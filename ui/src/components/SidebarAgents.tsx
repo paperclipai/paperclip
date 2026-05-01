@@ -63,7 +63,8 @@ function SidebarAgentItem({
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
   const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
-  const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused;
+  const pauseResumeDisabled =
+    disabled || agent.status === "pending_approval" || isBudgetPaused;
   const pauseResumeDisabledLabel = disabled
     ? "Updating..."
     : isBudgetPaused
@@ -82,10 +83,13 @@ function SidebarAgentItem({
           "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 text-[13px] font-medium transition-colors",
           isActive
             ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
         )}
       >
-        <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
+        <AgentIcon
+          icon={agent.icon}
+          className="shrink-0 h-3.5 w-3.5 text-muted-foreground"
+        />
         <span className="flex-1 truncate">{agent.name}</span>
         {(agent.pauseReason === "budget" || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
@@ -142,9 +146,15 @@ function SidebarAgentItem({
               onPauseResume(agent, isPaused ? "resume" : "pause");
             }}
             disabled={pauseResumeDisabled}
-            title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+            title={
+              isBudgetPaused ? "Agent was paused by budget limits" : undefined
+            }
           >
-            {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
+            {isPaused ? (
+              <PlayCircle className="size-4" />
+            ) : (
+              <PauseCircle className="size-4" />
+            )}
             <span>{pauseResumeDisabledLabel}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -155,7 +165,9 @@ function SidebarAgentItem({
 
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
-  const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
+  const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
@@ -183,6 +195,7 @@ export function SidebarAgents() {
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
     for (const run of liveRuns ?? []) {
+      if (run.status !== "running" && run.status !== "queued") continue;
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
@@ -190,7 +203,7 @@ export function SidebarAgents() {
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
-      (a: Agent) => a.status !== "terminated"
+      (a: Agent) => a.status !== "terminated",
     );
     return filtered;
   }, [agents]);
@@ -201,12 +214,20 @@ export function SidebarAgents() {
     userId: currentUserId,
   });
 
-  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
+  const agentMatch = location.pathname.match(
+    /^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/,
+  );
   const activeAgentId = agentMatch?.[1] ?? null;
   const activeTab = agentMatch?.[2] ?? null;
 
   const pauseResumeAgent = useMutation({
-    mutationFn: ({ agent, action }: { agent: Agent; action: "pause" | "resume" }) =>
+    mutationFn: ({
+      agent,
+      action,
+    }: {
+      agent: Agent;
+      action: "pause" | "resume";
+    }) =>
       action === "pause"
         ? agentsApi.pause(agent.id, selectedCompanyId ?? undefined)
         : agentsApi.resume(agent.id, selectedCompanyId ?? undefined),
@@ -220,14 +241,24 @@ export function SidebarAgents() {
     onSuccess: async (_agent, { agent, action }) => {
       if (selectedCompanyId) {
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.agents.list(selectedCompanyId),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.liveRuns(selectedCompanyId),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.dashboard(selectedCompanyId),
+          }),
         ]);
       }
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.detail(agent.id),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.detail(agentRouteRef(agent)),
+        }),
       ]);
       pushToast({
         title: action === "pause" ? "Agent paused" : "Agent resumed",
@@ -237,7 +268,10 @@ export function SidebarAgents() {
     },
     onError: (error, { agent, action }) => {
       pushToast({
-        title: action === "pause" ? "Could not pause agent" : "Could not resume agent",
+        title:
+          action === "pause"
+            ? "Could not pause agent"
+            : "Could not resume agent",
         body: error instanceof Error ? error.message : agent.name,
         tone: "error",
       });
@@ -259,7 +293,7 @@ export function SidebarAgents() {
             <ChevronRight
               className={cn(
                 "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
+                open && "rotate-90",
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
@@ -291,7 +325,9 @@ export function SidebarAgents() {
                 agent={agent}
                 disabled={pendingAgentIds.has(agent.id)}
                 isMobile={isMobile}
-                onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
+                onPauseResume={(targetAgent, action) =>
+                  pauseResumeAgent.mutate({ agent: targetAgent, action })
+                }
                 runCount={runCount}
                 setSidebarOpen={setSidebarOpen}
               />

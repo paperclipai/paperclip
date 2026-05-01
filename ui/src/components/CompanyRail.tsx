@@ -63,7 +63,13 @@ function SortableCompanyItem({
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="overflow-visible">
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className="overflow-visible"
+    >
       <Tooltip delayDuration={300}>
         <TooltipTrigger asChild>
           <a
@@ -82,13 +88,14 @@ function SortableCompanyItem({
             <div
               className={cn(
                 "absolute left-[-14px] w-1 rounded-r-full bg-foreground transition-[height] duration-150",
-                isSelected
-                  ? "h-5"
-                  : "h-0 group-hover:h-2"
+                isSelected ? "h-5" : "h-0 group-hover:h-2",
               )}
             />
             <div
-              className={cn("relative overflow-visible transition-transform duration-150", isDragging && "scale-105")}
+              className={cn(
+                "relative overflow-visible transition-transform duration-150",
+                isDragging && "scale-105",
+              )}
             >
               <CompanyPatternIcon
                 companyName={company.name}
@@ -139,7 +146,10 @@ export function CompanyRail() {
     queryFn: () => authApi.getSession(),
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const companyIds = useMemo(() => sidebarCompanies.map((company) => company.id), [sidebarCompanies]);
+  const companyIds = useMemo(
+    () => sidebarCompanies.map((company) => company.id),
+    [sidebarCompanies],
+  );
 
   const liveRunsQueries = useQueries({
     queries: companyIds.map((companyId) => ({
@@ -158,7 +168,12 @@ export function CompanyRail() {
   const hasLiveAgentsByCompanyId = useMemo(() => {
     const result = new Map<string, boolean>();
     companyIds.forEach((companyId, index) => {
-      result.set(companyId, (liveRunsQueries[index]?.data?.length ?? 0) > 0);
+      result.set(
+        companyId,
+        (liveRunsQueries[index]?.data?.filter(
+          (r) => r.status === "running" || r.status === "queued",
+        ).length ?? 0) > 0,
+      );
     });
     return result;
   }, [companyIds, liveRunsQueries]);
@@ -180,7 +195,7 @@ export function CompanyRail() {
     // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
     useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
-    })
+    }),
   );
 
   const handleDragEnd = useCallback(
@@ -195,7 +210,7 @@ export function CompanyRail() {
 
       persistOrder(arrayMove(ids, oldIndex, newIndex));
     },
-    [orderedCompanies, persistOrder]
+    [orderedCompanies, persistOrder],
   );
 
   return (
@@ -221,8 +236,12 @@ export function CompanyRail() {
                 key={company.id}
                 company={company}
                 isSelected={company.id === highlightedCompanyId}
-                hasLiveAgents={hasLiveAgentsByCompanyId.get(company.id) ?? false}
-                hasUnreadInbox={hasUnreadInboxByCompanyId.get(company.id) ?? false}
+                hasLiveAgents={
+                  hasLiveAgentsByCompanyId.get(company.id) ?? false
+                }
+                hasUnreadInbox={
+                  hasUnreadInboxByCompanyId.get(company.id) ?? false
+                }
                 onSelect={() => {
                   setSelectedCompanyId(company.id);
                   if (isInstanceRoute) {
