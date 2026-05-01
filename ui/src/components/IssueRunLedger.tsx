@@ -311,6 +311,7 @@ function stopReasonLabel(run: RunForIssue) {
   if (timeoutFired || stopReason === "timeout") {
     return timeoutText ? `timeout (${timeoutText})` : "timeout";
   }
+  if (stopReason === "max_turns_exhausted" || stopReason === "turn_limit_exhausted") return "max turns exhausted";
   if (stopReason === "budget_paused") return "budget paused";
   if (stopReason === "cancelled") return "cancelled";
   if (stopReason === "paused") return "paused by board";

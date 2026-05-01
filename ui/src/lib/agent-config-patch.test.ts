@@ -108,6 +108,35 @@ describe("buildAgentUpdatePatch", () => {
     expect(patch.adapterConfig).toBeUndefined();
   });
 
+  it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        heartbeat: {
+          maxTurnContinuation: {
+            enabled: true,
+            maxAttempts: 3,
+            delayMs: 1000,
+          },
+        },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 300,
+          maxTurnContinuation: {
+            enabled: true,
+            maxAttempts: 3,
+            delayMs: 1000,
+          },
+        },
+      },
+    });
+  });
+
   it("merges cheap profile changes onto existing runtimeConfig.modelProfiles state", () => {
     const agent = makeAgent();
     agent.runtimeConfig = {
