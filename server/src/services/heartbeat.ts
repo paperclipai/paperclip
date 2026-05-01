@@ -744,6 +744,8 @@ const heartbeatRunIssueSummaryColumns = {
   status: heartbeatRuns.status,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
+  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
   createdAt: heartbeatRuns.createdAt,
