@@ -839,13 +839,27 @@ async def decide(state: MeetingState, utterance: str, speaker: str) -> dict[str,
 
     # Wake-word fast-path detection: if anyone (not just Vardaan) directly addresses
     # the bot, give it priority + fewer tool rounds for snappier response.
+    # Includes Teams ASR mis-hearings ("Donald", "Roland", "Reynold") of "Ronald".
     _utt_lower = utterance.lower()
     _wake_pattern = _re.compile(
-        r"\b(bot|nova|ronald|claude|agent|hey\s+bot|hey\s+nova|hey\s+ronald|hey\s+claude|"
-        r"meeting\s+bot|note\s*taker|notetaker|are\s+you\s+there|you\s+there)\b",
+        r"\b(bot|nova|ronald|donald|roland|reynold|renault|"
+        r"claude|agent|hey\s+(bot|nova|ronald|donald|claude)|"
+        r"meeting\s+bot|note\s*taker|notetaker|are\s+you\s+there|you\s+there|"
+        r"hi\s+(bot|nova|ronald|donald|claude))\b",
         _re.IGNORECASE,
     )
     is_directly_addressed = bool(_wake_pattern.search(_utt_lower))
+
+    # When directly addressed AND we just got a fresh utterance, short-circuit
+    # the LLM entirely with a hardcoded acknowledgment for instant response.
+    # The actual answer (if a question was asked) follows from the LLM path
+    # in subsequent transcript chunks.
+    if is_directly_addressed and len(utterance.split()) <= 4:
+        return {
+            "action": "speak",
+            "text": "Yes, I'm here. Go ahead.",
+            "reason": "wake-word-instant-ack",
+        }
 
     org_ctx = state.__dict__.get("_org_context") or {}
     system = _DECISION_SYSTEM_PROMPT.format(
@@ -874,7 +888,7 @@ async def decide(state: MeetingState, utterance: str, speaker: str) -> dict[str,
 
         for _round in range(max_rounds):
             resp = await client.messages.create(
-                model="claude-haiku-4-5",
+                model="claude-sonnet-4-6",
                 max_tokens=max_toks,
                 system=system,
                 tools=_TOOL_DEFINITIONS,
