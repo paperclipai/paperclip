@@ -171,14 +171,14 @@
 
   <!-- Top activations -->
   <div data-help="cb-activations" style="color:#aab;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:10px;margin-bottom:5px;cursor:help;display:flex;justify-content:space-between;align-items:center">
-    <span>Activation neurale <span style="color:#55ff99;text-transform:none;letter-spacing:0">réel</span></span>
+    <span>Activation neurale récente <span style="color:#55ff99;text-transform:none;letter-spacing:0">réel</span></span>
     <span id="hb-act-info" style="color:#557;font-size:8.5px;text-transform:none;letter-spacing:0;font-family:ui-monospace,monospace">—</span>
   </div>
   <div id="cb-activations" data-help="cb-activations" style="display:flex;flex-direction:column;gap:3px;font-size:10px"></div>
 
   <!-- Apprentissages Hebbian -->
   <div data-help="cb-hebbian" style="color:#aab;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:13px;margin-bottom:5px;cursor:help;display:flex;justify-content:space-between;align-items:center">
-    <span>Apprentissages Hebbian <span style="color:#55ff99;text-transform:none;letter-spacing:0">réel disque</span></span>
+    <span>Traces Hebbian récentes <span style="color:#55ff99;text-transform:none;letter-spacing:0">réel disque</span></span>
     <span id="hb-heb-info" style="color:#557;font-size:8.5px;text-transform:none;letter-spacing:0;font-family:ui-monospace,monospace">—</span>
   </div>
   <div id="cb-hebbian" data-help="cb-hebbian" style="display:flex;flex-direction:column;gap:3px;font-size:10px"></div>
@@ -196,7 +196,7 @@
   <div id="cb-focus" data-help="cb-focus" style="font-size:10px;color:#778"></div>
 
   <!-- World model : concepts qui grandissent (croissance Hebbian + activation cumulée) -->
-  <div data-help="cb-worldmodel" style="color:#aab;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:13px;margin-bottom:5px;cursor:help">Concepts qui grandissent <span style="color:#55ff99;text-transform:none;letter-spacing:0">world model</span></div>
+  <div data-help="cb-worldmodel" style="color:#aab;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:13px;margin-bottom:5px;cursor:help">Concepts consolidés / en croissance <span style="color:#55ff99;text-transform:none;letter-spacing:0">world model</span></div>
   <div id="cb-worldmodel" data-help="cb-worldmodel" style="display:flex;flex-direction:column;gap:3px;font-size:10px;color:#778"></div>
 
   <!-- Dernière décision autonome -->
@@ -393,6 +393,12 @@
                 <div id="consortium-live-path" style="color:#6a7a9c;font-size:10px;margin-top:3px">Le prochain arbitrage apparaîtra ici</div>
                 <div id="consortium-live-note" style="color:#90a4cf;font-size:10px;line-height:1.45;margin-top:7px">Quand Cortex passe par le panel-of-judges, vous verrez ici le backend retenu, le chemin, puis les rounds récents complets juste en dessous.</div>
               </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button onclick="window._consortiumExplainWhy()" style="background:#0b1225;border:1px solid #27406f;color:#9fc0ff;cursor:pointer;font-size:10px;padding:5px 8px;border-radius:4px;font-family:inherit">Pourquoi ce modèle ?</button>
+                <button id="consortium-toggle-empty" onclick="window._toggleConsortiumEmpty()" style="background:#10172a;border:1px solid #2a3555;color:#9aaad0;cursor:pointer;font-size:10px;padding:5px 8px;border-radius:4px;font-family:inherit">masquer réponses vides</button>
+                <button id="consortium-toggle-last" onclick="window._toggleConsortiumLastOnly()" style="background:#10172a;border:1px solid #2a3555;color:#9aaad0;cursor:pointer;font-size:10px;padding:5px 8px;border-radius:4px;font-family:inherit">dernier round seulement</button>
+                <button onclick="window._consortiumShowJson()" style="background:#10172a;border:1px solid #2a3555;color:#9aaad0;cursor:pointer;font-size:10px;padding:5px 8px;border-radius:4px;font-family:inherit">voir JSON</button>
+              </div>
               <div id="consortium-ranking" style="display:flex;flex-wrap:wrap;gap:6px"></div>
             </div>
             <div id="consortium-rounds" style="flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:10px"></div>
@@ -419,6 +425,19 @@
   <div id="md-content" style="flex:1;overflow-y:auto;padding:14px 16px;color:#667;font-size:11px;line-height:1.7;white-space:pre-wrap"></div>
   <div style="padding:10px 16px;border-top:1px solid #101018">
     <button onclick="openInObsidian()" style="width:100%;background:#06060e;border:1px solid #181828;color:#334;padding:6px;border-radius:4px;cursor:pointer;font-size:10px;font-family:inherit">Ouvrir dans Obsidian ↗</button>
+  </div>
+</div>
+<div id="brain-detail-modal" style="display:none;position:fixed;inset:0;background:rgba(2,6,16,.8);z-index:9998;align-items:center;justify-content:center;padding:24px">
+  <div style="width:min(760px,100%);max-height:88vh;overflow:auto;background:#07101f;border:1px solid #22345c;border-radius:14px;box-shadow:0 30px 90px rgba(0,0,0,.45);padding:18px 20px;font-family:ui-monospace,monospace">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+      <div>
+        <div id="brain-detail-title" style="color:#e8efff;font-size:14px;font-weight:700;word-break:break-word">Détail</div>
+        <div id="brain-detail-subtitle" style="color:#8ea8dd;font-size:10px;margin-top:4px">source</div>
+      </div>
+      <button onclick="window._closeBrainDetail()" style="background:none;border:0;color:#6f84b8;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div id="brain-detail-meta" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px"></div>
+    <div id="brain-detail-body" style="margin-top:14px;color:#b9c7e4;font-size:11px;line-height:1.6;white-space:pre-wrap"></div>
   </div>
 </div>
 
@@ -2093,22 +2112,40 @@ window._toggleConsortium = () => {
   window._setChatSidecarTab('consortium');
   if (typeof window._refreshConsortium === 'function') window._refreshConsortium();
 };
-window._playtestLoad = (url) => {
+window._playtestLoad = async (url) => {
   const inp = document.getElementById('playtest-url');
   const target = url || (inp && inp.value.trim());
   if (!target) return;
   if (inp) inp.value = target;
   const f = document.getElementById('playtest-frame');
-  if (f) f.src = target;
   const info = document.getElementById('playtest-info');
-  if (info) info.innerHTML = 'Chargé : <code style="color:#cdf">' + target.replace(/</g,'&lt;') + '</code>';
+  if (info) info.innerHTML = 'Chargement : <code style="color:#cdf">' + target.replace(/</g,'&lt;') + '</code>';
+  try {
+    if (/^https?:\/\/127\.0\.0\.1:8765\/playtests\/.+\.html$/i.test(target) || /^\/playtests\/.+\.html$/i.test(target)) {
+      const probe = await fetch(target, {cache: 'no-store'});
+      if (!probe.ok) throw new Error('HTTP ' + probe.status);
+    }
+    if (f) f.src = target;
+    if (info) info.innerHTML = 'Chargé : <code style="color:#cdf">' + target.replace(/</g,'&lt;') + '</code>';
+  } catch (e) {
+    if (info) info.innerHTML = 'Échec Playtest : <code style="color:#ffb49a">' + String(e.message || e).replace(/</g,'&lt;') + '</code>';
+  }
 };
 window._playtestSetFromCode = (result) => {
-  // result = sortie du dev_command /code. On cherche un chemin de fichier
-  // créé/modifié dans la sortie et on le propose en preview.
   const info = document.getElementById('playtest-info');
   if (!info) return;
-  // Heuristique : fichiers HTML, MD, ou path générique
+  if (result && typeof result === 'object') {
+    const meta = result.meta || {};
+    if (meta.playtest_url || meta.auto_open_playtest) {
+      const target = meta.playtest_url || (result.response && (result.response.match(/https?:\/\/127\.0\.0\.1:8765\/playtests\/[^\s]+\.html/i) || [])[0]);
+      if (target) {
+        info.innerHTML = `Livrable Playtest généré : <code style="color:#cdf">${target.replace(/</g,'&lt;')}</code>`;
+        window._togglePlaytest();
+        window._playtestLoad(target);
+        return;
+      }
+    }
+  }
   const m = (result || '').match(/[A-Z]:[\\\/][^\s'"`]+\.(html|md|js|ts|py)/i);
   if (m) {
     const p = m[0];
@@ -2121,6 +2158,51 @@ window._playtestSetFromCode = (result) => {
   }
 };
 
+window._consortiumUi = { hideEmpty: true, lastOnly: false };
+window._toggleConsortiumEmpty = () => {
+  window._consortiumUi.hideEmpty = !window._consortiumUi.hideEmpty;
+  const btn = document.getElementById('consortium-toggle-empty');
+  if (btn) btn.textContent = window._consortiumUi.hideEmpty ? 'afficher réponses vides' : 'masquer réponses vides';
+  window._renderConsortium(window._consortiumCache || {ok:false});
+};
+window._toggleConsortiumLastOnly = () => {
+  window._consortiumUi.lastOnly = !window._consortiumUi.lastOnly;
+  const btn = document.getElementById('consortium-toggle-last');
+  if (btn) btn.textContent = window._consortiumUi.lastOnly ? 'tous les rounds' : 'dernier round seulement';
+  window._renderConsortium(window._consortiumCache || {ok:false});
+};
+window._consortiumShowJson = () => {
+  const raw = JSON.stringify(window._consortiumCache || {}, null, 2);
+  window._openBrainDetail({
+    title: 'Consortium JSON brut',
+    subtitle: 'Source: /api/cortex/judges',
+    chips: [{label:'raw json', color:'#9fc0ff'}],
+    body: raw,
+  });
+};
+window._consortiumExplainWhy = () => {
+  const meta = window._lastChatMeta || {};
+  const lines = [
+    `intent: ${meta.intent || 'n/a'}`,
+    `complexité: ${meta.complexity || 'n/a'}`,
+    `routing_decision: ${meta.routing_decision || meta.v2_path || 'n/a'}`,
+    `backend: ${meta.selected_backend || meta.backend || 'n/a'}`,
+    `raison: ${meta.selection_reason || meta.route_reason || 'n/a'}`,
+    `router_used: ${String(!!meta.router_used)}`,
+    `judge_used: ${String(!!meta.judge_used)}`,
+    `history: ${meta.history_used ? 'oui' : 'non'} (${meta.history_count || 0})`,
+  ];
+  window._openBrainDetail({
+    title: 'Pourquoi ce modèle ?',
+    subtitle: 'Métadonnées du dernier tour',
+    chips: [
+      {label:`backend ${(meta.selected_backend || meta.backend || 'n/a')}`, color:'#9fc0ff'},
+      {label:`route ${(meta.routing_decision || meta.v2_path || 'n/a')}`, color:'#8fd5b8'},
+    ],
+    body: lines.join('\n'),
+  });
+};
+
 window._renderConsortium = (data) => {
   const ranking = document.getElementById('consortium-ranking');
   const rounds = document.getElementById('consortium-rounds');
@@ -2130,27 +2212,46 @@ window._renderConsortium = (data) => {
     rounds.innerHTML = '<div class="consortium-card" style="color:#ffb49a">Impossible de lire le consortium pour le moment.</div>';
     return;
   }
-  ranking.innerHTML = (data.ranking || []).slice(0, 5).map((row, idx) =>
-    `<span class="consortium-chip"><b style="color:${idx === 0 ? '#67e6a8' : '#d2defd'}">${idx + 1}. ${row.model}</b><span>${row.win_rate}% · ${row.avg_latency_s}s</span></span>`
-  ).join('');
-  rounds.innerHTML = (data.rounds || []).slice().reverse().map((round, idx) => {
+  const rankingRows = (data.ranking || []).filter(row => Number(row.rounds || 0) > 0);
+  ranking.innerHTML = rankingRows.length
+    ? rankingRows.slice(0, 5).map((row, idx) =>
+      `<span class="consortium-chip"><b style="color:${idx === 0 ? '#67e6a8' : '#d2defd'}">${idx + 1}. ${row.model}</b><span>${row.win_rate}% · ${row.avg_latency_s}s</span></span>`
+    ).join('')
+    : '<span class="consortium-chip" style="color:#8ea8dd">Pas assez de scores réels pour afficher un classement fiable.</span>';
+  let sourceRounds = (data.rounds || []).slice().reverse();
+  if (window._consortiumUi.lastOnly) sourceRounds = sourceRounds.slice(0, 1);
+  rounds.innerHTML = sourceRounds.map((round, idx) => {
     const responses = round.responses || {};
     const latencies = round.latencies || {};
     const scores = round.scores || {};
-    const models = Object.keys(responses);
+    const statuses = round.statuses || {};
+    let models = Object.keys({...responses, ...latencies, ...scores, ...statuses});
+    if (window._consortiumUi.hideEmpty) {
+      models = models.filter((model) => {
+        const resp = responses[model];
+        return !!(resp && String(resp).trim());
+      });
+    }
     const rows = models.map((model) => {
       const isWinner = model === round.winner;
       const score = scores[model];
       const latency = latencies[model];
-      const why = score != null
-        ? `score ${Number(score).toFixed ? Number(score).toFixed(1) : score}`
-        : `latence ${latency != null ? Number(latency).toFixed(1) + 's' : 'n/a'}`;
+      const rawStatus = statuses[model];
+      const inferredStatus = rawStatus || (!responses[model] ? (latency >= 59 ? 'timeout' : 'empty_response') : 'ok');
+      const statusColor = inferredStatus === 'ok' ? '#8fd5b8' : inferredStatus.includes('timeout') ? '#ffb36b' : inferredStatus.includes('error') ? '#ff8a8a' : '#d7b36f';
+      const finalScore = round.final_scores && round.final_scores[model];
+      const why = [
+        `status ${inferredStatus}`,
+        latency != null ? `latence ${Number(latency).toFixed(1)}s` : 'latence n/a',
+        score != null ? `score juge ${Number(score).toFixed(1)}` : null,
+        finalScore != null ? `score final ${Number(finalScore).toFixed(2)}` : null,
+      ].filter(Boolean).join(' · ');
       return `<div class="consortium-response${isWinner ? ' winner' : ''}">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
           <div style="color:${isWinner ? '#bff7d7' : '#d0daf4'};font-size:10px;font-weight:700">${model}${isWinner ? ' · gagnant' : ''}</div>
-          <div style="color:${isWinner ? '#8de5b5' : '#7f8fb0'};font-size:9px">${why}</div>
+          <div style="color:${isWinner ? '#8de5b5' : statusColor};font-size:9px">${why}</div>
         </div>
-        <div style="color:#a8b7da;font-size:10px;line-height:1.5;margin-top:4px">${(responses[model] || '(vide)').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</div>
+        <div style="color:#a8b7da;font-size:10px;line-height:1.5;margin-top:4px">${(responses[model] || 'empty_response').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</div>
       </div>`;
     }).join('');
     const question = (round.question || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -2160,7 +2261,8 @@ window._renderConsortium = (data) => {
         <div class="consortium-chip" style="color:#67e6a8;border-color:#24503c;background:rgba(20,42,30,.34)">winner ${round.winner || 'n/a'}</div>
       </div>
       <div style="color:#e1e9ff;font-size:11px;line-height:1.5;margin-top:7px">${question || '(question indisponible)'}</div>
-      <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">${rows}</div>
+      <div style="color:#7f92bc;font-size:9px;margin-top:6px">${round.route || round.v2_path || 'route non documentée'}</div>
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">${rows || '<div style="color:#7f92bc">Tous les candidats ont été masqués par le filtre actuel.</div>'}</div>
     </div>`;
   }).join('') || '<div class="consortium-card" style="color:#7f92bc">Aucun round récent.</div>';
 };
@@ -2291,6 +2393,61 @@ function _shortName(p) {
   if (!p) return '?';
   return p.split('/').pop().split('\\').pop().replace(/\.md$/, '').slice(0, 32);
 }
+function _brainAttr(obj) {
+  return JSON.stringify(obj)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+window._openBrainDetail = (opts) => {
+  const modal = document.getElementById('brain-detail-modal');
+  if (!modal) return;
+  document.getElementById('brain-detail-title').textContent = opts.title || 'Détail';
+  document.getElementById('brain-detail-subtitle').textContent = opts.subtitle || '';
+  const meta = document.getElementById('brain-detail-meta');
+  meta.innerHTML = (opts.chips || []).map(ch =>
+    `<span style="padding:4px 8px;border-radius:999px;border:1px solid ${ch.color || '#334'};background:${(ch.color || '#334')}22;color:${ch.color || '#ccd'};font-size:10px">${String(ch.label || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</span>`
+  ).join('');
+  document.getElementById('brain-detail-body').textContent = opts.body || '';
+  modal.style.display = 'flex';
+};
+window._closeBrainDetail = () => {
+  const modal = document.getElementById('brain-detail-modal');
+  if (modal) modal.style.display = 'none';
+};
+window._showBrainSourceDetail = async (item) => {
+  const chips = [];
+  if (item.type) chips.push({label:`type ${item.type}`, color:'#9fc0ff'});
+  if (item.score != null) chips.push({label:`score ${Number(item.score).toFixed(3)}`, color:'#8fd5b8'});
+  if (item.weight != null) chips.push({label:`force ${Number(item.weight).toFixed(3)}`, color:'#f6ad55'});
+  if (item.learningRate != null) chips.push({label:`learning_rate ${Number(item.learningRate).toFixed(3)}`, color:'#fbd38d'});
+  if (item.coactivationCount != null) chips.push({label:`coactivations ${item.coactivationCount}`, color:'#d6bcfa'});
+  if (item.lastSeen) chips.push({label:`last_seen ${item.lastSeen}`, color:'#a0aec0'});
+  window._openBrainDetail({
+    title: item.title || _shortName(item.source || item.a || item.b || ''),
+    subtitle: item.source || [item.a, item.b].filter(Boolean).join(' ↔ ') || 'source introuvable',
+    chips,
+    body: 'Chargement de la source markdown…',
+  });
+  let excerpt = 'source introuvable';
+  if (item.source) {
+    try {
+      const r = await fetch(`/api/node-content?id=${encodeURIComponent(item.source)}`);
+      const d = await r.json();
+      excerpt = (d.content || 'source introuvable').slice(0, 2400);
+    } catch (e) {
+      excerpt = 'source introuvable';
+    }
+  }
+  const details = [];
+  if (item.description) details.push(item.description);
+  if (item.a || item.b) details.push(`Liaison: ${(item.a || '?')} ↔ ${(item.b || '?')}`);
+  if (item.tooltip) details.push(item.tooltip);
+  details.push('\nExtrait markdown:\n' + excerpt);
+  document.getElementById('brain-detail-body').textContent = details.join('\n\n');
+};
 function _kindOf(p) {
   // Devine la nature d'un nœud à partir de son chemin
   const s = (p||'').toLowerCase();
@@ -2320,12 +2477,15 @@ function refreshCerebralView() {
           + `<div style='color:#aac'>Activation : <b style='color:#88ff44'>${v.toFixed(3)}</b> (sur 1.0)</div>`
           + `<div style='color:#aac'>Demi-vie restante avant extinction : ~${Math.max(0, halfLife)} s</div>`
           + `<div style='color:#778;margin-top:4px;font-size:10px'>Pourquoi éveillé : un retrieve_context, un A* ou la boucle de pensée vagabonde l&#39;a touché. Plus la valeur est haute, plus il vient d&#39;être réactivé.</div>`;
-        return `<div data-tip="${tip.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:6px;cursor:help">
+        const detail = _brainAttr({title:_shortName(p), source:p, type:k, score:Number(v.toFixed(3)), lastSeen:'récent', description:'Activation neurale récente. Cette barre peut décroître avec le temps.'});
+        return `<div data-tip="${tip.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:6px;cursor:help" data-brain-item="${detail}" onclick="window._showBrainSourceDetail(JSON.parse(this.dataset.brainItem))">
+          <div style="display:flex;align-items:center;gap:6px;cursor:pointer;width:100%">
           <div style="flex:1;background:#04040c;border-radius:2px;height:14px;position:relative;overflow:hidden">
             <div style="position:absolute;inset:0;width:${w}%;background:linear-gradient(90deg,#88ff44,#33ffcc);opacity:0.7"></div>
             <span style="position:absolute;left:5px;top:0;line-height:14px;color:#cdf;font-size:9.5px">${_shortName(p)}</span>
           </div>
           <span style="color:#88ff44;font-size:9px;width:32px;text-align:right">${(v).toFixed(2)}</span>
+          </div>
         </div>`;
       }).join('');
     }
@@ -2346,7 +2506,8 @@ function refreshCerebralView() {
           + `<div style='color:#aac;margin-top:5px'>Force : <b style='color:#ffaa44'>${e.strength.toFixed(3)}</b></div>`
           + `<div style='color:#aac'>Soit ~<b>${coActivations}</b> co-activations cumulées (HEBBIAN_LR=0.01).</div>`
           + `<div style='color:#778;margin-top:4px;font-size:10px'>Plus on les pense ensemble, plus le lien grossit. Persisté sur disque, survit aux redémarrages. C&#39;est la mémoire long terme.</div>`;
-        return `<div data-tip="${tip.replace(/"/g,'&quot;')}" style="cursor:help">
+        const detail = _brainAttr({title:`${_shortName(e.a)} ↔ ${_shortName(e.b)}`, source:e.a, a:e.a, b:e.b, type:'hebbian', weight:Number(e.strength.toFixed(3)), learningRate:0.01, coactivationCount:coActivations, lastSeen:'récent', description:'Ces deux notes ont été co-activées plusieurs fois. Force actuelle persistée sur disque.', tooltip:`Ces deux notes ont été co-activées ${coActivations} fois. Force actuelle: ${e.strength.toFixed(3)}.`});
+        return `<div data-tip="${tip.replace(/"/g,'&quot;')}" style="cursor:help" data-brain-item="${detail}" onclick="window._showBrainSourceDetail(JSON.parse(this.dataset.brainItem))">
           <div style="display:flex;justify-content:space-between;font-size:10px">
             <span style="color:#cdf;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_shortName(e.a)}</span>
             <span style="color:#557;margin:0 5px">↔</span>
@@ -2426,6 +2587,7 @@ function refreshCerebralView() {
   // ── 4b. World model — concepts qui grandissent (croissance Hebbian récente) ──
   const wcont = document.getElementById('cb-worldmodel');
   if (wcont) {
+    window._worldModelStable = window._worldModelStable || {};
     // On combine : top hebbian edges (force) + activations actuelles pour deviner
     // les concepts en croissance dans le world model.
     const heb = (acts.top_hebbian_edges || []).slice(0, 12);
@@ -2435,7 +2597,12 @@ function refreshCerebralView() {
       concept[e.b] = (concept[e.b] || 0) + e.strength;
     });
     active.forEach(([p, v]) => { concept[p] = (concept[p] || 0) + v * 0.5; });
-    const top = Object.entries(concept).sort((a,b) => b[1]-a[1]).slice(0, 5);
+    Object.entries(concept).forEach(([p, score]) => {
+      const prev = window._worldModelStable[p] || 0;
+      window._worldModelStable[p] = Math.max(prev, score);
+    });
+    const stableEntries = Object.entries(window._worldModelStable).sort((a,b) => b[1]-a[1]).slice(0, 5);
+    const top = stableEntries.length ? stableEntries : Object.entries(concept).sort((a,b) => b[1]-a[1]).slice(0, 5);
     if (!top.length) {
       wcont.innerHTML = '<div style="color:#445;font-style:italic;font-size:10px">Apprentissage stagne — Cortex n\'a rien renforcé récemment</div>';
     } else {
@@ -2446,7 +2613,8 @@ function refreshCerebralView() {
           + `<div style='color:#aac;margin-top:4px'>Score de croissance : <b style='color:#33ffcc'>${score.toFixed(3)}</b></div>`
           + `<div style='color:#aac'>= activation cumulée + force des liens Hebbian.</div>`
           + `<div style='color:#778;margin-top:4px;font-size:10px'>Plus ce score grandit, plus Cortex consolide ce concept dans son world model. Si tous les scores sont bas → l&#39;apprentissage est en pause (augmente l&#39;activité ou attends la pensée vagabonde).</div>`;
-        return `<div data-tip="${tip.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:6px;cursor:help">
+        const detail = _brainAttr({title:_shortName(p), source:p, type:'concept_consolidated', score:Number(score.toFixed(3)), lastSeen:'stable', description:'Concept consolidé ou en croissance. Cette vue garde la meilleure consolidation observée et ne décroît pas artificiellement.'});
+        return `<div data-tip="${tip.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:6px;cursor:help" data-brain-item="${detail}" onclick="window._showBrainSourceDetail(JSON.parse(this.dataset.brainItem))">
           <div style="flex:1;background:#04040c;border-radius:2px;height:13px;position:relative;overflow:hidden">
             <div style="position:absolute;inset:0;width:${w}%;background:linear-gradient(90deg,#33ffcc,#88ff44);opacity:0.55"></div>
             <span style="position:absolute;left:5px;top:0;line-height:13px;color:#cdf;font-size:9.5px">${_shortName(p)}</span>
@@ -2570,10 +2738,11 @@ function _renderConsortiumLive(source) {
   const stream = source || window._dashboardLastStream || {};
   const lastChat = stream.last_chat || {};
   const router = stream.router || {};
-  const backend = (lastChat.meta && lastChat.meta.backend) || router.v2_last_winner;
-  const route = (lastChat.meta && lastChat.meta.v2_path) || router.v2_last_path || 'local';
+  const meta = lastChat.meta || {};
+  const backend = meta.selected_backend || meta.backend || router.v2_last_winner;
+  const route = meta.routing_decision || meta.v2_path || router.v2_last_path || 'local';
   const scores = lastChat.meta && lastChat.meta.scores;
-  const isJudge = /panel|judge|frugal|v2/i.test(route || '');
+  const isJudge = !!meta.judge_used || /panel|judge|frugal|v2|consensus/i.test(route || '');
   if (!backend) {
     status.textContent = 'pas encore de décision';
     winner.textContent = 'Aucun backend récent';
@@ -2583,12 +2752,12 @@ function _renderConsortiumLive(source) {
     pill.style.color = '#778';
     return;
   }
-  status.textContent = isJudge ? 'consortium actif' : 'réponse directe';
+  status.textContent = isJudge ? 'consortium actif' : (meta.router_used ? 'router actif' : 'panel non utilisé');
   winner.textContent = backend;
   path.textContent = `Chemin ${route}`;
   note.textContent = scores && typeof scores === 'object' && Object.keys(scores).length
     ? `Scores observés : ${Object.entries(scores).map(([k,v]) => `${k} ${Number(v).toFixed ? Number(v).toFixed(1) : v}`).join(' · ')}`
-    : 'Pas de scores détaillés sur ce tour; le chemin ou la latence ont probablement suffi à décider.';
+    : (meta.selection_reason || 'Pas de scores détaillés sur ce tour; le chemin, la latence ou un guardrail ont suffi à décider.');
   pill.textContent = isJudge ? `consortium ${backend}` : `chat ${backend}`;
   pill.style.color = isJudge ? '#93b7ff' : '#8fd5b8';
 }
@@ -3018,8 +3187,8 @@ async function _fetchLastEmergence() {
     const ce = document.getElementById('hb-em-content') || document.getElementById('cb-emergence');
     if (!ce) return;
     const ageS = Math.round(Date.now()/1000 - (last.ts||0));
-    ce.innerHTML = `<div style="color:#33ffcc;font-size:9px;margin-bottom:3px">action: ${last.action} · il y a ${_fmtAge(ageS)}</div>` +
-                   `<div style="color:#aac;font-size:10px;line-height:1.4;white-space:pre-line">${(last.response||'').slice(0,300)}</div>`;
+    ce.innerHTML = `<div style="color:#33ffcc;font-size:9px;margin-bottom:3px">dernière action: ${last.action || 'n/a'} · il y a ${_fmtAge(ageS)}</div>` +
+                   `<div style="color:#aac;font-size:10px;line-height:1.4;white-space:pre-line">${(last.response||'').slice(0,300) || 'résultat indisponible'}</div>`;
     window._cbLastEmergenceTs = (last.ts||0) * 1000;
   } catch(e) {}
 }
@@ -3673,7 +3842,7 @@ window.sendChat = async () => {
     appendChatMessage({speaker:'cortex', msg, response, meta:d.meta || {}});
     // Hook playtest pour chat normal aussi (Sam : "Cortex a répondu mais playtest n'a pas bougé")
     if (typeof window._playtestSetFromCode === 'function') {
-      try { window._playtestSetFromCode(response); } catch(e) {}
+      try { window._playtestSetFromCode(d); } catch(e) {}
     }
   } catch(e) {
     if (pending?.text) {
@@ -3684,6 +3853,11 @@ window.sendChat = async () => {
     }
   }
 };
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    window._closeBrainDetail();
+  }
+});
 let _calibRecog = null, _calibActive = false;
 let _calibGoodCount = 0;
 const CALIB_TARGET = 5;  // 5 segments avec bon score = profil validé

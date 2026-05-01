@@ -35,6 +35,17 @@ def _norm(text: str) -> str:
 def detect_intent(message: str) -> CortexIntent:
     m = _norm(message)
 
+    if m.startswith("/code") and any(k in m for k in [
+        "playtest", "app", "application", "html", "interface",
+        "calculatrice", "todo", "kanban", "dashboard"
+    ]):
+        return CortexIntent(
+            intent="playtest_code_task",
+            confidence="high",
+            route_reason="playtest_builder_direct",
+            dashboard_context=DASHBOARD_CONTEXT,
+        )
+
     if any(k in m for k in [
         "recherche web", "cherche sur le web", "actualité", "actualités",
         "actu", "news", "récent", "récente", "aujourd'hui", "maintenant",

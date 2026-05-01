@@ -16,6 +16,7 @@ import json
 import time
 import os
 import socketserver
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -31,6 +32,10 @@ HERE = Path(__file__).parent
 PORT = int(os.environ.get("BRAIN_DASHBOARD_PORT", "8765"))
 CHAT_STREAM_FILE = VAULT / ".cortex-chat-stream.jsonl"
 EMERGENCE_STREAM_FILE = VAULT / ".cortex-emergence-stream.jsonl"
+PLAYTEST_DIR = HERE / "playtests"
+PLAYTEST_BASE_URL = f"http://127.0.0.1:{PORT}/playtests"
+ROUTER_BENCHMARK_FILE = HERE / "state" / "router_benchmarks.json"
+OPENCODE_CMD = Path(r"C:\Users\Smedj\AppData\Roaming\npm\opencode.cmd")
 
 GRAPH_FILE = VAULT / ".vault-graph.json"
 LAYOUT_FILE = VAULT / ".vault-graph-layout.json"
@@ -44,6 +49,44 @@ JEPA_STATUS = VAULT / ".vault-jepa-status.json"
 _cache: dict = {"snapshot": None, "snapshot_mtime": 0}
 _lock = threading.Lock()
 
+CONFIGURED_MODEL_PRIORS = {
+    "minimax_fast": {
+        "strengths": ["fast", "french", "chat", "summarization"],
+        "weaknesses": ["deep_reasoning", "complex_code"],
+        "cost": "low",
+    },
+    "gpt_5_nano": {
+        "strengths": ["structured", "fast_reasoning"],
+        "weaknesses": [],
+        "cost": "low",
+    },
+    "big_pickle": {
+        "strengths": ["math", "short_factual"],
+        "weaknesses": [],
+        "cost": "low",
+    },
+    "hy3_preview": {
+        "strengths": ["reasoning"],
+        "weaknesses": [],
+        "cost": "low",
+    },
+    "nemotron_3_super": {
+        "strengths": ["reasoning", "long_answer"],
+        "weaknesses": [],
+        "cost": "low",
+    },
+    "playtest_builder": {
+        "strengths": ["playtest_html"],
+        "weaknesses": [],
+        "cost": "low",
+    },
+    "direct_guardrail": {
+        "strengths": ["truth", "safe_direct_answer"],
+        "weaknesses": [],
+        "cost": "low",
+    },
+}
+
 
 def _is_chat_entry(entry: dict | None) -> bool:
     if not isinstance(entry, dict):
@@ -55,6 +98,316 @@ def _append_jsonl(path: Path, entry: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _write_json_atomic(path: Path, payload: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _infer_complexity(message: str, intent_name: str = "") -> str:
+    text = (message or "").strip().lower()
+    if intent_name in ("recent_web_search", "playtest_dashboard_help", "identity"):
+        return "simple"
+    if intent_name == "playtest_code_task":
+        return "hard"
+    if len(text) > 500:
+        return "hard"
+    hard_markers = [
+        "architecture", "stabiliser", "stabilize", "debug", "diagnostic",
+        "plan", "planifie", "pourquoi", "analyse", "compare", "router",
+        "judge", "consortium", "server", "crash", "timeout",
+    ]
+    medium_markers = [
+        "explique", "comment", "résume", "resume", "problème", "probleme",
+        "mémoire", "memoire", "vault", "fichier", "repo",
+    ]
+    if any(marker in text for marker in hard_markers):
+        return "hard"
+    if any(marker in text for marker in medium_markers):
+        return "medium"
+    return "simple"
+
+
+def _is_simple_fact_question(message: str) -> bool:
+    text = (message or "").strip().lower()
+    if not text or len(text) > 160:
+        return False
+    if any(marker in text for marker in ["```", "/code", "debug", "architecture", "plan", "analyse", "compare"]):
+        return False
+    return any(text.startswith(prefix) for prefix in [
+        "quelle", "quel", "qui", "où", "ou", "quand", "combien", "c'est quoi", "explique-moi brièvement",
+    ])
+
+
+def _is_playtest_code_request(message: str) -> bool:
+    text = (message or "").strip().lower()
+    if not text.startswith("/code"):
+        return False
+    markers = ["playtest", "app", "application", "html", "interface", "calculatrice", "todo", "kanban", "dashboard"]
+    return any(marker in text for marker in markers)
+
+
+def _read_recent_history(max_turns: int = 4, include_responses: bool = True) -> list[dict]:
+    turns: list[dict] = []
+    if not CHAT_STREAM_FILE.exists():
+        return turns
+    try:
+        lines = CHAT_STREAM_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-120:]
+    except Exception:
+        return turns
+    for raw in reversed(lines):
+        try:
+            entry = json.loads(raw)
+        except Exception:
+            continue
+        if not _is_chat_entry(entry):
+            continue
+        msg = (entry.get("msg") or "").strip()
+        response = (entry.get("response") or "").strip()
+        if not msg and not response:
+            continue
+        turns.append({
+            "msg": msg[:400],
+            "response": response[:500] if include_responses else "",
+            "speaker": entry.get("speaker") or "cortex",
+            "meta": entry.get("meta") or {},
+        })
+        if len(turns) >= max_turns:
+            break
+    turns.reverse()
+    return turns
+
+
+def _history_prompt(turns: list[dict], for_code: bool = False) -> tuple[str, int]:
+    if not turns:
+        return "", 0
+    chunks = []
+    for turn in turns[-5:]:
+        msg = (turn.get("msg") or "").strip()
+        response = (turn.get("response") or "").strip()
+        if not msg:
+            continue
+        if for_code:
+            chunks.append(f"Sam: {msg[:220]}")
+        else:
+            block = f"Sam: {msg[:220]}"
+            if response:
+                block += f"\nCortex: {response[:260]}"
+            chunks.append(block)
+    if not chunks:
+        return "", 0
+    return "\n\nHistorique utile récent:\n" + "\n---\n".join(chunks), len(chunks)
+
+
+def _extract_html_document(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        for part in parts:
+            candidate = part.strip()
+            if "<html" in candidate.lower() or "<!doctype html" in candidate.lower():
+                raw = candidate
+                break
+    lower = raw.lower()
+    start = lower.find("<!doctype html")
+    if start < 0:
+        start = lower.find("<html")
+    if start >= 0:
+        raw = raw[start:]
+    end = raw.lower().rfind("</html>")
+    if end >= 0:
+        raw = raw[:end + len("</html>")]
+    return raw.strip()
+
+
+def _fallback_playtest_html(message: str) -> str:
+    title = "Playtest Cortex"
+    if "calculatrice" in (message or "").lower():
+        title = "Calculatrice Playtest"
+        body = """
+  <main class="shell">
+    <section class="card">
+      <h1>Calculatrice locale</h1>
+      <p>Fallback autonome généré par Cortex. Aucun CDN, aucun backend.</p>
+      <div class="screen" id="screen">0</div>
+      <div class="grid" id="keys"></div>
+    </section>
+  </main>
+  <script>
+    const screen = document.getElementById('screen');
+    const keys = document.getElementById('keys');
+    const layout = ['7','8','9','/','4','5','6','*','1','2','3','-','0','.','=','+','C'];
+    let expr = '';
+    function render(){ screen.textContent = expr || '0'; }
+    layout.forEach(key => {
+      const btn = document.createElement('button');
+      btn.textContent = key;
+      btn.className = /[\\/=*+-]/.test(key) ? 'op' : '';
+      btn.onclick = () => {
+        if (key === 'C') { expr = ''; return render(); }
+        if (key === '=') {
+          try { expr = String(Function('return (' + expr + ')')()); }
+          catch { expr = 'Erreur'; }
+          return render();
+        }
+        if (expr === 'Erreur') expr = '';
+        expr += key;
+        render();
+      };
+      keys.appendChild(btn);
+    });
+    render();
+  </script>
+"""
+    else:
+        body = f"""
+  <main class="shell">
+    <section class="card">
+      <h1>{title}</h1>
+      <p>Fallback HTML autonome généré après un échec LLM.</p>
+      <textarea id="notes" placeholder="Décris ici ce que Sam veut voir...">{(message or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</textarea>
+      <div class="actions">
+        <button id="save">Sauvegarder localement</button>
+        <button id="clear" class="ghost">Effacer</button>
+      </div>
+      <p id="status">Prêt.</p>
+    </section>
+  </main>
+  <script>
+    const key = 'cortex-playtest-notes';
+    const notes = document.getElementById('notes');
+    const status = document.getElementById('status');
+    notes.value = localStorage.getItem(key) || notes.value;
+    document.getElementById('save').onclick = () => {{
+      localStorage.setItem(key, notes.value);
+      status.textContent = 'Sauvegardé dans localStorage.';
+    }};
+    document.getElementById('clear').onclick = () => {{
+      notes.value = '';
+      localStorage.removeItem(key);
+      status.textContent = 'Effacé.';
+    }};
+  </script>
+"""
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    :root {{ color-scheme: dark; --bg:#0b1020; --panel:#111936; --line:#26345f; --text:#eef3ff; --muted:#9eb1d9; --accent:#4fd1c5; --accent2:#f6ad55; }}
+    * {{ box-sizing:border-box; font-family: ui-sans-serif, system-ui, sans-serif; }}
+    body {{ margin:0; min-height:100vh; background:radial-gradient(circle at top, #1a254d, #070b16 60%); color:var(--text); }}
+    .shell {{ min-height:100vh; display:grid; place-items:center; padding:24px; }}
+    .card {{ width:min(520px, 100%); background:rgba(17,25,54,.88); border:1px solid var(--line); border-radius:22px; padding:24px; box-shadow:0 24px 80px rgba(0,0,0,.45); backdrop-filter: blur(10px); }}
+    h1 {{ margin:0 0 8px; font-size:clamp(1.6rem, 4vw, 2.4rem); }}
+    p {{ color:var(--muted); line-height:1.5; }}
+    .screen {{ margin:18px 0; padding:18px; background:#060913; border:1px solid #1c2748; border-radius:16px; font-size:2rem; text-align:right; min-height:76px; }}
+    .grid {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }}
+    button {{ border:0; border-radius:14px; padding:14px; font-size:1rem; background:#182445; color:var(--text); cursor:pointer; }}
+    button.op {{ background:linear-gradient(135deg, var(--accent), #3182ce); color:#04111a; font-weight:700; }}
+    button.ghost {{ background:transparent; border:1px solid var(--line); color:var(--muted); }}
+    textarea {{ width:100%; min-height:220px; margin:16px 0; padding:14px; border-radius:16px; border:1px solid var(--line); background:#0a1124; color:var(--text); resize:vertical; }}
+    .actions {{ display:flex; gap:10px; }}
+    #status {{ margin-top:12px; color:var(--accent2); }}
+  </style>
+</head>
+<body>{body}
+</body>
+</html>"""
+
+
+def _write_playtest_file(html: str) -> tuple[Path, str]:
+    PLAYTEST_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"generated_{stamp}.html"
+    file_path = PLAYTEST_DIR / filename
+    file_path.write_text(html, encoding="utf-8")
+    return file_path, f"{PLAYTEST_BASE_URL}/{filename}"
+
+
+def _playtest_file_from_name(name: str) -> Path | None:
+    if not name or "/" in name or "\\" in name or ".." in name or ":" in name:
+        return None
+    if not name.lower().endswith(".html"):
+        return None
+    target = (PLAYTEST_DIR / name).resolve()
+    try:
+        target.relative_to(PLAYTEST_DIR.resolve())
+    except Exception:
+        return None
+    return target
+
+
+def _load_router_benchmarks() -> dict:
+    data = _safe_load(ROUTER_BENCHMARK_FILE)
+    if isinstance(data, dict) and "backends" in data:
+        return data
+    return {"updated_at": None, "backends": {}}
+
+
+def _update_router_benchmarks(backend: str, latency_s: float, status: str, domains: list[str], judge_score: float | None = None):
+    if not backend:
+        return
+    data = _load_router_benchmarks()
+    backends = data.setdefault("backends", {})
+    item = backends.setdefault(backend, {
+        "calls": 0,
+        "success": 0,
+        "empty_responses": 0,
+        "timeouts": 0,
+        "errors": 0,
+        "avg_latency_s": 0.0,
+        "judge_score_avg": 0.0,
+        "judge_score_count": 0,
+        "domains": {},
+    })
+    item["calls"] += 1
+    prev_calls = max(item["calls"] - 1, 0)
+    if status == "ok":
+        item["success"] += 1
+    elif status == "timeout":
+        item["timeouts"] += 1
+    elif status == "empty":
+        item["empty_responses"] += 1
+    else:
+        item["errors"] += 1
+    latency_s = max(0.0, _safe_float(latency_s))
+    item["avg_latency_s"] = ((item["avg_latency_s"] * prev_calls) + latency_s) / max(item["calls"], 1)
+    if judge_score is not None:
+        count = _safe_int(item.get("judge_score_count"))
+        avg = _safe_float(item.get("judge_score_avg"))
+        item["judge_score_avg"] = ((avg * count) + judge_score) / (count + 1)
+        item["judge_score_count"] = count + 1
+    for domain in domains or []:
+        if not domain:
+            continue
+        item["domains"][domain] = _safe_int(item["domains"].get(domain)) + 1
+    data["updated_at"] = dt.datetime.now().isoformat()
+    try:
+        _write_json_atomic(ROUTER_BENCHMARK_FILE, data)
+    except Exception as exc:
+        print(f"[router benchmarks] {exc}", flush=True)
 
 # Heartbeat global : timestamp de dÃƒÂ©marrage du serveur (pour uptime)
 SERVER_STARTED_AT = time.time()
@@ -460,6 +813,433 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try: self.close_connection = True
             except Exception: pass
 
+    def _send_json(self, payload: dict, status: int = 200):
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_text_file(self, path: Path, ctype: str):
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _controlled_chat_error(self, message: str, intent_name: str = "simple_chat", req_id: str = "", extra_meta: dict | None = None) -> dict:
+        meta = {
+            "backend": "error_guard",
+            "intent": intent_name or "simple_chat",
+            "error": message,
+            "tools_used": [],
+            "confidence": "low",
+            "complexity": "medium",
+            "routing_decision": "controlled_error",
+            "router_used": False,
+            "judge_used": False,
+            "selected_backend": "error_guard",
+            "selection_reason": "controlled exception captured by /api/chat guard",
+            "history_used": False,
+            "history_count": 0,
+            "benchmark_basis": {
+                "internal_observed": False,
+                "configured_priors": True,
+                "official_sources": [],
+            },
+        }
+        if req_id:
+            meta["req_id"] = req_id
+        if extra_meta:
+            meta.update(extra_meta)
+        return {"response": f"Erreur contrôlée: {message}", "meta": meta, "req_id": req_id}
+
+    def _call_opencode_chat(self, prompt: str, timeout_s: int = 35, model_id: str = "opencode/minimax-m2.5-free") -> tuple[str, str | None]:
+        if not OPENCODE_CMD.exists():
+            return "", "opencode_unavailable"
+        try:
+            run = subprocess.run(
+                [str(OPENCODE_CMD), "run", "--model", model_id, "-"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                encoding="utf-8",
+                errors="replace",
+            )
+            lines = [
+                line for line in (run.stdout or "").splitlines()
+                if line.strip() and not line.startswith(">") and "\x1b" not in line and "build" not in line.lower()
+            ]
+            response = "\n".join(lines).strip()
+            return response, None if response else "empty_response"
+        except subprocess.TimeoutExpired:
+            return "", "timeout"
+        except Exception as exc:
+            return "", str(exc)
+
+    def _build_chat_payload(self, msg: str, intent_name: str, role: str, history_text: str, extra_context: str = "") -> str:
+        try:
+            import cortex_identity as _cortex_identity
+            identity = _cortex_identity.identity_prompt()
+        except Exception:
+            identity = "Tu es Cortex, assistant local fiable pour Paperclip."
+        parts = [
+            identity.strip(),
+            "Réponds en français. Sois utile, concret, et ne prétends jamais avoir utilisé un outil absent.",
+        ]
+        if extra_context:
+            parts.append(extra_context.strip())
+        if history_text:
+            parts.append(history_text.strip())
+        if intent_name == "playtest_code_task":
+            parts.append(
+                "Retourne uniquement un document HTML autonome complet. Un seul fichier. CSS inline. JS inline. Aucune dépendance externe."
+            )
+        elif role == "code":
+            parts.append("Si tu proposes du code, reste précis et orienté exécution.")
+        parts.append(f"Message actuel de Sam:\n{msg.strip()}")
+        return "\n\n".join(part for part in parts if part)
+
+    def _append_chat_stream_entry(self, msg: str, response: str, meta: dict):
+        try:
+            entry = {"ts": time.time(), "msg": msg, "response": response, "meta": meta}
+            _append_jsonl(CHAT_STREAM_FILE, entry)
+        except Exception as exc:
+            print(f"[chat stream] {exc}", flush=True)
+
+    def _build_selection_reason(self, backend: str, route: str, complexity: str, priors_used: bool, internal_observed: bool) -> str:
+        reason = f"route={route}, complexity={complexity}, backend={backend}"
+        if priors_used:
+            reason += ", configured_model_priors used"
+        if internal_observed:
+            reason += ", internal_observed_data available"
+        return reason
+
+    def _maybe_log_episodic(self, msg: str, response: str, meta: dict):
+        try:
+            import sys as _sys
+            if r"H:\Code\Paperclip\scripts\brain" not in _sys.path:
+                _sys.path.insert(0, r"H:\Code\Paperclip\scripts\brain")
+            import cortex_memory as _cm
+            if response and not response.startswith("Erreur contrôlée"):
+                _cm.log_episodic(msg, response, meta)
+        except Exception as exc:
+            print(f"[chat memory log] {exc}", flush=True)
+
+    def _generate_playtest(self, msg: str, history_text: str, req_id: str) -> dict:
+        _chat_stage(req_id, "Playtest builder", "generation HTML autonome + sauvegarde locale")
+        prompt = self._build_chat_payload(
+            msg,
+            "playtest_code_task",
+            "code",
+            history_text,
+            extra_context=(
+                "Objectif: construire une mini-app web visible immédiatement dans le Playtest Cortex local. "
+                "N'inclus ni explication ni markdown autour du HTML."
+            ),
+        )
+        html, llm_error = self._call_opencode_chat(prompt, timeout_s=40)
+        html_doc = _extract_html_document(html)
+        used_fallback = False
+        if not html_doc:
+            used_fallback = True
+            html_doc = _fallback_playtest_html(msg)
+        file_path, playtest_url = _write_playtest_file(html_doc)
+        response = f"Fichier créé: {file_path.as_posix()} URL Playtest: {playtest_url}"
+        meta = {
+            "intent": "playtest_code_task",
+            "complexity": "hard",
+            "routing_decision": "playtest_builder_direct",
+            "router_used": False,
+            "judge_used": False,
+            "selected_backend": "playtest_builder",
+            "selection_reason": "playtest code request bypassed route_v2 and used local HTML builder",
+            "backend": "playtest_builder",
+            "tools_used": ["file_write"],
+            "confidence": "high" if not used_fallback else "medium",
+            "evidence_count": 1,
+            "playtest_path": str(file_path.relative_to(Path(r"H:\Code\Paperclip"))).replace("\\", "/"),
+            "playtest_url": playtest_url,
+            "auto_open_playtest": True,
+            "route_reason": "generated_playtest_html",
+            "history_used": bool(history_text),
+            "history_count": history_text.count("Sam:"),
+            "benchmark_basis": {
+                "internal_observed": False,
+                "configured_priors": True,
+                "official_sources": [],
+            },
+        }
+        if llm_error:
+            meta["llm_error"] = llm_error
+        return {"response": response, "meta": meta, "req_id": req_id}
+
+    def _handle_api_chat(self):
+        import urllib.request as _ur
+        import sys as _sys
+        if r"H:\Code\Paperclip\scripts\brain" not in _sys.path:
+            _sys.path.insert(0, r"H:\Code\Paperclip\scripts\brain")
+
+        length = _safe_int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length).decode("utf-8-sig") if length > 0 else "{}"
+        body = json.loads(raw_body or "{}")
+        msg = (body.get("message") or "").strip()
+        req_id = body.get("req_id") or f"r{int(time.time()*1000)}"
+        if not msg:
+            return self._controlled_chat_error("message vide", "simple_chat", req_id)
+
+        _chat_stage(req_id, "Réception", "parse + intent")
+        try:
+            import cortex_intent as _ci
+            intent = _ci.detect_intent(msg)
+        except Exception as exc:
+            print(f"[chat intent] {exc}", flush=True)
+            intent = {"intent": "simple_chat", "confidence": "medium", "route_reason": "intent_fallback"}
+        intent_name = intent.get("intent") if isinstance(intent, dict) else getattr(intent, "intent", "simple_chat")
+        confidence = intent.get("confidence") if isinstance(intent, dict) else getattr(intent, "confidence", "medium")
+        complexity = _infer_complexity(msg, intent_name)
+        history_turns = _read_recent_history(max_turns=4, include_responses=not _is_playtest_code_request(msg))
+        history_text, history_count = _history_prompt(history_turns, for_code=_is_playtest_code_request(msg))
+        history_used = bool(history_text)
+        role = "code" if msg.lower().startswith("/code") or any(token in msg.lower() for token in ["python", "git", "serve.py", "router"]) else "general"
+        base_meta = {
+            "intent": intent_name,
+            "complexity": complexity,
+            "tools_used": [],
+            "confidence": confidence,
+            "history_used": history_used,
+            "history_count": history_count,
+            "benchmark_basis": {
+                "internal_observed": False,
+                "configured_priors": True,
+                "official_sources": [],
+            },
+            "req_id": req_id,
+        }
+
+        if intent_name == "recent_web_search":
+            payload = {
+                "response": "Je dois lancer une recherche web réelle avant de répondre.",
+                "meta": {
+                    **base_meta,
+                    "backend": "direct_guardrail",
+                    "routing_decision": "guardrail_recent_web_search",
+                    "router_used": False,
+                    "judge_used": False,
+                    "selected_backend": "direct_guardrail",
+                    "selection_reason": "recent_web_search requires a real web tool first",
+                    "route_reason": "needs_web_search",
+                    "needs_web_search": True,
+                    "needs_vault_search": False,
+                },
+                "req_id": req_id,
+            }
+            self._append_chat_stream_entry(msg, payload["response"], payload["meta"])
+            return payload
+
+        if intent_name in ("local_project_search", "vault_memory_search"):
+            payload = {
+                "response": "Je dois d'abord chercher dans le vault, la mémoire ou les fichiers locaux avant d'affirmer quelque chose sur ce projet.",
+                "meta": {
+                    **base_meta,
+                    "backend": "direct_guardrail",
+                    "routing_decision": "guardrail_local_project_search",
+                    "router_used": False,
+                    "judge_used": False,
+                    "selected_backend": "direct_guardrail",
+                    "selection_reason": "local project claims require real evidence first",
+                    "route_reason": "needs_vault_or_file_search",
+                    "needs_web_search": False,
+                    "needs_vault_search": True,
+                },
+                "req_id": req_id,
+            }
+            self._append_chat_stream_entry(msg, payload["response"], payload["meta"])
+            return payload
+
+        if intent_name == "playtest_dashboard_help":
+            payload = {
+                "response": (
+                    "Le playtest intégré est lié au dashboard Cortex local : http://127.0.0.1:8765/. "
+                    "Tu peux utiliser le sidecar chat, l’onglet Playtest, l’onglet Consortium, et les APIs "
+                    "/api/cortex/judges, /api/cortex/homeostasis et /api/chat."
+                ),
+                "meta": {
+                    **base_meta,
+                    "backend": "direct_guardrail",
+                    "routing_decision": "direct_playtest_help",
+                    "router_used": False,
+                    "judge_used": False,
+                    "selected_backend": "direct_guardrail",
+                    "selection_reason": "safe dashboard help answer",
+                    "route_reason": "dashboard_context_direct",
+                    "needs_web_search": False,
+                    "needs_vault_search": False,
+                },
+                "req_id": req_id,
+            }
+            self._append_chat_stream_entry(msg, payload["response"], payload["meta"])
+            return payload
+
+        if intent_name == "identity":
+            payload = {
+                "response": "Je suis Cortex, l’assistant cognitif local de Sam pour le projet Paperclip.",
+                "meta": {
+                    **base_meta,
+                    "backend": "direct_guardrail",
+                    "routing_decision": "direct_identity",
+                    "router_used": False,
+                    "judge_used": False,
+                    "selected_backend": "direct_guardrail",
+                    "selection_reason": "safe identity answer",
+                    "route_reason": "identity_direct",
+                    "needs_web_search": False,
+                    "needs_vault_search": False,
+                },
+                "req_id": req_id,
+            }
+            self._append_chat_stream_entry(msg, payload["response"], payload["meta"])
+            return payload
+
+        if _is_playtest_code_request(msg):
+            payload = self._generate_playtest(msg, history_text, req_id)
+            self._append_chat_stream_entry(msg, payload["response"], payload["meta"])
+            return payload
+
+        prompt = self._build_chat_payload(msg, intent_name, role, history_text)
+        start_ts = time.time()
+        response = ""
+        backend = ""
+        route_reason = ""
+        routing_decision = ""
+        router_used = False
+        judge_used = False
+        selected_backend = ""
+        selection_reason = ""
+        status = "ok"
+        scores = None
+        internal_observed = False
+
+        if _is_simple_fact_question(msg) or complexity == "simple":
+            _chat_stage(req_id, "Réponse rapide", "minimax_fast direct")
+            response, fast_err = self._call_opencode_chat(prompt, timeout_s=30)
+            backend = "minimax_fast"
+            route_reason = "fast_direct_simple"
+            routing_decision = "fast_minimax_direct"
+            router_used = False
+            judge_used = False
+            selected_backend = backend
+            if fast_err:
+                status = "timeout" if fast_err == "timeout" else ("empty" if fast_err == "empty_response" else "error")
+                response = "Je n’ai pas obtenu de réponse rapide fiable, donc je passe sur un fallback contrôlé."
+                backend = "error_guard"
+                selected_backend = backend
+                selection_reason = f"fast direct failed: {fast_err}"
+            else:
+                selection_reason = self._build_selection_reason(backend, route_reason, complexity, True, False)
+        else:
+            _chat_stage(req_id, "Router v2", "route_v2 avec timeout strict")
+            router_used = True
+            try:
+                payload = json.dumps({"text": prompt, "role": role}).encode("utf-8")
+                req = _ur.Request("http://127.0.0.1:18900/route_v2", data=payload, headers={"Content-Type": "application/json"})
+                with _ur.urlopen(req, timeout=70) as reply:
+                    router_data = json.loads(reply.read().decode())
+                response = (router_data.get("response") or "").strip()
+                backend = router_data.get("backend") or "router_unknown"
+                selected_backend = backend
+                route_reason = router_data.get("v2_path") or "route_v2"
+                routing_decision = route_reason
+                judge_used = route_reason in ("judge_pass", "consensus")
+                scores = router_data.get("all_scores")
+                internal_observed = True
+                if not response:
+                    status = "empty"
+                    fallback_response, fallback_err = self._call_opencode_chat(prompt, timeout_s=35)
+                    if fallback_response:
+                        response = fallback_response
+                        backend = "minimax_fast"
+                        selected_backend = backend
+                        route_reason = "route_v2_empty_then_fast_fallback"
+                        routing_decision = "router_empty_fallback_fast"
+                        selection_reason = "route_v2 empty response, fell back to minimax_fast"
+                        status = "ok"
+                    else:
+                        response = "Le routeur n’a pas produit de contenu exploitable. Je renvoie un fallback contrôlé au lieu de couper la connexion."
+                        backend = "error_guard"
+                        selected_backend = backend
+                selection_reason = self._build_selection_reason(selected_backend, route_reason, complexity, True, internal_observed)
+            except Exception as exc:
+                err_text = "timeout" if "timed out" in str(exc).lower() else str(exc)
+                status = "timeout" if "timeout" in err_text.lower() else "error"
+                fallback_response, fallback_err = self._call_opencode_chat(prompt, timeout_s=35)
+                if fallback_response:
+                    response = fallback_response
+                    backend = "minimax_fast"
+                    selected_backend = backend
+                    route_reason = "route_v2_error_then_fast_fallback"
+                    routing_decision = "router_timeout_fallback" if status == "timeout" else "router_error_fallback"
+                    selection_reason = f"router failure captured ({err_text}); minimax_fast fallback used"
+                    status = "ok"
+                else:
+                    response = f"Le routeur est indisponible ou trop lent ({err_text})."
+                    backend = "error_guard"
+                    selected_backend = backend
+                    route_reason = "route_v2_error"
+                    routing_decision = "router_timeout_fallback" if status == "timeout" else "router_error_fallback"
+                    selection_reason = f"router failure captured: {err_text}"
+
+        latency_s = time.time() - start_ts
+        meta = {
+            **base_meta,
+            "backend": backend,
+            "routing_decision": routing_decision,
+            "router_used": router_used,
+            "judge_used": judge_used,
+            "selected_backend": selected_backend or backend,
+            "selection_reason": selection_reason or self._build_selection_reason(selected_backend or backend, route_reason or routing_decision, complexity, True, internal_observed),
+            "route_reason": route_reason or routing_decision,
+            "needs_web_search": False,
+            "needs_vault_search": False,
+            "selected_backend_latency_s": round(latency_s, 3),
+            "benchmark_basis": {
+                "internal_observed": internal_observed,
+                "configured_priors": True,
+                "official_sources": [],
+            },
+            "role": role,
+        }
+        if scores:
+            meta["scores"] = scores
+            try:
+                judge_score = max(_safe_float(v) for v in scores.values()) if isinstance(scores, dict) and scores else None
+            except Exception:
+                judge_score = None
+        else:
+            judge_score = None
+
+        if backend == "error_guard":
+            meta["error"] = response
+            payload = self._controlled_chat_error(response, intent_name, req_id, extra_meta=meta)
+            self._append_chat_stream_entry(msg, payload["response"], payload["meta"])
+            return payload
+
+        _update_router_benchmarks(
+            selected_backend or backend,
+            latency_s=latency_s,
+            status=status,
+            domains=[intent_name, role, "playtest_html" if intent_name == "playtest_code_task" else ""],
+            judge_score=judge_score,
+        )
+        self._maybe_log_episodic(msg, response, meta)
+        self._append_chat_stream_entry(msg, response, meta)
+        return {"response": response or "Erreur contrôlée: réponse vide", "meta": meta, "req_id": req_id}
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/" or parsed.path == "/index.html":
@@ -470,6 +1250,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/gpu":
             self._serve_static(HERE / "brain_gpu.html", "text/html; charset=utf-8")
+            return
+        if parsed.path.startswith("/playtests/"):
+            name = parsed.path.split("/playtests/", 1)[-1]
+            target = _playtest_file_from_name(name)
+            if not target or not target.exists():
+                self._safe_send_error(404, "playtest not found")
+                return
+            self._send_text_file(target, "text/html; charset=utf-8")
             return
         if parsed.path == "/api/devices":
             try:
@@ -1773,6 +2561,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         import subprocess as _sp
         from urllib.parse import urlparse as _up
         parsed = _up(self.path)
+        if parsed.path == "/api/chat":
+            req_id = ""
+            try:
+                payload = self._handle_api_chat()
+            except Exception as exc:
+                try:
+                    _chat_stage_done(req_id)
+                except Exception:
+                    pass
+                print(f"[api/chat guarded] {type(exc).__name__}: {exc}", flush=True)
+                payload = self._controlled_chat_error(str(exc), "simple_chat", req_id)
+            self._send_json(payload)
+            try:
+                _chat_stage_done(payload.get("req_id", ""))
+            except Exception:
+                pass
+            return
         if parsed.path == "/api/calibrate":
             # Tuer voice_input et attendre libÃƒÂ©ration du mic
             (VAULT / ".voice-calibrating.flag").touch()
