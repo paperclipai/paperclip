@@ -214,7 +214,7 @@ describe("acpx_local runtime skill isolation", () => {
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 
-  it("cleans stale credential wrapper scripts across ACPX agent changes", async () => {
+  it("keeps fresh credential wrapper scripts across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const baseConfig = {
@@ -234,12 +234,12 @@ describe("acpx_local runtime skill isolation", () => {
     });
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
-    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(1);
-    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(false);
+    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(2);
+    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(2);
+    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(true);
     expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
-    const wrapperPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".sh"))!);
-    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".env"))!);
+    const wrapperPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".sh"))!);
+    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".env"))!);
     const wrapper = await fs.readFile(wrapperPath, "utf8");
     const env = await fs.readFile(envPath, "utf8");
     expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
@@ -250,6 +250,67 @@ describe("acpx_local runtime skill isolation", () => {
     expect(wrapper).not.toContain("old-key");
     expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
+  });
+
+  it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const wrappersDir = path.join(stateDir, "wrappers");
+    const baseConfig = {
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+    };
+
+    await runExecutor({
+      ...baseConfig,
+      agent: "custom-a",
+      env: { PAPERCLIP_API_KEY: "old-key" },
+    });
+    const oldDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await Promise.all(
+      (await fs.readdir(wrappersDir))
+        .filter((name) => name.startsWith("custom-a-"))
+        .map((name) => fs.utimes(path.join(wrappersDir, name), oldDate, oldDate)),
+    );
+
+    await runExecutor({
+      ...baseConfig,
+      agent: "custom-b",
+      env: { PAPERCLIP_API_KEY: "new-key" },
+    });
+
+    const wrappers = await fs.readdir(wrappersDir);
+    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
+    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(1);
+    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(false);
+    expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
+  });
+
+  it("keeps distinct wrapper env files for concurrent runs with different credentials", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const baseConfig = {
+      agent: "custom-a",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+    };
+
+    await runExecutor({
+      ...baseConfig,
+      env: { PAPERCLIP_API_KEY: "first-key" },
+    });
+    await runExecutor({
+      ...baseConfig,
+      env: { PAPERCLIP_API_KEY: "second-key" },
+    });
+
+    const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
+    expect(envFileNames).toHaveLength(2);
+    const envFiles = await Promise.all(
+      envFileNames.map(async (name) => fs.readFile(path.join(stateDir, "wrappers", name), "utf8")),
+    );
+    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='first-key'"))).toHaveLength(1);
+    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='second-key'"))).toHaveLength(1);
   });
 
   it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {

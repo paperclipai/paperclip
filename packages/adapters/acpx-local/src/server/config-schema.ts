@@ -43,9 +43,9 @@ export function getConfigSchema(): AdapterConfigSchema {
         default: DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
         options: [
           { value: "approve-all", label: "Approve all" },
-          { value: "default", label: "ACP default" },
+          { value: "default", label: "Approve reads" },
         ],
-        hint: "Defaults to maximum permissions: ACPX permission requests are auto-approved.",
+        hint: "Defaults to maximum permissions. Approve reads grants read-only requests and asks for approval on writes.",
       },
       {
         key: "nonInteractivePermissions",

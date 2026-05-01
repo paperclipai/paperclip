@@ -48,6 +48,7 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WARM_HANDLE_IDLE_MS = 15 * 60 * 1000;
+const WRAPPER_CLEANUP_RETENTION_MS = 24 * 60 * 60 * 1000;
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
@@ -548,16 +549,17 @@ async function writeAgentWrapper(input: {
 }): Promise<{ wrapperPath: string; envFilePath: string }> {
   const wrappersDir = path.join(input.stateDir, "wrappers");
   await fs.mkdir(wrappersDir, { recursive: true });
-  const wrapperHash = shortHash({
-    agent: input.acpxAgent,
-    command: input.agentCommandShell,
-  });
-  const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
-  const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
   const envLines = Object.entries(input.env)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  const wrapperHash = shortHash({
+    agent: input.acpxAgent,
+    command: input.agentCommandShell,
+    env: envLines,
+  });
+  const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
+  const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
   const script = [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
@@ -580,15 +582,26 @@ async function writeAgentWrapper(input: {
     contents: script,
     mode: 0o700,
   });
-  const staleWrappers = await fs.readdir(wrappersDir).catch(() => []);
+  await cleanupStaleAgentWrappers({
+    wrappersDir,
+    currentFileNames: new Set([path.basename(wrapperPath), path.basename(envFilePath)]),
+  });
+  return { wrapperPath, envFilePath };
+}
+
+async function cleanupStaleAgentWrappers(input: { wrappersDir: string; currentFileNames: Set<string> }) {
+  const wrappers = await fs.readdir(input.wrappersDir).catch(() => []);
+  const now = Date.now();
   await Promise.all(
-    staleWrappers.map(async (name) => {
+    wrappers.map(async (name) => {
       const isManagedWrapperFile = name.endsWith(".sh") || name.endsWith(".env");
-      if (!isManagedWrapperFile || name === path.basename(wrapperPath) || name === path.basename(envFilePath)) return;
-      await fs.rm(path.join(wrappersDir, name), { force: true });
+      if (!isManagedWrapperFile || input.currentFileNames.has(name)) return;
+      const wrapperPath = path.join(input.wrappersDir, name);
+      const stats = await fs.stat(wrapperPath).catch(() => null);
+      if (!stats || now - stats.mtimeMs < WRAPPER_CLEANUP_RETENTION_MS) return;
+      await fs.rm(wrapperPath, { force: true });
     }),
   );
-  return { wrapperPath, envFilePath };
 }
 
 async function buildRuntime(input: {
