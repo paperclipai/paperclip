@@ -222,6 +222,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     name: "PAP-1 workspace",
     status: "active",
     cwd: "/tmp/paperclip/PAP-1",
+    agentCwd: null,
     repoUrl: null,
     baseRef: "master",
     branchName: "pap-1-workspace",

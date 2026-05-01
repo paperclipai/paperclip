@@ -77,6 +77,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace>): Execu
     name: overrides.name ?? "PAP-893",
     status: overrides.status ?? "active",
     cwd: overrides.cwd ?? "/repo/.worktrees/PAP-893",
+    agentCwd: overrides.agentCwd ?? null,
     repoUrl: overrides.repoUrl ?? null,
     baseRef: overrides.baseRef ?? "public-gh/master",
     branchName: overrides.branchName ?? "PAP-893-workspaces-tab",

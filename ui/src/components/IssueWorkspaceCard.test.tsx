@@ -42,6 +42,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     name: "Issue sandbox",
     status: "active",
     cwd: "/tmp/issue-sandbox",
+    agentCwd: null,
     repoUrl: null,
     baseRef: null,
     branchName: "paperclip/papa-81",

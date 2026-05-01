@@ -14,6 +14,7 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     strategyType: "git_worktree",
     name: "Parent workspace",
     cwd: "/tmp/workspace-1",
+    agentCwd: null,
     repoUrl: null,
     baseRef: null,
     branchName: "feature/pap-1",

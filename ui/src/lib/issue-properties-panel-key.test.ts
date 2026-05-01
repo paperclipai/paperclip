@@ -68,6 +68,7 @@ describe("buildIssuePropertiesPanelKey", () => {
           name: "PAP-1 workspace",
           status: "active",
           cwd: "/tmp/paperclip/PAP-1",
+          agentCwd: null,
           repoUrl: null,
           baseRef: "master",
           branchName: "PAP-1-workspace",
