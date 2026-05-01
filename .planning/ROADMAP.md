@@ -12,7 +12,7 @@
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
-- [shipped] **v3.0 Native Distribution Readiness** - Phase 59-64 complete, 2026-05-01
+- [shipped] **v3.0 Native Distribution Readiness** - Phase 59-64 완료, 2026-05-01 ([archive](milestones/v3.0-ROADMAP.md), [requirements](milestones/v3.0-REQUIREMENTS.md), [audit](milestones/v3.0-MILESTONE-AUDIT.md))
 
 ## 완료됨
 
@@ -113,7 +113,7 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.0 Native Distribution Readiness가 완료됐다. v2.9 capture reliability는 shipped baseline으로 고정했고, signed native distribution pipeline, release channel/updater, resident tray/global shortcut, mobile push notification, final distribution gate를 evidence-first 운영 표면으로 닫았다.
+v3.0 Native Distribution Readiness가 완료되어 archive됐다. v2.9 capture reliability는 shipped baseline으로 고정했고, signed native distribution pipeline, release channel/updater, resident tray/global shortcut, mobile push notification, final distribution gate를 evidence-first 운영 표면으로 닫았다. 다음 작업은 새 milestone 정의 또는 실제 release/operator evidence 수집 scope를 정하는 것이다.
 
 <details>
 <summary>v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 (Phase 44-47) - 2026-04-30 완료</summary>
@@ -441,6 +441,9 @@ Success criteria:
 - [v2.8 roadmap archive](milestones/v2.8-ROADMAP.md)
 - [v2.8 requirements archive](milestones/v2.8-REQUIREMENTS.md)
 - [v2.8 milestone audit](milestones/v2.8-MILESTONE-AUDIT.md)
+- [v3.0 roadmap archive](milestones/v3.0-ROADMAP.md)
+- [v3.0 requirements archive](milestones/v3.0-REQUIREMENTS.md)
+- [v3.0 milestone audit](milestones/v3.0-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-05-01, Phase 64 final distribution gate completed*
+*마지막 업데이트: 2026-05-01, v3.0 milestone archived*

@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Native Distribution Readiness
-status: completed
-last_updated: "2026-05-01T09:05:00+09:00"
-last_activity: 2026-05-01 -- Phase 64 completed
+status: archived
+last_updated: "2026-05-01T09:17:08+09:00"
+last_activity: 2026-05-01 -- v3.0 milestone archived
 progress:
   total_phases: 6
   completed_phases: 6
@@ -17,10 +17,10 @@ progress:
 
 ## Current Position
 
-Phase: 64 v3.0 Distribution Gate and Capture Regression Closure
-Plan: 64-01
-Status: Complete
-Last activity: 2026-05-01 -- Phase 64 completed
+Phase: v3.0 milestone archive
+Plan: complete-milestone
+Status: Archived
+Last activity: 2026-05-01 -- v3.0 milestone archived
 
 ## 현재 위치
 
@@ -40,11 +40,11 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 
 ## 프로젝트 기준
 
-참조: `.planning/PROJECT.md` (2026-04-30 업데이트)
+참조: `.planning/PROJECT.md` (2026-05-01 업데이트)
 
 **핵심 가치:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
 
-**현재 초점:** signed native distribution pipeline, release channels, updater, resident tray/global shortcut, mobile push가 v2.9 capture/review loop를 깨지 않고 운영 가능한 배포 표면이 되게 한다.
+**현재 초점:** 다음 milestone 정의. v3.0 distribution evidence gates는 future release/operator evidence 수집의 기준선이다.
 
 ## v3.0 계획
 
@@ -86,9 +86,9 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 
 ## 다음 단계
 
-v3.0 Native Distribution Readiness는 완료됐다. 다음 세션에서는 새 milestone을 시작하거나 v3.0 release/operator evidence를 실제 환경에서 채우는 후속 scope를 정의한다.
+v3.0 Native Distribution Readiness는 archive됐다. 다음 세션에서는 새 milestone을 시작하거나 v3.0 release/operator evidence를 실제 환경에서 채우는 후속 scope를 정의한다.
 
 다음 세션 지시어: `$gsd-new-milestone`으로 다음 milestone을 정의하거나, 실제 release/operator evidence 수집을 별도 phase로 추가하려면 `$gsd-add-phase`를 사용한다.
 
 ---
-*상태 업데이트: 2026-05-01, Phase 64 completed*
+*상태 업데이트: 2026-05-01, v3.0 milestone archived*

@@ -12,17 +12,17 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability, v3.0 Native Distribution Readiness
 
 **최근 완료 마일스톤:** v3.0 Native Distribution Readiness
 
-**최근 완료:** v2.9는 persistent draft revision, PWA/mobile quick capture, Slack/Teams/webhook signed inbound, review operations reliability, Phase 58 traceability closure를 완료했다. DRAFT/NATIVE/MSG/REVIEW capture reliability는 shipped baseline이다.
+**최근 완료:** v3.0은 native distribution foundation, macOS/Windows signing evidence gate, release channel/signed updater evidence gate, resident tray/global shortcut evidence gate, Mobile/Web Push/APNs evidence gate, final distribution gate, v2.9 capture regression closure를 완료했다.
 
-**현재 진행:** v3.0은 Phase 59에서 native distribution foundation을 완료했고 Phase 60에서 macOS/Windows native signing evidence gate를 완료했으며 Phase 61에서 release channel/signed updater evidence gate를 완료했고 Phase 62에서 resident tray/global shortcut evidence gate를 완료했으며 Phase 63에서 Mobile/Web Push/APNs evidence gate를 완료했고 Phase 64에서 final distribution gate와 v2.9 capture regression closure를 완료했다. v2.9 capture reliability는 regression gate로만 보호한다.
+**현재 진행:** 다음 milestone 정의 대기. v2.9 capture reliability는 regression gate로만 보호하고, v3.0 distribution evidence gates는 future release/operator evidence 수집의 기준선으로 사용한다.
 
-## Current Milestone: v3.0 Native Distribution Readiness
+## Current State After v3.0
 
-**Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
+v3.0 Native Distribution Readiness는 2026-05-01에 archive됐다. RealTycoon2는 아직 web/PWA-first repo지만, signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영자가 검증할 수 있는 evidence-first gate를 갖췄다.
 
 **Target features:**
 - Native shell packaging 후보, signing credential inventory, platform capability boundary를 확정한다. - Phase 59 완료
@@ -38,6 +38,12 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 - Autonomous Jarvis apply without approval.
 - Public/open company capture marketplace.
 - Public store listing launch, marketing, reviewer account operations.
+
+## Next Milestone Goals
+
+- 새 milestone은 `$gsd-new-milestone`으로 요구사항을 다시 정의한다.
+- 후보 scope는 actual release/operator evidence 수집, native shell scaffold, public store operations, federation preview, Jarvis autonomy hardening 중 하나로 좁혀야 한다.
+- v3.0 validation artifact hygiene debt는 cleanup phase로 별도 처리할 수 있다.
 
 ## 최근 마일스톤: v2.9 Native Capture and Draft Reliability
 
@@ -182,10 +188,11 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.9 native/mobile quick capture 요구사항 3개. - Phase 55, Phase 58 검증
 - [x] v2.9 messaging capture 요구사항 3개. - Phase 56, Phase 58 검증
 - [x] v2.9 review operations 요구사항 3개. - Phase 57, Phase 58 검증
-
-### 완료됨
-
 - [x] v3.0 Native Distribution Readiness 요구사항 12개 중 12개 완료. Phase 59-64 complete.
+
+### 다음 요구사항
+
+다음 milestone에서 새 `.planning/REQUIREMENTS.md`를 생성한다.
 
 ### 범위 밖
 
@@ -274,4 +281,4 @@ v3.0 Native Distribution Readiness는 완료됐다. Phase 59에서 확정한 Tau
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-30 after Phase 62 resident surface evidence gate completion*
+*마지막 업데이트: 2026-05-01 after v3.0 milestone archive*

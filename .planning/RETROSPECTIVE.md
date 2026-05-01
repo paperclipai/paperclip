@@ -359,6 +359,47 @@
 - 다음 milestone은 `REQUIREMENTS.md`를 새로 만들어야 한다. v2.8 archived requirements를 계속 active scope처럼 재사용하면 planning drift가 생긴다.
 - Full-suite timeout/failure가 반복되는 동안에는 focused tests의 범위와 accepted debt의 owner를 milestone마다 명확히 적어야 한다.
 
+## 마일스톤: v3.0 - Native Distribution Readiness
+
+**완료:** 2026-05-01  
+**Phases:** 6  
+**Plans:** 6  
+**Audit:** `tech_debt`
+
+### 만든 것
+
+- Tauri v2 native shell baseline, future `apps/desktop` package boundary, signing/updater/channel inventory, v2.9 regression boundary.
+- macOS Developer ID, hardened runtime, codesign, notarization, stapling, Gatekeeper evidence를 검증하는 native signing gate.
+- Windows installer trust path, signing, timestamping, signature verification, install trust evidence를 검증하는 native signing gate.
+- internal/beta/stable release channel, signed updater metadata, rollout/rollback, installed/update state를 검증하는 release channel gate.
+- resident tray/menubar status, OS-level global shortcut lifecycle/privacy, native capture review handoff를 검증하는 resident surface gate.
+- Mobile/Web Push/APNs registration scope, minimal payload/deep link, delivery/retry/invalid-token/click-through evidence를 검증하는 push notification gate.
+- Phase 60-63 summary와 focused v2.9 regression evidence를 묶는 final distribution gate.
+
+### 잘 된 점
+
+- 실제 native dependency를 추가하기 전에 release evidence contract를 먼저 닫아 lockfile churn과 premature platform coupling을 피했다.
+- 각 gate가 `summary.json`/`report.md`, stable blocker code, focused Node tests라는 같은 운영 패턴을 공유한다.
+- v2.9 capture reliability를 새 기능 scope로 다시 열지 않고 Phase 64 regression evidence로 보호했다.
+
+### 비효율적이었던 점
+
+- 설치된 `gsd-sdk`가 `query` 명령을 제공하지 않아 audit/complete workflow를 파일 기반으로 대체해야 했다.
+- 일부 `VALIDATION.md` task row가 `pending`으로 남아 audit이 `passed`가 아니라 `tech_debt`가 됐다.
+- Phase 60-62 broad `pnpm test`는 unrelated host timeout을 기록했고, focused rerun evidence로 보완해야 했다.
+
+### 확립된 패턴
+
+- Native distribution은 operator evidence gate를 먼저 정의하고 실제 provider/native integration은 후속 scope로 분리한다.
+- Secret material은 repo에 저장하지 않고 secret reference만 허용하며 gates가 raw key/token/password material을 차단한다.
+- Final release gate는 upstream summaries와 regression evidence를 소비하는 aggregator로 둔다.
+
+### 핵심 교훈
+
+- Validation frontmatter와 task row는 phase close 직후 같이 정렬해야 milestone audit이 artifact hygiene debt로 낮아지지 않는다.
+- Native/release readiness는 public store operations와 별도다. Store listing, reviewer account, marketing metadata는 distribution gate가 green이 된 뒤 다뤄야 한다.
+- 다음 milestone은 새 `.planning/REQUIREMENTS.md`에서 actual release evidence, native scaffold, store operations, federation, autonomy 중 하나로 좁혀 시작해야 한다.
+
 ## Cross-Milestone Trend
 
 | Trend | Observation |
@@ -366,4 +407,4 @@
 | Product identity | RT2가 우선순위다. Paperclip/Multica wording은 product-facing surface에서 숨기고 engine/internal compatibility layer로 제한한다. |
 | Verification | Windows sandbox `spawn EPERM`은 반복되는 local environment issue다. Vitest/build에는 승인된 escalated run이 필요할 수 있다. |
 | Planning | 사용자는 wave-by-wave prompting보다 긴 `--auto --chain` execution을 선호한다. |
-| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. v2.6은 운영 hardening을 완료하되 full-suite timeout을 `tech_debt`로 분리했다. v2.7은 release-host evidence와 runtime confidence taxonomy로 blocker 없는 accepted debt를 명시했다. v2.8은 product identity와 daily work UX를 audit `passed` 상태로 닫았다. |
+| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. v2.6은 운영 hardening을 완료하되 full-suite timeout을 `tech_debt`로 분리했다. v2.7은 release-host evidence와 runtime confidence taxonomy로 blocker 없는 accepted debt를 명시했다. v2.8은 product identity와 daily work UX를 audit `passed` 상태로 닫았다. v3.0은 native distribution readiness를 blocker 없이 완료했지만 validation task-row drift 때문에 `tech_debt`로 기록했다. |
