@@ -266,7 +266,7 @@ describe("acpx_local runtime skill isolation", () => {
       agent: "custom-a",
       env: { PAPERCLIP_API_KEY: "old-key" },
     });
-    const oldDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const oldDate = new Date(Date.now() - 16 * 60 * 1000);
     await Promise.all(
       (await fs.readdir(wrappersDir))
         .filter((name) => name.startsWith("custom-a-"))

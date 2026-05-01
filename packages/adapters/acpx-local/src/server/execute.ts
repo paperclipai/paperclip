@@ -48,7 +48,7 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WARM_HANDLE_IDLE_MS = 15 * 60 * 1000;
-const WRAPPER_CLEANUP_RETENTION_MS = 24 * 60 * 60 * 1000;
+const WRAPPER_CLEANUP_RETENTION_MS = 15 * 60 * 1000;
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
@@ -725,7 +725,7 @@ async function buildRuntime(input: {
   const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const fingerprint = shortHash({
     acpxAgent,
-    agentCommand: wrapperPath ?? agentCommand,
+    agentCommand: agentCommand ?? acpxAgent,
     cwd: path.resolve(cwd),
     mode,
     permissionMode,

@@ -124,6 +124,10 @@ describe("adapter session codecs", () => {
       workspaceId: "workspace-1",
       repoUrl: "https://example.com/repo.git",
       repoRef: "main",
+      remoteExecution: {
+        environmentId: "environment-1",
+        leaseId: "lease-1",
+      },
     });
 
     expect(parsed).toMatchObject({
@@ -140,6 +144,10 @@ describe("adapter session codecs", () => {
       workspaceId: "workspace-1",
       repoUrl: "https://example.com/repo.git",
       repoRef: "main",
+      remoteExecution: {
+        environmentId: "environment-1",
+        leaseId: "lease-1",
+      },
     });
     expect(acpxSessionCodec.serialize(parsed)).toEqual(parsed);
     expect(acpxSessionCodec.getDisplayId?.(parsed)).toBe("runtime-session-1");
