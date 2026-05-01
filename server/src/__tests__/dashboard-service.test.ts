@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -165,5 +166,237 @@ describeEmbeddedPostgres("dashboard service", () => {
       other: 1,
       total: 3,
     });
+  });
+
+  // ----- issueActivity / recentIssues coverage -----
+
+  async function seedCompany(companyId: string) {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+  }
+
+  it("excludes hidden issues from issueActivity and recentIssues", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const today = utcDay(0);
+
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Visible",
+        status: "todo",
+        priority: "high",
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Hidden — should be excluded",
+        status: "todo",
+        priority: "critical",
+        hiddenAt: today,
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.recentIssues).toHaveLength(1);
+    expect(summary.recentIssues[0]?.title).toBe("Visible");
+
+    const todayBucket = summary.issueActivity.find((d) => d.date === utcDateKey(today));
+    expect(todayBucket?.total).toBe(1);
+    expect(todayBucket?.byPriority.high).toBe(1);
+    expect(todayBucket?.byPriority.critical).toBe(0); // hidden didn't leak in
+    expect(todayBucket?.byStatus.todo).toBe(1);
+  });
+
+  it("derives total from byPriority sum (does not double-count byStatus)", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const today = utcDay(0);
+
+    // 3 issues, same day, distinct priorities AND statuses. If status loop
+    // accidentally adds to total, we'd see total=6 instead of total=3.
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "A",
+        status: "todo",
+        priority: "critical",
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "B",
+        status: "in_progress",
+        priority: "high",
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "C",
+        status: "blocked",
+        priority: "low",
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    const bucket = summary.issueActivity.find((d) => d.date === utcDateKey(today));
+
+    expect(bucket?.total).toBe(3);
+    expect(Object.values(bucket?.byPriority ?? {}).reduce((a, b) => a + b, 0)).toBe(3);
+    expect(Object.values(bucket?.byStatus ?? {}).reduce((a, b) => a + b, 0)).toBe(3);
+  });
+
+  it("buckets issueActivity by UTC createdAt day", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+
+    // Insert at 23:59 UTC on a day; should bucket into that day, not the next.
+    const now = new Date();
+    const lateUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 0));
+    const earlyNext = new Date(lateUtc.getTime() + 60 * 60 * 1000); // 00:59 UTC next day
+
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Late today (UTC)",
+        status: "todo",
+        priority: "medium",
+        createdAt: lateUtc,
+        updatedAt: lateUtc,
+        lastActivityAt: lateUtc,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Early tomorrow (UTC)",
+        status: "todo",
+        priority: "medium",
+        createdAt: earlyNext,
+        updatedAt: earlyNext,
+        lastActivityAt: earlyNext,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    const todayBucket = summary.issueActivity.find((d) => d.date === utcDateKey(lateUtc));
+    expect(todayBucket?.total).toBe(1);
+    // Note: we don't assert on the next-day bucket because it may be outside
+    // the 14-day window depending on host clock. The point is that 23:59 UTC
+    // and 00:59 UTC next day land in DIFFERENT buckets, not same.
+    expect(todayBucket?.byPriority.medium).toBe(1);
+  });
+
+  it("orders recentIssues by lastActivityAt DESC and caps at 50", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+
+    const newest = utcDay(0);
+    const middle = utcDay(-3);
+    const oldest = utcDay(-10);
+
+    // Build 60 issues with lastActivityAt distributed so we can pin
+    // ordering AND verify the limit-50 cap.
+    const rows = Array.from({ length: 60 }, (_, i) => {
+      // First 5 are "newest", next 5 "middle", rest "oldest". Within each
+      // group, vary lastActivityAt by milliseconds so order is deterministic.
+      const baseDate = i < 5 ? newest : i < 10 ? middle : oldest;
+      const offsetMs = i; // smaller index = more recent within group
+      const t = new Date(baseDate.getTime() - offsetMs * 1000);
+      return {
+        id: randomUUID(),
+        companyId,
+        title: `issue-${i}`,
+        status: "todo" as const,
+        priority: "medium" as const,
+        createdAt: t,
+        updatedAt: t,
+        lastActivityAt: t,
+      };
+    });
+    await db.insert(issues).values(rows);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.recentIssues).toHaveLength(50);
+    // The newest 5 should appear first.
+    expect(summary.recentIssues.slice(0, 5).every((i) => i.title.match(/^issue-[0-4]$/))).toBe(true);
+    // The list should be in lastActivityAt DESC order.
+    for (let i = 1; i < summary.recentIssues.length; i++) {
+      expect(new Date(summary.recentIssues[i - 1].lastActivityAt).getTime())
+        .toBeGreaterThanOrEqual(new Date(summary.recentIssues[i].lastActivityAt).getTime());
+    }
+  });
+
+  it("does not leak issues across companies in issueActivity or recentIssues", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await seedCompany(companyId);
+    await seedCompany(otherCompanyId);
+    const today = utcDay(0);
+
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "ours",
+        status: "todo",
+        priority: "high",
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+      {
+        id: randomUUID(),
+        companyId: otherCompanyId,
+        title: "theirs",
+        status: "todo",
+        priority: "critical",
+        createdAt: today,
+        updatedAt: today,
+        lastActivityAt: today,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    expect(summary.recentIssues.map((i) => i.title)).toEqual(["ours"]);
+    const todayBucket = summary.issueActivity.find((d) => d.date === utcDateKey(today));
+    expect(todayBucket?.total).toBe(1);
+    expect(todayBucket?.byPriority.high).toBe(1);
+    expect(todayBucket?.byPriority.critical).toBe(0);
+  });
+
+  it("core() omits issueActivity and recentIssues — sidebar-badges path doesn't pay for them", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+
+    const result = await dashboardService(db).core(companyId);
+    expect(result).not.toHaveProperty("issueActivity");
+    expect(result).not.toHaveProperty("recentIssues");
+    // But still has the agent / cost fields sidebar-badges consumes.
+    expect(result.agents).toMatchObject({ active: 0, running: 0, paused: 0, error: 0 });
+    expect(result.costs.monthBudgetCents).toBeDefined();
   });
 });
