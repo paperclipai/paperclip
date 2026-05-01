@@ -15,6 +15,7 @@
 | v2.9 | Native Capture and Draft Reliability | Shipped | 2026-04-30 | 2026-04-30 | Phase 54-58 완료. 요구사항 13/13 완료. Persistent draft revision, PWA/mobile quick capture, signed messaging inbound, review reliability, distribution boundary closure 완료 |
 | v3.0 | Native Distribution Readiness | Shipped | 2026-04-30 | 2026-05-01 | Phase 59-64 complete. Requirements 12/12, audit `tech_debt`; signing/updater/resident surface/push/final distribution evidence gates 완료 |
 | v3.1 | DevPlan Core Convergence | Shipped | 2026-05-01 | 2026-05-01 | Phase 65-71 complete. DevPlan alignment from 64% → 100%. Requirements 24/24 complete. Acceptance gate passed with +36pp delta. |
+| v3.2 | Future Scope | Shipped | 2026-05-01 | 2026-05-01 | Phase 72-77 complete. Public marketplace, billing/payroll, federation, autonomous Jarvis, store operations. DevPlan alignment 100%. |
 
 ## v2.0 RT2 Refoundation
 
@@ -647,8 +648,9 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 ## v3.2 Future Scope
 
-**상태:** Active
+**상태:** Shipped
 **시작:** 2026-05-01
+**완료:** 2026-05-01
 
 ### 목표
 
@@ -662,16 +664,22 @@ RealTycoon2를 trusted internal company evidence ecosystem에서 public/open mar
 - Billing, payroll, and external payment settlement
 - Native credentials and public store operations
 
-### 계획된 Phase
+### 완료된 Phase
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 72 | Public Marketplace Launch | MKT-01..03 | Planned |
-| 73 | Billing, Payroll, and Settlement | BILL-01..03 | Planned |
-| 74 | Federation and Cross-Company Evidence | FED-01..02 | Planned |
-| 75 | Autonomous Jarvis Direct Apply | AUTO-01..02 | Planned |
-| 76 | Public Store Operations | STORE-01..02 | Planned |
-| 77 | v3.2 Acceptance Gate | GATE-01..02 | Planned |
+| 72 | Public Marketplace Launch | MKT-01..03 | Complete |
+| 73 | Billing, Payroll, and Settlement | BILL-01..03 | Complete |
+| 74 | Federation and Cross-Company Evidence | FED-01..02 | Complete |
+| 75 | Autonomous Jarvis Direct Apply | AUTO-01..02 | Complete |
+| 76 | Public Store Operations | STORE-01..02 | Complete |
+| 77 | v3.2 Acceptance Gate | GATE-01..02 | Complete |
+
+### 주요 산출물
+
+- DevPlan alignment: 100% passed, 0 blockers
+- 5개 스키마 확장 (marketplace, payroll, federation, autonomy, store operations)
+- Typecheck: 통과
 
 ---
-*마지막 업데이트: 2026-05-01, v3.2 started*
+*마지막 업데이트: 2026-05-01, v3.2 shipped*

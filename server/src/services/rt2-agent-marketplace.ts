@@ -25,6 +25,10 @@ export type MarketplaceListing = {
   totalSubscriptions: number;
   ratingAverage: number;
   ratingCount: number;
+  listingApprovalStatus: "draft" | "pending_approval" | "approved" | "rejected";
+  rejectionReason: string | null;
+  submittedAt: Date | null;
+  approvedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   evidence?: MarketplaceListingEvidence;
@@ -55,6 +59,42 @@ export type MarketplaceListingEvidence = {
     pricePerTaskCents: number | null;
     monthlySubscriptionCents: number | null;
   };
+};
+
+export type ListingApprovalStatus = "draft" | "pending_approval" | "approved" | "rejected";
+
+export type EvidenceTier = "bronze" | "silver" | "gold";
+export type ReputationTier = "new" | "established" | "top_rated";
+export type QualityTier = "bronze" | "silver" | "gold";
+
+export type PublicListingEvidence = {
+  evidenceTier: EvidenceTier;
+  reputationTier: ReputationTier;
+  qualityTier: QualityTier;
+  evidenceStatus: "ready" | "partial" | "missing";
+  pricingSummary: {
+    pricingType: string;
+    priceLabel: string;
+  };
+  approvalStatus: ListingApprovalStatus;
+};
+
+export type PublicMarketplaceListing = {
+  id: string;
+  creatorCompanyId: string;
+  name: string;
+  description: string | null;
+  category: string;
+  tags: string[] | null;
+  pricingType: string;
+  pricePerTaskCents: number | null;
+  monthlySubscriptionCents: number | null;
+  adapterType: string;
+  isActive: boolean;
+  totalSubscriptions: number;
+  ratingAverage: number;
+  ratingCount: number;
+  publicEvidence: PublicListingEvidence;
 };
 
 export type ByoaAgent = {
@@ -99,8 +139,55 @@ export function rt2AgentMarketplaceService(db: Db) {
     category?: string,
     limit: number = 20,
     offset: number = 0,
+    options?: { publicOnly?: boolean; companyId?: string },
   ): Promise<MarketplaceListing[]> {
     const conditions = [eq(rt2AgentMarketplace.isActive, true)];
+    if (category) {
+      conditions.push(eq(rt2AgentMarketplace.category, category));
+    }
+    // Public view: only approved listings
+    if (options?.publicOnly) {
+      conditions.push(eq(rt2AgentMarketplace.listingApprovalStatus, "approved"));
+    }
+
+    const listings = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(and(...conditions))
+      .orderBy(desc(rt2AgentMarketplace.ratingAverage))
+      .limit(limit)
+      .offset(offset);
+
+    // If companyId provided, include own listings even if not approved
+    if (options?.companyId) {
+      const ownListings = await db
+        .select()
+        .from(rt2AgentMarketplace)
+        .where(
+          and(
+            eq(rt2AgentMarketplace.isActive, true),
+            eq(rt2AgentMarketplace.creatorCompanyId, options.companyId!),
+          ),
+        )
+        .orderBy(desc(rt2AgentMarketplace.ratingAverage));
+      const ownIds = new Set(ownListings.map((l) => l.id));
+      const combined = listings.concat(ownListings.filter((l) => !ownIds.has(l.id)));
+      return Promise.all(combined.map((listing) => mapListingWithEvidence(listing)));
+    }
+
+    return Promise.all(listings.map((listing) => mapListingWithEvidence(listing)));
+  }
+
+  async function listCompanyMarketplaceAgents(
+    companyId: string,
+    category?: string,
+    limit: number = 20,
+    offset: number = 0,
+  ): Promise<MarketplaceListing[]> {
+    const conditions = [
+      eq(rt2AgentMarketplace.isActive, true),
+      eq(rt2AgentMarketplace.creatorCompanyId, companyId),
+    ];
     if (category) {
       conditions.push(eq(rt2AgentMarketplace.category, category));
     }
@@ -116,26 +203,35 @@ export function rt2AgentMarketplaceService(db: Db) {
     return Promise.all(listings.map((listing) => mapListingWithEvidence(listing)));
   }
 
-  async function listCompanyMarketplaceAgents(
-    companyId: string,
-    category?: string,
-    limit: number = 20,
-    offset: number = 0,
-  ): Promise<MarketplaceListing[]> {
-    const listings = await listMarketplaceAgents(category, limit, offset);
-    return listings.filter((listing) => listing.creatorCompanyId === companyId);
-  }
-
   /**
-   * M3.2: Search marketplace agents
+   * M3.2: Search marketplace agents (public - only approved listings)
    */
   async function searchMarketplaceAgents(
     query: string,
     category?: string,
   ): Promise<MarketplaceListing[]> {
-    const listings = await listMarketplaceAgents(category, 50);
+    const listings = await listMarketplaceAgents(category, 50, 0, { publicOnly: true });
 
     // Simple search filter
+    const q = query.toLowerCase();
+    return listings.filter(
+      l =>
+        l.name.toLowerCase().includes(q) ||
+        (l.description?.toLowerCase().includes(q) ?? false) ||
+        l.tags?.some(t => t.toLowerCase().includes(q)),
+    );
+  }
+
+  /**
+   * Search marketplace agents for company (includes draft/pending)
+   */
+  async function searchCompanyMarketplaceAgents(
+    companyId: string,
+    query: string,
+    category?: string,
+  ): Promise<MarketplaceListing[]> {
+    const listings = await listMarketplaceAgents(category, 50, 0, { companyId });
+
     const q = query.toLowerCase();
     return listings.filter(
       l =>
@@ -340,6 +436,7 @@ function extractSkills(listing: typeof rt2AgentMarketplace.$inferSelect): string
         pricePerTaskCents: options?.pricePerTaskCents || null,
         monthlySubscriptionCents: options?.monthlySubscriptionCents || null,
         capabilities: options?.capabilities || "{}",
+        listingApprovalStatus: "draft",
       })
       .returning();
 
@@ -523,11 +620,285 @@ function extractSkills(listing: typeof rt2AgentMarketplace.$inferSelect): string
     return (sub as unknown as AgentSubscription) ?? null;
   }
 
+  // ===== Public Marketplace (Phase 72) =====
+
+  /**
+   * Derive evidence tier bucket from approved deliverable count
+   */
+  function deriveEvidenceTier(approvedCount: number): EvidenceTier {
+    if (approvedCount >= 6) return "gold";
+    if (approvedCount >= 3) return "silver";
+    return "bronze";
+  }
+
+  /**
+   * Derive reputation tier from subscription count
+   */
+  function deriveReputationTier(subscriptionCount: number): ReputationTier {
+    if (subscriptionCount >= 11) return "top_rated";
+    if (subscriptionCount >= 1) return "established";
+    return "new";
+  }
+
+  /**
+   * Derive quality tier from average quality score
+   */
+  function deriveQualityTier(averageQualityScore: number | null): QualityTier {
+    if (averageQualityScore === null) return "bronze";
+    if (averageQualityScore >= 75) return "gold";
+    if (averageQualityScore >= 50) return "silver";
+    return "bronze";
+  }
+
+  /**
+   * Get pricing label for public view
+   */
+  function getPricingLabel(
+    pricingType: string,
+    pricePerTaskCents: number | null,
+    monthlySubscriptionCents: number | null,
+  ): string {
+    switch (pricingType) {
+      case "subscription":
+        return monthlySubscriptionCents
+          ? `$${(monthlySubscriptionCents / 100).toFixed(0)}/month`
+          : "Subscription";
+      case "one_time":
+        return pricePerTaskCents ? `$${(pricePerTaskCents / 100).toFixed(0)} one-time` : "One-time";
+      default:
+        return pricePerTaskCents ? `$${(pricePerTaskCents / 100).toFixed(0)}/task` : "Per task";
+    }
+  }
+
+  /**
+   * Submit listing for approval (draft -> pending_approval)
+   */
+  async function submitForApproval(
+    listingId: string,
+    companyId: string,
+  ): Promise<MarketplaceListing> {
+    const [listing] = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(eq(rt2AgentMarketplace.id, listingId))
+      .limit(1);
+
+    if (!listing) throw new Error("Listing not found");
+    if (listing.creatorCompanyId !== companyId) throw new Error("Not authorized");
+    if (listing.listingApprovalStatus !== "draft") {
+      throw new Error("Only draft listings can be submitted for approval");
+    }
+
+    const [updated] = await db
+      .update(rt2AgentMarketplace)
+      .set({
+        listingApprovalStatus: "pending_approval",
+        submittedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(rt2AgentMarketplace.id, listingId))
+      .returning();
+
+    return updated as unknown as MarketplaceListing;
+  }
+
+  /**
+   * Approve listing (pending_approval -> approved)
+   */
+  async function approveListing(listingId: string): Promise<MarketplaceListing> {
+    const [listing] = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(eq(rt2AgentMarketplace.id, listingId))
+      .limit(1);
+
+    if (!listing) throw new Error("Listing not found");
+    if (listing.listingApprovalStatus !== "pending_approval") {
+      throw new Error("Only pending_approval listings can be approved");
+    }
+
+    const [updated] = await db
+      .update(rt2AgentMarketplace)
+      .set({
+        listingApprovalStatus: "approved",
+        approvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(rt2AgentMarketplace.id, listingId))
+      .returning();
+
+    return updated as unknown as MarketplaceListing;
+  }
+
+  /**
+   * Reject listing (pending_approval -> rejected)
+   */
+  async function rejectListing(
+    listingId: string,
+    reason: string,
+  ): Promise<MarketplaceListing> {
+    const [listing] = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(eq(rt2AgentMarketplace.id, listingId))
+      .limit(1);
+
+    if (!listing) throw new Error("Listing not found");
+    if (listing.listingApprovalStatus !== "pending_approval") {
+      throw new Error("Only pending_approval listings can be rejected");
+    }
+
+    const [updated] = await db
+      .update(rt2AgentMarketplace)
+      .set({
+        listingApprovalStatus: "rejected",
+        rejectionReason: reason,
+        updatedAt: new Date(),
+      })
+      .where(eq(rt2AgentMarketplace.id, listingId))
+      .returning();
+
+    return updated as unknown as MarketplaceListing;
+  }
+
+  /**
+   * Get pending approval listings for a company
+   */
+  async function getPendingApprovals(companyId: string): Promise<MarketplaceListing[]> {
+    const listings = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(
+        and(
+          eq(rt2AgentMarketplace.creatorCompanyId, companyId),
+          eq(rt2AgentMarketplace.listingApprovalStatus, "pending_approval"),
+        ),
+      )
+      .orderBy(desc(rt2AgentMarketplace.submittedAt));
+
+    return Promise.all(listings.map((listing) => mapListingWithEvidence(listing)));
+  }
+
+  /**
+   * Get public marketplace listing (public evidence contract)
+   */
+  async function getPublicMarketplaceListing(
+    listingId: string,
+  ): Promise<PublicMarketplaceListing | null> {
+    const [listing] = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(
+        and(
+          eq(rt2AgentMarketplace.id, listingId),
+          eq(rt2AgentMarketplace.listingApprovalStatus, "approved"),
+        ),
+      )
+      .limit(1);
+
+    if (!listing) return null;
+
+    const evidence = await getListingEvidence(listing);
+
+    return {
+      id: listing.id,
+      creatorCompanyId: listing.creatorCompanyId,
+      name: listing.name,
+      description: listing.description,
+      category: listing.category,
+      tags: listing.tags as string[] | null,
+      pricingType: listing.pricingType,
+      pricePerTaskCents: listing.pricePerTaskCents,
+      monthlySubscriptionCents: listing.monthlySubscriptionCents,
+      adapterType: listing.adapterType,
+      isActive: listing.isActive,
+      totalSubscriptions: listing.totalSubscriptions,
+      ratingAverage: listing.ratingAverage,
+      ratingCount: listing.ratingCount,
+      publicEvidence: {
+        evidenceTier: deriveEvidenceTier(evidence.approvedDeliverableCount),
+        reputationTier: deriveReputationTier(evidence.subscriptionCount),
+        qualityTier: deriveQualityTier(evidence.averageQualityScore),
+        evidenceStatus: evidence.evidenceStatus,
+        pricingSummary: {
+          pricingType: evidence.pricing.pricingType,
+          priceLabel: getPricingLabel(
+            evidence.pricing.pricingType,
+            evidence.pricing.pricePerTaskCents,
+            evidence.pricing.monthlySubscriptionCents,
+          ),
+        },
+        approvalStatus: "approved",
+      },
+    };
+  }
+
+  /**
+   * List public marketplace agents (only approved, public evidence contract)
+   */
+  async function listPublicMarketplaceAgents(
+    category?: string,
+    limit: number = 20,
+    offset: number = 0,
+  ): Promise<PublicMarketplaceListing[]> {
+    const conditions = [
+      eq(rt2AgentMarketplace.isActive, true),
+      eq(rt2AgentMarketplace.listingApprovalStatus, "approved"),
+    ];
+    if (category) {
+      conditions.push(eq(rt2AgentMarketplace.category, category));
+    }
+
+    const listings = await db
+      .select()
+      .from(rt2AgentMarketplace)
+      .where(and(...conditions))
+      .orderBy(desc(rt2AgentMarketplace.ratingAverage))
+      .limit(limit)
+      .offset(offset);
+
+    return Promise.all(listings.map(async (listing) => {
+      const evidence = await getListingEvidence(listing);
+      return {
+        id: listing.id,
+        creatorCompanyId: listing.creatorCompanyId,
+        name: listing.name,
+        description: listing.description,
+        category: listing.category,
+        tags: listing.tags as string[] | null,
+        pricingType: listing.pricingType,
+        pricePerTaskCents: listing.pricePerTaskCents,
+        monthlySubscriptionCents: listing.monthlySubscriptionCents,
+        adapterType: listing.adapterType,
+        isActive: listing.isActive,
+        totalSubscriptions: listing.totalSubscriptions,
+        ratingAverage: listing.ratingAverage,
+        ratingCount: listing.ratingCount,
+        publicEvidence: {
+          evidenceTier: deriveEvidenceTier(evidence.approvedDeliverableCount),
+          reputationTier: deriveReputationTier(evidence.subscriptionCount),
+          qualityTier: deriveQualityTier(evidence.averageQualityScore),
+          evidenceStatus: evidence.evidenceStatus,
+          pricingSummary: {
+            pricingType: evidence.pricing.pricingType,
+            priceLabel: getPricingLabel(
+              evidence.pricing.pricingType,
+              evidence.pricing.pricePerTaskCents,
+              evidence.pricing.monthlySubscriptionCents,
+            ),
+          },
+          approvalStatus: "approved" as const,
+        },
+      };
+    }));
+  }
+
   return {
     // Marketplace
     listMarketplaceAgents,
     listCompanyMarketplaceAgents,
     searchMarketplaceAgents,
+    searchCompanyMarketplaceAgents,
     getMarketplaceListing,
     createListing,
     // BYOA
@@ -540,5 +911,12 @@ function extractSkills(listing: typeof rt2AgentMarketplace.$inferSelect): string
     cancelSubscription,
     recordTaskUsage,
     getActiveSubscription,
+    // Public Marketplace (Phase 72)
+    submitForApproval,
+    approveListing,
+    rejectListing,
+    getPendingApprovals,
+    getPublicMarketplaceListing,
+    listPublicMarketplaceAgents,
   };
 }

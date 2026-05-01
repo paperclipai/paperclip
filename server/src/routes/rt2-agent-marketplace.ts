@@ -8,15 +8,54 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
   const router = Router();
   const svc = rt2AgentMarketplaceService(db);
 
-  // M3.2: List marketplace agents
+  // ===== Public Marketplace (Phase 72) =====
+
+  // Public: List marketplace agents (only approved, public evidence contract)
   router.get("/rt2/marketplace/agents", async (req, res) => {
     const category = req.query.category as string | undefined;
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
     const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
 
-    const agents = await svc.listMarketplaceAgents(category, limit, offset);
+    const agents = await svc.listPublicMarketplaceAgents(category, limit, offset);
     res.json(agents);
   });
+
+  // Public: Search marketplace agents (only approved)
+  router.get("/rt2/marketplace/search", async (req, res) => {
+    const query = req.query.q as string;
+    const category = req.query.category as string | undefined;
+
+    if (!query) {
+      throw badRequest("Search query 'q' is required");
+    }
+
+    const agents = await svc.searchMarketplaceAgents(query, category);
+    res.json(agents);
+  });
+
+  // Public: Get marketplace listing (public evidence contract)
+  router.get("/rt2/marketplace/agents/:listingId", async (req, res) => {
+    const { listingId } = req.params;
+    const includePrivate = req.query.includePrivate === "true";
+
+    if (includePrivate) {
+      // Company-scoped view: full evidence
+      const listing = await svc.getMarketplaceListing(listingId);
+      if (!listing) {
+        throw badRequest("Listing not found");
+      }
+      res.json(listing);
+    } else {
+      // Public view: public evidence contract
+      const listing = await svc.getPublicMarketplaceListing(listingId);
+      if (!listing) {
+        throw badRequest("Listing not found or not approved");
+      }
+      res.json(listing);
+    }
+  });
+
+  // ===== Company-Scoped Routes =====
 
   router.get("/companies/:companyId/rt2/marketplace/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -30,8 +69,11 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(agents);
   });
 
-  // M3.2: Search marketplace agents
-  router.get("/rt2/marketplace/search", async (req, res) => {
+  // Company-scoped: Search marketplace agents (includes draft/pending own listings)
+  router.get("/companies/:companyId/rt2/marketplace/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
     const query = req.query.q as string;
     const category = req.query.category as string | undefined;
 
@@ -39,23 +81,11 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
       throw badRequest("Search query 'q' is required");
     }
 
-    const agents = await svc.searchMarketplaceAgents(query, category);
+    const agents = await svc.searchCompanyMarketplaceAgents(companyId, query, category);
     res.json(agents);
   });
 
-  // M3.2: Get marketplace listing
-  router.get("/rt2/marketplace/agents/:listingId", async (req, res) => {
-    const { listingId } = req.params;
-
-    const listing = await svc.getMarketplaceListing(listingId);
-    if (!listing) {
-      throw badRequest("Listing not found");
-    }
-
-    res.json(listing);
-  });
-
-  // M3.2: Create marketplace listing (for creators)
+  // Create marketplace listing (draft by default)
   router.post("/companies/:companyId/rt2/marketplace/listings", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -78,7 +108,55 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(listing);
   });
 
-  // M3.2: Get BYOA agents for company
+  // Submit listing for approval
+  router.post("/companies/:companyId/rt2/marketplace/listings/:listingId/submit-for-approval", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const { listingId } = req.params;
+
+    const listing = await svc.submitForApproval(listingId, companyId);
+    res.json(listing);
+  });
+
+  // Approve listing (company admin)
+  router.post("/companies/:companyId/rt2/marketplace/listings/:listingId/approve", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const { listingId } = req.params;
+
+    const listing = await svc.approveListing(listingId);
+    res.json(listing);
+  });
+
+  // Reject listing (company admin)
+  router.post("/companies/:companyId/rt2/marketplace/listings/:listingId/reject", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const { listingId } = req.params;
+    const { reason } = req.body;
+
+    if (!reason) {
+      throw badRequest("reason is required");
+    }
+
+    const listing = await svc.rejectListing(listingId, reason);
+    res.json(listing);
+  });
+
+  // Get pending approvals for company
+  router.get("/companies/:companyId/rt2/marketplace/pending-approvals", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const listings = await svc.getPendingApprovals(companyId);
+    res.json(listings);
+  });
+
+  // ===== BYOA Routes =====
+
   router.get("/companies/:companyId/rt2/byoa/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -87,7 +165,6 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(agents);
   });
 
-  // M3.2: Register BYOA agent
   router.post("/companies/:companyId/rt2/byoa/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -102,7 +179,6 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(agent);
   });
 
-  // M3.2: Update BYOA connection status
   router.patch("/companies/:companyId/rt2/byoa/agents/:agentId/status", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -118,7 +194,8 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(agent);
   });
 
-  // M3.2: Get company subscriptions
+  // ===== Subscription Routes =====
+
   router.get("/companies/:companyId/rt2/subscriptions", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -127,7 +204,6 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(subs);
   });
 
-  // M3.2: Subscribe to marketplace agent
   router.post("/companies/:companyId/rt2/subscriptions", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -151,7 +227,6 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(sub);
   });
 
-  // M3.2: Cancel subscription
   router.post("/companies/:companyId/rt2/subscriptions/:subscriptionId/cancel", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -162,7 +237,6 @@ export function rt2AgentMarketplaceRoutes(db: Db) {
     res.json(sub);
   });
 
-  // M3.2: Record task usage
   router.post("/companies/:companyId/rt2/subscriptions/:subscriptionId/record-usage", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   issueWorkProducts,
@@ -1538,5 +1538,124 @@ export function rt2PersonalPnLService(db: Db) {
     transferCoins,
     allocateBudget,
     getCompanyPnLSummary,
+    // BILL-01 / D-BILL-01: Auto-trigger settlement methods
+    triggerAutomaticSettlement,
+    materializeAndAutoApproveLowRisk,
   };
+
+  // ===== D-BILL-01: Auto-trigger settlement methods =====
+
+  /**
+   * BILL-01: Trigger automatic settlement processing
+   * Called by the quality score approval hook (onQualityScoreApproved).
+   * Ensures settlement rows exist for any newly approved deliverables.
+   * Returns the list of all settlements after processing.
+   */
+  async function triggerAutomaticSettlement(
+    companyId: string,
+    period?: string,
+  ): Promise<SettlementFlow[]> {
+    // ensureSettlementRows creates settlement rows for all approved deliverables
+    // that don't already have a settlement. It applies anti-gaming signals
+    // and derives risk level (low/medium/high).
+    const settlements = await ensureSettlementRows(companyId, period);
+    return settlements;
+  }
+
+  /**
+   * BILL-01: Materialize P&L and auto-approve low-risk settlements
+   * Called after P&L materialization (e.g., end of period or on-demand).
+   * 1. Records income for all approved deliverables
+   * 2. Auto-approves settlements with riskLevel=low (no human review needed)
+   * 3. Marks them as processedAt + autoProcessed
+   */
+  async function materializeAndAutoApproveLowRisk(
+    companyId: string,
+    period?: string,
+    approverId: string = "system",
+  ): Promise<{
+    materialized: number;
+    autoApproved: number;
+    settlements: SettlementFlow[];
+  }> {
+    const p = period || getCurrentPeriod();
+
+    // Step 1: Materialize income from approved deliverables
+    await materializeApprovedDeliverablePnL(companyId, p);
+
+    // Step 2: Find all pending settlements with low risk that haven't been auto-processed
+    const pendingLowRisk = await db
+      .select()
+      .from(rt2SettlementGovernance)
+      .where(
+        and(
+          eq(rt2SettlementGovernance.companyId, companyId),
+          eq(rt2SettlementGovernance.pnlPeriod, p),
+          eq(rt2SettlementGovernance.status, "pending"),
+          eq(rt2SettlementGovernance.riskLevel, "low"),
+          isNull(rt2SettlementGovernance.processedAt),
+        ),
+      );
+
+    let autoApprovedCount = 0;
+    const allSettlements: SettlementFlow[] = [];
+
+    for (const settlement of pendingLowRisk) {
+      try {
+        // Auto-approve: use proposed price, system approver, auto flag
+        const finalPrice = settlement.proposedPriceGold;
+        const { ledger } = await recordIncomeWithLedger(
+          companyId,
+          settlement.ownerActorId,
+          settlement.ownerActorType as "user" | "agent",
+          finalPrice,
+          `Auto-approved low-risk settlement: ${settlement.workProductId}`,
+          settlement.id,
+          "settlement",
+          p,
+        );
+
+        const [updated] = await db
+          .update(rt2SettlementGovernance)
+          .set({
+            finalPriceGold: finalPrice,
+            status: "approved",
+            approverId,
+            decisionReason: "Auto-approved: low-risk settlement (riskLevel=low)",
+            ledgerEntryId: ledger.id,
+            decidedAt: new Date(),
+            processedAt: new Date(),
+            autoProcessed: 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(rt2SettlementGovernance.id, settlement.id))
+          .returning();
+
+        allSettlements.push(await enrichSettlementFlow(updated));
+        autoApprovedCount++;
+      } catch {
+        // Skip settlements that fail (e.g., ledger error) — leave pending for manual review
+      }
+    }
+
+    // Return all settlements for the period (including newly approved)
+    const allForPeriod = await db
+      .select()
+      .from(rt2SettlementGovernance)
+      .where(
+        and(
+          eq(rt2SettlementGovernance.companyId, companyId),
+          eq(rt2SettlementGovernance.pnlPeriod, p),
+        ),
+      )
+      .orderBy(desc(rt2SettlementGovernance.updatedAt));
+
+    const enrichedSettlements = await Promise.all(allForPeriod.map(enrichSettlementFlow));
+
+    return {
+      materialized: pendingLowRisk.length,
+      autoApproved: autoApprovedCount,
+      settlements: enrichedSettlements,
+    };
+  }
 }

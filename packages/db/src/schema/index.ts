@@ -63,6 +63,12 @@ export {
 export { rt2QualityScores } from "./rt2_quality_scores.js";
 export { rt2JarvisRewriteEvals, rt2JarvisRewriteProposals } from "./rt2_jarvis_autonomy.js";
 export { rt2BasePrices, DEFAULT_BASE_PRICES } from "./rt2_base_prices.js";
+export {
+  rt2StoreListings,
+  rt2StoreReviewerCommunications,
+  rt2StoreReviewerMessages,
+  rt2StoreAuditTrails,
+} from "./rt2_store_operations.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";
@@ -112,6 +118,12 @@ export { rt2CollaborationRewards, rt2CollaborationEvents } from "./rt2_collabora
 export { rt2PersonalPnL, rt2CoinLedger } from "./rt2_personal_pnl.js";
 export { rt2AntiGamingSignals, rt2SettlementGovernance, rt2SettlementThresholds } from "./rt2_settlement_governance.js";
 export {
+  rt2PayrollRuns,
+  rt2PayrollRunEntries,
+  rt2PaymentReceipts,
+  rt2SettlementReconciliation,
+} from "./rt2_payroll_settlement.js";
+export {
   rt2CaptureSources,
   rt2CaptureDrafts,
   rt2CaptureDraftRevisions,
@@ -129,6 +141,11 @@ export {
   rt2BindingModes,
   rt2EnterpriseConnectorEvidence,
 } from "./rt2_enterprise.js";
+export {
+  rt2FederationPartners,
+  rt2FederationEvidenceContracts,
+  rt2FederationAuditTrails,
+} from "./rt2_federation.js";
 export { rt2PromotionTriggers, rt2PerformanceReviews, rt2CreditConversionLedger, CREDITS_PER_GOLD, PROMOTION_TIERS, GRADE_THRESHOLDS, calculateGrade, getTierFromReputation, calculateGoldFromCredits } from "./rt2_reputation_expansion.js";
 export { rt2SearchIndex, rt2SearchLog } from "./rt2_search.js";
 export {

@@ -764,6 +764,34 @@
       "when": 1776761100000,
       "tag": "0108_rt2_career_mate_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1776761400000,
+      "tag": "0109_rt2_public_marketplace_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1776762000000,
+      "tag": "0110_rt2_payroll_settlement_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1776762600000,
+      "tag": "0111_rt2_federation_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1776845400000,
+      "tag": "0112_rt2_store_operations_tables",
+      "breakpoints": true
     }
   ]
 }

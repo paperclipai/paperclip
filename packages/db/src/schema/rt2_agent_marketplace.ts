@@ -30,6 +30,11 @@ export const rt2AgentMarketplace = pgTable(
     totalSubscriptions: integer("total_subscriptions").notNull().default(0),
     ratingAverage: integer("rating_average").notNull().default(0), // 0-5000 (0.0-5.0)
     ratingCount: integer("rating_count").notNull().default(0),
+    // Approval workflow for public marketplace
+    listingApprovalStatus: text("listing_approval_status").notNull().default("draft"), // 'draft' | 'pending_approval' | 'approved' | 'rejected'
+    rejectionReason: text("rejection_reason"), // Reason when rejected
+    submittedAt: timestamp("submitted_at", { withTimezone: true }), // When submitted for approval
+    approvedAt: timestamp("approved_at", { withTimezone: true }), // When approved
     // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -38,6 +43,7 @@ export const rt2AgentMarketplace = pgTable(
     creatorIdx: index("agent_marketplace_creator_idx").on(table.creatorCompanyId),
     categoryIdx: index("agent_marketplace_category_idx").on(table.category),
     activeIdx: index("agent_marketplace_active_idx").on(table.isActive),
+    approvalStatusIdx: index("agent_marketplace_approval_status_idx").on(table.listingApprovalStatus),
   }),
 );
 

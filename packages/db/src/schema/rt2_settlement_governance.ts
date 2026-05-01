@@ -34,6 +34,8 @@ export const rt2SettlementGovernance = pgTable(
     ledgerEntryId: uuid("ledger_entry_id"),
     pnlPeriod: text("pnl_period"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    autoProcessed: integer("auto_processed").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -42,6 +44,7 @@ export const rt2SettlementGovernance = pgTable(
     companyStatusIdx: index("rt2_settlement_company_status_idx").on(table.companyId, table.status),
     workProductIdx: index("rt2_settlement_work_product_idx").on(table.companyId, table.workProductId),
     ownerIdx: index("rt2_settlement_owner_idx").on(table.companyId, table.ownerActorId, table.ownerActorType),
+    processedIdx: index("rt2_settlement_processed_idx").on(table.companyId, table.processedAt),
   }),
 );
 

@@ -517,6 +517,12 @@ Success criteria:
 | 69. Graphify v3 Corpus Graph Sidecar | v3.1 | 1/1 | Complete | 2026-05-01 |
 | 70. Economy, Marketplace, P&L, and CareerMate Loop | v3.1 | 1/1 | Complete | 2026-05-01 |
 | 71. v3.1 DevPlan Acceptance Gate | v3.1 | 1/1 | Complete | 2026-05-01 |
+| 72. Public Marketplace Launch | v3.2 | 0/0 | Planned | — |
+| 73. Billing, Payroll, and Settlement | v3.2 | 0/0 | Planned | — |
+| 74. Federation and Cross-Company Evidence | v3.2 | 0/0 | Planned | — |
+| 75. Autonomous Jarvis Direct Apply | v3.2 | 0/0 | Planned | — |
+| 76. Public Store Operations | v3.2 | 0/0 | Planned | — |
+| 77. v3.2 Acceptance Gate | v3.2 | 0/0 | Planned | — |
 
 ## Archive
 

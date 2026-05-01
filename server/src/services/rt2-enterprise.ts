@@ -8,6 +8,9 @@ import {
   rt2CompanyTemplates,
   rt2TenantPolicies,
   rt2BindingModes,
+  rt2FederationPartners,
+  rt2FederationEvidenceContracts,
+  rt2FederationAuditTrails,
 } from "@paperclipai/db";
 import type {
   Rt2EnterpriseRolloutOverview,
@@ -1520,5 +1523,260 @@ export function rt2EnterpriseService(db: Db) {
     createScimPreview,
     applyScimPreview,
     getRolloutAuditLog,
+  };
+}
+
+export function rt2FederationService(db: Db) {
+  // FED-01: Create a federation partnership
+  async function createFederationPartner(
+    companyId: string,
+    data: {
+      partnerCompanyId: string;
+      partnershipType?: string;
+      evidenceSharingLevel?: string;
+      trustLevel?: string;
+      allowedEvidenceTypes?: string[];
+    },
+  ) {
+    const [partner] = await db
+      .insert(rt2FederationPartners)
+      .values({
+        companyId,
+        partnerCompanyId: data.partnerCompanyId,
+        status: "pending",
+        partnershipType: data.partnershipType ?? "bidirectional",
+        evidenceSharingLevel: data.evidenceSharingLevel ?? "none",
+        trustLevel: data.trustLevel ?? "unknown",
+        allowedEvidenceTypes: data.allowedEvidenceTypes ?? [],
+      })
+      .returning();
+    return partner;
+  }
+
+  // FED-01: List all partners for a company
+  async function getFederationPartners(companyId: string) {
+    const partners = await db
+      .select()
+      .from(rt2FederationPartners)
+      .where(eq(rt2FederationPartners.companyId, companyId))
+      .orderBy(desc(rt2FederationPartners.createdAt));
+    return partners;
+  }
+
+  // FED-01: Get a specific partner relationship
+  async function getFederationPartner(companyId: string, partnerId: string) {
+    const [partner] = await db
+      .select()
+      .from(rt2FederationPartners)
+      .where(
+        and(
+          eq(rt2FederationPartners.id, partnerId),
+          eq(rt2FederationPartners.companyId, companyId),
+        ),
+      )
+      .limit(1);
+    return partner ?? null;
+  }
+
+  // FED-01: Update partnership status and evidence sharing level
+  async function updateFederationPartner(
+    companyId: string,
+    partnerId: string,
+    data: {
+      status?: string;
+      evidenceSharingLevel?: string;
+      trustLevel?: string;
+      allowedEvidenceTypes?: string[];
+    },
+  ) {
+    const [updated] = await db
+      .update(rt2FederationPartners)
+      .set({
+        ...(data.status && { status: data.status }),
+        ...(data.evidenceSharingLevel && { evidenceSharingLevel: data.evidenceSharingLevel }),
+        ...(data.trustLevel && { trustLevel: data.trustLevel }),
+        ...(data.allowedEvidenceTypes && { allowedEvidenceTypes: data.allowedEvidenceTypes }),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(rt2FederationPartners.id, partnerId),
+          eq(rt2FederationPartners.companyId, companyId),
+        ),
+      )
+      .returning();
+    return updated;
+  }
+
+  // FED-01: Create an evidence sharing contract for a partnership
+  async function createFederationContract(
+    companyId: string,
+    data: {
+      federationPartnerId: string;
+      contractType: string;
+      evidenceTypes: string[];
+      transformationRules?: {
+        redactAmounts: boolean;
+        redactNames: boolean;
+        aggregateQuality: boolean;
+        showTiersOnly: boolean;
+      };
+    },
+  ) {
+    const [contract] = await db
+      .insert(rt2FederationEvidenceContracts)
+      .values({
+        companyId,
+        federationPartnerId: data.federationPartnerId,
+        contractType: data.contractType,
+        evidenceTypes: data.evidenceTypes,
+        transformationRules: data.transformationRules ?? {
+          redactAmounts: false,
+          redactNames: false,
+          aggregateQuality: false,
+          showTiersOnly: false,
+        },
+        auditRequirements: {
+          logAllAccess: true,
+          requireApprovalForAccess: false,
+          retainAuditDays: 365,
+        },
+      })
+      .returning();
+    return contract;
+  }
+
+  // FED-01: List evidence contracts for a partnership
+  async function getFederationContracts(companyId: string, federationPartnerId?: string) {
+    const conditions = [eq(rt2FederationEvidenceContracts.companyId, companyId)];
+    if (federationPartnerId) {
+      conditions.push(eq(rt2FederationEvidenceContracts.federationPartnerId, federationPartnerId));
+    }
+    const contracts = await db
+      .select()
+      .from(rt2FederationEvidenceContracts)
+      .where(and(...conditions))
+      .orderBy(desc(rt2FederationEvidenceContracts.createdAt));
+    return contracts;
+  }
+
+  // FED-02: Record an audit trail entry for cross-company evidence access
+  async function recordFederationAuditTrail(
+    companyId: string,
+    data: {
+      federationPartnerId: string;
+      evidenceType: string;
+      evidenceId?: string;
+      accessAction: string;
+      accessResult: string;
+      accessedByActorId?: string;
+      accessedByActorType?: string;
+      contractId?: string;
+      sharedDataSummary?: Record<string, unknown>;
+      redactionNotes?: string;
+      ipAddress?: string;
+      userAgent?: string;
+    },
+  ) {
+    const [trail] = await db
+      .insert(rt2FederationAuditTrails)
+      .values({
+        companyId,
+        federationPartnerId: data.federationPartnerId,
+        evidenceType: data.evidenceType,
+        evidenceId: data.evidenceId ?? null,
+        accessAction: data.accessAction,
+        accessResult: data.accessResult,
+        accessedByActorId: data.accessedByActorId ?? null,
+        accessedByActorType: data.accessedByActorType ?? null,
+        contractId: data.contractId ?? null,
+        sharedDataSummary: data.sharedDataSummary ?? {},
+        redactionNotes: data.redactionNotes ?? null,
+        accessNetworkInfo: {
+          ipAddress: data.ipAddress ?? "",
+          userAgent: data.userAgent ?? "",
+        },
+      })
+      .returning();
+    return trail;
+  }
+
+  // FED-02: Get audit trails for a company
+  async function getFederationAuditTrails(
+    companyId: string,
+    options?: {
+      federationPartnerId?: string;
+      evidenceType?: string;
+      limit?: number;
+    },
+  ) {
+    const conditions = [eq(rt2FederationAuditTrails.companyId, companyId)];
+    if (options?.federationPartnerId) {
+      conditions.push(eq(rt2FederationAuditTrails.federationPartnerId, options.federationPartnerId));
+    }
+    if (options?.evidenceType) {
+      conditions.push(eq(rt2FederationAuditTrails.evidenceType, options.evidenceType));
+    }
+    const trails = await db
+      .select()
+      .from(rt2FederationAuditTrails)
+      .where(and(...conditions))
+      .orderBy(desc(rt2FederationAuditTrails.accessedAt))
+      .limit(options?.limit ?? 100);
+    return trails;
+  }
+
+  // FED-02: Get audit report for federation review
+  async function getFederationAuditReport(
+    companyId: string,
+    options?: { partnerId?: string; since?: Date },
+  ) {
+    const conditions = [eq(rt2FederationAuditTrails.companyId, companyId)];
+    if (options?.partnerId) {
+      conditions.push(eq(rt2FederationAuditTrails.federationPartnerId, options.partnerId));
+    }
+    if (options?.since) {
+      conditions.push(sql`${rt2FederationAuditTrails.accessedAt} >= ${options.since}`);
+    }
+
+    const trails = await db
+      .select()
+      .from(rt2FederationAuditTrails)
+      .where(and(...conditions))
+      .orderBy(desc(rt2FederationAuditTrails.accessedAt));
+
+    const byPartner: Record<string, number> = {};
+    const byType: Record<string, number> = {};
+    const byAction: Record<string, number> = {};
+    let redactedCount = 0;
+
+    for (const trail of trails) {
+      byPartner[trail.federationPartnerId] = (byPartner[trail.federationPartnerId] ?? 0) + 1;
+      byType[trail.evidenceType] = (byType[trail.evidenceType] ?? 0) + 1;
+      byAction[trail.accessAction] = (byAction[trail.accessAction] ?? 0) + 1;
+      if (trail.accessResult === "redacted") redactedCount++;
+    }
+
+    return {
+      companyId,
+      totalEvents: trails.length,
+      byPartner,
+      byEvidenceType: byType,
+      byAction,
+      redactedCount,
+      trails,
+    };
+  }
+
+  return {
+    createFederationPartner,
+    getFederationPartners,
+    getFederationPartner,
+    updateFederationPartner,
+    createFederationContract,
+    getFederationContracts,
+    recordFederationAuditTrail,
+    getFederationAuditTrails,
+    getFederationAuditReport,
   };
 }
