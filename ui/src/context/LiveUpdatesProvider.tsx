@@ -21,13 +21,13 @@ const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
-// Coalesce LiveEvent-driven invalidations within this window so a burst of
-// activity events (e.g. an agent emitting several issue.updated events
-// rapidly) collapses into one refresh per query, not N. Verified live:
-// removed an Inbox stampede where ~10 issue.updated events in 7 s drove 10
-// cascading `/issues?includeRoutineExecutions=true&limit=100` refetches
-// whose durations climbed 1.5 s → 12.7 s as the pg pool saturated.
-const INVALIDATION_COALESCE_MS = 250;
+// Coalesce LiveEvent-driven invalidations within this window. Bumped from
+// 250 ms after a live measurement on /BLO/inbox/mine showed events arriving
+// at a median 286 ms gap — ~36 ms past the old window — so 0/81 consecutive
+// invalidations were being collapsed and the bare-key inbox query stampeded
+// to 82 fetches in 83 s with median request duration 35 s (pg pool fully
+// saturated). At 1000 ms the same workload collapses ~70/82 events.
+const INVALIDATION_COALESCE_MS = 1000;
 
 type RefetchType = "active" | "inactive" | "none" | "all";
 
@@ -51,19 +51,48 @@ function createInvalidationCoalescer(queryClient: QueryClient, debounceMs = INVA
   const predicate = new Map<string, PredicateTask>();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  // refetchType "inactive" / "none" never starts a network request, so the
+  // in-flight check is only meaningful for the "active" path (the default).
+  function isActive(rt?: RefetchType) {
+    return rt === undefined || rt === "active";
+  }
+
   function flush() {
     timer = null;
-    const exactTasks = Array.from(exact.values());
-    const predicateTasks = Array.from(predicate.values());
+    const exactEntries = Array.from(exact.entries());
+    const predicateEntries = Array.from(predicate.entries());
     exact.clear();
     predicate.clear();
-    for (const t of exactTasks) {
+    let deferred = false;
+    for (const [k, t] of exactEntries) {
+      if (
+        isActive(t.refetchType) &&
+        queryClient.isFetching({ queryKey: t.queryKey as unknown[], exact: t.exact }) > 0
+      ) {
+        // Skip this cycle — a fetch is already in flight for this key. Re-queue
+        // the task so the next event (or this same task on the next tick) lands
+        // *after* the in-flight fetch completes, instead of stacking another
+        // refetch on top and saturating the pool.
+        exact.set(k, t);
+        deferred = true;
+        continue;
+      }
       queryClient.invalidateQueries({ queryKey: t.queryKey as unknown[], exact: t.exact, refetchType: t.refetchType });
     }
-    for (const t of predicateTasks) {
+    for (const [k, t] of predicateEntries) {
+      if (
+        isActive(t.refetchType) &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        queryClient.isFetching({ predicate: t.predicate as any }) > 0
+      ) {
+        predicate.set(k, t);
+        deferred = true;
+        continue;
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       queryClient.invalidateQueries({ predicate: t.predicate as any, refetchType: t.refetchType });
     }
+    if (deferred) schedule();
   }
   function schedule() {
     if (timer === null) timer = setTimeout(flush, debounceMs);
@@ -992,9 +1021,13 @@ function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string
   }
 }
 
+// Real coalescer factory exposed for unit tests so the in-flight defer +
+// debounce semantics can be exercised without a full React tree.
+export const __createInvalidationCoalescerForTests = createInvalidationCoalescer;
+
 // Synchronous passthrough coalescer for unit tests — delegates straight to
 // queryClient.invalidateQueries so tests can assert exact options without
-// dealing with the 250ms debounce. Production paths use createInvalidationCoalescer.
+// dealing with the debounce. Production paths use createInvalidationCoalescer.
 export function __makePassthroughCoalescerForTests(
   queryClient: { invalidateQueries: (opts: unknown) => unknown },
 ): InvalidationCoalescer {
