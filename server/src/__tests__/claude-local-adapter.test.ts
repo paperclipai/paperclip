@@ -29,6 +29,15 @@ describe("claude_local max-turn detection", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not detect max-turn exhaustion from unstructured result text", () => {
+    expect(
+      isClaudeMaxTurnsResult({
+        subtype: "error",
+        result: "Tool output said: Maximum turns reached.",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("claude_local ui stdout parser", () => {
