@@ -344,7 +344,20 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
   });
 
-  it("returns empty array by default when no runs are queued or running", async () => {
+  it("does not backfill terminal runs when no active runs exist (default minCount=0)", async () => {
+    // Pre-fix behaviour (default minCount=50):
+    //   1. live query → [] (no queued/running)
+    //   2. backfill block fires because 50 > 0 && 0 < 50
+    //   3. db.select called twice
+    // Post-fix behaviour (default minCount=0):
+    //   1. live query → []
+    //   2. backfill block SKIPPED because 0 > 0 is false
+    //   3. db.select called exactly once
+    //
+    // Asserting on db.select call count is the only stub-friendly way to
+    // distinguish the two code paths: the existing stub doesn't model the
+    // status filter, so we can't rely on row-shape alone to prove the
+    // backfill branch wasn't entered.
     const { db } = createLiveRunsDbStub([]);
 
     const res = await requestApp(
@@ -354,6 +367,51 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(0);
+    // Critical: exactly one db.select call. Two calls would mean the backfill
+    // path was entered (the regression this PR fixes).
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("DOES backfill terminal runs when caller explicitly passes minCount=50", async () => {
+    // Verifies the activity-feed use case still works when callers opt in.
+    // Stub doesn't model the status filter, so the live query and the
+    // backfill query both return the same `rows` — but db.select call count
+    // proves the backfill branch was entered.
+    const terminalRow = {
+      id: "run-done",
+      companyId: "company-1",
+      status: "succeeded",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: new Date("2026-04-10T09:31:00.000Z"),
+      createdAt: new Date("2026-04-10T09:30:00.000Z"),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    };
+    const { db } = createLiveRunsDbStub([terminalRow]);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?minCount=50"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // Two db.select calls = live query + backfill query.
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 
   it("treats explicit zero live run limits as the capped default", async () => {
