@@ -1,19 +1,13 @@
+import { redactCommandText } from "@paperclipai/adapter-utils";
+
 const SECRET_PAYLOAD_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
-const JWT_TEXT_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
-const OPENAI_KEY_TEXT_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const GITHUB_TOKEN_TEXT_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
-const AUTHORIZATION_BEARER_TEXT_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-const CLI_SECRET_OPTION_TEXT_RE =
-  /(\B-{1,2}(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\s+|=)(["']?))[^\s"'`]+(\2)/gi;
 const CLI_SECRET_FLAG_RE =
   /^-{1,2}(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)$/i;
-const ENV_SECRET_ASSIGNMENT_TEXT_RE =
-  /(\b[A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|JWT)[A-Za-z0-9_]*\s*=\s*)[^\s"'`]+/gi;
 const JSON_SECRET_FIELD_TEXT_RE =
   /((?:"|')?(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:"|')?\s*:\s*(?:"|'))[^"'`\r\n]+((?:"|'))/gi;
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE =
@@ -100,13 +94,10 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
 }
 
 export function redactSensitiveText(input: string): string {
-  return input
-    .replace(AUTHORIZATION_BEARER_TEXT_RE, `$1${REDACTED_EVENT_VALUE}`)
-    .replace(CLI_SECRET_OPTION_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$3`)
-    .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-    .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-    .replace(ENV_SECRET_ASSIGNMENT_TEXT_RE, `$1${REDACTED_EVENT_VALUE}`)
-    .replace(OPENAI_KEY_TEXT_RE, REDACTED_EVENT_VALUE)
-    .replace(GITHUB_TOKEN_TEXT_RE, REDACTED_EVENT_VALUE)
-    .replace(JWT_TEXT_RE, REDACTED_EVENT_VALUE);
+  return redactCommandText(
+    input
+      .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
+      .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
+    REDACTED_EVENT_VALUE,
+  );
 }

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+import { redactCommandText } from "./command-redaction.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -78,15 +79,6 @@ export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
-const COMMAND_CLI_SECRET_OPTION_RE =
-  /(\B-{1,2}(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\s+|=)(["']?))[^\s"'`]+(\2)/gi;
-const COMMAND_ENV_SECRET_ASSIGNMENT_RE =
-  /(\b[A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|JWT)[A-Za-z0-9_]*\s*=\s*)[^\s"'`]+/gi;
-const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
-const COMMAND_JWT_RE =
-  /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -805,13 +797,7 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
 }
 
 export function redactCommandTextForLogs(command: string): string {
-  return command
-    .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${REDACTED_LOG_VALUE}`)
-    .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${REDACTED_LOG_VALUE}$3`)
-    .replace(COMMAND_ENV_SECRET_ASSIGNMENT_RE, `$1${REDACTED_LOG_VALUE}`)
-    .replace(COMMAND_OPENAI_KEY_RE, REDACTED_LOG_VALUE)
-    .replace(COMMAND_GITHUB_TOKEN_RE, REDACTED_LOG_VALUE)
-    .replace(COMMAND_JWT_RE, REDACTED_LOG_VALUE);
+  return redactCommandText(command, REDACTED_LOG_VALUE);
 }
 
 export function buildInvocationEnvForLogs(
@@ -1552,7 +1538,6 @@ export async function materializePaperclipSkillCopy(
     skippedSymlinks: [],
   };
 
-  const sourceFingerprint = await hashSkillDirectory(sourceRoot);
   const lockDir = `${targetRoot}.lock`;
   const releaseLock = await acquireMaterializeLock(lockDir);
   const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
@@ -1586,6 +1571,7 @@ export async function materializePaperclipSkillCopy(
   }
 
   try {
+    const sourceFingerprint = await hashSkillDirectory(sourceRoot);
     if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
     await copyEntry(sourceRoot, tempRoot, "");
     await fs.writeFile(
