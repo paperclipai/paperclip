@@ -1,7 +1,7 @@
 ---
 course_slug: gemini-enterprise-agents
 title: "Build Production AI Agents with Gemini Enterprise Agent Platform"
-status: outline-draft-for-review
+status: outline-revised-for-g0
 author: course-author
 level: Builder
 vendor_tag: google
@@ -62,11 +62,11 @@ By the end of Chapter 7 you will have a fully deployed multi-agent system behind
 - **Duration**: 50 min
 - **Prerequisites**: Chapter 1, GCP project with billing, `gcloud` CLI installed
 - **Learning objectives**:
-  - Install `google-adk`, scaffold an agent, and run it locally in under 15 minutes
-  - Define Python functions as tools with proper type hints and docstrings that ADK can introspect
-  - Distinguish in-session state (`Session`) from long-term memory (`Memory Bank`) and explain when to use each
-  - Deploy the agent to Agent Runtime and invoke it via the managed API endpoint
-- **Key concepts**: `Agent` class, `@tool` decorator, `InMemoryRunner` vs `VertexAiSessionService`, `MemoryBank`, Agent Runtime deployment, cold-start behavior, tool annotations
+  - Install `google-cloud-aiplatform[agent_engines,adk]` and initialize the Agent Platform SDK for Python in under 15 minutes
+  - Define Python functions as tools with proper type hints and docstrings that ADK auto-introspects — no decorator required
+  - Distinguish in-session state (Sessions managed via `AdkApp`) from long-term memory (`Memory Bank`) and explain when to use each
+  - Deploy the agent to Agent Runtime via `client.agent_engines.create()` and invoke it via the managed `reasoningEngine` endpoint
+- **Key concepts**: `Agent` class, `agent_engines.AdkApp`, `async_stream_query` (in-memory sessions for local testing), Sessions vs Memory Bank, Agent Runtime deployment (`reasoningEngine`), cold-start behavior, tool type hints and docstrings as ADK tool annotations
 - **Hands-on**: Build a "Policy Q&A" agent — a tool that queries a mock policy document store, a Session that tracks the conversation, and a Memory Bank profile that accumulates the user's department and access level across sessions. Deploy to Agent Runtime and verify via `curl`.
 
 ---
@@ -76,10 +76,10 @@ By the end of Chapter 7 you will have a fully deployed multi-agent system behind
 - **Prerequisites**: Chapter 2
 - **Learning objectives**:
   - Configure RAG Engine with your own corpus (PDF, HTML, Cloud Storage) and explain the ingestion pipeline
-  - Distinguish the five grounding options (Google Search, Google Maps, RAG Engine, Agent Search, Elasticsearch) and select the right one for three enterprise scenarios
+  - Distinguish the grounding options available on Agent Platform (Google Search, Google Maps, Agent Platform Search, RAG, Elasticsearch, your search API, Parallel, Web Grounding for Enterprise) and select the right one for three enterprise scenarios
   - Set up Agent Platform Vector Search 2.0 as the backing vector store for RAG
   - Measure retrieval quality and diagnose hallucination with grounding metadata and citation scores
-- **Key concepts**: RAG Engine, corpus ingestion, chunking and parsing strategies (Document AI, LLM parser), Vector Search 2.0 collections, grounding with Google Search, Agent Search, hybrid retrieval, reranking
+- **Key concepts**: RAG Engine, corpus ingestion, chunking and parsing strategies (Document AI, LLM parser), Vector Search 2.0 collections, grounding options (Google Search, Google Maps, Agent Platform Search, RAG, Elasticsearch, your search API, Parallel), hybrid retrieval, reranking
 - **Hands-on**: Ingest a set of 10 internal policy documents into a RAG corpus. Connect the Policy Q&A agent from Chapter 2 to the corpus. Run five test queries and compare responses with and without grounding. Identify at least one hallucination that grounding eliminates.
 
 ---
@@ -116,9 +116,9 @@ By the end of Chapter 7 you will have a fully deployed multi-agent system behind
 - **Learning objectives**:
   - Configure Cloud Observability (Trace, Logging, Monitoring, Topology) for deployed agents using OpenTelemetry
   - Read an agent trace to diagnose a failed tool call, identify the latency bottleneck, and calculate token cost per interaction
-  - Set up an automated evaluation pipeline using Gen AI Evaluation Service: Auto SxS for online evaluation and offline evaluation with curated test sets
+  - Set up an automated evaluation pipeline using Agent Evaluation: Agent Simulation for pre-deploy testing, Online Monitors (multi-turn autoraters) for continuous live evaluation, and Agent Optimizer for automated failure clustering and instruction refinement
   - Configure quality alerts and Example Store for continuous improvement
-- **Key concepts**: Cloud Trace, Cloud Logging, Cloud Monitoring, Topology view, OpenTelemetry, Gen AI Evaluation Service, Auto SxS, offline evaluation, online monitors, quality alerts, Example Store, failure cluster analysis
+- **Key concepts**: Cloud Trace, Cloud Logging, Cloud Monitoring, Topology view, OpenTelemetry, Agent Evaluation, Agent Simulation (synthetic user interactions), Online Monitors (multi-turn autoraters), offline evaluation, quality alerts, Example Store, Agent Optimizer (failure clustering + instruction refinement), failure cluster analysis
 - **Hands-on**: Enable observability on the invoice pipeline. Inject a deliberate failure (misconfigured tool). Read the trace to identify the failure point. Run an offline evaluation with a 20-query test set. Configure a quality alert for latency > 5s. Verify the alert fires in the monitoring dashboard.
 
 ---
@@ -151,7 +151,7 @@ Deliverable:
 - A CISO security review checklist completed for the deployment
 
 Verification criteria:
-- `adk deploy` succeeds and all four agents are reachable via Agent Runtime
+- `client.agent_engines.create()` succeeds and all four agents are reachable via Agent Runtime
 - Agent Gateway blocks an unauthorized tool call (demonstrated in trace)
 - Model Armor flags a sensitive-data leak in a tool response (demonstrated in audit log)
 - Memory Bank retains user context across three separate sessions
@@ -182,11 +182,13 @@ Most GEAP content stops at "deploy your first agent." No existing tutorial cover
 1. [Google Cloud Blog: Introducing Gemini Enterprise Agent Platform](https://cloud.google.com/blog/products/ai-machine-learning/introducing-gemini-enterprise-agent-platform)
 2. [GEAP Agents Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/agents/overview)
 3. [Agent Studio Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/agent-studio/overview)
-4. [Agent Development Kit (ADK)](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime/quickstart-adk)
+4. [Agent Development Kit (ADK) Quickstart](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime/quickstart-adk)
 5. [RAG Engine Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/rag-engine/rag-overview)
-6. [Agent Gateway Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/gateways/agent-gateway-overview)
-7. [Agent Identity Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/agent-identity-overview)
-8. [Cloud Observability for Agents — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/observability/overview)
-9. [Gen AI Evaluation Service — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation)
-10. [Google DeepMind: Measuring AGI Progress](https://blog.google/innovation-and-ai/models-and-research/google-deepmind/measuring-agi-cognitive-framework/)
-11. [OpenAI on AWS — Competitive Context](https://openai.com/index/openai-on-aws/)
+6. [Grounding Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/grounding/overview)
+7. [Agent Gateway Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/gateways/agent-gateway-overview)
+8. [Agent Identity Overview — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/govern/agent-identity-overview)
+9. [Cloud Observability for Agents — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/observability/overview)
+10. [Agent Evaluation — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation)
+11. [Agent Optimizer — Official Docs](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/optimize-agent)
+12. [Google DeepMind: Measuring AGI Progress](https://blog.google/innovation-and-ai/models-and-research/google-deepmind/measuring-agi-cognitive-framework/)
+13. [OpenAI on AWS — Competitive Context](https://openai.com/index/openai-on-aws/)
