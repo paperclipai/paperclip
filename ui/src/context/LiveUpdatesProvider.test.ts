@@ -36,14 +36,20 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: null, agentId: null },
     );
 
+    // Inbox-badge keys are invalidated with refetchType: "none" so they
+    // settle on staleTime + tab-focus / next-mount instead of triggering
+    // a synchronous refetch storm (LiveUpdatesProvider.tsx:684-687).
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listMineByMe("company-1"),
+      refetchType: "none",
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
+      refetchType: "none",
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
+      refetchType: "none",
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
