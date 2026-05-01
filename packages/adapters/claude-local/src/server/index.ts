@@ -20,6 +20,13 @@ export {
   fetchWithTimeout,
   claudeConfigDir,
 } from "./quota.js";
+export { probeClaudeAuth, isAdapterUnhealthy } from "./auth-probe.js";
+export type {
+  AdapterAuthProbeResult,
+  AdapterAuthProbeSource,
+  AdapterAuthProbeStatus,
+  ProbeClaudeAuthOptions,
+} from "./auth-probe.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
