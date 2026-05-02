@@ -359,6 +359,68 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
+  // PLA-141: suppress long_active when the orphan checkoutRunId points at a
+  // terminal run and there has been no real assignee activity since.
+  it("suppresses long_active when checkoutRunId is terminal and no assignee comment is newer than finishedAt", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const runId = randomUUID();
+    const finishedAt = new Date(now.getTime() - 60 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      startedAt: new Date(finishedAt.getTime() - 30_000),
+      finishedAt,
+      contextSnapshot: { issueId: seeded.issueId },
+    });
+    await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, seeded.issueId));
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  // PLA-141 positive control: a still-running checkoutRunId is not "terminal",
+  // so the long_active trigger must still fire. Guards against the suppression
+  // branch widening accidentally (e.g. dropping the terminal-status gate).
+  it("still creates a long_active review when checkoutRunId points to a still-running run", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(now.getTime() - 60 * 60 * 1000),
+      contextSnapshot: { issueId: seeded.issueId },
+    });
+    await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, seeded.issueId));
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

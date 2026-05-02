@@ -1177,7 +1177,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    // PLA-141: the reaped (failed) run also clears the matching checkoutRunId
+    // atomically so the orphan-checkout state never lingers; the paused-tree
+    // hold is what gates further recovery, not a stale checkout lock.
+    expect(issue?.checkoutRunId).toBeNull();
 
     const recoveryIssues = await db
       .select()
@@ -1291,6 +1294,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+  });
+
+  // PLA-141: when releaseIssueExecutionAndPromote runs against a routine_execution
+  // issue whose execution lock is already cleared but whose checkoutRunId still
+  // points at this run, the new ownsCheckoutLock branch must clear it. Without
+  // that branch the checkoutRunId stays set and wedges every subsequent mutation.
+  it("clears orphan checkoutRunId when the completing run owns it (PLA-141)", async () => {
+    const { issueId, runId } = await seedRunFixture({ agentStatus: "running" });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        originKind: "routine_execution",
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("dispatches assigned todo work with no prior run as a normal assignment wake", async () => {

@@ -1923,6 +1923,12 @@ export function issueRoutes(
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
+    // PLA-141: defensively back-fill any orphan `checkoutRunId` / `executionRunId`
+    // pointing at a terminal heartbeat_runs row before authorization runs. Converts
+    // the partial-checkout state into a clean state so the mutation either succeeds
+    // (assignee re-checks-out cleanly on next call) or returns a structured 4xx
+    // instead of 5xx-ing on the orphan.
+    await svc.clearOrphanCheckoutLocksIfTerminal(id);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
@@ -2731,6 +2737,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
     const id = req.params.id as string;
+    // PLA-141: see PATCH route — back-fill orphan-checkout state up front.
+    await svc.clearOrphanCheckoutLocksIfTerminal(id);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -2805,6 +2813,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
+    // PLA-141: see PATCH route — back-fill orphan-checkout state up front.
+    await svc.clearOrphanCheckoutLocksIfTerminal(id);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
@@ -3400,6 +3410,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
+    // PLA-141: see PATCH route — back-fill orphan-checkout state up front.
+    await svc.clearOrphanCheckoutLocksIfTerminal(id);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });

@@ -472,7 +472,36 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    let longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+
+    // PLA-141 / PLA-139 follow-up: suppress `long_active_duration` when the issue's
+    // `checkoutRunId` points to a terminal run AND the latest assignee comment on
+    // this issue is older than that run's `finished_at`. In that case the issue is
+    // not actually "stuck for N hours" — it is sitting in the orphan-checkoutRunId
+    // state described in PLA-141 and there has been no real assignee activity since
+    // the run completed. The defensive back-fill in mutation handlers will clean up
+    // the orphan on next touch; we should not page a reviewer in the meantime.
+    if (longActive && sourceIssue.checkoutRunId) {
+      const checkoutRun = await db
+        .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, sourceIssue.checkoutRunId))
+        .then((rows) => rows[0] ?? null);
+      const isTerminal =
+        !checkoutRun ||
+        TERMINAL_RUN_STATUSES.includes(checkoutRun.status as (typeof TERMINAL_RUN_STATUSES)[number]);
+      if (isTerminal) {
+        const runFinishedAt = coerceDate(checkoutRun?.finishedAt ?? null);
+        const latestAssigneeCommentAt = coerceDate(latestComments[0]?.createdAt ?? null);
+        if (
+          runFinishedAt &&
+          (!latestAssigneeCommentAt || latestAssigneeCommentAt.getTime() <= runFinishedAt.getTime())
+        ) {
+          longActive = false;
+        }
+      }
+    }
+
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||

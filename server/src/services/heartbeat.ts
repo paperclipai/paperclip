@@ -6221,15 +6221,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
-      if (issue.executionRunId === run.id) {
+      // PLA-141: clear `checkoutRunId` atomically with the execution lock when the
+      // completing run owns either side of the issue checkout state. Without this,
+      // routine_execution issues that stay in `in_progress` between runs are left
+      // with a `checkoutRunId` pointing at a terminal heartbeat_runs row, wedging
+      // future mutations and tripping the productivity-review long-active heuristic.
+      const ownsExecutionLock = issue.executionRunId === run.id;
+      const ownsCheckoutLock = issue.checkoutRunId === run.id;
+      if (ownsExecutionLock || ownsCheckoutLock) {
+        const cleanupPatch: Partial<typeof issues.$inferInsert> = {
+          updatedAt: new Date(),
+        };
+        if (ownsExecutionLock) {
+          cleanupPatch.executionRunId = null;
+          cleanupPatch.executionAgentNameKey = null;
+          cleanupPatch.executionLockedAt = null;
+        }
+        if (ownsCheckoutLock) {
+          cleanupPatch.checkoutRunId = null;
+        }
         await tx
           .update(issues)
-          .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
+          .set(cleanupPatch)
           .where(eq(issues.id, issue.id));
       }
 

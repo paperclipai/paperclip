@@ -2100,8 +2100,94 @@ export function issueService(db: Db) {
     });
   }
 
+  /**
+   * PLA-141: defensive back-fill for the orphan-`checkoutRunId` lifecycle bug.
+   *
+   * When `releaseIssueExecutionAndPromote` failed to clear `checkoutRunId` (or any
+   * other code path leaves it pointing at a terminal heartbeat_runs row), mutation
+   * handlers should treat that state as "no active checkout" rather than 5xx-ing or
+   * 4xx-ing on a partial state. Call this once at the top of each mutation route
+   * (PATCH, addComment, checkout, release) before any authorization that depends on
+   * `checkoutRunId` / `executionRunId`. The helper is a no-op when both lock columns
+   * are null or point at a non-terminal run, so it is safe to call unconditionally.
+   *
+   * Returns true if any column was cleared (used by tests; callers can ignore).
+   */
+  async function clearOrphanCheckoutLocksIfTerminal(issueId: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+      const issue = await tx
+        .select({
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return false;
+      if (!issue.checkoutRunId && !issue.executionRunId) return false;
+
+      const runIds = Array.from(
+        new Set([issue.checkoutRunId, issue.executionRunId].filter((id): id is string => Boolean(id))),
+      );
+      if (runIds.length === 0) return false;
+
+      // Lock the run rows in a stable order to avoid deadlocks against
+      // concurrent run-completion paths that lock the issue first then the run.
+      for (const runId of [...runIds].sort()) {
+        await tx.execute(
+          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+        );
+      }
+      const runs = await tx
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, runIds));
+      const runStatusById = new Map(runs.map((r) => [r.id, r.status]));
+
+      const isTerminal = (runId: string | null) => {
+        if (!runId) return false;
+        const status = runStatusById.get(runId);
+        // Missing run row (FK set null on delete cascade) or terminal status both qualify.
+        return status === undefined || TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
+      };
+
+      const clearCheckout = isTerminal(issue.checkoutRunId);
+      const clearExecution = isTerminal(issue.executionRunId);
+      if (!clearCheckout && !clearExecution) return false;
+
+      const patch: Partial<typeof issues.$inferInsert> = { updatedAt: new Date() };
+      if (clearCheckout) patch.checkoutRunId = null;
+      if (clearExecution) {
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
+      }
+
+      const conditions = [eq(issues.id, issueId)];
+      if (clearCheckout && issue.checkoutRunId) {
+        conditions.push(eq(issues.checkoutRunId, issue.checkoutRunId));
+      }
+      if (clearExecution && issue.executionRunId) {
+        conditions.push(eq(issues.executionRunId, issue.executionRunId));
+      }
+
+      const updated = await tx
+        .update(issues)
+        .set(patch)
+        .where(and(...conditions))
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      return Boolean(updated);
+    });
+  }
+
   return {
     clearExecutionRunIfTerminal,
+    clearOrphanCheckoutLocksIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
