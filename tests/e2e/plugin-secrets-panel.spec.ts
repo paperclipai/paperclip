@@ -74,7 +74,11 @@ test.describe("Plugin-Managed Secrets panel", () => {
     await expect(page.locator("h2", { hasText: "Plugin-Managed Secrets" })).toBeVisible({
       timeout: 10_000,
     });
-    // The panel description mentions the capability name
-    await expect(page.locator("text=secrets.write")).toBeVisible({ timeout: 5_000 });
+    // The panel description renders the capability name in a <code> element.
+    // Using locator("code") avoids a strict-mode violation: the empty-state
+    // message also contains the literal text "secrets.write".
+    await expect(page.locator("code", { hasText: "secrets.write" })).toBeVisible({
+      timeout: 5_000,
+    });
   });
 });
