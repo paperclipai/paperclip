@@ -23,7 +23,7 @@ import {
 import { companiesApi } from "@/api/companies";
 import { projectsApi } from "@/api/projects";
 import { agentsApi } from "@/api/agents";
-import type { Agent, Company, Project } from "@paperclipai/shared";
+import type { Agent, Company, CompanySecret, Project } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,6 +117,14 @@ export interface JsonSchemaFormProps {
    * action buttons render as disabled.
    */
   pluginId?: string;
+  /**
+   * Optional list of secrets the operator can pick from for `format: "secret-ref"`
+   * fields. When provided, those fields render a name-picker dropdown alongside
+   * the manual UUID input. Stored value is always the secret's UUID, regardless
+   * of how it was entered. Caller is responsible for fetching this list (e.g.
+   * via `secretsApi.list(companyId)`) and passing it in.
+   */
+  secrets?: CompanySecret[];
 }
 
 /**
@@ -530,7 +538,19 @@ const EnumField = React.memo(({
 EnumField.displayName = "EnumField";
 
 /**
- * Specialized field for secret-ref values, providing a toggleable password input.
+ * Specialized field for secret-ref values.
+ *
+ * Renders a "Pick from your secrets" dropdown when the form provides a secrets
+ * list (the common case for plugin settings pages — the page fetches its
+ * company's secrets and passes them to JsonSchemaForm). The dropdown shows the
+ * secret's human-readable name; the stored value is always the secret's UUID.
+ *
+ * The manual text input below the dropdown stays available so operators can:
+ * - paste a UUID directly (legacy / cross-company use case)
+ * - reference a secret that doesn't appear in the list yet
+ *
+ * When no secrets list is available (legacy callers), only the text input
+ * renders, preserving backwards compatibility.
  */
 const SecretField = React.memo(({
   value,
@@ -552,6 +572,14 @@ const SecretField = React.memo(({
   defaultValue?: unknown;
 }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const ctx = React.useContext(FormRootContext);
+  const secrets = ctx?.secrets;
+  const stringValue = String(value ?? "");
+  const matchedSecret = useMemo(
+    () => secrets?.find((s) => s.id === stringValue) ?? null,
+    [secrets, stringValue],
+  );
+
   return (
     <FieldWrapper
       label={label}
@@ -563,33 +591,70 @@ const SecretField = React.memo(({
       error={error}
       disabled={disabled}
     >
-      <div className="relative">
-        <Input
-          type={isVisible ? "text" : "password"}
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={String(defaultValue ?? "")}
-          disabled={disabled}
-          className="pr-10"
-          aria-invalid={!!error}
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-          onClick={() => setIsVisible(!isVisible)}
-          disabled={disabled}
-        >
-          {isVisible ? (
-            <EyeOff className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <Eye className="h-4 w-4 text-muted-foreground" />
-          )}
-          <span className="sr-only">
-            {isVisible ? "Hide secret" : "Show secret"}
-          </span>
-        </Button>
+      <div className="space-y-1.5">
+        {secrets && secrets.length > 0 ? (
+          <Select
+            value={matchedSecret ? matchedSecret.id : stringValue ? "__custom__" : ""}
+            onValueChange={(v) => {
+              if (v === "__custom__") return; // operator wants to type a UUID; leave value as-is
+              onChange(v);
+            }}
+            disabled={disabled}
+          >
+            <SelectTrigger aria-invalid={!!error}>
+              <SelectValue placeholder="Pick from your secrets…" />
+            </SelectTrigger>
+            <SelectContent>
+              {secrets.map((s) => (
+                <SelectItem key={s.id} value={s.id}>
+                  {s.name}
+                </SelectItem>
+              ))}
+              {stringValue && !matchedSecret ? (
+                <SelectItem value="__custom__">
+                  (custom UUID below)
+                </SelectItem>
+              ) : null}
+            </SelectContent>
+          </Select>
+        ) : null}
+        <div className="relative">
+          <Input
+            type={isVisible ? "text" : "password"}
+            value={stringValue}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={
+              secrets && secrets.length > 0
+                ? "…or paste a secret UUID"
+                : String(defaultValue ?? "")
+            }
+            disabled={disabled}
+            className="pr-10"
+            aria-invalid={!!error}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+            onClick={() => setIsVisible(!isVisible)}
+            disabled={disabled}
+          >
+            {isVisible ? (
+              <EyeOff className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <Eye className="h-4 w-4 text-muted-foreground" />
+            )}
+            <span className="sr-only">
+              {isVisible ? "Hide secret" : "Show secret"}
+            </span>
+          </Button>
+        </div>
+        {matchedSecret ? (
+          <p className="text-[11px] text-muted-foreground/70">
+            Using <span className="font-mono">{matchedSecret.name}</span>
+          </p>
+        ) : null}
       </div>
     </FieldWrapper>
   );
@@ -719,6 +784,8 @@ interface FormRootContextValue {
   rootRef: React.MutableRefObject<Record<string, unknown>>;
   /** UUID of the owning plugin, used by action buttons. */
   pluginId?: string;
+  /** Operator's secrets — used by SecretField to render a name-picker dropdown. */
+  secrets?: CompanySecret[];
 }
 const FormRootContext = React.createContext<FormRootContextValue | null>(null);
 
@@ -1734,7 +1801,7 @@ export function JsonSchemaForm(props: JsonSchemaFormProps) {
   // root reference stays anchored to the top-level form values.
   if (!existingCtx) {
     return (
-      <FormRootContext.Provider value={{ rootRef, pluginId: props.pluginId }}>
+      <FormRootContext.Provider value={{ rootRef, pluginId: props.pluginId, secrets: props.secrets }}>
         <JsonSchemaFormInner {...props} />
       </FormRootContext.Provider>
     );

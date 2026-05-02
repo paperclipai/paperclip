@@ -6,7 +6,9 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi } from "@/api/plugins";
+import { secretsApi } from "@/api/secrets";
 import { queryKeys } from "@/lib/queryKeys";
+import type { CompanySecret } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -98,6 +100,15 @@ export function PluginSettings() {
     queryKey: queryKeys.plugins.config(pluginId!),
     queryFn: () => pluginsApi.getConfig(pluginId!),
     enabled: !!pluginId && !!hasConfigSchema,
+  });
+
+  // Secrets list for the secret-ref picker in the auto-generated config form.
+  // Scoped to the currently-selected company; the operator can paste a UUID
+  // for cross-company refs as a fallback.
+  const { data: secretsData } = useQuery({
+    queryKey: queryKeys.secrets.list(selectedCompanyId!),
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!hasConfigSchema,
   });
 
   const { slots } = usePluginSlots({
@@ -234,6 +245,7 @@ export function PluginSettings() {
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
+                  secrets={secretsData}
                 />
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -553,6 +565,8 @@ interface PluginConfigFormProps {
   pluginStatus?: string;
   /** Whether the plugin worker implements `validateConfig`. */
   supportsConfigTest?: boolean;
+  /** Secrets list for the SecretField picker. Optional — when absent, fields fall back to UUID-paste only. */
+  secrets?: CompanySecret[];
 }
 
 /**
@@ -562,7 +576,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest, secrets }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -689,6 +703,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         errors={errors}
         disabled={saveMutation.isPending}
         pluginId={pluginId}
+        secrets={secrets}
       />
 
       {/* Status messages */}
