@@ -45,7 +45,10 @@ export function OAuthProfileSwitcher({
 
   const { data: profiles } = useQuery<OAuthProfile[]>({
     queryKey: ["oauth-profiles", companyId],
-    queryFn: () => api.get<OAuthProfile[]>(`/companies/${companyId}/oauth-profiles`),
+    queryFn: () =>
+      api
+        .get<{ profiles: OAuthProfile[] }>(`/companies/${companyId}/claude-oauth-profiles`)
+        .then((r) => r.profiles),
     retry: false,
     staleTime: 5 * 60 * 1000,
   });
