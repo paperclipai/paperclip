@@ -879,6 +879,11 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  pilotApplicationSchema,
+  PILOT_PRACTICE_TYPES,
+  PILOT_CAP,
+  type PilotApplication,
+  type PilotPracticeType,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
