@@ -41,39 +41,33 @@ test.describe("Plugin-Managed Secrets panel", () => {
     await expect(emptyState).toBeVisible({ timeout: 5_000 });
   });
 
-  test("displays a plugin-owned secret seeded via the API", async ({ page, request }) => {
+  test("panel shows empty state when board-user-created secret exists (not plugin-owned)", async ({ page, request }) => {
     const companyId = await getOrCreateCompanyId(request);
 
-    // Seed a secret via the REST API with plugin: attribution
+    // Seed a secret via the REST API as a board user (no plugin: prefix in actor).
+    // The panel filters by createdByUserId LIKE 'plugin:%', so this secret
+    // must NOT appear — panel should still show the empty state.
     const seedRes = await request.post(`${BASE_URL}/api/companies/${companyId}/secrets`, {
       headers: { "Content-Type": "application/json" },
       data: {
-        name: "E2E_PLUGIN_TOKEN",
+        name: "E2E_BOARD_USER_TOKEN",
         provider: "local_encrypted",
         value: "e2e-test-value",
-        description: "Created by e2e test",
-        // Attribution: set the actor to simulate plugin ownership by patching
-        // createdByUserId via internal test endpoint — if no such endpoint
-        // exists, seed directly via a raw DB insert approach.
+        description: "Created by e2e test as board user",
       },
     });
 
-    // If the API doesn't accept actor override, insert directly is not possible
-    // without DB access. In that case verify only the panel structure renders.
+    await page.goto("/instance/settings/heartbeats");
+    await expect(page.locator("h2", { hasText: "Plugin-Managed Secrets" })).toBeVisible({
+      timeout: 10_000,
+    });
+
     if (seedRes.ok()) {
-      await page.goto("/instance/settings/heartbeats");
-      await expect(page.locator("h2", { hasText: "Plugin-Managed Secrets" })).toBeVisible({
-        timeout: 10_000,
-      });
-      // The seeded secret was created by a board user, not a plugin, so it won't
-      // appear in the plugin panel. Panel should show empty state.
+      // Board-user secret must not appear in the plugin panel.
       await expect(page.locator("text=No plugin-managed secrets")).toBeVisible({ timeout: 5_000 });
     } else {
-      // API rejected — just verify the panel renders correctly.
-      await page.goto("/instance/settings/heartbeats");
-      await expect(page.locator("h2", { hasText: "Plugin-Managed Secrets" })).toBeVisible({
-        timeout: 10_000,
-      });
+      // API rejected the seed — panel still expected to render and show empty state.
+      await expect(page.locator("text=No plugin-managed secrets")).toBeVisible({ timeout: 5_000 });
     }
   });
 
