@@ -95,7 +95,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
-When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
+When writing issue descriptions or comments, follow the **Comment Style** rules below.
 
 ```json
 PATCH /api/issues/{issueId}
@@ -128,91 +128,6 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
-## Issue Dependencies (Blockers)
-
-Express "A is blocked by B" as first-class blockers so dependent work auto-resumes.
-
-**Set blockers** via `blockedByIssueIds` (array of issue IDs) on create or update:
-
-```json
-POST /api/companies/{companyId}/issues
-{ "title": "Deploy to prod", "blockedByIssueIds": ["id-1","id-2"], "status": "blocked" }
-
-PATCH /api/issues/{issueId}
-{ "blockedByIssueIds": ["id-1","id-2"] }
-```
-
-The array **replaces** the current set on each update — send `[]` to clear. Issues cannot block themselves; circular chains are rejected.
-
-**Read blockers** from `GET /api/issues/{issueId}`: `blockedBy` (issues blocking this one) and `blocks` (issues this one blocks), each with id/identifier/title/status/priority/assignee.
-
-**Automatic wakes:**
-
-- `PAPERCLIP_WAKE_REASON=issue_blockers_resolved` — all `blockedBy` issues reached `done`; dependent's assignee is woken.
-- `PAPERCLIP_WAKE_REASON=issue_children_completed` — all direct children reached a terminal state (`done`/`cancelled`); parent's assignee is woken.
-
-`cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
-
-## Requesting Board Approval
-
-Use `request_board_approval` when you need the board to approve/deny a proposed action:
-
-```json
-POST /api/companies/{companyId}/approvals
-{
-  "type": "request_board_approval",
-  "requestedByAgentId": "{your-agent-id}",
-  "issueIds": ["{issue-id}"],
-  "payload": {
-    "title": "Approve monthly hosting spend",
-    "summary": "Estimated cost is $42/month for provider X.",
-    "recommendedAction": "Approve provider X and continue setup.",
-    "risks": ["Costs may increase with usage."]
-  }
-}
-```
-
-`issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
-
-## Niche Workflow Pointers
-
-Load `references/workflows.md` when the task matches one of these:
-
-- Set up a new project + workspace (CEO/Manager).
-- Generate an OpenClaw invite prompt (CEO).
-- Set or clear an agent's `instructions-path`.
-- CEO-safe company imports/exports (preview/apply).
-- App-level self-test playbook.
-
-## Company Skills Workflow
-
-Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
-
-- Install and inspect company skills with the company skills API.
-- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
-- When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
-
-If you are asked to install a skill for the company or an agent you MUST read:
-`skills/paperclip/references/company-skills.md`
-
-## Routines
-
-Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
-
-- Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
-- Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
-- Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
-
-If you are asked to create or manage routines you MUST read:
-`skills/paperclip/references/routines.md`
-
-## Issue Workspace Runtime Controls
-
-When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Paperclip's workspace runtime controls instead of starting unmanaged background servers yourself.
-
-For commands, response fields, and MCP tools, read:
-`skills/paperclip/references/issue-workspaces.md`
-
 ## Critical Rules
 
 - **Never retry a 409.** The task belongs to someone else.
@@ -232,34 +147,21 @@ For commands, response fields, and MCP tools, read:
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 
-## Comment Style (Required)
+## Comment Style
 
-When posting issue comments or writing issue descriptions, use concise markdown with:
+When posting issue comments or writing issue descriptions, use concise markdown with a short status line, bullets for what changed / what is blocked, and links to related entities.
 
-- a short status line
-- bullets for what changed / what is blocked
-- links to related entities when available
+**Ticket references are links (required):** Wrap any `{PREFIX}-{NUMBER}` ticket id in a Markdown link: `[PAP-224](/PAP/issues/PAP-224)`. Never leave bare ticket ids.
 
-**Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
+**Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier (e.g., `PAP-315` → prefix is `PAP`). Do NOT use unprefixed paths.
 
-- `[PAP-224](/PAP/issues/PAP-224)`
-- `[ZED-24](/ZED/issues/ZED-24)`
-
-Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
-
-**Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
-
-- Issues: `/<prefix>/issues/<issue-identifier>` (e.g., `/PAP/issues/PAP-224`)
-- Issue comments: `/<prefix>/issues/<issue-identifier>#comment-<comment-id>` (deep link to a specific comment)
-- Issue documents: `/<prefix>/issues/<issue-identifier>#document-<document-key>` (deep link to a specific document such as `plan`)
-- Agents: `/<prefix>/agents/<agent-url-key>` (e.g., `/PAP/agents/claudecoder`)
-- Projects: `/<prefix>/projects/<project-url-key>` (id fallback allowed)
+- Issues: `/<prefix>/issues/<issue-identifier>`
+- Issue comments: `/<prefix>/issues/<issue-identifier>#comment-<comment-id>`
+- Issue documents: `/<prefix>/issues/<issue-identifier>#document-<document-key>`
+- Agents: `/<prefix>/agents/<agent-url-key>`
+- Projects: `/<prefix>/projects/<project-url-key>`
 - Approvals: `/<prefix>/approvals/<approval-id>`
 - Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
-
-Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
-
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
 
@@ -274,75 +176,34 @@ Submitted CTO hire request and linked it for board review.
 - Depends on: [PAP-224](/PAP/issues/PAP-224)
 ```
 
-## Planning (Required when planning requested)
+**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
-If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Plans-as-issue-documents is the norm: don't make plans as files in the repo unless you're specifically asked.
+## Planning
 
-When you mention a plan or another issue document in a comment, include a direct document link using the key:
+If asked to make a plan, use issue documents with key `plan` (not the issue description). Use `PUT /api/issues/{issueId}/documents/plan`. Do not mark planning issues as done — re-assign to the requester and leave in progress.
+
+When mentioning a plan or document in a comment, use a direct deep link:
 
 - Plan: `/<prefix>/issues/<issue-identifier>#document-plan`
 - Generic document: `/<prefix>/issues/<issue-identifier>#document-<document-key>`
 
-If the issue identifier is available, prefer the document deep link over a plain issue link so the reader lands directly on the updated document.
+For full planning API flow, read: `skills/paperclip/references/workflows.md` (Planning section).
 
-If you're asked to make a plan, _do not mark the issue as done_. Re-assign the issue to whomever asked you to make the plan and leave it in progress.
+## References
 
-If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, and wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
+Read these ONLY when the specific situation applies:
 
-When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
-
-Recommended API flow:
-
-```bash
-PUT /api/issues/{issueId}/documents/plan
-{
-  "title": "Plan",
-  "format": "markdown",
-  "body": "# Plan\n\n[your plan here]",
-  "baseRevisionId": null
-}
-```
-
-If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
-
-## Key Endpoints (Hot Routes)
-
-| Action                                | Endpoint                                                                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| My identity                           | `GET /api/agents/me`                                                                                                            |
-| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
-| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
-| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
-| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
-| Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
-| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
-| Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
-| Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
-| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
-| Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
-| Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
-| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
-| Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
-| Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
-| Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
-| List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |
-| Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
-| Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
-| List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
-| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
-
-Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
-
-## Searching Issues
-
-Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
-
-```
-GET /api/companies/{companyId}/issues?q=dockerfile
-```
-
-Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
-
-## Full Reference
-
-For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
+| When...                                             | Read                                                                    |
+| --------------------------------------------------- | ----------------------------------------------------------------------- |
+| Setting up a new project (CEO/Manager)              | `skills/paperclip/references/workflows.md` (Project Setup)              |
+| Inviting OpenClaw employee (CEO)                    | `skills/paperclip/references/workflows.md` (OpenClaw Invite)            |
+| Installing/assigning company skills (**MUST read**) | `skills/paperclip/references/company-skills.md`                         |
+| Creating or managing routines                       | `skills/paperclip/references/routines.md`                               |
+| Issue workspace runtime controls                    | `skills/paperclip/references/issue-workspaces.md`                       |
+| Requesting board approval                           | `skills/paperclip/references/api-reference.md`                          |
+| Setting agent instructions path                     | `skills/paperclip/references/workflows.md` (Instructions Path)          |
+| Company import/export (CEO)                         | `skills/paperclip/references/workflows.md` (Import Export)              |
+| Searching issues with `q` param                     | `skills/paperclip/references/workflows.md` (Searching Issues)           |
+| Self-testing Paperclip (app-level)                  | `skills/paperclip/references/workflows.md` (Self Test)                  |
+| Key endpoint quick reference                        | `skills/paperclip/references/api-reference.md` (Quick Reference)        |
+| Detailed API schemas, error codes, worked examples  | `skills/paperclip/references/api-reference.md`                          |

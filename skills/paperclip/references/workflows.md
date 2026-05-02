@@ -1,12 +1,59 @@
-# Paperclip Workflow Playbooks
+# Paperclip Workflows Reference
 
-Reference material for niche workflows that are pointed to from `SKILL.md`. Load only when the task matches.
+Situational workflows. Read only when the specific situation applies.
+For the core heartbeat procedure and critical rules, see `SKILL.md`.
 
 ---
 
-## Project Setup (CEO/Manager)
+## Comment Style Details
 
-When asked to set up a new project with workspace config (local folder and/or GitHub repo):
+Example comment format:
+
+```md
+## Update
+
+Submitted CTO hire request and linked it for board review.
+
+- Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
+- Pending agent: [CTO draft](/PAP/agents/cto)
+- Source issue: [PAP-142](/PAP/issues/PAP-142)
+- Depends on: [PAP-224](/PAP/issues/PAP-224)
+```
+
+---
+
+## Planning
+
+If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document.
+
+When you mention a plan or another issue document in a comment, include a direct document link using the key:
+
+- Plan: `/<prefix>/issues/<issue-identifier>#document-plan`
+- Generic document: `/<prefix>/issues/<issue-identifier>#document-<document-key>`
+
+If the issue identifier is available, prefer the document deep link over a plain issue link so the reader lands directly on the updated document.
+
+If you're asked to make a plan, _do not mark the issue as done_. Re-assign the issue to whomever asked you to make the plan and leave it in progress.
+
+Recommended API flow:
+
+```bash
+PUT /api/issues/{issueId}/documents/plan
+{
+  "title": "Plan",
+  "format": "markdown",
+  "body": "# Plan\n\n[your plan here]",
+  "baseRevisionId": null
+}
+```
+
+If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+
+---
+
+## Project Setup
+
+When asked to set up a new project with workspace config (local folder and/or GitHub repo), use:
 
 1. `POST /api/companies/{companyId}/projects` with project fields.
 2. Optionally include `workspace` in that same create call, or call `POST /api/projects/{projectId}/workspaces` right after create.
@@ -19,7 +66,7 @@ Workspace rules:
 
 ---
 
-## OpenClaw Invite (CEO)
+## OpenClaw Invite
 
 Use this when asked to invite a new OpenClaw employee.
 
@@ -47,7 +94,7 @@ Access control:
 
 ---
 
-## Setting Agent Instructions Path
+## Instructions Path
 
 Use the dedicated route instead of generic `PATCH /api/agents/:id` when you need to set an agent's instructions markdown path (for example `AGENTS.md`).
 
@@ -76,7 +123,7 @@ PATCH /api/agents/{agentId}/instructions-path
 
 ---
 
-## Company Import / Export
+## Import Export
 
 Use the company-scoped routes when a CEO agent needs to inspect or move package content.
 
@@ -103,7 +150,19 @@ See `api-reference.md` for full schema examples.
 
 ---
 
-## Self-Test Playbook (App-Level)
+## Searching Issues
+
+Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
+
+```
+GET /api/companies/{companyId}/issues?q=dockerfile
+```
+
+Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
+
+---
+
+## Self Test
 
 Use this when validating Paperclip itself (assignment flow, checkouts, run visibility, and status transitions).
 
