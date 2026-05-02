@@ -424,4 +424,172 @@ describe.sequential("plugin scoped API routes", () => {
       "path must stay inside the plugin api namespace",
     );
   });
+
+  // Regression: lock in the host's cross-tenant gate (assertCompanyAccess)
+  // sitting between companyResolution and worker dispatch in
+  // server/src/routes/plugins.ts:1477. If a future refactor removes that line
+  // these tests fail; they assert the gate runs before workerManager.call.
+  // See PLA-101 for context.
+  describe("cross-tenant rejection (companyResolution gate)", () => {
+    const otherCompanyId = "99999999-9999-4999-8999-999999999999";
+    const otherIssueId = "88888888-8888-4888-8888-888888888888";
+
+    it("rejects agent for company A querying ?companyId=B (companyResolution: query) before worker dispatch", async () => {
+      const apiRoutes = manifest([
+        {
+          routeKey: "summary.get",
+          method: "GET",
+          path: "/summary",
+          auth: "agent",
+          capability: "api.routes.register",
+          companyResolution: { from: "query", key: "companyId" },
+        },
+      ]);
+      const { app, workerManager } = await createApp({
+        actor: {
+          type: "agent",
+          agentId,
+          companyId, // agent is pinned to company A
+          runId,
+          source: "agent_key",
+        },
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+      });
+
+      // Agent A asks for company B's data via the resolution-declared key.
+      const res = await request(app)
+        .get(`/api/plugins/${pluginId}/api/summary?companyId=${otherCompanyId}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Agent key cannot access another company");
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent for company A posting body { companyId: B } (companyResolution: body) before worker dispatch", async () => {
+      const apiRoutes = manifest([
+        {
+          routeKey: "summary.create",
+          method: "POST",
+          path: "/summary",
+          auth: "agent",
+          capability: "api.routes.register",
+          companyResolution: { from: "body", key: "companyId" },
+        },
+      ]);
+      const { app, workerManager } = await createApp({
+        actor: {
+          type: "agent",
+          agentId,
+          companyId, // agent is pinned to company A
+          runId,
+          source: "agent_key",
+        },
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/summary`)
+        .send({ companyId: otherCompanyId, payload: { foo: "bar" } });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Agent key cannot access another company");
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it("rejects board user with companyIds=[A] requesting ?companyId=B before worker dispatch", async () => {
+      const apiRoutes = manifest([
+        {
+          routeKey: "summary.get",
+          method: "GET",
+          path: "/summary",
+          auth: "board",
+          capability: "api.routes.register",
+          companyResolution: { from: "query", key: "companyId" },
+        },
+      ]);
+      const { app, workerManager } = await createApp({
+        actor: {
+          // Non-implicit board user, scoped to company A only.
+          type: "board",
+          userId: "user-1",
+          source: "session",
+          isInstanceAdmin: false,
+          companyIds: [companyId],
+          memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+        },
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+      });
+
+      const res = await request(app)
+        .get(`/api/plugins/${pluginId}/api/summary?companyId=${otherCompanyId}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("User does not have access to this company");
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent for company A targeting an issue from company B (companyResolution: issue) before worker dispatch", async () => {
+      // companyResolution: "issue" extracts issue.companyId server-side,
+      // so a cross-company issueId yields companyId=B, which assertCompanyAccess
+      // rejects for an agent pinned to company A. This covers the gate before
+      // enforceScopedApiCheckout's "Issue not found" layered defense fires.
+      const apiRoutes = manifest([
+        {
+          routeKey: "issue.advance",
+          method: "POST",
+          path: "/issues/:issueId/advance",
+          auth: "agent",
+          capability: "api.routes.register",
+          // No checkoutPolicy: isolate the assertCompanyAccess gate from
+          // enforceScopedApiCheckout's "Issue not found" branch.
+          companyResolution: { from: "issue", param: "issueId" },
+        },
+      ]);
+      mockIssueService.getById.mockResolvedValue({
+        id: otherIssueId,
+        companyId: otherCompanyId, // issue belongs to company B
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      const { app, workerManager } = await createApp({
+        actor: {
+          type: "agent",
+          agentId,
+          companyId, // agent is pinned to company A
+          runId,
+          source: "agent_key",
+        },
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/issues/${otherIssueId}/advance`)
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Agent key cannot access another company");
+      expect(workerManager.call).not.toHaveBeenCalled();
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    });
+  });
 });
