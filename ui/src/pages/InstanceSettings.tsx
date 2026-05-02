@@ -304,6 +304,7 @@ export function InstanceSettings() {
         )}
       </div>
 
+      {isInstanceAdmin && (
       <div className="space-y-4">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
@@ -342,6 +343,11 @@ export function InstanceSettings() {
                           {pluginId}
                         </Badge>
                       )}
+                      {secret.companyId && (
+                        <span className="text-muted-foreground text-xs shrink-0 truncate max-w-[120px]" title={secret.companyId}>
+                          {secret.companyId}
+                        </span>
+                      )}
                       <span className="text-muted-foreground tabular-nums shrink-0">
                         v{secret.latestVersion}
                       </span>
@@ -359,6 +365,7 @@ export function InstanceSettings() {
           </Card>
         )}
       </div>
+      )}
     </div>
   );
 }
