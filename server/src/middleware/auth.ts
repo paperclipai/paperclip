@@ -142,6 +142,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      // Guard against non-UUID sub values (e.g. system identifiers like "ado-pr-dispatcher")
+      // which would cause a PostgreSQL "invalid input syntax for type uuid" error below.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!UUID_RE.test(claims.sub)) {
+        next();
+        return;
+      }
+
       const agentRecord = await db
         .select()
         .from(agents)
