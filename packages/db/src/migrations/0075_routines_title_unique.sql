@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "routines_company_title_active_uq" ON "routines" USING btree ("company_id", lower("title")) WHERE "status" != 'archived';

@@ -353,9 +353,9 @@ describe("routine routes", () => {
   });
 
   it("returns 409 with conflictingRoutineId when the service rejects a duplicate title", async () => {
-    const { conflict } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    const { conflictWithFlatDetails } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
     mockRoutineService.create.mockRejectedValue(
-      conflict("A routine with this title already exists", {
+      conflictWithFlatDetails("A routine with this title already exists", {
         conflictingRoutineId: routineId,
       }),
     );

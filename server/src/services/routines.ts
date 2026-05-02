@@ -38,7 +38,7 @@ import {
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
-import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { conflict, conflictWithFlatDetails, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService } from "./issues.js";
@@ -1215,7 +1215,7 @@ export function routineService(
         )
         .limit(1);
       if (existingWithTitle.length > 0) {
-        throw conflict("A routine with this title already exists", {
+        throw conflictWithFlatDetails("A routine with this title already exists", {
           conflictingRoutineId: existingWithTitle[0]!.id,
         });
       }
@@ -1229,27 +1229,44 @@ export function routineService(
       );
       assertRoutineVariableDefinitions(variables);
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
-      const [created] = await db
-        .insert(routines)
-        .values({
-          companyId,
-          projectId: input.projectId ?? null,
-          goalId: input.goalId ?? null,
-          parentIssueId: input.parentIssueId ?? null,
-          title: input.title,
-          description: input.description ?? null,
-          assigneeAgentId: input.assigneeAgentId ?? null,
-          priority: input.priority,
-          status,
-          concurrencyPolicy: input.concurrencyPolicy,
-          catchUpPolicy: input.catchUpPolicy,
-          variables,
-          createdByAgentId: actor.agentId ?? null,
-          createdByUserId: actor.userId ?? null,
-          updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
-        })
-        .returning();
+      let created: Routine;
+      try {
+        [created] = await db
+          .insert(routines)
+          .values({
+            companyId,
+            projectId: input.projectId ?? null,
+            goalId: input.goalId ?? null,
+            parentIssueId: input.parentIssueId ?? null,
+            title: input.title,
+            description: input.description ?? null,
+            assigneeAgentId: input.assigneeAgentId ?? null,
+            priority: input.priority,
+            status,
+            concurrencyPolicy: input.concurrencyPolicy,
+            catchUpPolicy: input.catchUpPolicy,
+            variables,
+            createdByAgentId: actor.agentId ?? null,
+            createdByUserId: actor.userId ?? null,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+          })
+          .returning();
+      } catch (err) {
+        // Catch the partial unique index violation (concurrent duplicate) as a backstop.
+        // Postgres error code 23505 = unique_violation.
+        if (
+          err instanceof Error &&
+          "code" in err &&
+          (err as NodeJS.ErrnoException).code === "23505" &&
+          "constraint" in err &&
+          typeof (err as any).constraint === "string" &&
+          (err as any).constraint === "routines_company_title_active_uq"
+        ) {
+          throw conflictWithFlatDetails("A routine with this title already exists", {});
+        }
+        throw err;
+      }
       return created;
     },
 
