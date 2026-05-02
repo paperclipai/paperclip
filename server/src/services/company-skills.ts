@@ -417,6 +417,65 @@ function prepareYamlLines(raw: string) {
     .filter((line) => line.content.length > 0 && !line.content.startsWith("#"));
 }
 
+function normalizeYamlBlockScalars(raw: string) {
+  const lines = raw.split("\n");
+  const normalized: string[] = [];
+
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index]!;
+    const match = line.match(
+      /^(\s*[^:#][^:]*:\s*)([>|])([+-]?)(?:\s*(?:#.*)?)?$/,
+    );
+    if (!match) {
+      normalized.push(line);
+      index += 1;
+      continue;
+    }
+
+    const [, prefix, style, chomp] = match;
+    const parentIndent = prefix!.match(/^ */)?.[0].length ?? 0;
+    const blockLines: string[] = [];
+    index += 1;
+
+    while (index < lines.length) {
+      const blockLine = lines[index]!;
+      const trimmed = blockLine.trim();
+      const indent = blockLine.match(/^ */)?.[0].length ?? 0;
+      if (trimmed.length > 0 && indent <= parentIndent) break;
+      blockLines.push(blockLine);
+      index += 1;
+    }
+
+    normalized.push(
+      `${prefix}${JSON.stringify(parseYamlBlockScalar(blockLines, style!, chomp!))}`,
+    );
+  }
+
+  return normalized.join("\n");
+}
+
+function parseYamlBlockScalar(lines: string[], style: string, chomp: string) {
+  const nonEmptyIndents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^ */)?.[0].length ?? 0);
+  const baseIndent = nonEmptyIndents.length > 0 ? Math.min(...nonEmptyIndents) : 0;
+  const stripped = lines.map((line) => {
+    if (line.trim().length === 0) return "";
+    return line.slice(Math.min(baseIndent, line.length)).trimEnd();
+  });
+
+  const value = style === "|"
+    ? stripped.join("\n")
+    : stripped.reduce((acc, line) => {
+      if (line.length === 0) return acc.replace(/ +$/u, "") + "\n";
+      if (acc.length === 0 || acc.endsWith("\n")) return acc + line;
+      return `${acc} ${line}`;
+    }, "");
+
+  if (chomp === "+") return value;
+  return value.replace(/\n+$/u, "");
+}
+
 function parseYamlScalar(rawValue: string): unknown {
   const trimmed = rawValue.trim();
   if (trimmed === "") return "";
@@ -517,7 +576,7 @@ function parseYamlBlock(
 }
 
 function parseYamlFrontmatter(raw: string): Record<string, unknown> {
-  const prepared = prepareYamlLines(raw);
+  const prepared = prepareYamlLines(normalizeYamlBlockScalars(raw));
   if (prepared.length === 0) return {};
   const parsed = parseYamlBlock(prepared, 0, prepared[0]!.indent);
   return isPlainRecord(parsed.value) ? parsed.value : {};

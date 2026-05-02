@@ -185,6 +185,60 @@ describe("project workspace skill discovery", () => {
       ],
     });
   });
+
+  it("parses folded and literal block scalar descriptions in skill frontmatter", async () => {
+    const foldedWorkspace = await makeTempDir("paperclip-folded-skill-yaml-");
+    await fs.mkdir(foldedWorkspace, { recursive: true });
+    await fs.writeFile(
+      path.join(foldedWorkspace, "SKILL.md"),
+      [
+        "---",
+        "name: Folded Metadata Skill",
+        "description: >",
+        "  Use when you need website engagement data - sessions,",
+        "  pageviews, and conversions.",
+        "---",
+        "",
+        "# Folded Metadata Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const literalWorkspace = await makeTempDir("paperclip-literal-skill-yaml-");
+    await fs.mkdir(literalWorkspace, { recursive: true });
+    await fs.writeFile(
+      path.join(literalWorkspace, "SKILL.md"),
+      [
+        "---",
+        "name: Literal Metadata Skill",
+        "description: |",
+        "  First line.",
+        "  Second line.",
+        "---",
+        "",
+        "# Literal Metadata Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const folded = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      foldedWorkspace,
+      { inventoryMode: "full" },
+    );
+    const literal = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      literalWorkspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(folded.description).toBe(
+      "Use when you need website engagement data - sessions, pageviews, and conversions.",
+    );
+    expect(literal.description).toBe("First line.\nSecond line.");
+  });
 });
 
 describe("missing local skill reconciliation", () => {
