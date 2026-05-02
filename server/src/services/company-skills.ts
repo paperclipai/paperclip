@@ -423,6 +423,8 @@ function normalizeYamlBlockScalars(raw: string) {
 
   for (let index = 0; index < lines.length;) {
     const line = lines[index]!;
+    // Accept the same loose key shape as the existing frontmatter parser,
+    // including indented array-item keys such as "- kind: >".
     const match = line.match(
       /^(\s*[^:#][^:]*:\s*)([>|])([+-]?)(?:\s*(?:#.*)?)?$/,
     );
@@ -472,8 +474,9 @@ function parseYamlBlockScalar(lines: string[], style: string, chomp: string) {
       return `${acc} ${line}`;
     }, "");
 
+  if (chomp === "-") return value.replace(/\n+$/u, "");
   if (chomp === "+") return value;
-  return value.replace(/\n+$/u, "");
+  return value.replace(/\n+$/u, "") + (value.length > 0 ? "\n" : "");
 }
 
 function parseYamlScalar(rawValue: string): unknown {
