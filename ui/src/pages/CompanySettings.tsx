@@ -19,8 +19,6 @@ import { Button } from "@/components/ui/button";
 import {
   Settings,
   Check,
-  ChevronDown,
-  ChevronRight,
   Download,
   Upload,
   KeyRound,
@@ -903,8 +901,6 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   // Whether the "Or paste auth.json manually" disclosure is expanded for
   // the add/edit forms. Default collapsed — paste-from-file is now the fallback,
   // not the primary path.
-  const [showAddCodexManual, setShowAddCodexManual] = useState(false);
-  const [showEditCodexManual, setShowEditCodexManual] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -966,7 +962,6 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setAddType("claude_api_key");
     setAddToken("");
     setAddIsDefault(false);
-    setShowAddCodexManual(false);
     setFormProbe((prev) => (prev?.scope === "add" ? null : prev));
   };
 
@@ -1005,7 +1000,6 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setEditName("");
     setEditToken("");
     setEditIsDefault(false);
-    setShowEditCodexManual(false);
     setFormProbe((prev) => (prev?.scope === "edit" ? null : prev));
   };
 
@@ -1181,64 +1175,38 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       />
                     </Field>
                     {cred.type === "codex_oauth" ? (
-                      <div className="space-y-2">
-                        <div className="rounded-md border border-border bg-background px-3 py-3 space-y-2">
-                          <Button
-                            size="sm"
-                            onClick={() => openCodexAuth("edit")}
-                            disabled={
-                              startCodexAuth.isPending || codexAuthSessionId !== null
-                            }
-                            className="gap-1.5"
-                          >
-                            <LogIn className="h-3.5 w-3.5" />
-                            {startCodexAuth.isPending && codexAuthScope === "edit"
-                              ? "Starting…"
-                              : "Re-login with ChatGPT"}
-                          </Button>
-                          <p className="text-xs text-muted-foreground">
-                            Last updated{" "}
-                            {new Date(cred.updatedAt).toLocaleDateString(undefined, {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}
-                            . Re-login replaces the stored auth.json.
-                          </p>
-                          {editToken.trim().length > 0 && (
-                            <div className="flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
-                              <CheckCircle2 className="h-3 w-3" />
-                              New auth.json captured. Click Save to replace.
-                            </div>
-                          )}
-                          {codexAuthStartError && codexAuthScope === "edit" && (
-                            <p className="text-xs text-destructive">{codexAuthStartError}</p>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowEditCodexManual((v) => !v)}
-                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      <div className="rounded-md border border-border bg-background px-3 py-3 space-y-2">
+                        <Button
+                          size="sm"
+                          onClick={() => openCodexAuth("edit")}
+                          disabled={
+                            startCodexAuth.isPending || codexAuthSessionId !== null
+                          }
+                          className="gap-1.5"
                         >
-                          {showEditCodexManual ? (
-                            <ChevronDown className="h-3 w-3" />
-                          ) : (
-                            <ChevronRight className="h-3 w-3" />
-                          )}
-                          Or edit auth.json manually
-                        </button>
-                        {showEditCodexManual && (
-                          <Field
-                            label="Replace auth.json"
-                            hint="Leave empty to keep the existing token."
-                          >
-                            <textarea
-                              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[120px]"
-                              value={editToken}
-                              placeholder={credentialPlaceholder(cred.type)}
-                              onChange={(e) => setEditToken(e.target.value)}
-                            />
-                          </Field>
+                          <LogIn className="h-3.5 w-3.5" />
+                          {startCodexAuth.isPending && codexAuthScope === "edit"
+                            ? "Starting…"
+                            : "Re-login with ChatGPT"}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          We'll generate a one-time code. You'll open openai.com in a new tab,
+                          paste the code, and approve. Done. Last updated{" "}
+                          {new Date(cred.updatedAt).toLocaleDateString(undefined, {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          })}
+                          .
+                        </p>
+                        {editToken.trim().length > 0 && (
+                          <div className="flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
+                            <CheckCircle2 className="h-3 w-3" />
+                            New login captured. Click Save to replace.
+                          </div>
+                        )}
+                        {codexAuthStartError && codexAuthScope === "edit" && (
+                          <p className="text-xs text-destructive">{codexAuthStartError}</p>
                         )}
                       </div>
                     ) : (
@@ -1473,58 +1441,32 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               </select>
             </Field>
             {addType === "codex_oauth" ? (
-              <div className="space-y-2">
-                <div className="rounded-md border border-border bg-muted/30 px-3 py-3 space-y-2">
-                  <Button
-                    size="sm"
-                    onClick={() => openCodexAuth("add")}
-                    disabled={startCodexAuth.isPending || codexAuthSessionId !== null}
-                    className="gap-1.5"
-                  >
-                    <LogIn className="h-3.5 w-3.5" />
-                    {startCodexAuth.isPending && codexAuthScope === "add"
-                      ? "Starting…"
-                      : addToken.trim().length > 0
-                        ? "Re-sign in with ChatGPT"
-                        : "Sign in with ChatGPT"}
-                  </Button>
-                  <p className="text-xs text-muted-foreground">
-                    Opens a verification code at openai.com — no copy/paste of files needed.
-                  </p>
-                  {addToken.trim().length > 0 && (
-                    <div className="flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
-                      <CheckCircle2 className="h-3 w-3" />
-                      auth.json captured. Click Save to store this credential.
-                    </div>
-                  )}
-                  {codexAuthStartError && codexAuthScope === "add" && (
-                    <p className="text-xs text-destructive">{codexAuthStartError}</p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowAddCodexManual((v) => !v)}
-                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-3 space-y-2">
+                <Button
+                  size="sm"
+                  onClick={() => openCodexAuth("add")}
+                  disabled={startCodexAuth.isPending || codexAuthSessionId !== null}
+                  className="gap-1.5"
                 >
-                  {showAddCodexManual ? (
-                    <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ChevronRight className="h-3 w-3" />
-                  )}
-                  Or paste auth.json manually
-                </button>
-                {showAddCodexManual && (
-                  <Field
-                    label="auth.json contents"
-                    hint="Paste the full contents of ~/.codex/auth.json (generated by running `codex login` on your machine)."
-                  >
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[120px]"
-                      value={addToken}
-                      placeholder={credentialPlaceholder(addType)}
-                      onChange={(e) => setAddToken(e.target.value)}
-                    />
-                  </Field>
+                  <LogIn className="h-3.5 w-3.5" />
+                  {startCodexAuth.isPending && codexAuthScope === "add"
+                    ? "Starting…"
+                    : addToken.trim().length > 0
+                      ? "Re-sign in with ChatGPT"
+                      : "Sign in with ChatGPT"}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  We'll generate a one-time code. You'll open openai.com in a new tab,
+                  paste the code, and approve. Done.
+                </p>
+                {addToken.trim().length > 0 && (
+                  <div className="flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
+                    <CheckCircle2 className="h-3 w-3" />
+                    Login captured. Click Save to store this credential.
+                  </div>
+                )}
+                {codexAuthStartError && codexAuthScope === "add" && (
+                  <p className="text-xs text-destructive">{codexAuthStartError}</p>
                 )}
               </div>
             ) : (
