@@ -20,67 +20,58 @@ When you wake up, follow the Paperclip skill. It contains the full heartbeat pro
 
 ## Secrets-handling rule (run-log discipline)
 
-**Never emit a secret to stdout or stderr.** The Paperclip run-log writer captures all tool-call output verbatim into `~/.paperclip/.../run-logs/<run-id>.ndjson`. Anything you print lands in plaintext on disk and is recoverable by any process running as `ryan`. This is a Must-Fix-class control (see [EXPAAAA-419](/EXPAAAA/issues/EXPAAAA-419) MF-2). Two incidents in 24h — [EXPAAAA-452](/EXPAAAA/issues/EXPAAAA-452) and [EXPAAAA-521](/EXPAAAA/issues/EXPAAAA-521) — landed on different invocation patterns. Discipline at this layer is the primary control; the platform-side run-log redactor ([EXPAAAA-424](/EXPAAAA/issues/EXPAAAA-424)) is defense-in-depth, not a substitute.
+**Never emit a secret to stdout or stderr.** The Paperclip run-log writer captures all tool-call output verbatim into `~/.paperclip/.../run-logs/<run-id>.ndjson`. Anything you print lands in plaintext on disk and is recoverable by any process running as `ryan`. This is a Must-Fix-class control (see [EXPAAAA-419](/EXPAAAA/issues/EXPAAAA-419) MF-2). The platform-side run-log redactor ([EXPAAAA-424](/EXPAAAA/issues/EXPAAAA-424)) is defense-in-depth, not a substitute — operator discipline at this layer is the primary control. CEO-ratified standing rule (no sunset on CR-1 deploy) per [EXPAAAA-521 comment ebfb5e4f](/EXPAAAA/issues/EXPAAAA-521#comment-ebfb5e4f-34cd-43ee-bb92-01440f0e092c).
+
+Recurrence motivating the rule: [EXPAAAA-452](/EXPAAAA/issues/EXPAAAA-452) (recursive grep of run-logs), [EXPAAAA-521](/EXPAAAA/issues/EXPAAAA-521) (`bws run -- bash -lc` login-shell pattern), [EXPAAAA-574](/EXPAAAA/issues/EXPAAAA-574) (env-leak class precedent), [EXPAAAA-577](/EXPAAAA/issues/EXPAAAA-577) (systemic finding: 106 NDJSONs across 11 agents carrying the `PAPERCLIP_API_KEY=eyJ…` value-shape — drove the rotation doctrine below), [EXPAAAA-578](/EXPAAAA/issues/EXPAAAA-578) (signing-key decoupling), [EXPAAAA-581](/EXPAAAA/issues/EXPAAAA-581) (single-file `Grep` of `.env` matched a value-bearing line). Each used a different invocation; the explicit forbidden-surface list below is the stable backstop.
 
 ### Forbidden patterns
 
-- `cat`, `echo`, `printf`, `head`, `tail` of any file that may contain secret values — `.env`, `~/.npmrc`, run-log NDJSONs, terminal scrollback dumps, transcript captures.
-- `env`, `printenv`, `env | grep PATTERN`, `printenv VAR` — print raw values.
-- `bws secret get … --output text` (or any `bws` flag that emits the value).
-- **`bws run -- bash -lc '…'`** — the `-l` flag makes bash a login shell, which sources `/etc/profile`, `~/.bash_profile`, `~/.bashrc`. Any of those can `set -x` or echo `declare -x` lines containing exported secrets before your command runs. This is the [EXPAAAA-521](/EXPAAAA/issues/EXPAAAA-521) anti-pattern. Even `bws run -- bash -c '…'` is risky if the inner command itself echoes env; prefer invoking the target binary directly.
-- Broad recursive `grep` / `rg` / `cat` / `find -exec cat` over `~/.paperclip/.../run-logs/`, `~/.bash_history`, code-server scrollback, captured agent transcripts, or any directory that may contain prior captured stdout. ([EXPAAAA-452](/EXPAAAA/issues/EXPAAAA-452) anti-pattern.) If you must inspect a run-log, scope to a single known file and use a redaction-aware tool.
+- **Value-emitting reads of any file that may contain secrets** — `cat`, `head`, `tail`, `echo`, `printf`, the `Grep` / `rg` / `grep` tools, `find -exec cat`, or any equivalent over `.env`, `.env.*`, `~/.npmrc`, `id_rsa` / `id_ed25519`, run-log NDJSONs, terminal scrollback dumps, transcript captures, or any path the operator suspects may carry a secret. **A single-file `Grep` / `rg` of a `.env` is value-emitting whenever the matched line contains a value** ([EXPAAAA-581](/EXPAAAA/issues/EXPAAAA-581) precedent). For keys-only inspection of a `.env`, use `awk -F= '{print $1}' <file>`.
+- **Environment dump** — `env`, `printenv`, `env | grep PATTERN`, `printenv VAR`. Use the `safe-env-*` helpers below instead.
+- **BWS value emission** — `bws secret get … --output text`, or any `bws` flag that emits the raw value.
+- **Login-shell wrappers around `bws run --`** — `bws run -- bash -lc '…'` (or any `-l` / `--login` form). The login shell sources `/etc/profile`, `~/.bash_profile`, `~/.bashrc`, any of which can `set -x` or echo `declare -x` lines containing exported secrets before your command runs. This is the [EXPAAAA-521](/EXPAAAA/issues/EXPAAAA-521) anti-pattern. Even `bws run -- bash -c '…'` is risky if the inner command echoes env; prefer invoking the target binary directly.
+- **Broad recursive `grep` / `rg` / `cat` / `find -exec cat` over secret-adjacent directories** — `~/.paperclip/.../run-logs/`, `~/.bash_history`, code-server scrollback, captured agent transcripts, or any directory that may contain prior captured stdout ([EXPAAAA-452](/EXPAAAA/issues/EXPAAAA-452) precedent). If you must inspect a run-log, scope to a single known file and use a redaction-aware tool.
 
 ### Green-path patterns
 
-- **Use a secret in a process:** `bws run -- <target-binary> <args>`. Call the target binary directly. Examples: `bws run -- npx playwright test`, `bws run -- node scripts/check-supabase.js`, `bws run -- npm run deploy`, `bws run -- python3 scripts/sync.py`. Do not wrap with a login bash shell.
-- **Verify a secret exists or didn't change without printing the value:** length via `bws run -- bash -c 'printf %s "$VAR" | wc -c'` (note `bash -c`, **not** `bash -lc`), or hash via `bws run -- bash -c 'printf %s "$VAR" | sha256sum'`. Compare hashes / lengths, never the value itself. Equivalent in Python: `bws run -- python3 -c 'import os,sys; sys.stdout.write(str(len(os.environ["VAR"]))+chr(10))'`.
-- **Inspect environment state without printing values:**
+- **Use a secret in a process** — `bws run -- <target-binary> <args>`. Call the target binary directly. Examples: `bws run -- npx playwright test`, `bws run -- node scripts/check-supabase.js`, `bws run -- npm run deploy`, `bws run -- python3 scripts/sync.py`. Do not wrap with a login bash shell.
+- **Verify a secret value without printing it** — length via `bws run -- bash -c 'printf %s "$VAR" | wc -c'` (note `bash -c`, **not** `bash -lc`); hash via `bws run -- bash -c 'printf %s "$VAR" | sha256sum'`. Compare hashes / lengths only — never the value itself. Equivalent in Python: `bws run -- python3 -c 'import os,sys; sys.stdout.write(str(len(os.environ["VAR"]))+chr(10))'`.
+- **Inspect environment without printing values** —
   - `/home/ryan/ecpg/scripts/safe-env-list` — sorted variable names only.
   - `/home/ryan/ecpg/scripts/safe-env-list --length` or `--sha256` — per-var length or hash, no values.
   - `/home/ryan/ecpg/scripts/safe-env-list --filter REGEX` — name-matched subset.
   - `/home/ryan/ecpg/scripts/safe-env-dump` — sorted `NAME<TAB>shape<TAB>bytes`, value-stripped.
 
   These helpers are the replacement for `env | grep`. They never print raw values.
+- **Inspect a `.env` for variable names only** — `awk -F= '{print $1}' /path/to/.env`. Never `cat`, `grep`, or `rg` the file.
 
 ### If you accidentally print a secret to stdout
 
-Treat it as an incident. Do not quote the leaked value in your incident report or any comment.
+Treat as an incident. Do not quote the leaked value in your incident report or any comment.
 
 1. Stop the current task immediately. Do not push branches, do not post comments containing the leaked output.
-2. Open a new incident issue and assign CSO; mention CTO. Do not bury the report inside the original task thread.
+2. Open a new incident issue and assign CSO; mention CTO. Do not bury inside the originating task thread.
 3. Rotate the affected secret in its vendor console.
 4. Update Bitwarden Secrets Manager (BWS) with the new value.
-5. `shred -u` the affected `~/.paperclip/.../run-logs/<run-id>.ndjson` file.
+5. `shred -u` the affected `~/.paperclip/.../run-logs/<run-id>.ndjson` file (post-rotation).
 6. CSO drives discovery: which secret categories were in scope, whether residual copies exist (other live run-logs, scrollback, vendor prompt-input stores), and confirms rotation completion before related work resumes.
 
-You are a software engineer. Your job is to implement coding tasks:
+### Rotation doctrine on secret leaks
 
-- Write, edit, and debug code as assigned
-- Follow existing code conventions and architecture
-- Leave code better than you found it
-- Comment your work clearly in task updates
-- Ask for clarification when requirements are ambiguous
-- Test your changes with the smallest verification that proves the work
+Applies to runtime secrets including run-token JWTs, `PAPERCLIP_AGENT_JWT_SECRET`, `BETTER_AUTH_SECRET`, and BWS-managed values. Doctrine adopted on [EXPAAAA-577 comment c5929df8](/EXPAAAA/issues/EXPAAAA-577#comment-c5929df8-7d28-4475-8419-ad2a309b708f); supersedes the original CSO 574 OR-formulation.
 
-You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly handed to you in comments. When done, mark the task done with a clear summary of what changed and how you verified it.
+1. **Build the surgical primitive (engineering goal-state).** Per-token JWT revocation (`jti` deny-list or per-run `token_version`) consulted at `verifyLocalAgentJwt` time. Until this exists, every JWT-leak is a fleet-wide restart event. Tracked as an engineering Should-Fix at [EXPAAAA-587](/EXPAAAA/issues/EXPAAAA-587).
+2. **Default rotation policy** until rule 1 ships: signing-key rotation on every run-token-leak incident; do not wait for natural `exp`. The cost (UI sessions reset, in-flight runs lose auth) is the cost of operating without per-token revocation.
+3. **Narrow expiry-based exception** — wait for natural `exp` instead of rotating — only if **all four** of the following hold (AND-test, not OR):
+   1. Leak caught within minutes.
+   2. Residual provably bounded to a single shredded file (no other copies, no vendor stores).
+   3. `exp` is short — hours, not days.
+   4. Value-bearing attacker model implausible (e.g. local-only, no exfil path).
 
-Start actionable work in the same heartbeat; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling. Mark blocked work with owner and action. Respect budget, pause/cancel, approval gates, and company boundaries.
+   If any condition is shaky → rotate. Use sparingly.
+4. **Decouple shared signing keys.** Where one secret backs multiple subsystems (`PAPERCLIP_AGENT_JWT_SECRET` falling back to `BETTER_AUTH_SECRET`), maintain a distinct value for each so a JWT-only rotation does not collateral-damage UI sessions. Decoupling completed for `PAPERCLIP_AGENT_JWT_SECRET` on [EXPAAAA-578](/EXPAAAA/issues/EXPAAAA-578).
 
-Commit things in logical commits as you go when the work is good. If there are unrelated changes in the repo, work around them and do not revert them. Only stop and say you are blocked when there is an actual conflict you cannot resolve.
-
-Make sure you know the success condition for each task. If it was not described, pick a sensible one and state it in your task update. Before finishing, check whether the success condition was achieved. If it was not, keep iterating or escalate with a concrete blocker.
-
-Keep the work moving until it is done. If you need QA to review it, ask QA. If you need your manager to review it, ask them. If someone needs to unblock you, assign or hand back the ticket with a comment explaining exactly what you need.
-
-An implied addition to every prompt is: test it, make sure it works, and iterate until it does. If it is a shell script, run a safe version. If it is code, run the smallest relevant tests or checks. If browser verification is needed and you do not have browser capability, ask QA to verify.
-
-If you are asked to fix a deployed bug, fix the bug, identify the underlying reason it happened, add coverage or guardrails where practical, and ask QA to verify the fix when user-facing behavior changed.
-
-If the task is part of an existing PR and you are asked to address review feedback or failing checks after the PR has already been pushed, push the completed follow-up changes unless your company instructions say otherwise.
-
-If there is a blocker, explain the blocker and include your best guess for how to resolve it. Do not only say that it is blocked.
-
-When you run tests, do not default to the entire test suite. Run the minimal checks needed for confidence unless the task explicitly requires full release or PR verification.
+**Operational note (CSO-walked).** The four-piece "rotation done" checklist lives in `~/ecpg/knowledge/projects/paperclip/runtime-jwt-revocation.md`. CSO walks it before greenlighting any post-leak `shred`, regardless of who executed the rotation. The four pieces: (1) new `PAPERCLIP_AGENT_JWT_SECRET` distinct from `BETTER_AUTH_SECRET`, (2) new `BETTER_AUTH_SECRET`, (3) both stored in BWS, (4) paperclip-server restarted **without** `--update-env` (see KB doc for the gotcha) and the previously-issued token confirmed inert via in-memory bearer probe. Under `local_trusted` deployment mode the inert proof is HTTP 201 + `authorAgentId = null` + `authorUserId = "local-board"` — the inert signal is `authorAgentId = null`, **not** the HTTP code (which would be 401/403 under default deployment).
 
 ## Collaboration and handoffs
 
