@@ -9,15 +9,22 @@ import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
-import { credentialsApi, type ProviderCredential } from "../api/credentials";
+import {
+  credentialsApi,
+  type CodexCredDeviceAuthPollResponse,
+  type ProviderCredential,
+} from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import {
   Settings,
   Check,
+  ChevronDown,
+  ChevronRight,
   Download,
   Upload,
   KeyRound,
+  LogIn,
   Trash2,
   Star,
   Pencil,
@@ -30,6 +37,7 @@ import {
   Zap,
 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { CodexDeviceAuthDialog } from "../components/CodexDeviceAuthDialog";
 import {
   Field,
   ToggleField,
@@ -884,6 +892,19 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   const [addType, setAddType] = useState<CredentialType>("claude_api_key");
   const [addToken, setAddToken] = useState("");
   const [addIsDefault, setAddIsDefault] = useState(false);
+  // ChatGPT device-auth flow: when the user clicks "Sign in with ChatGPT",
+  // we open a modal driven by these state vars. On success the captured
+  // auth.json content is pushed into addToken/editToken, the modal closes,
+  // and the user just hits Save to persist via the normal CREATE/UPDATE.
+  const [codexAuthScope, setCodexAuthScope] = useState<"add" | "edit" | null>(null);
+  const [codexAuthSessionId, setCodexAuthSessionId] = useState<string | null>(null);
+  const [codexAuthState, setCodexAuthState] = useState<CodexCredDeviceAuthPollResponse | null>(null);
+  const [codexAuthStartError, setCodexAuthStartError] = useState<string | null>(null);
+  // Whether the "Or paste auth.json manually" disclosure is expanded for
+  // the add/edit forms. Default collapsed — paste-from-file is now the fallback,
+  // not the primary path.
+  const [showAddCodexManual, setShowAddCodexManual] = useState(false);
+  const [showEditCodexManual, setShowEditCodexManual] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -945,6 +966,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setAddType("claude_api_key");
     setAddToken("");
     setAddIsDefault(false);
+    setShowAddCodexManual(false);
     setFormProbe((prev) => (prev?.scope === "add" ? null : prev));
   };
 
@@ -983,6 +1005,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setEditName("");
     setEditToken("");
     setEditIsDefault(false);
+    setShowEditCodexManual(false);
     setFormProbe((prev) => (prev?.scope === "edit" ? null : prev));
   };
 
@@ -1041,6 +1064,88 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     updateMutation.mutate({ id: cred.id, data });
   }
 
+  const startCodexAuth = useMutation({
+    mutationFn: () => credentialsApi.startCodexDeviceAuth(companyId),
+    onMutate: () => {
+      setCodexAuthStartError(null);
+      setCodexAuthState(null);
+    },
+    onSuccess: (data) => {
+      setCodexAuthSessionId(data.sessionId);
+    },
+    onError: (err) => {
+      setCodexAuthStartError(err instanceof Error ? err.message : "Failed to start ChatGPT login");
+    },
+  });
+
+  function openCodexAuth(scope: "add" | "edit") {
+    setCodexAuthScope(scope);
+    setCodexAuthStartError(null);
+    setCodexAuthState(null);
+    startCodexAuth.mutate();
+  }
+
+  function closeCodexAuth() {
+    setCodexAuthSessionId(null);
+    setCodexAuthState(null);
+    setCodexAuthScope(null);
+  }
+
+  // Poll the device-auth session until it reaches a terminal state. The first
+  // poll that observes status==="success" carries the captured auth.json string
+  // — push it into the active form (add or edit) and close the modal. The
+  // server has already wiped the temp dir + session by this point.
+  useEffect(() => {
+    if (!codexAuthSessionId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const next = await credentialsApi.pollCodexDeviceAuth(companyId, codexAuthSessionId);
+        if (cancelled) return;
+        setCodexAuthState(next);
+        if (next.status === "success" && next.authJson) {
+          if (codexAuthScope === "add") {
+            setAddToken(next.authJson);
+            // Auto-populate a friendly default name like "ChatGPT — May 2, 2026"
+            // if the user hasn't already typed something. They can rename before saving.
+            setAddName((prev) => {
+              if (prev.trim().length > 0) return prev;
+              const today = new Date().toLocaleDateString(undefined, {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              });
+              return `ChatGPT — ${today}`;
+            });
+          } else if (codexAuthScope === "edit") {
+            setEditToken(next.authJson);
+          }
+          // Close the modal a beat later so the user sees the success tick.
+          setTimeout(() => {
+            if (!cancelled) closeCodexAuth();
+          }, 800);
+          return;
+        }
+        if (next.status === "error") return;
+        timer = setTimeout(poll, 1500);
+      } catch (err) {
+        if (cancelled) return;
+        setCodexAuthStartError(err instanceof Error ? err.message : "Failed to poll ChatGPT login session");
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // codexAuthScope is intentionally read at success-time only; it won't change
+    // during a single session lifecycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codexAuthSessionId, companyId]);
+
   return (
     <div className="space-y-4">
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -1075,18 +1180,81 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                         onChange={(e) => setEditName(e.target.value)}
                       />
                     </Field>
-                    <Field
-                      label="Replace token"
-                      hint="Leave empty to keep the existing token."
-                    >
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                        type="password"
-                        value={editToken}
-                        placeholder={credentialPlaceholder(cred.type)}
-                        onChange={(e) => setEditToken(e.target.value)}
-                      />
-                    </Field>
+                    {cred.type === "codex_oauth" ? (
+                      <div className="space-y-2">
+                        <div className="rounded-md border border-border bg-background px-3 py-3 space-y-2">
+                          <Button
+                            size="sm"
+                            onClick={() => openCodexAuth("edit")}
+                            disabled={
+                              startCodexAuth.isPending || codexAuthSessionId !== null
+                            }
+                            className="gap-1.5"
+                          >
+                            <LogIn className="h-3.5 w-3.5" />
+                            {startCodexAuth.isPending && codexAuthScope === "edit"
+                              ? "Starting…"
+                              : "Re-login with ChatGPT"}
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            Last updated{" "}
+                            {new Date(cred.updatedAt).toLocaleDateString(undefined, {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            })}
+                            . Re-login replaces the stored auth.json.
+                          </p>
+                          {editToken.trim().length > 0 && (
+                            <div className="flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
+                              <CheckCircle2 className="h-3 w-3" />
+                              New auth.json captured. Click Save to replace.
+                            </div>
+                          )}
+                          {codexAuthStartError && codexAuthScope === "edit" && (
+                            <p className="text-xs text-destructive">{codexAuthStartError}</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowEditCodexManual((v) => !v)}
+                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          {showEditCodexManual ? (
+                            <ChevronDown className="h-3 w-3" />
+                          ) : (
+                            <ChevronRight className="h-3 w-3" />
+                          )}
+                          Or edit auth.json manually
+                        </button>
+                        {showEditCodexManual && (
+                          <Field
+                            label="Replace auth.json"
+                            hint="Leave empty to keep the existing token."
+                          >
+                            <textarea
+                              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[120px]"
+                              value={editToken}
+                              placeholder={credentialPlaceholder(cred.type)}
+                              onChange={(e) => setEditToken(e.target.value)}
+                            />
+                          </Field>
+                        )}
+                      </div>
+                    ) : (
+                      <Field
+                        label="Replace token"
+                        hint="Leave empty to keep the existing token."
+                      >
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                          type="password"
+                          value={editToken}
+                          placeholder={credentialPlaceholder(cred.type)}
+                          onChange={(e) => setEditToken(e.target.value)}
+                        />
+                      </Field>
+                    )}
                     <ToggleField
                       label="Default credential"
                       hint="If set, agents without an explicit credential will use this one."
@@ -1304,24 +1472,79 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                 ))}
               </select>
             </Field>
-            <Field
-              label={addType === "claude_oauth" || addType === "codex_oauth" ? "Access Token" : "API Key"}
-              hint={
-                addType === "claude_oauth"
-                  ? "Paste a long-lived setup-token (sk-ant-oat01-..., recommended), an OAuth access token, or the full ~/.claude/.credentials.json."
-                  : addType === "codex_oauth"
-                    ? "Paste your Codex OAuth access token (eyJ...). For auto-renewing credentials, paste the full ~/.codex/auth.json instead."
+            {addType === "codex_oauth" ? (
+              <div className="space-y-2">
+                <div className="rounded-md border border-border bg-muted/30 px-3 py-3 space-y-2">
+                  <Button
+                    size="sm"
+                    onClick={() => openCodexAuth("add")}
+                    disabled={startCodexAuth.isPending || codexAuthSessionId !== null}
+                    className="gap-1.5"
+                  >
+                    <LogIn className="h-3.5 w-3.5" />
+                    {startCodexAuth.isPending && codexAuthScope === "add"
+                      ? "Starting…"
+                      : addToken.trim().length > 0
+                        ? "Re-sign in with ChatGPT"
+                        : "Sign in with ChatGPT"}
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Opens a verification code at openai.com — no copy/paste of files needed.
+                  </p>
+                  {addToken.trim().length > 0 && (
+                    <div className="flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
+                      <CheckCircle2 className="h-3 w-3" />
+                      auth.json captured. Click Save to store this credential.
+                    </div>
+                  )}
+                  {codexAuthStartError && codexAuthScope === "add" && (
+                    <p className="text-xs text-destructive">{codexAuthStartError}</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddCodexManual((v) => !v)}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {showAddCodexManual ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                  Or paste auth.json manually
+                </button>
+                {showAddCodexManual && (
+                  <Field
+                    label="auth.json contents"
+                    hint="Paste the full contents of ~/.codex/auth.json (generated by running `codex login` on your machine)."
+                  >
+                    <textarea
+                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[120px]"
+                      value={addToken}
+                      placeholder={credentialPlaceholder(addType)}
+                      onChange={(e) => setAddToken(e.target.value)}
+                    />
+                  </Field>
+                )}
+              </div>
+            ) : (
+              <Field
+                label={addType === "claude_oauth" ? "Access Token" : "API Key"}
+                hint={
+                  addType === "claude_oauth"
+                    ? "Paste a long-lived setup-token (sk-ant-oat01-..., recommended), an OAuth access token, or the full ~/.claude/.credentials.json."
                     : undefined
-              }
-            >
-              <input
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                type="password"
-                value={addToken}
-                placeholder={credentialPlaceholder(addType)}
-                onChange={(e) => setAddToken(e.target.value)}
-              />
-            </Field>
+                }
+              >
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="password"
+                  value={addToken}
+                  placeholder={credentialPlaceholder(addType)}
+                  onChange={(e) => setAddToken(e.target.value)}
+                />
+              </Field>
+            )}
             {addType === "claude_oauth" && (
               <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1">
                 <div className="font-medium text-foreground">Long-lived token (recommended for production)</div>
@@ -1420,6 +1643,14 @@ function CredentialsSection({ companyId }: { companyId: string }) {
           </div>
         )}
       </div>
+      <CodexDeviceAuthDialog
+        open={codexAuthSessionId !== null}
+        onOpenChange={(open) => {
+          if (!open) closeCodexAuth();
+        }}
+        state={codexAuthState}
+        successMessage="Captured. Saving credential…"
+      />
     </div>
   );
 }
