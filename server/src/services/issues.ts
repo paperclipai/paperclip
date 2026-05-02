@@ -46,6 +46,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { sanitizeIssueCommentBody } from "./issue-comment-guardrails.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -3518,7 +3519,10 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const guardedBody = sanitizeIssueCommentBody(body, {
+        machineAuthored: Boolean(actor.agentId),
+      });
+      const redactedBody = redactCurrentUserText(guardedBody, currentUserRedactionOptions);
       const [comment] = await db
         .insert(issueComments)
         .values({
