@@ -262,8 +262,9 @@ const providerWindowRows: Record<string, CostWindowSpendRow[]> = {
 
 const claudeQuotaWindows: QuotaWindow[] = [
   { label: "Current session", usedPercent: 46, resetsAt: at(-180).toISOString(), valueLabel: null, detail: "Healthy session headroom for review tasks." },
-  { label: "Current week all models", usedPercent: 74, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Warning threshold after the release documentation run." },
-  { label: "Current week Opus only", usedPercent: 92, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Critical model-specific budget: route default work to Sonnet." },
+  { label: "Weekly (all models)", usedPercent: 74, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Warning threshold after the release documentation run." },
+  { label: "Weekly (Sonnet)", usedPercent: 58, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Sonnet-only weekly utilization, separate from the all-models meter." },
+  { label: "Current week (Opus only)", usedPercent: 92, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Critical model-specific budget: route default work to Sonnet." },
   { label: "Extra usage", usedPercent: null, resetsAt: null, valueLabel: "$18.40 overage", detail: "Overage billing is enabled for board-approved release checks." },
 ];
 

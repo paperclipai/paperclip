@@ -9,7 +9,9 @@ interface ClaudeSubscriptionPanelProps {
 
 const WINDOW_ORDER = [
   "currentsession",
+  "weeklyallmodels",
   "currentweekallmodels",
+  "weeklysonnet",
   "currentweeksonnetonly",
   "currentweeksonnet",
   "currentweekopusonly",
