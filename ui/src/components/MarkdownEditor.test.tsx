@@ -369,6 +369,10 @@ describe("MarkdownEditor", () => {
       );
     });
 
+    // Two flushes: the mock's mount effect schedules a setTimeout that calls
+    // setContent("") *after* the first flush settles. Without the second flush,
+    // that state update lands outside any act() boundary and React warns.
+    await flush();
     await flush();
     await vi.waitFor(() => {
       expect(container.querySelector("textarea")).not.toBeNull();
