@@ -283,6 +283,110 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.status).toBe("paused");
   });
 
+  it("rejects creation when a non-archived routine with the same title already exists", async () => {
+    const { companyId, agentId, svc } = await seedFixture();
+
+    await expect(
+      svc.create(
+        companyId,
+        {
+          projectId: null,
+          goalId: null,
+          parentIssueId: null,
+          title: "ascii frog",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+        },
+        {},
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "A routine with this title already exists",
+    });
+  });
+
+  it("rejects creation when a duplicate title differs only in case", async () => {
+    const { companyId, agentId, svc } = await seedFixture();
+
+    await expect(
+      svc.create(
+        companyId,
+        {
+          projectId: null,
+          goalId: null,
+          parentIssueId: null,
+          title: "ASCII FROG",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+        },
+        {},
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "A routine with this title already exists",
+    });
+  });
+
+  it("allows creation when the only existing routine with the same title is archived", async () => {
+    const { companyId, agentId, svc } = await seedFixture();
+
+    // Archive the existing "ascii frog" routine
+    await db
+      .update(routines)
+      .set({ status: "archived" })
+      .where(eq(routines.companyId, companyId));
+
+    const newRoutine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "ascii frog",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(newRoutine.title).toBe("ascii frog");
+  });
+
+  it("allows creation when no routine with the same title exists", async () => {
+    const { companyId, agentId, svc } = await seedFixture();
+
+    const newRoutine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "brand new routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(newRoutine.title).toBe("brand new routine");
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 

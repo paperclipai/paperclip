@@ -351,4 +351,34 @@ describe("routine routes", () => {
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
+
+  it("returns 409 with conflictingRoutineId when the service rejects a duplicate title", async () => {
+    const { conflict } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockRoutineService.create.mockRejectedValue(
+      conflict("A routine with this title already exists", {
+        conflictingRoutineId: routineId,
+      }),
+    );
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Daily routine",
+        assigneeAgentId: agentId,
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "A routine with this title already exists",
+      conflictingRoutineId: routineId,
+    });
+  });
 });

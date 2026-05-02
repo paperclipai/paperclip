@@ -1203,6 +1203,22 @@ export function routineService(
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
+      const existingWithTitle = await db
+        .select({ id: routines.id })
+        .from(routines)
+        .where(
+          and(
+            eq(routines.companyId, companyId),
+            sql`lower(${routines.title}) = lower(${input.title})`,
+            ne(routines.status, "archived"),
+          ),
+        )
+        .limit(1);
+      if (existingWithTitle.length > 0) {
+        throw conflict("A routine with this title already exists", {
+          conflictingRoutineId: existingWithTitle[0]!.id,
+        });
+      }
       await assertProject(companyId, input.projectId ?? null);
       await assertAssignableAgent(companyId, input.assigneeAgentId ?? null);
       if (input.goalId) await assertGoal(companyId, input.goalId);

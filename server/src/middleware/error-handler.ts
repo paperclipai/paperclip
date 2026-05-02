@@ -51,7 +51,11 @@ export function errorHandler(
     }
     res.status(err.status).json({
       error: err.message,
-      ...(err.details ? { details: err.details } : {}),
+      ...(err.details && typeof err.details === "object" && !Array.isArray(err.details)
+        ? (err.details as Record<string, unknown>)
+        : err.details !== undefined
+          ? { details: err.details }
+          : {}),
     });
     return;
   }
