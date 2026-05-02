@@ -98,7 +98,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { formatIssueActivityAction } from "@/lib/activity-format";
+import { formatIssueActivityAction, getFailureReason } from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
@@ -1058,16 +1058,26 @@ function IssueDetailActivityTab({
           agentMap={agentMap}
           hasLiveRuns={hasLiveRuns}
           activityEvents={activity ?? []}
-          renderActivityEvent={(evt) => (
-            <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
-                <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId })}</span>
-                <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+          renderActivityEvent={(evt) => {
+            const details = evt.details as Record<string, unknown> | null;
+            const status = typeof details?.status === "string" ? details.status : null;
+            const failureReason = getFailureReason(details);
+            return (
+              <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
+                  <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId })}</span>
+                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                </div>
+                <IssueReferenceActivitySummary event={evt} />
+                {status === "failed" && failureReason ? (
+                  <p className="text-xs text-red-600 dark:text-red-300 break-words">
+                    {failureReason}
+                  </p>
+                ) : null}
               </div>
-              <IssueReferenceActivitySummary event={evt} />
-            </div>
-          )}
+            );
+          }}
         />
       </div>
       {linkedApprovals && linkedApprovals.length > 0 && (

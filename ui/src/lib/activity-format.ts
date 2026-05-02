@@ -21,6 +21,13 @@ interface ActivityFormatOptions {
   currentUserId?: string | null;
 }
 
+export function getFailureReason(details: Record<string, unknown> | null): string | null {
+  if (typeof details?.failureReason === "string") return details.failureReason;
+  if (typeof details?.error === "string") return details.error;
+  if (typeof details?.message === "string") return details.message;
+  return null;
+}
+
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.created": "created",
   "issue.updated": "updated",

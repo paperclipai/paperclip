@@ -1036,6 +1036,9 @@ export function routineService(
 
     if (input.source === "schedule" || input.source === "webhook") {
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";
+      // Include failureReason in activity details only for failed runs with a valid message
+      const reason =
+        typeof run.failureReason === "string" ? run.failureReason.trim() : null;
       try {
         await logActivity(db, {
           companyId: input.routine.companyId,
@@ -1049,6 +1052,9 @@ export function routineService(
             triggerId: input.trigger?.id ?? null,
             source: run.source,
             status: run.status,
+            ...(run.status === "failed" && reason
+              ? { failureReason: reason }
+              : {}),
           },
         });
       } catch (err) {

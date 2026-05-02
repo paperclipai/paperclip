@@ -3,7 +3,7 @@ import { Identity } from "./Identity";
 import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import { formatActivityVerb } from "../lib/activity-format";
+import { formatActivityVerb, getFailureReason } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 
@@ -29,6 +29,10 @@ interface ActivityRowProps {
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
   const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+  const details = event.details as Record<string, unknown> | null;
+  const status = typeof details?.status === "string" ? details.status : null;
+  const failureReason = getFailureReason(details);
+  const showFailureReason = status === "failed" && !!failureReason;
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -67,6 +71,11 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
         <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
       </div>
       <IssueReferenceActivitySummary event={event} />
+      {showFailureReason ? (
+        <p className="text-xs text-red-600 dark:text-red-300 break-words">
+          {failureReason}
+        </p>
+      ) : null}
     </div>
   );
 

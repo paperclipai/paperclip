@@ -1082,19 +1082,26 @@ export function RoutineDetail() {
             <div className="border border-border rounded-lg divide-y divide-border">
               {(routineRuns ?? []).map((run) => (
                 <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="outline" className="shrink-0">{run.source}</Badge>
-                    <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
-                      {run.status.replaceAll("_", " ")}
-                    </Badge>
-                    {run.trigger && (
-                      <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
-                    )}
-                    {run.linkedIssue && (
-                      <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">
-                        {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
-                      </Link>
-                    )}
+                  <div className="min-w-0 flex flex-col gap-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Badge variant="outline" className="shrink-0">{run.source}</Badge>
+                      <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
+                        {run.status.replaceAll("_", " ")}
+                      </Badge>
+                      {run.trigger && (
+                        <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
+                      )}
+                      {run.linkedIssue && (
+                        <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">
+                          {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
+                        </Link>
+                      )}
+                    </div>
+                    {run.status === "failed" && run.failureReason ? (
+                      <div className="text-xs text-red-600 dark:text-red-300 break-words">
+                        {run.failureReason}
+                      </div>
+                    ) : null}
                   </div>
                   <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
                 </div>
