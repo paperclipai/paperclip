@@ -334,7 +334,17 @@ export async function runCodexLogin(input: {
     }
   };
 
-  const proc = await runChildProcess(input.runId, command, ["login", "--device-auth"], {
+  // Wrap the spawn with `script -qfc` so codex sees a TTY on stdout. Without a
+  // TTY, the Rust runtime in codex switches stdout to fully block-buffered
+  // mode and the URL+code (~400 bytes) never flushes during the 16-min device
+  // auth poll. `script` is provided by `bsdutils` (essential) on the
+  // node:lts-trixie-slim base image. `-q` suppresses the "Script started"
+  // banner so the parser sees only the codex output. The command must be a
+  // single shell string for `-c`; we single-quote `command` to defend against
+  // absolute paths with spaces. The single inner arg "login --device-auth" has
+  // no shell metacharacters.
+  const shellQuoted = `'${command.replace(/'/g, `'"'"'`)}' login --device-auth`;
+  const proc = await runChildProcess(input.runId, "script", ["-qfc", shellQuoted, "/dev/null"], {
     cwd,
     env,
     timeoutSec,

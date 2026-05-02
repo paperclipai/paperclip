@@ -41,9 +41,10 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils && rm -rf /var/lib/apt/lists/*
 ARG CLAUDE_CODE_VERSION=2.1.111
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@latest playwright
+ARG CODEX_VERSION=0.128.0
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} playwright
 
 # Install Chromium + all system dependencies for headless browser automation
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
