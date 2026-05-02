@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -3580,7 +3581,17 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      const [comment] = await db
+
+      // Deduplicate agent-authored comments: if the same run posts the same body
+      // at any point during the run's lifetime, return the existing comment instead
+      // of inserting a new one. The unique partial index on idempotency_key makes
+      // this atomic — concurrent duplicate inserts are collapsed at the DB level
+      // via ON CONFLICT DO NOTHING.
+      const idempotencyKey = actor.runId
+        ? createHash("sha256").update(`${actor.runId}:${issueId}:${redactedBody}`).digest("hex")
+        : null;
+
+      const inserted = await db
         .insert(issueComments)
         .values({
           companyId: issue.companyId,
@@ -3588,15 +3599,32 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           createdByRunId: actor.runId ?? null,
+          idempotencyKey,
           body: redactedBody,
         })
+        .onConflictDoNothing()
         .returning();
 
-      // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+      const [comment] = inserted.length > 0 || !idempotencyKey
+        ? inserted
+        : await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.idempotencyKey, idempotencyKey))
+          .limit(1);
+
+      if (!comment) {
+        throw new Error("Failed to insert or retrieve deduplicated comment");
+      }
+
+      // Update issue's updatedAt only for a newly inserted comment so duplicate
+      // retries do not create fresh activity.
+      if (inserted.length > 0) {
+        await db
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+      }
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },

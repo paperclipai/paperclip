@@ -2302,6 +2302,135 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.addComment idempotency", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comment-idempotency-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssueWithRun() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Retry-safe comment",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    return { companyId, agentId, issueId, runId };
+  }
+
+  it("returns the existing comment when the same run retries the same issue body", async () => {
+    const { agentId, issueId, runId } = await seedIssueWithRun();
+
+    const first = await svc.addComment(issueId, "Implementation is complete.", { agentId, runId });
+    const sentinelUpdatedAt = new Date("2024-01-01T00:00:00.000Z");
+    await db.update(issues).set({ updatedAt: sentinelUpdatedAt }).where(eq(issues.id, issueId));
+
+    const second = await svc.addComment(issueId, "Implementation is complete.", { agentId, runId });
+
+    expect(second.id).toBe(first.id);
+
+    const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(rows[0]?.createdByRunId).toBe(runId);
+
+    const [issue] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.updatedAt.toISOString()).toBe(sentinelUpdatedAt.toISOString());
+  });
+
+  it("allows the same run to post different bodies and the same body on a different issue", async () => {
+    const { companyId, agentId, issueId, runId } = await seedIssueWithRun();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      title: "Separate issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const first = await svc.addComment(issueId, "First body.", { agentId, runId });
+    const differentBody = await svc.addComment(issueId, "Second body.", { agentId, runId });
+    const differentIssue = await svc.addComment(otherIssueId, "First body.", { agentId, runId });
+
+    expect(new Set([first.id, differentBody.id, differentIssue.id])).toHaveLength(3);
+
+    const rows = await db.select().from(issueComments);
+    expect(rows).toHaveLength(3);
+  });
+
+  it("does not deduplicate agent comments that are not associated with a run", async () => {
+    const { agentId, issueId } = await seedIssueWithRun();
+
+    const first = await svc.addComment(issueId, "Manual agent note.", { agentId });
+    const second = await svc.addComment(issueId, "Manual agent note.", { agentId });
+
+    expect(second.id).not.toBe(first.id);
+
+    const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.idempotencyKey === null)).toBe(true);
+  });
+});
+
 describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
