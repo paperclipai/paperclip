@@ -68,59 +68,67 @@ export function CodexDeviceAuthDialog({
         <DialogHeader>
           <DialogTitle>Sign in with ChatGPT</DialogTitle>
           <DialogDescription>
-            First time? Enable <span className="font-medium">Device Code Login</span> in your ChatGPT
-            account security settings before continuing.
+            Three steps. Takes about 20 seconds.
           </DialogDescription>
         </DialogHeader>
         {state?.status === "starting" || !state ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Requesting a device code...
+            Generating a one-time code...
           </div>
         ) : state.status === "awaiting_user" ? (
           <div className="space-y-4 py-2">
-            <ol className="list-decimal pl-5 text-sm space-y-2">
-              <li>
-                Open the verification URL:
+            <ol className="space-y-4 text-sm">
+              <li className="space-y-2">
+                <div>
+                  <span className="font-medium">1.</span> Click the link below (opens openai.com in
+                  a new tab).
+                </div>
                 {state.verificationUrl && (
-                  <div className="mt-1 flex items-center gap-2">
-                    <a
-                      href={state.verificationUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-600 underline underline-offset-2 break-all dark:text-blue-400 inline-flex items-center gap-1"
-                    >
-                      {state.verificationUrl}
-                      <ExternalLink className="h-3 w-3 shrink-0" />
-                    </a>
-                  </div>
+                  <a
+                    href={state.verificationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Open openai.com
+                  </a>
                 )}
               </li>
-              <li>
-                Enter this code:
+              <li className="space-y-2">
+                <div>
+                  <span className="font-medium">2.</span> Paste this code on the openai.com page.
+                </div>
                 {state.userCode && (
-                  <div className="mt-1 flex items-center gap-2">
-                    <code className="rounded bg-muted px-2 py-1 font-mono text-base tracking-widest">
+                  <div className="group relative flex items-center justify-between rounded-md border border-border bg-muted px-4 py-3">
+                    <code className="font-mono text-2xl font-semibold tracking-[0.3em]">
                       {state.userCode}
                     </code>
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-7 w-7 p-0"
+                      className="h-8 w-8 p-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
                       onClick={copyCode}
                       aria-label="Copy code"
                     >
-                      <Copy className="h-3.5 w-3.5" />
+                      <Copy className="h-4 w-4" />
                     </Button>
                   </div>
                 )}
               </li>
-              <li>Approve the request in your browser.</li>
+              <li>
+                <span className="font-medium">3.</span> Click "Approve" on the openai.com page.
+              </li>
             </ol>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Waiting for you to approve in browser...
+            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+              Once you click Approve at openai.com, this dialog will close automatically.
             </div>
+            <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+              Setup once: open ChatGPT &rarr; Settings &rarr; Security &rarr; enable "Device Code
+              Login". Required only the first time.
+            </p>
           </div>
         ) : state.status === "success" ? (
           <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 py-4">
