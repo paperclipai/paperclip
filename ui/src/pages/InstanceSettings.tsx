@@ -6,6 +6,7 @@ import { Link } from "@/lib/router";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +45,13 @@ export function InstanceSettings() {
     ]);
   }, [setBreadcrumbs]);
 
+  const boardAccessQuery = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
+
+  const isInstanceAdmin = boardAccessQuery.data?.isInstanceAdmin ?? false;
+
   const heartbeatsQuery = useQuery({
     queryKey: queryKeys.instance.schedulerHeartbeats,
     queryFn: () => heartbeatsApi.listInstanceSchedulerAgents(),
@@ -54,6 +62,7 @@ export function InstanceSettings() {
     queryKey: queryKeys.instance.pluginSecrets,
     queryFn: () => instanceSettingsApi.listPluginSecrets(),
     refetchInterval: 30_000,
+    enabled: isInstanceAdmin,
   });
 
   const toggleMutation = useMutation({
