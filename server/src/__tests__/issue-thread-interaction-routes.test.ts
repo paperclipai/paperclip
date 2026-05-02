@@ -17,6 +17,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   answerQuestions: vi.fn(),
+  cancelQuestions: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -36,6 +37,9 @@ vi.mock("../telemetry.js", () => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
       hasPermission: vi.fn(async () => true),
@@ -136,7 +140,7 @@ async function createApp(actor: Record<string, unknown> = {
   return app;
 }
 
-describe("issue thread interaction routes", () => {
+describe.sequential("issue thread interaction routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
@@ -144,7 +148,7 @@ describe("issue thread interaction routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
@@ -245,6 +249,36 @@ describe("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
+    });
+    mockInteractionService.cancelQuestions.mockResolvedValue({
+      id: "interaction-2",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: "comment-2",
+      sourceRunId: "run-2",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Scope?",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+      result: {
+        version: 1,
+        answers: [],
+        cancelled: true,
+        cancellationReason: null,
+        summaryMarkdown: null,
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
     });
   });
 
@@ -356,6 +390,42 @@ describe("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.thread_interaction_answered",
+      }),
+    );
+  });
+
+  it("cancels question interactions and emits a continuation wake", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("cancelled");
+    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      {},
+      expect.objectContaining({ userId: "local-board" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          interactionId: "interaction-2",
+          interactionKind: "ask_user_questions",
+          interactionStatus: "cancelled",
+          sourceCommentId: "comment-2",
+          sourceRunId: "run-2",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_cancelled",
       }),
     );
   });

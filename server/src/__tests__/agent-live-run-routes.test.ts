@@ -7,6 +7,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  buildRunOutputSilence: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
@@ -69,7 +70,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(db: Record<string, unknown> = {}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -86,9 +87,57 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
+  const limit = vi.fn(async (value: number) => rows.slice(0, value));
+  const orderedQuery = {
+    limit,
+    then: (resolve: (value: Array<Record<string, unknown>>) => unknown) => Promise.resolve(rows).then(resolve),
+  };
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnValue(orderedQuery),
+  };
+
+  return {
+    db: {
+      select: vi.fn().mockReturnValue(query),
+    },
+    limit,
+  };
+}
+
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
 }
 
 describe("agent live run routes", () => {
@@ -104,7 +153,7 @@ describe("agent live run routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -132,11 +181,14 @@ describe("agent live run routes", () => {
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
       finishedAt: null,
       createdAt: new Date("2026-04-10T09:29:59.000Z"),
@@ -144,6 +196,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -160,16 +213,21 @@ describe("agent live run routes", () => {
   });
 
   it("returns a compact active run payload for issue polling", async () => {
-    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       id: "run-1",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
       startedAt: "2026-04-10T09:30:00.000Z",
       finishedAt: null,
       createdAt: "2026-04-10T09:29:59.000Z",
@@ -177,6 +235,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
       agentName: "Builder",
       adapterType: "codex_local",
+      outputSilence: null,
     });
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
@@ -207,7 +266,10 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
 
-    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
@@ -222,7 +284,10 @@ describe("agent live run routes", () => {
   });
 
   it("uses narrow run log metadata lookups for log polling", async () => {
-    const res = await request(await createApp()).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
@@ -242,5 +307,221 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+  });
+
+  it("caps company live run polling by default", async () => {
+    const rows = Array.from({ length: 75 }, (_, index) => ({
+      id: `run-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+    const { db, limit } = createLiveRunsDbStub(rows);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(limit).toHaveBeenCalledWith(50);
+    expect(res.body).toHaveLength(50);
+    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
+  });
+
+  it("treats explicit zero or invalid live run limit as the capped default", async () => {
+    const rows = Array.from({ length: 75 }, (_, index) => ({
+      id: `run-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+    const { db, limit } = createLiveRunsDbStub(rows);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?limit=0&minCount=0"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(limit).toHaveBeenCalledWith(50);
+    expect(res.body).toHaveLength(50);
+  });
+
+  it("does not pad with recent runs when no minCount is requested", async () => {
+    const liveRows = Array.from({ length: 8 }, (_, index) => ({
+      id: `run-live-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+
+    const selectCalls: Array<ReturnType<typeof vi.fn>> = [];
+    const db = {
+      select: vi.fn().mockImplementation(() => {
+        const limitFn = vi.fn(async (value: number) => liveRows.slice(0, value));
+        const orderedQuery = {
+          limit: limitFn,
+          then: (resolve: (value: typeof liveRows) => unknown) =>
+            Promise.resolve(liveRows).then(resolve),
+        };
+        const query = {
+          from: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(orderedQuery),
+        };
+        selectCalls.push(limitFn);
+        return query;
+      }),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(8);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("pads with recent runs when minCount is explicitly requested", async () => {
+    const liveRows = Array.from({ length: 2 }, (_, index) => ({
+      id: `run-live-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+    const recentRows = Array.from({ length: 4 }, (_, index) => ({
+      id: `run-recent-${index}`,
+      companyId: "company-1",
+      status: "succeeded",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-09T09:30:00.000Z"),
+      finishedAt: new Date("2026-04-09T09:35:00.000Z"),
+      createdAt: new Date(`2026-04-09T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+
+    let selectCallCount = 0;
+    const db = {
+      select: vi.fn().mockImplementation(() => {
+        selectCallCount += 1;
+        const rows = selectCallCount === 1 ? liveRows : recentRows;
+        const limitFn = vi.fn(async (value: number) => rows.slice(0, value));
+        const orderedQuery = {
+          limit: limitFn,
+          then: (resolve: (value: typeof rows) => unknown) =>
+            Promise.resolve(rows).then(resolve),
+        };
+        return {
+          from: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(orderedQuery),
+        };
+      }),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?minCount=4"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(4);
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 });

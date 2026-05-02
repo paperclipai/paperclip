@@ -74,6 +74,9 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
     documentService: () => ({}),
@@ -113,8 +116,8 @@ function createApp() {
 
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
   ]);
 
   app.use((req, _res, next) => {
@@ -159,7 +162,7 @@ function makeComment(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("issue comment cancel routes", () => {
+describe.sequential("issue comment cancel routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
@@ -175,7 +178,7 @@ describe("issue comment cancel routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getComment.mockResolvedValue(makeComment());

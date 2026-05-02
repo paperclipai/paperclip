@@ -4,6 +4,8 @@ import {
   activityLog,
   agents,
   documentRevisions,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -397,6 +399,7 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -425,6 +428,8 @@ export function activityService(db: Db) {
         .orderBy(desc(heartbeatRuns.createdAt));
 
       if (runs.length === 0) return runs;
+      const runIds = runs.map((run) => run.runId);
+      if (runIds.length === 0) return runs;
 
       const exhaustionRows = await db
         .select({
@@ -434,7 +439,7 @@ export function activityService(db: Db) {
         .from(heartbeatRunEvents)
         .where(
           and(
-            inArray(heartbeatRunEvents.runId, runs.map((run) => run.runId)),
+            inArray(heartbeatRunEvents.runId, runIds),
             eq(heartbeatRunEvents.eventType, "lifecycle"),
             sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
           ),
@@ -447,10 +452,68 @@ export function activityService(db: Db) {
         retryExhaustedReasonByRunId.set(row.runId, row.message);
       }
 
-      return runs.map((run) => ({
-        ...run,
-        retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
-      }));
+      const leaseRows = await db
+        .select({
+          lease: environmentLeases,
+          environment: {
+            id: environments.id,
+            name: environments.name,
+            driver: environments.driver,
+          },
+        })
+        .from(environmentLeases)
+        .innerJoin(environments, eq(environmentLeases.environmentId, environments.id))
+        .where(
+          and(
+            eq(environmentLeases.companyId, companyId),
+            inArray(environmentLeases.heartbeatRunId, runIds),
+          ),
+        )
+        .orderBy(desc(environmentLeases.lastUsedAt), desc(environmentLeases.createdAt));
+
+      const leaseByRunId = new Map<string, (typeof leaseRows)[number]>();
+      for (const row of leaseRows) {
+        if (row.lease.heartbeatRunId && !leaseByRunId.has(row.lease.heartbeatRunId)) {
+          leaseByRunId.set(row.lease.heartbeatRunId, row);
+        }
+      }
+
+      return runs.map((run) => {
+        const leaseRow = leaseByRunId.get(run.runId);
+        const leaseMetadata = leaseRow?.lease.metadata ?? null;
+        const workspacePath =
+          typeof leaseMetadata?.remoteCwd === "string" && leaseMetadata.remoteCwd.trim().length > 0
+            ? leaseMetadata.remoteCwd
+            : typeof leaseMetadata?.remoteWorkspacePath === "string" && leaseMetadata.remoteWorkspacePath.trim().length > 0
+              ? leaseMetadata.remoteWorkspacePath
+              : null;
+        return {
+          ...run,
+          environment: leaseRow
+            ? {
+                id: leaseRow.environment.id,
+                name: leaseRow.environment.name,
+                driver: leaseRow.environment.driver,
+              }
+            : null,
+          environmentLease: leaseRow
+            ? {
+                id: leaseRow.lease.id,
+                status: leaseRow.lease.status,
+                leasePolicy: leaseRow.lease.leasePolicy,
+                provider: leaseRow.lease.provider,
+                providerLeaseId: leaseRow.lease.providerLeaseId,
+                executionWorkspaceId: leaseRow.lease.executionWorkspaceId,
+                workspacePath,
+                failureReason: leaseRow.lease.failureReason,
+                cleanupStatus: leaseRow.lease.cleanupStatus,
+                acquiredAt: leaseRow.lease.acquiredAt,
+                releasedAt: leaseRow.lease.releasedAt,
+              }
+            : null,
+          retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+        };
+      });
     },
 
     issuesForRun: async (runId: string) => {

@@ -238,6 +238,11 @@ export type CurrentBoardAccess = {
   userId: string;
   isInstanceAdmin: boolean;
   companyIds: string[];
+  memberships?: Array<{
+    companyId: string;
+    membershipRole: HumanCompanyRole | "member" | null;
+    status: "pending" | "active" | "suspended" | "archived";
+  }>;
   source: string;
   keyId: string | null;
 };

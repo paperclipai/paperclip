@@ -189,20 +189,21 @@ export async function createApp(
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
-  api.use(agentRoutes(db));
+  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
   }));
   api.use(issueTreeControlRoutes(db));
-  api.use(routineRoutes(db));
-  api.use(environmentRoutes(db));
+  api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
-  api.use(approvalRoutes(db));
+  api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
-  api.use(costRoutes(db));
+  api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(userProfileRoutes(db));
@@ -258,7 +259,9 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker);
+        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
+          pluginWorkerManager: workerManager,
+        });
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({
           pluginId,

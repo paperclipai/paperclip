@@ -109,7 +109,7 @@ describe("project and goal telemetry routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: mockTelemetryTrack });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockEnvironmentService.getById.mockReset();

@@ -4,6 +4,7 @@ import type { Agent, CompanySecret, EnvBinding, Project, RoutineVariable } from 
 import { Code2, FileText, ListPlus, RotateCcw, Table2 } from "lucide-react";
 import { EnvVarEditor } from "@/components/EnvVarEditor";
 import { ExecutionParticipantPicker } from "@/components/ExecutionParticipantPicker";
+import { FoldCurtain } from "@/components/FoldCurtain";
 import { InlineEditor } from "@/components/InlineEditor";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
 import { JsonSchemaForm, type JsonSchemaNode, getDefaultValues } from "@/components/JsonSchemaForm";
@@ -90,6 +91,8 @@ Ship criteria for the board UI refresh:
 - [x] Preserve company-scoped routes
 - [x] Keep comments and task updates auditable
 - [ ] Attach screenshots after QA
+
+Tooling: lean on [/react-perf-optimizer](skill://skill-react-perf?s=react-perf-optimizer) and [/vercel-react-best-practices](skill://skill-vercel-react?s=vercel-react-best-practices) so we don't regress render performance on the page it's open to. Inline skill chips like [/release-changelog](skill://skill-release?s=release-changelog) must sit on the surrounding text line, not hang below it.
 
 | Surface | Owner | State |
 | --- | --- | --- |
@@ -709,4 +712,86 @@ export const AllFormsAndEditors: Story = {
 export const RoutineRunVariablesDialogOpen: Story = {
   name: "Routine Run Variables Dialog",
   render: () => <RoutineRunDialogStory />,
+};
+
+const foldCurtainLongMarkdown = [
+  "# paperclip-bench",
+  "",
+  "Ship criteria for the benchmark harness — these notes are intentionally lengthy so the fold-curtain clips them.",
+  "",
+  "## Overview",
+  "",
+  "We need a benchmark that compares agent performance across task types and model backends. This includes:",
+  "",
+  "- a **runner** that executes tasks in isolated workspaces",
+  "- a **scorer** that grades outputs against ground truth",
+  "- a **dashboard** that trends metrics over time",
+  "",
+  "## Task format",
+  "",
+  "Each task is a directory containing a `task.md`, an optional `setup.sh`, and an `expected/` fixture. The runner mounts the task, executes the agent, and diffs the resulting workspace against `expected/`.",
+  "",
+  "```ts",
+  "type TaskResult = {",
+  "  taskId: string;",
+  "  agent: string;",
+  "  exitCode: number;",
+  "  scoreBreakdown: Record<string, number>;",
+  "};",
+  "```",
+  "",
+  "## Metrics",
+  "",
+  "| Metric | Description |",
+  "| --- | --- |",
+  "| Pass@1 | First-try correctness |",
+  "| Tokens | Cost per task |",
+  "| Wall time | End-to-end minutes |",
+  "",
+  "## Next steps",
+  "",
+  "1. Land the runner with support for 3 task types.",
+  "2. Backfill 50 tasks from open-source benchmarks.",
+  "3. Wire the scorer to GitHub Actions.",
+  "4. Publish baseline numbers on the main branch.",
+  "",
+  "All of this is described in more detail in the design doc linked from the home page.",
+].join("\n");
+
+const foldCurtainShortMarkdown = "This description is short. No curtain should appear.";
+
+function FoldCurtainStory() {
+  return (
+    <StoryShell>
+      <Section
+        eyebrow="Presentation"
+        title="FoldCurtain"
+        description="Long content collapses to a preview with a bottom fade and a Show more button. Short content renders untouched."
+      >
+        <div className="space-y-6">
+          <StatePanel
+            label="Long description (collapsed)"
+            detail="Default state on every fresh page load. Natural height far exceeds the collapsed height, so the curtain activates."
+          >
+            <FoldCurtain>
+              <MarkdownBody className="text-[15px] leading-7">{foldCurtainLongMarkdown}</MarkdownBody>
+            </FoldCurtain>
+          </StatePanel>
+          <StatePanel
+            label="Short description (no curtain)"
+            detail="Content below the activation threshold renders with no curtain and no button."
+          >
+            <FoldCurtain>
+              <MarkdownBody className="text-[15px] leading-7">{foldCurtainShortMarkdown}</MarkdownBody>
+            </FoldCurtain>
+          </StatePanel>
+        </div>
+      </Section>
+    </StoryShell>
+  );
+}
+
+export const FoldCurtainShowcase: Story = {
+  name: "Fold Curtain",
+  render: () => <FoldCurtainStory />,
 };

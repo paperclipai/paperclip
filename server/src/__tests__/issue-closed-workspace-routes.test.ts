@@ -74,6 +74,9 @@ function registerServiceMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
@@ -125,8 +128,8 @@ function registerServiceMocks() {
 
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -173,7 +176,7 @@ function makeClosedWorkspace() {
   };
 }
 
-describe("closed isolated workspace issue routes", () => {
+describe.sequential("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
@@ -189,7 +192,7 @@ describe("closed isolated workspace issue routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerServiceMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });

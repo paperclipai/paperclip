@@ -50,7 +50,7 @@
 // ---------------------------------------------------------------------------
 
 export { definePlugin } from "./define-plugin.js";
-export { createTestHarness } from "./testing.js";
+export { createTestHarness, createEnvironmentTestHarness, createFakeEnvironmentDriver, filterEnvironmentEvents, assertEnvironmentEventOrder, assertLeaseLifecycle, assertWorkspaceRealizationLifecycle, assertExecutionLifecycle, assertEnvironmentError } from "./testing.js";
 export { createPluginBundlerPresets } from "./bundlers.js";
 export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";
 export { startWorkerRpcHost, runWorker } from "./worker-rpc-host.js";
@@ -102,6 +102,10 @@ export type {
   TestHarness,
   TestHarnessOptions,
   TestHarnessLogEntry,
+  EnvironmentTestHarness,
+  EnvironmentTestHarnessOptions,
+  EnvironmentEventRecord,
+  FakeEnvironmentDriverOptions,
 } from "./testing.js";
 export type {
   PluginBundlerPresetInput,
@@ -142,6 +146,21 @@ export type {
   GetDataParams,
   PerformActionParams,
   ExecuteToolParams,
+  PluginEnvironmentDiagnostic,
+  PluginEnvironmentDriverBaseParams,
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentValidationResult,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentProbeResult,
+  PluginEnvironmentLease,
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentExecuteResult,
   PluginModalBoundsRequest,
   PluginRenderCloseEvent,
   PluginLauncherRenderContextSnapshot,
@@ -235,6 +254,7 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
   PluginUiSlotDeclaration,
   PluginUiDeclaration,
   PluginLauncherActionDeclaration,

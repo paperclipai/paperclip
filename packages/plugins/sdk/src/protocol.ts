@@ -325,6 +325,99 @@ export interface ExecuteToolParams {
   runContext: ToolRunContext;
 }
 
+export interface PluginEnvironmentDiagnostic {
+  severity: "info" | "warning" | "error";
+  message: string;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDriverBaseParams {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  config: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentValidateConfigParams {
+  driverKey: string;
+  config: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentValidationResult {
+  ok: boolean;
+  warnings?: string[];
+  errors?: string[];
+  normalizedConfig?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentProbeParams extends PluginEnvironmentDriverBaseParams {}
+
+export interface PluginEnvironmentProbeResult {
+  ok: boolean;
+  summary?: string;
+  diagnostics?: PluginEnvironmentDiagnostic[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentLease {
+  providerLeaseId: string | null;
+  metadata?: Record<string, unknown>;
+  expiresAt?: string | null;
+}
+
+export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
+  runId: string;
+  workspaceMode?: string;
+  requestedCwd?: string;
+}
+
+export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
+
+export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  workspace: {
+    localPath?: string;
+    remotePath?: string;
+    mode?: string;
+    metadata?: Record<string, unknown>;
+  };
+}
+
+export interface PluginEnvironmentRealizeWorkspaceResult {
+  cwd: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: string;
+  timeoutMs?: number;
+}
+
+export interface PluginEnvironmentExecuteResult {
+  exitCode: number | null;
+  signal?: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  metadata?: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // UI launcher / modal host interaction payloads
 // ---------------------------------------------------------------------------
@@ -394,6 +487,38 @@ export interface HostToWorkerMethods {
   performAction: [params: PerformActionParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.10 */
   executeTool: [params: ExecuteToolParams, result: ToolResult];
+  environmentValidateConfig: [
+    params: PluginEnvironmentValidateConfigParams,
+    result: PluginEnvironmentValidationResult,
+  ];
+  environmentProbe: [
+    params: PluginEnvironmentProbeParams,
+    result: PluginEnvironmentProbeResult,
+  ];
+  environmentAcquireLease: [
+    params: PluginEnvironmentAcquireLeaseParams,
+    result: PluginEnvironmentLease,
+  ];
+  environmentResumeLease: [
+    params: PluginEnvironmentResumeLeaseParams,
+    result: PluginEnvironmentLease,
+  ];
+  environmentReleaseLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: void,
+  ];
+  environmentDestroyLease: [
+    params: PluginEnvironmentDestroyLeaseParams,
+    result: void,
+  ];
+  environmentRealizeWorkspace: [
+    params: PluginEnvironmentRealizeWorkspaceParams,
+    result: PluginEnvironmentRealizeWorkspaceResult,
+  ];
+  environmentExecute: [
+    params: PluginEnvironmentExecuteParams,
+    result: PluginEnvironmentExecuteResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -417,6 +542,14 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "getData",
   "performAction",
   "executeTool",
+  "environmentValidateConfig",
+  "environmentProbe",
+  "environmentAcquireLease",
+  "environmentResumeLease",
+  "environmentReleaseLease",
+  "environmentDestroyLease",
+  "environmentRealizeWorkspace",
+  "environmentExecute",
 ] as const;
 
 // ---------------------------------------------------------------------------

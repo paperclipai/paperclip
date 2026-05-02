@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { errorHandler } from "../middleware/index.js";
+import { authRoutes } from "../routes/auth.js";
 
 function createSelectChain(rows: unknown[]) {
   return {
@@ -32,16 +34,12 @@ function createUpdateChain(row: unknown) {
 
 function createDb(row: Record<string, unknown>) {
   return {
-    select: vi.fn(() => createSelectChain([row])),
-    update: vi.fn(() => createUpdateChain(row)),
+    select: () => createSelectChain([row]),
+    update: () => createUpdateChain(row),
   } as any;
 }
 
-async function createApp(actor: Express.Request["actor"], row: Record<string, unknown>) {
-  const [{ authRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/auth.js"),
-    import("../middleware/index.js"),
-  ]);
+function createApp(actor: Express.Request["actor"], row: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -53,17 +51,13 @@ async function createApp(actor: Express.Request["actor"], row: Record<string, un
   return app;
 }
 
-describe("auth routes", () => {
+describe.sequential("auth routes", () => {
   const baseUser = {
     id: "user-1",
     name: "Jane Example",
     email: "jane@example.com",
     image: "https://example.com/jane.png",
   };
-
-  beforeEach(() => {
-    vi.resetModules();
-  });
 
   it("returns the persisted user profile in the session payload", async () => {
     const app = await createApp(

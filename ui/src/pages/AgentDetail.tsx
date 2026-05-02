@@ -19,7 +19,7 @@ import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
@@ -27,6 +27,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
+import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
@@ -110,9 +111,12 @@ const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string 
   cancelled: { icon: Slash, color: "text-neutral-500 dark:text-neutral-400" },
 };
 
+const RUN_LOG_PAGE_BYTES = 256_000;
+
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+const COMMAND_ENV_KEY_RE = /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 
 function redactPathText(value: string, censorUsernameInLogs: boolean) {
@@ -121,6 +125,10 @@ function redactPathText(value: string, censorUsernameInLogs: boolean) {
 
 function redactPathValue<T>(value: T, censorUsernameInLogs: boolean): T {
   return redactHomePathUserSegmentsInValue(value, { enabled: censorUsernameInLogs });
+}
+
+function redactCommandText(value: string, censorUsernameInLogs: boolean): string {
+  return redactPathText(redactCommandSecretText(value, REDACTED_ENV_VALUE), censorUsernameInLogs);
 }
 
 function shouldRedactSecretValue(key: string, value: unknown): boolean {
@@ -140,6 +148,7 @@ function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boole
   }
   if (shouldRedactSecretValue(key, value)) return REDACTED_ENV_VALUE;
   if (value === null || value === undefined) return "";
+  if (typeof value === "string" && COMMAND_ENV_KEY_RE.test(key)) return redactCommandText(value, censorUsernameInLogs);
   if (typeof value === "string") return redactPathText(value, censorUsernameInLogs);
   try {
     return JSON.stringify(redactPathValue(value, censorUsernameInLogs));
@@ -300,7 +309,7 @@ export function RunInvocationCard({
   payload: Record<string, unknown>;
   censorUsernameInLogs: boolean;
 }) {
-  const commandLine = [
+  const rawCommandLine = [
     typeof payload.command === "string" ? payload.command : null,
     ...(Array.isArray(payload.commandArgs)
       ? payload.commandArgs.filter((value): value is string => typeof value === "string")
@@ -308,6 +317,7 @@ export function RunInvocationCard({
   ]
     .filter((value): value is string => Boolean(value))
     .join(" ");
+  const commandLine = rawCommandLine ? redactCommandText(rawCommandLine, censorUsernameInLogs) : "";
 
   const hasAdvancedDetails =
     commandLine.length > 0
@@ -624,7 +634,7 @@ export function AgentDetail() {
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
-  const { openNewIssue } = useDialog();
+  const { openNewIssue } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -2464,7 +2474,7 @@ function PromptEditorSkeleton() {
   );
 }
 
-function AgentSkillsTab({
+export function AgentSkillsTab({
   agent,
   companyId,
 }: {
@@ -2647,11 +2657,18 @@ function AgentSkillsTab({
   }, [skillSnapshot?.mode]);
   const unsupportedSkillMessage = useMemo(() => {
     if (skillSnapshot?.mode !== "unsupported") return null;
+    if (
+      agent.adapterType === "acpx_local" &&
+      typeof agent.adapterConfig.agent === "string" &&
+      agent.adapterConfig.agent === "custom"
+    ) {
+      return "Paperclip cannot manage skills for custom ACP commands yet.";
+    }
     if (agent.adapterType === "openclaw_gateway") {
       return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
     }
     return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
-  }, [agent.adapterType, skillSnapshot?.mode]);
+  }, [agent.adapterConfig.agent, agent.adapterType, skillSnapshot?.mode]);
   const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
   const saveStatusLabel = syncSkills.isPending
     ? "Saving changes..."
@@ -3473,6 +3490,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
   const [logOffset, setLogOffset] = useState(0);
+  const [hasMoreLog, setHasMoreLog] = useState(false);
+  const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
@@ -3627,6 +3646,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     pendingLogLineRef.current = "";
     setLogLines([]);
     setLogOffset(0);
+    setHasMoreLog(false);
+    setLoadingMoreLog(false);
     setLogError(null);
 
     if (!run.logRef && !isLive) {
@@ -3637,25 +3658,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     }
 
     setLogLoading(true);
-    const firstLimit =
-      typeof run.logBytes === "number" && run.logBytes > 0
-        ? Math.min(Math.max(run.logBytes + 1024, 256_000), 2_000_000)
-        : 256_000;
-
     const load = async () => {
       try {
-        let offset = 0;
-        let first = true;
-        while (!cancelled) {
-          const result = await heartbeatsApi.log(run.id, offset, first ? firstLimit : 256_000);
-          if (cancelled) break;
-          appendLogContent(result.content, result.nextOffset === undefined);
-          const next = result.nextOffset ?? offset + result.content.length;
-          setLogOffset(next);
-          offset = next;
-          first = false;
-          if (result.nextOffset === undefined || isLive) break;
-        }
+        const result = await heartbeatsApi.log(run.id, 0, RUN_LOG_PAGE_BYTES);
+        if (cancelled) return;
+        appendLogContent(result.content, result.nextOffset === undefined);
+        const next = result.nextOffset ?? result.content.length;
+        setLogOffset(next);
+        setHasMoreLog(!isLive && result.nextOffset !== undefined);
       } catch (err) {
         if (!cancelled) {
           if (isLive && isRunLogUnavailable(err)) {
@@ -3674,6 +3684,23 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       cancelled = true;
     };
   }, [run.id, run.logRef, run.logBytes, isLive]);
+
+  async function loadMorePersistedLog() {
+    if (loadingMoreLog || !hasMoreLog) return;
+    setLoadingMoreLog(true);
+    setLogError(null);
+    try {
+      const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
+      appendLogContent(result.content, result.nextOffset === undefined);
+      const next = result.nextOffset ?? logOffset + result.content.length;
+      setLogOffset(next);
+      setHasMoreLog(result.nextOffset !== undefined);
+    } catch (err) {
+      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
+    } finally {
+      setLoadingMoreLog(false);
+    }
+  }
 
   // Poll for live updates
   useEffect(() => {
@@ -3941,6 +3968,25 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           streaming={isLive}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
+        {hasMoreLog && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={loadMorePersistedLog}
+              disabled={loadingMoreLog}
+            >
+              {loadingMoreLog ? "Loading..." : "Load more log"}
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              Showing the first {Math.round(logOffset / 1024).toLocaleString("en-US")} KB
+              {typeof run.logBytes === "number" && run.logBytes > 0
+                ? ` of ${Math.round(run.logBytes / 1024).toLocaleString("en-US")} KB`
+                : ""}
+            </span>
+          </div>
+        )}
         {logError && (
           <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
             {logError}

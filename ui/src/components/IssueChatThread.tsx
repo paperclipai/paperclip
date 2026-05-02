@@ -12,6 +12,8 @@ import {
   createContext,
   Component,
   forwardRef,
+  memo,
+  useCallback,
   useContext,
   useEffect,
   useImperativeHandle,
@@ -31,6 +33,8 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueAttachment,
+  IssueBlockerAttention,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -57,6 +61,7 @@ import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "..
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
@@ -85,8 +90,8 @@ import {
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
-import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { timeAgo } from "../lib/timeAgo";
 import {
   describeToolInput,
@@ -102,27 +107,26 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
-import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
+import { IssueBlockedNotice } from "./IssueBlockedNotice";
 
 interface IssueChatMessageContext {
-  feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-  activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
-  stoppingRunId?: string | null;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
-  interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
@@ -136,13 +140,14 @@ interface IssueChatMessageContext {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
-  feedbackVoteByTargetId: new Map(),
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
-  activeRunIds: new Set<string>(),
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -207,6 +212,21 @@ function useLiveElapsed(startMs: number | null | undefined, active: boolean): st
   return formatDurationWords(Date.now() - startMs);
 }
 
+function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
+  const callbackRef = useRef(callback);
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  return useMemo(() => {
+    if (!callback) return undefined;
+    return ((...args: Parameters<T>) => callbackRef.current?.(...args)) as T;
+    // Keep the wrapper stable while the callback identity changes; the ref above
+    // carries the current callback implementation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(callback)]);
+}
+
 interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -219,7 +239,7 @@ export interface IssueChatComposerHandle {
 
 interface IssueChatComposerProps {
   onImageUpload?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
@@ -243,6 +263,7 @@ interface IssueChatThreadProps {
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
   blockedBy?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention | null;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -258,8 +279,11 @@ interface IssueChatThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
   imageUploadHandler?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
@@ -293,7 +317,16 @@ interface IssueChatThreadProps {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  /**
+   * Hook for the parent to refetch comments when the user explicitly asks
+   * to jump to the latest comment. Used to make sure the absolute newest
+   * comment is in the loaded set before we scroll to it.
+   */
+  onRefreshLatestComments?: () => Promise<unknown> | void;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -340,53 +373,6 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
     }
     return this.props.children;
   }
-}
-
-function IssueBlockedNotice({
-  issueStatus,
-  blockers,
-}: {
-  issueStatus?: string;
-  blockers: IssueRelationIssueSummary[];
-}) {
-  if (blockers.length === 0 && issueStatus !== "blocked") return null;
-
-  const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
-
-  return (
-    <div className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-      <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
-        <div className="min-w-0 space-y-1.5">
-          <p className="leading-5">
-            {blockers.length > 0
-              ? <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
-              : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
-          </p>
-          {blockers.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {blockers.map((blocker) => {
-                const issuePathId = blocker.identifier ?? blocker.id;
-                return (
-                  <IssueLinkQuicklook
-                    key={blocker.id}
-                    issuePathId={issuePathId}
-                    to={createIssueDetailPath(issuePathId)}
-                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
-                  >
-                    <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-                    <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
-                      {blocker.title}
-                    </span>
-                  </IssueLinkQuicklook>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
@@ -508,8 +494,25 @@ const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
 const SUBMIT_SCROLL_RESERVE_VH = 0.4;
 
+type ComposerAttachmentItem = {
+  id: string;
+  name: string;
+  size: number;
+  status: "uploading" | "attached" | "error";
+  inline: boolean;
+  contentPath?: string;
+  error?: string;
+};
+
 function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
   return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
+}
+
+function formatAttachmentSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function toIsoString(value: string | Date | null | undefined): string | null {
@@ -565,6 +568,10 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
+function isUnassignedReassignValue(value: string): boolean {
+  return !value || value === "__none__";
+}
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function commentDateLabel(date: Date | string | undefined): string {
@@ -574,7 +581,7 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
-function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
+const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
   return (
     <MarkdownBody
@@ -586,7 +593,7 @@ function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolea
       {text}
     </MarkdownBody>
   );
-}
+});
 
 function humanizeValue(value: string | null) {
   if (!value) return "None";
@@ -736,8 +743,7 @@ function IssueChatChainOfThought({
     (p): p is ToolCallMessagePart => p.type === "tool-call",
   );
 
-  const hasActiveTool = toolParts.some((t) => t.result === undefined);
-  const isActive = isMessageRunning && hasActiveTool;
+  const isActive = isMessageRunning;
   const [expanded, setExpanded] = useState(isActive);
 
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
@@ -1075,7 +1081,7 @@ function getThreadMessageCopyText(message: ThreadMessage) {
     .join("\n\n");
 }
 
-function IssueChatTextParts({
+const IssueChatTextParts = memo(function IssueChatTextParts({
   message,
   recessed = false,
 }: {
@@ -1095,7 +1101,7 @@ function IssueChatTextParts({
         ))}
     </>
   );
-}
+});
 
 function groupAssistantParts(
   content: readonly ThreadMessage["content"][number][],
@@ -1133,16 +1139,17 @@ function groupAssistantParts(
   return groups;
 }
 
-function IssueChatAssistantParts({
+const IssueChatAssistantParts = memo(function IssueChatAssistantParts({
   message,
   hasCoT,
 }: {
   message: ThreadMessage;
   hasCoT: boolean;
 }) {
+  const groupedParts = useMemo(() => groupAssistantParts(message.content), [message.content]);
   return (
     <>
-      {groupAssistantParts(message.content).map((group) => {
+      {groupedParts.map((group) => {
         if (group.type === "text") {
           return (
             <IssueChatTextPart
@@ -1162,13 +1169,18 @@ function IssueChatAssistantParts({
       })}
     </>
   );
-}
+});
 
-function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
+function IssueChatUserMessage({
+  message,
+  isInterruptingQueuedRun,
+}: {
+  message: ThreadMessage;
+  isInterruptingQueuedRun: boolean;
+}) {
   const {
     onInterruptQueued,
     onCancelQueued,
-    interruptingQueuedRunId,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1178,6 +1190,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
@@ -1203,6 +1216,11 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+        {followUpRequested ? (
+          <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+            Follow-up
+          </Badge>
+        ) : null}
       </div>
       <div
         className={cn(
@@ -1223,10 +1241,10 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
                 size="sm"
                 variant="outline"
                 className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queueTargetRunId}
+                disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -1312,16 +1330,26 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   );
 }
 
-function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
+function IssueChatAssistantMessage({
+  message,
+  activeVote,
+  isRunActive,
+  isStoppingRun,
+}: {
+  message: ThreadMessage;
+  activeVote: FeedbackVoteValue | null;
+  isRunActive: boolean;
+  isStoppingRun: boolean;
+}) {
   const {
-    feedbackVoteByTargetId,
     feedbackDataSharingPreference,
     feedbackTermsUrl,
     onVote,
     agentMap,
-    activeRunIds,
     onStopRun,
-    stoppingRunId,
+    stopRunLabel = "Stop run",
+    stoppingRunLabel = "Stopping...",
+    stopRunVariant = "stop",
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1343,7 +1371,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
-  const canStopRun = canStopIssueChatRun({ runId, runStatus, activeRunIds });
+  const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
@@ -1377,7 +1405,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
     await onVote(commentId, vote, options);
   };
 
-  const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+  const followUpRequested = custom.followUpRequested === true;
 
   return (
     <div id={anchorId}>
@@ -1411,6 +1439,11 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              {followUpRequested ? (
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                  Follow-up
+                </Badge>
+              ) : null}
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -1509,14 +1542,22 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                     </DropdownMenuItem>
                     {canStopRun && onStopRun && runId ? (
                       <DropdownMenuItem
-                        disabled={stoppingRunId === runId}
-                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                        disabled={isStoppingRun}
+                        className={cn(
+                          stopRunVariant === "pause"
+                            ? "text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
+                            : "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200",
+                        )}
                         onSelect={() => {
                           void onStopRun(runId);
                         }}
                       >
-                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {stoppingRunId === runId ? "Stopping…" : "Stop run"}
+                        {stopRunVariant === "pause" ? (
+                          <PauseCircle className="mr-2 h-3.5 w-3.5" />
+                        ) : (
+                          <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                        )}
+                        {isStoppingRun ? stoppingRunLabel : stopRunLabel}
                       </DropdownMenuItem>
                     ) : null}
                     {runHref ? (
@@ -1773,6 +1814,7 @@ function ExpiredRequestConfirmationActivity({
     userLabelMap,
     onAcceptInteraction,
     onRejectInteraction,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -1851,6 +1893,7 @@ function ExpiredRequestConfirmationActivity({
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       ) : null}
@@ -1866,6 +1909,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1911,6 +1955,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       </div>
@@ -1926,7 +1971,9 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
       <div className="min-w-0 space-y-1">
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">
+            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+          </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -2036,6 +2083,546 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   return null;
 }
 
+function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
+  return (message.metadata?.custom ?? {}) as Record<string, unknown>;
+}
+
+function issueChatMessageKind(message: ThreadMessage): string {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.kind === "string" ? custom.kind : message.role;
+}
+
+function issueChatMessageCommentId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.commentId === "string" ? custom.commentId : null;
+}
+
+function issueChatMessageRunId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.runId === "string" ? custom.runId : null;
+}
+
+function issueChatMessageQueueTargetRunId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+}
+
+function issueChatMessageActiveVote(
+  message: ThreadMessage,
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>,
+): FeedbackVoteValue | null {
+  const commentId = issueChatMessageCommentId(message);
+  return commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+}
+
+function issueChatMessageRunIsActive(
+  message: ThreadMessage,
+  activeRunIds: ReadonlySet<string>,
+): boolean {
+  const runId = issueChatMessageRunId(message);
+  return Boolean(runId && activeRunIds.has(runId));
+}
+
+function issueChatMessageRunIsStopping(
+  message: ThreadMessage,
+  stoppingRunId: string | null | undefined,
+): boolean {
+  const runId = issueChatMessageRunId(message);
+  return Boolean(runId && stoppingRunId === runId);
+}
+
+function issueChatMessageQueuedRunIsInterrupting(
+  message: ThreadMessage,
+  interruptingQueuedRunId: string | null | undefined,
+): boolean {
+  const queueTargetRunId = issueChatMessageQueueTargetRunId(message);
+  return Boolean(queueTargetRunId && interruptingQueuedRunId === queueTargetRunId);
+}
+
+// Above ~150 merged rows the direct render path forces React to mount and
+// re-render hundreds of Markdown bodies, feedback controls, and avatars on
+// unrelated parent updates. Above this threshold we switch to a windowed
+// render path so only visible rows plus overscan stay mounted.
+export const VIRTUALIZED_THREAD_ROW_THRESHOLD = 150;
+const VIRTUALIZED_THREAD_OVERSCAN = 6;
+// Rough "average row" estimate. The virtualizer measures real heights as
+// rows mount, so this only affects offscreen rows it has not seen yet.
+const VIRTUALIZED_THREAD_ROW_ESTIMATE_PX = 220;
+const VIRTUALIZED_THREAD_GAP_FULL_PX = 16;
+const VIRTUALIZED_THREAD_GAP_EMBEDDED_PX = 12;
+
+interface VirtualizedIssueChatThreadListProps {
+  messages: readonly ThreadMessage[];
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>;
+  activeRunIds: ReadonlySet<string>;
+  stoppingRunId?: string | null;
+  interruptingQueuedRunId?: string | null;
+  variant: "full" | "embedded";
+}
+
+interface VirtualizedIssueChatThreadListHandle {
+  scrollToIndex: (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => void;
+  scrollToLatest: (options?: { behavior?: ScrollBehavior }) => void;
+  measure: () => void;
+}
+
+function issueChatMessageAnchorId(message: ThreadMessage): string | null {
+  const custom = message.metadata.custom as { anchorId?: unknown } | undefined;
+  return typeof custom?.anchorId === "string" ? custom.anchorId : null;
+}
+
+function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
+  return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+}
+
+export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const anchorId = issueChatMessageAnchorId(messages[index]);
+    if (anchorId && anchorId.startsWith("comment-")) return index;
+  }
+  return -1;
+}
+
+type VirtualizedVisibleAnchorSnapshot = {
+  anchorId: string;
+  index: number;
+  viewportTop: number;
+};
+
+type VirtualizedScrollMode =
+  | { kind: "window" }
+  | { kind: "element"; element: HTMLElement };
+
+type SimpleVirtualItem = {
+  index: number;
+  key: React.Key;
+  start: number;
+  size: number;
+};
+
+function useIssueThreadVirtualizer({
+  count,
+  estimateSize,
+  overscan,
+  scrollMargin,
+  gap,
+  getItemKey,
+  mode,
+}: {
+  count: number;
+  estimateSize: () => number;
+  overscan: number;
+  scrollMargin: number;
+  gap: number;
+  getItemKey: (index: number) => React.Key;
+  mode: VirtualizedScrollMode;
+}) {
+  const measuredSizeByKeyRef = useRef(new Map<React.Key, number>());
+  const [, rerender] = useState(0);
+  const estimatedSize = estimateSize();
+
+  const itemStarts: number[] = [];
+  const itemSizes: number[] = [];
+  let nextStart = scrollMargin;
+  for (let index = 0; index < count; index += 1) {
+    const key = getItemKey(index);
+    const size = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+    itemStarts.push(nextStart);
+    itemSizes.push(size);
+    nextStart += size + gap;
+  }
+  const totalSize = Math.max(0, nextStart - scrollMargin - gap);
+
+  const viewportHeight = () => (mode.kind === "window" ? window.innerHeight : mode.element.clientHeight);
+  const scrollOffset = () => (mode.kind === "window" ? window.scrollY : mode.element.scrollTop);
+  const maxScrollOffset = () => {
+    const targetScrollHeight = mode.kind === "window"
+      ? document.documentElement.scrollHeight
+      : mode.element.scrollHeight;
+    return Math.max(0, Math.max(targetScrollHeight, totalSize) - viewportHeight());
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target: Window | HTMLElement = mode.kind === "window" ? window : mode.element;
+    const update = () => rerender((value) => value + 1);
+    target.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      target.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const rawStart = Math.max(scrollMargin, scrollOffset());
+  const rawEnd = rawStart + viewportHeight();
+  let visibleStartIndex = 0;
+  while (
+    visibleStartIndex < count - 1
+    && itemStarts[visibleStartIndex] + itemSizes[visibleStartIndex] < rawStart
+  ) {
+    visibleStartIndex += 1;
+  }
+  let visibleEndIndex = visibleStartIndex;
+  while (visibleEndIndex < count - 1 && itemStarts[visibleEndIndex] <= rawEnd) {
+    visibleEndIndex += 1;
+  }
+  const startIndex = Math.max(0, visibleStartIndex - overscan);
+  const endIndex = Math.min(count - 1, visibleEndIndex + overscan);
+  const virtualItems: SimpleVirtualItem[] = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    virtualItems.push({
+      index,
+      key: getItemKey(index),
+      start: itemStarts[index] ?? scrollMargin,
+      size: itemSizes[index] ?? estimatedSize,
+    });
+  }
+
+  const scrollToIndex = (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => {
+    const clampedIndex = Math.max(0, Math.min(index, count - 1));
+    const targetMax = maxScrollOffset();
+    let top = itemStarts[clampedIndex] ?? scrollMargin;
+    if (options?.align === "center") {
+      top = top - viewportHeight() / 2 + (itemSizes[clampedIndex] ?? estimatedSize) / 2;
+    } else if (options?.align === "end") {
+      top = top + (itemSizes[clampedIndex] ?? estimatedSize) - viewportHeight();
+    }
+    top = Math.max(0, Math.min(top, targetMax));
+    if (mode.kind === "window") {
+      window.scrollTo({ top, behavior: options?.behavior });
+    } else {
+      mode.element.scrollTo({ top, behavior: options?.behavior });
+    }
+    rerender((value) => value + 1);
+  };
+
+  return {
+    getVirtualItems: () => virtualItems,
+    getTotalSize: () => totalSize,
+    scrollToIndex,
+    measure: () => undefined,
+    measureElement: (element?: HTMLElement | null) => {
+      if (!element) return;
+      const index = Number(element.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= count) return;
+      const measuredSize = element.getBoundingClientRect().height || element.offsetHeight;
+      if (!Number.isFinite(measuredSize) || measuredSize <= 0) return;
+      const key = getItemKey(index);
+      const previousSize = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+      if (Math.abs(previousSize - measuredSize) < 1) return;
+      measuredSizeByKeyRef.current.set(key, measuredSize);
+      rerender((value) => value + 1);
+    },
+  };
+}
+
+// The chat thread renders inside `<main id="main-content">` on the real issue
+// page (overflow-auto on desktop), but lives at document scope on mobile (main
+// is overflow-visible) and in the auth-free perf fixture. Walk the DOM to find
+// the actual scroll container so the virtualizer binds to the right offset
+// source — otherwise it stays anchored at offset 0 forever and the visible
+// chat area renders blank past the first viewport (PAP-2660).
+function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
+  if (!el || typeof window === "undefined") return null;
+  let current: HTMLElement | null = el.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+const VirtualizedIssueChatThreadList = forwardRef<VirtualizedIssueChatThreadListHandle, VirtualizedIssueChatThreadListProps>(function VirtualizedIssueChatThreadList(props, ref) {
+  const probeRef = useRef<HTMLDivElement | null>(null);
+  // Default to window scroll on first render so the imperative handle is
+  // available immediately for hash-target / submit-scroll effects. After mount
+  // we probe the DOM and remount via key={modeKey} if the actual scroll
+  // container is an element ancestor (e.g. desktop <main id="main-content">).
+  const [mode, setMode] = useState<VirtualizedScrollMode>({ kind: "window" });
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    const detect = () => {
+      const probe = probeRef.current;
+      if (!probe) return;
+      const container = findScrollContainer(probe);
+      setMode((prev) => {
+        if (container === null) {
+          return prev.kind === "window" ? prev : { kind: "window" };
+        }
+        if (prev.kind === "element" && prev.element === container) return prev;
+        return { kind: "element", element: container };
+      });
+    };
+    detect();
+    window.addEventListener("resize", detect);
+    return () => {
+      window.removeEventListener("resize", detect);
+    };
+  }, []);
+
+  return (
+    <VirtualizedIssueChatThreadListInner
+      key={mode.kind === "window" ? "window" : "element"}
+      ref={ref}
+      probeRef={probeRef}
+      mode={mode}
+      {...props}
+    />
+  );
+});
+
+interface VirtualizedIssueChatThreadListInnerProps extends VirtualizedIssueChatThreadListProps {
+  mode: VirtualizedScrollMode;
+  probeRef: React.MutableRefObject<HTMLDivElement | null>;
+}
+
+const VirtualizedIssueChatThreadListInner = forwardRef<
+  VirtualizedIssueChatThreadListHandle,
+  VirtualizedIssueChatThreadListInnerProps
+>(function VirtualizedIssueChatThreadListInner({
+  messages,
+  feedbackVoteByTargetId,
+  activeRunIds,
+  stoppingRunId,
+  interruptingQueuedRunId,
+  variant,
+  mode,
+  probeRef,
+}, ref) {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const pendingPrependAnchorRef = useRef<VirtualizedVisibleAnchorSnapshot | null>(null);
+
+  const setRefs = useCallback((element: HTMLDivElement | null) => {
+    parentRef.current = element;
+    probeRef.current = element;
+  }, [probeRef]);
+
+  useLayoutEffect(() => {
+    const element = parentRef.current;
+    if (!element || typeof window === "undefined") return;
+    const update = () => {
+      if (!parentRef.current) return;
+      const rect = parentRef.current.getBoundingClientRect();
+      const offset = mode.kind === "window"
+        ? rect.top + window.scrollY
+        : rect.top - mode.element.getBoundingClientRect().top + mode.element.scrollTop;
+      setScrollMargin((previous) => (Math.abs(previous - offset) < 0.5 ? previous : offset));
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const gap = variant === "embedded"
+    ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
+    : VIRTUALIZED_THREAD_GAP_FULL_PX;
+
+  const virtualizer = useIssueThreadVirtualizer({
+    count: messages.length,
+    estimateSize: () => VIRTUALIZED_THREAD_ROW_ESTIMATE_PX,
+    overscan: VIRTUALIZED_THREAD_OVERSCAN,
+    scrollMargin,
+    gap,
+    getItemKey: (index) => messages[index]?.id ?? index,
+    mode,
+  });
+
+  useImperativeHandle(ref, () => ({
+    scrollToIndex: (index, options) => {
+      if (index < 0 || index >= messages.length) return;
+      virtualizer.scrollToIndex(index, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    scrollToLatest: (options) => {
+      if (messages.length === 0) return;
+      virtualizer.scrollToIndex(messages.length - 1, {
+        align: "end",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    measure: () => {
+      virtualizer.measure();
+    },
+  }), [messages.length, virtualizer]);
+
+  useLayoutEffect(() => {
+    return () => {
+      const element = parentRef.current;
+      if (!element || typeof window === "undefined") return;
+      const rows = Array.from(
+        element.querySelectorAll<HTMLElement>("[data-anchor-id][data-index]"),
+      );
+      const visibleRow = rows.find((row) => row.getBoundingClientRect().bottom >= 0);
+      if (!visibleRow) return;
+      const anchorId = visibleRow.dataset.anchorId;
+      const index = Number(visibleRow.dataset.index);
+      if (!anchorId || !Number.isFinite(index)) return;
+      pendingPrependAnchorRef.current = {
+        anchorId,
+        index,
+        viewportTop: visibleRow.getBoundingClientRect().top,
+      };
+    };
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const pendingAnchor = pendingPrependAnchorRef.current;
+    pendingPrependAnchorRef.current = null;
+    virtualizer.measure();
+    if (!pendingAnchor || typeof window === "undefined") return;
+    const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
+    if (nextIndex <= pendingAnchor.index) return;
+
+    virtualizer.scrollToIndex(nextIndex, { align: "start", behavior: "auto" });
+    requestAnimationFrame(() => {
+      const element = document.getElementById(pendingAnchor.anchorId);
+      if (!element) return;
+      const delta = element.getBoundingClientRect().top - pendingAnchor.viewportTop;
+      if (Math.abs(delta) > 1) {
+        if (mode.kind === "window") {
+          window.scrollBy({ top: delta, behavior: "auto" });
+        } else {
+          mode.element.scrollBy({ top: delta, behavior: "auto" });
+        }
+      }
+      virtualizer.measure();
+    });
+  }, [messages, virtualizer, mode]);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  return (
+    <div
+      ref={setRefs}
+      data-testid="issue-chat-thread-virtualizer"
+      data-virtual-count={messages.length}
+      style={{ position: "relative", width: "100%", height: totalSize }}
+    >
+      {virtualItems.map((virtualItem) => {
+        const message = messages[virtualItem.index];
+        if (!message) return null;
+        const anchorId = issueChatMessageAnchorId(message);
+        return (
+          <div
+            key={virtualItem.key}
+            data-index={virtualItem.index}
+            data-anchor-id={anchorId ?? undefined}
+            data-testid="issue-chat-thread-virtual-row"
+            ref={(element) => {
+              if (element) virtualizer.measureElement(element);
+            }}
+            onLoadCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            onClickCapture={(event) => {
+              const row = event.currentTarget;
+              requestAnimationFrame(() => {
+                virtualizer.measureElement(row);
+              });
+            }}
+            onTransitionEndCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              transform: `translateY(${virtualItem.start - scrollMargin}px)`,
+            }}
+          >
+            <IssueChatMessageRow
+              message={message}
+              feedbackVoteByTargetId={feedbackVoteByTargetId}
+              activeRunIds={activeRunIds}
+              stoppingRunId={stoppingRunId}
+              interruptingQueuedRunId={interruptingQueuedRunId}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+interface IssueChatMessageRowProps {
+  message: ThreadMessage;
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>;
+  activeRunIds: ReadonlySet<string>;
+  stoppingRunId?: string | null;
+  interruptingQueuedRunId?: string | null;
+}
+
+const IssueChatMessageRow = memo(function IssueChatMessageRow({
+  message,
+  feedbackVoteByTargetId,
+  activeRunIds,
+  stoppingRunId,
+  interruptingQueuedRunId,
+}: IssueChatMessageRowProps) {
+  const kind = issueChatMessageKind(message);
+  const activeVote = issueChatMessageActiveVote(message, feedbackVoteByTargetId);
+  const isRunActive = issueChatMessageRunIsActive(message, activeRunIds);
+  const isStoppingRun = issueChatMessageRunIsStopping(message, stoppingRunId);
+  const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(message, interruptingQueuedRunId);
+  const renderedMessage = message.role === "user"
+    ? (
+      <IssueChatUserMessage
+        message={message}
+        isInterruptingQueuedRun={isInterruptingQueuedRun}
+      />
+    )
+    : message.role === "assistant"
+      ? (
+        <IssueChatAssistantMessage
+          message={message}
+          activeVote={activeVote}
+          isRunActive={isRunActive}
+          isStoppingRun={isStoppingRun}
+        />
+      )
+      : <IssueChatSystemMessage message={message} />;
+
+  return (
+    <div
+      data-testid="issue-chat-message-row"
+      data-message-role={message.role}
+      data-message-kind={kind}
+    >
+      {renderedMessage}
+    </div>
+  );
+}, areIssueChatMessageRowPropsEqual);
+
+function areIssueChatMessageRowPropsEqual(
+  prev: IssueChatMessageRowProps,
+  next: IssueChatMessageRowProps,
+) {
+  if (prev.message !== next.message) return false;
+  if (issueChatMessageActiveVote(prev.message, prev.feedbackVoteByTargetId) !== issueChatMessageActiveVote(next.message, next.feedbackVoteByTargetId)) return false;
+  if (issueChatMessageRunIsActive(prev.message, prev.activeRunIds) !== issueChatMessageRunIsActive(next.message, next.activeRunIds)) return false;
+  if (issueChatMessageRunIsStopping(prev.message, prev.stoppingRunId) !== issueChatMessageRunIsStopping(next.message, next.stoppingRunId)) return false;
+  if (issueChatMessageQueuedRunIsInterrupting(prev.message, prev.interruptingQueuedRunId) !== issueChatMessageQueuedRunIsInterrupting(next.message, next.interruptingQueuedRunId)) return false;
+  return true;
+}
+
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
   onImageUpload,
   onAttachImage,
@@ -2051,13 +2638,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   issueStatus,
 }, forwardedRef) {
   const api = useAui();
+  const toastActions = useOptionalToastActions();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentItem[]>([]);
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
+  const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2104,6 +2694,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
+  useEffect(() => {
+    setUnassignedConfirmed(false);
+  }, [reassignTarget]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -2121,6 +2715,22 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const trimmed = body.trim();
     if (!trimmed || submitting) return;
 
+    const composerHasAssigneePicker = enableReassign && reassignOptions.length > 0;
+    if (
+      composerHasAssigneePicker
+      && isUnassignedReassignValue(reassignTarget)
+      && !unassignedConfirmed
+    ) {
+      toastActions?.pushToast({
+        title: "No assignee selected",
+        body: "Pick an assignee or click Send again to post without one.",
+        tone: "warn",
+        dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
+      });
+      setUnassignedConfirmed(true);
+      return;
+    }
+
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
     const reopen = shouldImplicitlyReopenComment(
@@ -2132,6 +2742,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
     setSubmitting(true);
     setBody("");
+    setUnassignedConfirmed(false);
     try {
       const appendPromise = api.thread().append({
         role: "user",
@@ -2148,6 +2759,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       queueViewportRestore(viewportSnapshot);
       await appendPromise;
       if (draftKey) clearDraft(draftKey);
+      setComposerAttachments([]);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -2163,13 +2775,59 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }
 
   async function attachFile(file: File) {
-    if (onImageUpload && file.type.startsWith("image/")) {
-      const url = await onImageUpload(file);
-      const safeName = file.name.replace(/[[\]]/g, "\\$&");
-      const markdown = `![${safeName}](${url})`;
-      setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
-    } else if (onAttachImage) {
-      await onAttachImage(file);
+    const attachmentId = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
+    const inline = Boolean(onImageUpload && file.type.startsWith("image/"));
+    setComposerAttachments((prev) => [
+      ...prev,
+      {
+        id: attachmentId,
+        name: file.name,
+        size: file.size,
+        status: "uploading",
+        inline,
+      },
+    ]);
+
+    try {
+      if (onImageUpload && file.type.startsWith("image/")) {
+        const url = await onImageUpload(file);
+        const safeName = file.name.replace(/[[\]]/g, "\\$&");
+        const markdown = `![${safeName}](${url})`;
+        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? { ...item, status: "attached", contentPath: url }
+            : item,
+        ));
+      } else if (onAttachImage) {
+        const attachment = await onAttachImage(file);
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? {
+                ...item,
+                status: "attached",
+                contentPath: attachment?.contentPath,
+                name: attachment?.originalFilename ?? item.name,
+              }
+            : item,
+        ));
+      } else {
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? { ...item, status: "error", error: "This file type cannot be attached here" }
+            : item,
+        ));
+      }
+    } catch (err) {
+      setComposerAttachments((prev) => prev.map((item) =>
+        item.id === attachmentId
+          ? {
+              ...item,
+              status: "error",
+              error: err instanceof Error ? err.message : "Upload failed",
+            }
+          : item,
+      ));
     }
   }
 
@@ -2202,6 +2860,37 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setIsDragOver(false);
   }
 
+  function handleFileDragEnter(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  }
+
+  function handleFileDragOver(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    evt.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleFileDragLeave(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragOver(false);
+  }
+
+  function handleFileDrop(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    resetDragState();
+    void handleDroppedFiles(evt.dataTransfer?.files);
+  }
+
   const canSubmit = !submitting && !!body.trim();
 
   if (composerDisabledReason) {
@@ -2217,35 +2906,33 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
-        isDragOver && "ring-2 ring-primary/60 bg-accent/10",
+        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
-      onDragEnter={(evt) => {
-        if (!canAcceptFiles || !hasFilePayload(evt)) return;
-        dragDepthRef.current += 1;
-        setIsDragOver(true);
-      }}
-      onDragOver={(evt) => {
-        if (!canAcceptFiles || !hasFilePayload(evt)) return;
-        evt.preventDefault();
-        evt.dataTransfer.dropEffect = "copy";
-      }}
-      onDragLeave={() => {
-        if (!canAcceptFiles) return;
-        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-        if (dragDepthRef.current === 0) setIsDragOver(false);
-      }}
-      onDrop={(evt) => {
-        if (!canAcceptFiles) return;
-        if (evt.defaultPrevented) {
-          resetDragState();
-          return;
-        }
-        evt.preventDefault();
-        resetDragState();
-        void handleDroppedFiles(evt.dataTransfer?.files);
-      }}
+      onDragEnterCapture={handleFileDragEnter}
+      onDragOverCapture={handleFileDragOver}
+      onDragLeaveCapture={handleFileDragLeave}
+      onDropCapture={handleFileDrop}
     >
+      {isDragOver && canAcceptFiles ? (
+        <div
+          data-testid="issue-chat-composer-drop-overlay"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+        >
+          <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Paperclip className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Images insert into the reply. Other files are added to this issue.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <MarkdownEditor
         ref={editorRef}
         value={body}
@@ -2254,13 +2941,59 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
+        fileDropTarget="parent"
         bordered={false}
-        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
+        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
 
       {composerHint ? (
         <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
           {composerHint}
+        </div>
+      ) : null}
+
+      {composerAttachments.length > 0 ? (
+        <div
+          data-testid="issue-chat-composer-attachments"
+          className="mb-3 mt-2 space-y-1.5 rounded-md border border-dashed border-border/80 bg-muted/20 p-2"
+        >
+          {composerAttachments.map((attachment) => {
+            const sizeLabel = formatAttachmentSize(attachment.size);
+            const statusLabel =
+              attachment.status === "uploading"
+                ? "Uploading to issue"
+                : attachment.status === "error"
+                  ? attachment.error ?? "Upload failed"
+                  : attachment.inline
+                    ? "Inserted inline"
+                    : "Attached to issue";
+            return (
+              <div
+                key={attachment.id}
+                className={cn(
+                  "flex min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-xs",
+                  attachment.status === "error"
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-background/70 text-muted-foreground",
+                )}
+              >
+                {attachment.status === "uploading" ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                ) : attachment.status === "attached" ? (
+                  <Check className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                ) : (
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                  {attachment.name}
+                </span>
+                {sizeLabel ? (
+                  <span className="shrink-0 text-muted-foreground">{sizeLabel}</span>
+                ) : null}
+                <span className="shrink-0 text-muted-foreground">{statusLabel}</span>
+              </div>
+            );
+          })}
         </div>
       ) : null}
 
@@ -2270,7 +3003,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             <input
               ref={attachInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
               className="hidden"
               onChange={handleAttachFile}
             />
@@ -2279,7 +3011,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               size="icon-sm"
               onClick={() => attachInputRef.current?.click()}
               disabled={attaching}
-              title="Attach image"
+              title="Attach file"
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -2344,6 +3076,7 @@ export function IssueChatThread({
   liveRuns = [],
   activeRun = null,
   blockedBy = [],
+  blockerAttention = null,
   companyId,
   projectId,
   issueStatus,
@@ -2355,6 +3088,9 @@ export function IssueChatThread({
   onAdd,
   onCancelRun,
   onStopRun,
+  stopRunLabel,
+  stoppingRunLabel,
+  stopRunVariant,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -2381,10 +3117,13 @@ export function IssueChatThread({
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  onCancelInteraction,
   composerRef,
+  onRefreshLatestComments,
 }: IssueChatThreadProps) {
   const location = useLocation();
-  const hasScrolledRef = useRef(false);
+  const lastScrolledHashRef = useRef<string | null>(null);
+  const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
@@ -2393,6 +3132,8 @@ export function IssueChatThread({
   const lastUserMessageIdRef = useRef<string | null>(null);
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
+  const latestSettleTimeoutsRef = useRef<number[]>([]);
+  const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -2411,6 +3152,8 @@ export function IssueChatThread({
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        logBytes: activeRun.logBytes,
+        lastOutputBytes: activeRun.lastOutputBytes,
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -2431,6 +3174,17 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const clearLatestSettleTimeouts = useCallback(() => {
+    for (const timeout of latestSettleTimeoutsRef.current) {
+      window.clearTimeout(timeout);
+    }
+    latestSettleTimeoutsRef.current = [];
+    latestSettleCleanupRef.current?.();
+    latestSettleCleanupRef.current = null;
+  }, []);
+
+  useEffect(() => clearLatestSettleTimeouts, [clearLatestSettleTimeouts]);
+
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
@@ -2484,6 +3238,8 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
+  latestMessagesRef.current = messages;
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -2503,6 +3259,47 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
+  const useVirtualizedThread = messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  const messageAnchorIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    messages.forEach((message, index) => {
+      const anchorId = issueChatMessageAnchorId(message);
+      if (anchorId) map.set(anchorId, index);
+    });
+    return map;
+  }, [messages]);
+
+  function scrollToThreadAnchor(
+    anchorId: string,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    messageSnapshot: readonly ThreadMessage[] = messages,
+  ) {
+    const snapshotUsesVirtualizer = messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const virtualIndex =
+      messageSnapshot === messages
+        ? messageAnchorIndex.get(anchorId)
+        : findMessageAnchorIndex(messageSnapshot, anchorId);
+    if (snapshotUsesVirtualizer && virtualIndex !== undefined && virtualIndex >= 0) {
+      if (!virtualizedThreadRef.current) return false;
+      virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+      return true;
+    }
+
+    const element = document.getElementById(anchorId);
+    if (!element) return false;
+    element.scrollIntoView({
+      behavior: options?.behavior ?? "smooth",
+      block: options?.align === "start"
+        ? "start"
+        : options?.align === "end"
+          ? "end"
+          : "center",
+    });
+    return true;
+  }
 
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -2532,14 +3329,13 @@ export function IssueChatThread({
         spacerInitialReserveRef.current = reserve;
         setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
-          const el = document.getElementById(anchorId);
-          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+          scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
         });
       }
     }
 
     lastUserMessageIdRef.current = lastUserId;
-  }, [messages]);
+  }, [messageAnchorIndex, messages, useVirtualizedThread]);
 
   useLayoutEffect(() => {
     const anchorId = spacerBaselineAnchorRef.current;
@@ -2572,7 +3368,7 @@ export function IssueChatThread({
   }, [messages]);
 
   useEffect(() => {
-    const hash = location.hash;
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
     if (
       !(
         hash.startsWith("#comment-")
@@ -2581,58 +3377,246 @@ export function IssueChatThread({
         || hash.startsWith("#interaction-")
       )
     ) return;
-    if (messages.length === 0 || hasScrolledRef.current) return;
+    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
-    const element = document.getElementById(targetId);
-    if (!element) return;
-    hasScrolledRef.current = true;
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [location.hash, messages]);
+    let cancelled = false;
+    const attemptScroll = (finalAttempt = false) => {
+      if (cancelled || lastScrolledHashRef.current === hash) return;
+      const didScroll = scrollToThreadAnchor(targetId, { align: "center", behavior: "smooth" });
+      if (!didScroll) return;
+      if (finalAttempt || !useVirtualizedThread || document.getElementById(targetId)) {
+        lastScrolledHashRef.current = hash;
+      }
+    };
 
-  function handleJumpToLatest() {
+    attemptScroll();
+    const frame = requestAnimationFrame(() => attemptScroll());
+    const timeout = window.setTimeout(() => attemptScroll(true), 250);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+
+  function jumpToLatestFallback() {
+    if (useVirtualizedThread) {
+      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      return;
+    }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
+  // Lands on the latest `comment-*` row and then drives the scroll the rest
+  // of the way home as the virtualizer's per-row measurements arrive.
+  //
+  // The virtualizer estimates 220px for unmeasured rows. On long threads
+  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
+  // underestimated until rows render and get measured. A single scroll
+  // lands above the actual bottom; rendered rows then expand, the layout
+  // grows, and the user has to keep clicking Jump-to-latest to walk closer
+  // to the real bottom. The convergence loop below issues `scrollIntoView`
+  // on the latest comment element on every tick until the DOM bottom of
+  // that element is at the scroll container's bottom (or scroll position
+  // and content height stop changing).
+  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    if (latestCommentIndex < 0) {
+      jumpToLatestFallback();
+      return;
+    }
+    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
+    if (!latestCommentAnchor) {
+      jumpToLatestFallback();
+      return;
+    }
+
+    const initial = scrollToThreadAnchor(
+      latestCommentAnchor,
+      { align: "end", behavior: "smooth" },
+      messageSnapshot,
+    );
+    if (!initial) {
+      jumpToLatestFallback();
+      return;
+    }
+
+    if (typeof window === "undefined") return;
+
+    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const MAX_DURATION_MS = 4000;
+    const TICK_MS = 80;
+    const TOLERANCE_PX = 4;
+
+    clearLatestSettleTimeouts();
+    const resolveScrollContainer = (): HTMLElement | null =>
+      (document.getElementById("main-content") as HTMLElement | null);
+    const cancelTarget = resolveScrollContainer() ?? window;
+
+    let lastScrollTop = -1;
+    let lastScrollHeight = -1;
+    let stableTicks = 0;
+    let cancelled = false;
+
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    const cleanup = () => {
+      cancelTarget.removeEventListener("wheel", cancel);
+      cancelTarget.removeEventListener("touchstart", cancel);
+    };
+
+    cancelTarget.addEventListener("wheel", cancel, { once: true, passive: true });
+    cancelTarget.addEventListener("touchstart", cancel, { once: true, passive: true });
+    latestSettleCleanupRef.current = cleanup;
+
+    const finish = () => {
+      cleanup();
+      latestSettleCleanupRef.current = null;
+      for (const timeout of latestSettleTimeoutsRef.current) {
+        window.clearTimeout(timeout);
+      }
+      latestSettleTimeoutsRef.current = [];
+    };
+
+    const scheduleTick = (delay: number) => {
+      const timeout = window.setTimeout(() => {
+        latestSettleTimeoutsRef.current = latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
+        tick();
+      }, delay);
+      latestSettleTimeoutsRef.current.push(timeout);
+    };
+
+    const tick = () => {
+      const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      if (cancelled || now - startedAt > MAX_DURATION_MS) {
+        finish();
+        return;
+      }
+
+      if (typeof document === "undefined") {
+        finish();
+        return;
+      }
+
+      const el = document.getElementById(latestCommentAnchor);
+      if (!el) {
+        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
+        // the offset (instant) so it gets mounted, then keep settling.
+        virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
+          align: "end",
+          behavior: "auto",
+        });
+        scheduleTick(TICK_MS);
+        return;
+      }
+
+      const container = resolveScrollContainer();
+      const containerBottom = container
+        ? container.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const elBottom = el.getBoundingClientRect().bottom;
+      const offBottom = elBottom - containerBottom;
+
+      if (Math.abs(offBottom) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      const currentScrollTop = container?.scrollTop ?? window.scrollY;
+      const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
+      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
+      const heightStable = currentScrollHeight === lastScrollHeight;
+      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atBottom) {
+        stableTicks += 1;
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+      } else {
+        stableTicks = 0;
+      }
+      lastScrollTop = currentScrollTop;
+      lastScrollHeight = currentScrollHeight;
+      scheduleTick(TICK_MS);
+    };
+
+    // Hold the first iteration off for one frame so the initial smooth
+    // scroll has begun (and the virtualizer has rendered the buffer around
+    // the target) before we start settling.
+    scheduleTick(120);
+  }
+
+  function handleJumpToLatest() {
+    if (onRefreshLatestComments) {
+      // Refetching the comments query (page 0 first) brings any comment that
+      // arrived after the initial load — including ones live updates may
+      // have missed during reconnects — into the loaded set before we
+      // resolve the latest target. Otherwise we'd land on the latest
+      // *loaded* comment but not the absolute newest. (PAP-2672 follow-up.)
+      const refreshed = onRefreshLatestComments();
+      if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
+        (refreshed as Promise<unknown>).then(
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+        );
+        return;
+      }
+    }
+    scrollToLatestCommentWithSettle(latestMessagesRef.current);
+  }
+
+  const stableOnVote = useStableEvent(onVote);
+  const stableOnStopRun = useStableEvent(onStopRun);
+  const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
+  const stableOnCancelQueued = useStableEvent(onCancelQueued);
+  const stableOnImageClick = useStableEvent(onImageClick);
+  const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
+  const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
+  const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
+  const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
-      feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
       currentUserId,
       userLabelMap,
       userProfileMap,
-      activeRunIds,
-      onVote,
-      onStopRun,
-      stoppingRunId,
-      onInterruptQueued,
-      onCancelQueued,
-      interruptingQueuedRunId,
-      onImageClick,
-      onAcceptInteraction,
-      onRejectInteraction,
-      onSubmitInteractionAnswers,
+      onVote: stableOnVote,
+      onStopRun: stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      onInterruptQueued: stableOnInterruptQueued,
+      onCancelQueued: stableOnCancelQueued,
+      onImageClick: stableOnImageClick,
+      onAcceptInteraction: stableOnAcceptInteraction,
+      onRejectInteraction: stableOnRejectInteraction,
+      onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
+      onCancelInteraction: stableOnCancelInteraction,
     }),
     [
-      feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
       currentUserId,
       userLabelMap,
       userProfileMap,
-      activeRunIds,
-      onVote,
-      onStopRun,
-      stoppingRunId,
-      onInterruptQueued,
-      onCancelQueued,
-      interruptingQueuedRunId,
-      onImageClick,
-      onAcceptInteraction,
-      onRejectInteraction,
-      onSubmitInteractionAnswers,
+      stableOnVote,
+      stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      stableOnInterruptQueued,
+      stableOnCancelQueued,
+      stableOnImageClick,
+      stableOnAcceptInteraction,
+      stableOnRejectInteraction,
+      stableOnSubmitInteractionAnswers,
+      stableOnCancelInteraction,
     ],
   );
 
@@ -2641,10 +3625,13 @@ export function IssueChatThread({
     ?? (variant === "embedded"
       ? "No run output yet."
       : "This issue conversation is empty. Start with a message below.");
-  const errorBoundaryResetKey = useMemo(
-    () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
-    [messages],
-  );
+  const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
+  const errorBoundaryResetVersionRef = useRef(0);
+  if (previousErrorBoundaryMessagesRef.current !== messages) {
+    previousErrorBoundaryMessagesRef.current = messages;
+    errorBoundaryResetVersionRef.current += 1;
+  }
+  const errorBoundaryResetKey = String(errorBoundaryResetVersionRef.current);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -2682,23 +3669,38 @@ export function IssueChatThread({
                 )}>
                   {resolvedEmptyMessage}
                 </div>
+              ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
+                <VirtualizedIssueChatThreadList
+                  ref={virtualizedThreadRef}
+                  messages={messages}
+                  feedbackVoteByTargetId={feedbackVoteByTargetId}
+                  activeRunIds={activeRunIds}
+                  stoppingRunId={stoppingRunId}
+                  interruptingQueuedRunId={interruptingQueuedRunId}
+                  variant={variant}
+                />
               ) : (
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => {
-                  if (message.role === "user") {
-                    return <IssueChatUserMessage key={message.id} message={message} />;
-                  }
-                  if (message.role === "assistant") {
-                    return <IssueChatAssistantMessage key={message.id} message={message} />;
-                  }
-                  return <IssueChatSystemMessage key={message.id} message={message} />;
-                })
+                messages.map((message) => (
+                  <IssueChatMessageRow
+                    key={message.id}
+                    message={message}
+                    feedbackVoteByTargetId={feedbackVoteByTargetId}
+                    activeRunIds={activeRunIds}
+                    stoppingRunId={stoppingRunId}
+                    interruptingQueuedRunId={interruptingQueuedRunId}
+                  />
+                ))
               )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
-                  <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
+                  <IssueBlockedNotice
+                    issueStatus={issueStatus}
+                    blockers={unresolvedBlockers}
+                    blockerAttention={blockerAttention}
+                  />
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}

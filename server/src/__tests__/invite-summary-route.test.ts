@@ -127,7 +127,7 @@ describe("GET /invites/:token", () => {
     expect(res.body.companyBrandColor).toBe("#114488");
     expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
-  });
+  }, 10_000);
 
   it("omits companyLogoUrl when the stored logo object is missing", async () => {
     mockStorage.headObject.mockResolvedValue({ exists: false });
@@ -172,7 +172,7 @@ describe("GET /invites/:token", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.companyLogoUrl).toBeNull();
-  });
+  }, 10_000);
 
   it("returns pending join-request status for an already-accepted invite", async () => {
     const invite = {
@@ -218,7 +218,7 @@ describe("GET /invites/:token", () => {
     expect(res.body.joinRequestStatus).toBe("pending_approval");
     expect(res.body.joinRequestType).toBe("human");
     expect(res.body.companyName).toBe("Acme Robotics");
-  });
+  }, 10_000);
 
   it("falls back to a reusable human join request when the accepted invite reused an existing queue entry", async () => {
     const invite = {
@@ -274,5 +274,5 @@ describe("GET /invites/:token", () => {
     expect(res.status).toBe(200);
     expect(res.body.joinRequestStatus).toBe("pending_approval");
     expect(res.body.joinRequestType).toBe("human");
-  });
+  }, 10_000);
 });

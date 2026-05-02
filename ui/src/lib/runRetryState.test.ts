@@ -36,7 +36,8 @@ describe("runRetryState", () => {
     ).toMatchObject({
       kind: "exhausted",
       badgeLabel: "Retry exhausted",
-      detail: "Attempt 4 · Transient failure · No further automatic retry queued",
+      detail: "Attempt 4 · Transient failure · Automatic retries exhausted",
+      secondary: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued Manual intervention required.",
     });
   });
 });

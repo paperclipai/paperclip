@@ -91,7 +91,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     vi.doUnmock("../routes/companies.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {

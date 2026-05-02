@@ -38,30 +38,6 @@ vi.mock("../services/live-events.js", () => ({
   publishGlobalLiveEvent: vi.fn(),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
-
-  vi.doMock("../services/plugin-registry.js", () => ({
-    pluginRegistryService: () => mockRegistry,
-  }));
-
-  vi.doMock("../services/plugin-lifecycle.js", () => ({
-    pluginLifecycleManager: () => mockLifecycle,
-  }));
-
-  vi.doMock("../services/issues.js", () => ({
-    issueService: () => mockIssueService,
-  }));
-
-  vi.doMock("../services/activity-log.js", () => ({
-    logActivity: vi.fn(),
-  }));
-
-  vi.doMock("../services/live-events.js", () => ({
-    publishGlobalLiveEvent: vi.fn(),
-  }));
-}
-
 function manifest(apiRoutes: NonNullable<PaperclipPluginManifestV1["apiRoutes"]>): PaperclipPluginManifestV1 {
   return {
     id: "paperclip.scoped-api-test",
@@ -84,8 +60,8 @@ async function createApp(input: {
   workerResult?: unknown;
 }) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/plugins.js")>("../routes/plugins.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/plugins.js"),
+    import("../middleware/index.js"),
   ]);
 
   const workerManager = {
@@ -118,7 +94,7 @@ async function createApp(input: {
   return { app, workerManager };
 }
 
-describe("plugin scoped API routes", () => {
+describe.sequential("plugin scoped API routes", () => {
   const pluginId = "11111111-1111-4111-8111-111111111111";
   const companyId = "22222222-2222-4222-8222-222222222222";
   const agentId = "33333333-3333-4333-8333-333333333333";
@@ -126,17 +102,7 @@ describe("plugin scoped API routes", () => {
   const issueId = "55555555-5555-4555-8555-555555555555";
 
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/plugin-registry.js");
-    vi.doUnmock("../services/plugin-lifecycle.js");
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/live-events.js");
-    vi.doUnmock("../routes/plugins.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({
       id: issueId,
