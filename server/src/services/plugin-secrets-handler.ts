@@ -366,7 +366,7 @@ export function createPluginSecretsHandler(
       if (!SECRET_NAME_RE.test(name)) {
         throw new Error("Secret name must only contain alphanumeric characters, underscores, and dashes.");
       }
-      if (!value || value.trim().length === 0) {
+      if (!value || value.length === 0) {
         throw new Error("Secret value must not be empty.");
       }
       if (Buffer.byteLength(value, "utf8") > 65_536) {
