@@ -62,6 +62,17 @@ vi.mock("../services/companies.js", () => ({
   }),
 }));
 
+// mockAssertPluginAuthorizedForCompany controls the cross-company auth check.
+// Default: resolves (authorized). Set to throw to simulate unauthorized.
+const mockAssertPluginAuthorizedForCompany = vi.hoisted(() =>
+  vi.fn().mockResolvedValue(undefined),
+);
+
+vi.mock("../services/plugin-company-auth.js", () => ({
+  assertPluginAuthorizedForCompany: (...args: unknown[]) =>
+    mockAssertPluginAuthorizedForCompany(...args),
+}));
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -489,6 +500,72 @@ describe("createPluginSecretsHandler.delete() name validation", () => {
     await expect(
       h.delete({ companyId: COMPANY_ID, name: "A".repeat(256) }),
     ).rejects.toThrow(/255/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-company authorization — P1 security (Greptile finding)
+// ---------------------------------------------------------------------------
+
+describe("write() cross-company authorization", () => {
+  let handler: PluginSecretsService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetCompanyById.mockResolvedValue({ id: "co-1", name: "Test Company" });
+    mockGetByName.mockResolvedValue(null);
+    mockCreate.mockResolvedValue(BASE_SECRET);
+    mockAssertPluginAuthorizedForCompany.mockResolvedValue(undefined);
+    handler = createPluginSecretsHandler({ db: makeFakeDb(), pluginId: PLUGIN_ID });
+  });
+
+  it("rejects write when plugin is not authorized for the target company", async () => {
+    mockAssertPluginAuthorizedForCompany.mockRejectedValueOnce(
+      new Error("Plugin is not authorized for company company-b"),
+    );
+    await expect(
+      handler.write({ companyId: "company-b", name: "CROSS_SECRET", value: "val" }),
+    ).rejects.toThrow(/not authorized for company/i);
+  });
+
+  it("passes plugin ID and company ID to the authorization check", async () => {
+    await handler.write({ companyId: COMPANY_ID, name: "MY_SECRET", value: "val" });
+    expect(mockAssertPluginAuthorizedForCompany).toHaveBeenCalledWith(
+      expect.anything(),
+      PLUGIN_ID,
+      COMPANY_ID,
+    );
+  });
+});
+
+describe("delete() cross-company authorization", () => {
+  let handler: PluginSecretsService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetCompanyById.mockResolvedValue({ id: "co-1", name: "Test Company" });
+    mockGetByName.mockResolvedValue(BASE_SECRET);
+    mockRemove.mockResolvedValue(undefined);
+    mockAssertPluginAuthorizedForCompany.mockResolvedValue(undefined);
+    handler = createPluginSecretsHandler({ db: makeFakeDb(), pluginId: PLUGIN_ID });
+  });
+
+  it("rejects delete when plugin is not authorized for the target company", async () => {
+    mockAssertPluginAuthorizedForCompany.mockRejectedValueOnce(
+      new Error("Plugin is not authorized for company company-b"),
+    );
+    await expect(
+      handler.delete({ companyId: "company-b", name: "MY_SECRET" }),
+    ).rejects.toThrow(/not authorized for company/i);
+  });
+
+  it("passes plugin ID and company ID to the authorization check on delete", async () => {
+    await handler.delete({ companyId: COMPANY_ID, name: "MY_SECRET" });
+    expect(mockAssertPluginAuthorizedForCompany).toHaveBeenCalledWith(
+      expect.anything(),
+      PLUGIN_ID,
+      COMPANY_ID,
+    );
   });
 });
 
