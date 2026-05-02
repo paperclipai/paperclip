@@ -790,6 +790,15 @@ function credentialPlaceholder(type: CredentialType): string {
   }
 }
 
+// Long-lived tokens from `claude setup-token` are inference-only OAuth tokens
+// with the `sk-ant-oat<digits>-` prefix. They have no refresh/expiry metadata
+// and are routed through the CLAUDE_CODE_OAUTH_TOKEN env var at runtime.
+const CLAUDE_LONG_LIVED_TOKEN_RE = /^sk-ant-oat\d*-/;
+
+function isClaudeLongLivedToken(token: string): boolean {
+  return CLAUDE_LONG_LIVED_TOKEN_RE.test(token.trim());
+}
+
 function buildCredentialPayload(
   type: CredentialType,
   token: string,
@@ -814,6 +823,9 @@ function buildCredentialPayload(
       } catch {
         // fall through — treat as bare token
       }
+    }
+    if (isClaudeLongLivedToken(trimmed)) {
+      return { accessToken: trimmed, tokenKind: "long_lived" };
     }
     return { accessToken: trimmed };
   }
@@ -1296,7 +1308,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               label={addType === "claude_oauth" || addType === "codex_oauth" ? "Access Token" : "API Key"}
               hint={
                 addType === "claude_oauth"
-                  ? "Paste your Claude OAuth access token (sk-ant-oat01-...). For auto-renewing credentials, paste the full ~/.claude/.credentials.json instead."
+                  ? "Paste a long-lived setup-token (sk-ant-oat01-..., recommended), an OAuth access token, or the full ~/.claude/.credentials.json."
                   : addType === "codex_oauth"
                     ? "Paste your Codex OAuth access token (eyJ...). For auto-renewing credentials, paste the full ~/.codex/auth.json instead."
                     : undefined
@@ -1310,6 +1322,32 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                 onChange={(e) => setAddToken(e.target.value)}
               />
             </Field>
+            {addType === "claude_oauth" && (
+              <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1">
+                <div className="font-medium text-foreground">Long-lived token (recommended for production)</div>
+                <ol className="list-decimal pl-4 space-y-0.5">
+                  <li>
+                    Open{" "}
+                    <a
+                      href="https://claude.ai/auth/setup-token"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 underline underline-offset-2 dark:text-blue-400"
+                    >
+                      https://claude.ai/auth/setup-token
+                    </a>
+                  </li>
+                  <li>Authorize and copy the token shown.</li>
+                  <li>Paste it above. Long-lived tokens (sk-ant-oat01-...) don't expire on the same cadence as OAuth sessions.</li>
+                </ol>
+                {isClaudeLongLivedToken(addToken) && (
+                  <div className="text-green-700 dark:text-green-400 flex items-center gap-1 pt-1">
+                    <CheckCircle2 className="h-3 w-3" />
+                    Long-lived token detected — will be wired via CLAUDE_CODE_OAUTH_TOKEN.
+                  </div>
+                )}
+              </div>
+            )}
             <ToggleField
               label="Set as default"
               hint="If set, agents without an explicit credential will use this one."

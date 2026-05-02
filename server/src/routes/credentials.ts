@@ -315,6 +315,11 @@ async function probeCredential(type: string, payload: Record<string, unknown>): 
         }),
       });
       if (res.ok) {
+        const tokenKind = typeof payload.tokenKind === "string" ? payload.tokenKind : null;
+        const isLongLived = tokenKind === "long_lived" || (accessToken.startsWith("sk-ant-oat") && !payload.refreshToken);
+        if (isLongLived) {
+          return { ok: true, message: "Long-lived setup-token valid (no expiry / refresh required)" };
+        }
         const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
         const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 0;
         const expiresSoon = expiresAt > 0 && expiresAt - Date.now() < 24 * 3600 * 1000;

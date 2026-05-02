@@ -198,6 +198,20 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "claude_oauth credential missing accessToken");
         return { env: {} };
       }
+      // Long-lived tokens (from `claude setup-token`) use a distinct prefix and
+      // have no refreshToken / expiresAt; flag them so we can route through the
+      // CLAUDE_CODE_OAUTH_TOKEN env var instead of synthesising a fake-expiry
+      // .credentials.json that the CLI would otherwise try to refresh.
+      const tokenKind = typeof payload.tokenKind === "string" ? payload.tokenKind : null;
+      const isLongLivedToken =
+        tokenKind === "long_lived" || (accessToken.startsWith("sk-ant-oat") && !payload.refreshToken);
+      if (isLongLivedToken) {
+        logger.info(
+          { agentId, credentialId },
+          "resolving claude_oauth long-lived token via CLAUDE_CODE_OAUTH_TOKEN env",
+        );
+        return { env: { CLAUDE_CODE_OAUTH_TOKEN: accessToken } };
+      }
       const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
       const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
       const scopes = Array.isArray(payload.scopes) && payload.scopes.every((s) => typeof s === "string")
