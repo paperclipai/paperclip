@@ -146,6 +146,7 @@ describe("FailedRunInboxRow", () => {
       lastOutputStream: null,
       lastOutputBytes: null,
       errorCode: null,
+      cancelSource: null,
       externalRunId: null,
       processPid: null,
       processGroupId: null,

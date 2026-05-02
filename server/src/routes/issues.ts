@@ -2009,7 +2009,7 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(existing);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(runToInterrupt.id, "user_initiated");
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -2187,7 +2187,10 @@ export function issueRoutes(
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToCancelForCancelledStatus.id,
+          actor.actorType === "user" ? "user_initiated" : "system",
+        );
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
           await logActivity(db, {
@@ -3484,7 +3487,7 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(currentIssue);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(runToInterrupt.id, "user_initiated");
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {

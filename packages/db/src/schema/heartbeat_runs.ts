@@ -30,6 +30,7 @@ export const heartbeatRuns = pgTable(
     stdoutExcerpt: text("stdout_excerpt"),
     stderrExcerpt: text("stderr_excerpt"),
     errorCode: text("error_code"),
+    cancelSource: text("cancel_source"),
     externalRunId: text("external_run_id"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
