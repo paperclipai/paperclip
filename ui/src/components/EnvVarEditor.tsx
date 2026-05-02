@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
+import { Textarea } from "./ui/textarea";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -212,8 +213,9 @@ export function EnvVarEditor({
               </>
             ) : (
               <>
-                <input
-                  className={cn(inputClass, "flex-[3]")}
+                <Textarea
+                  rows={1}
+                  className={cn(inputClass, "flex-[3] min-h-0 resize-none shadow-none")}
                   placeholder="value"
                   value={row.plainValue}
                   onChange={(event) => updateRow(index, { plainValue: event.target.value })}
