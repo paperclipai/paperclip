@@ -2,7 +2,7 @@
 
 # Project-scoped Codex config (trusted projects only).
 # Keep only repo-local overrides here. Global defaults stay in ~/.codex/config.toml.
-project_doc_fallback_filenames = ["AGENTS.md", "README.md", "SESSION_HANDOFF.md"]
+project_doc_fallback_filenames = ["README.md", "SESSION_HANDOFF.md"]
 project_doc_max_bytes = 32768
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
