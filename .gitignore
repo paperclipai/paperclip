@@ -13,6 +13,7 @@ coverage/
 data/
 .paperclip/
 .pnpm-store/
+.playwright/
 tmp-*
 cli/tmp/
 
@@ -43,6 +44,7 @@ diagnostics/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+README.local.md
 /.idea/
 /.agents/
 
