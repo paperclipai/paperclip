@@ -15,6 +15,24 @@ export interface RevealedCredential {
   credential: Record<string, unknown>;
 }
 
+export interface CodexCredDeviceAuthStartResponse {
+  sessionId: string;
+}
+
+export interface CodexCredDeviceAuthPollResponse {
+  status: "starting" | "awaiting_user" | "success" | "error";
+  verificationUrl: string | null;
+  userCode: string | null;
+  error: string | null;
+  errorCode: "timeout" | "denied" | "device_code_disabled" | "infra" | null;
+  // Populated ONCE on the first poll that observes status === "success".
+  // The server wipes both this field and its on-disk copy as soon as it
+  // returns the value, so the UI must immediately persist it via the
+  // existing credential CREATE endpoint.
+  authJson: string | null;
+  stderr: string;
+}
+
 export const credentialsApi = {
   list: (companyId: string) =>
     api.get<ProviderCredential[]>(`/companies/${companyId}/credentials`),
@@ -45,4 +63,13 @@ export const credentialsApi = {
       type,
       credential,
     }),
+  startCodexDeviceAuth: (companyId: string) =>
+    api.post<CodexCredDeviceAuthStartResponse>(
+      `/companies/${companyId}/credentials/codex/device-auth-start`,
+      {},
+    ),
+  pollCodexDeviceAuth: (companyId: string, sessionId: string) =>
+    api.get<CodexCredDeviceAuthPollResponse>(
+      `/companies/${companyId}/credentials/codex/device-auth-poll/${encodeURIComponent(sessionId)}`,
+    ),
 };

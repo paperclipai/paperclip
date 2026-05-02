@@ -246,7 +246,10 @@ function buildCodexLoginResult(input: {
 
 export async function runCodexLogin(input: {
   runId: string;
-  agent: AdapterExecutionContext["agent"];
+  // Agent context for the managed-home flow (auth-recovery on a broken agent).
+  // Omit when `codexHomeOverride` is set — the credential-creation flow uses an
+  // isolated temp directory and must NOT reach into the host's shared codex home.
+  agent?: AdapterExecutionContext["agent"];
   config: Record<string, unknown>;
   context?: Record<string, unknown>;
   authToken?: string;
@@ -254,6 +257,11 @@ export async function runCodexLogin(input: {
   // Called as soon as the device-auth URL and user code are detected on stdout.
   // Allows the caller to surface the URL+code to the UI before the process completes.
   onDeviceAuth?: (info: { verificationUrl: string; userCode: string }) => Promise<void> | void;
+  // When provided, use this exact path as CODEX_HOME and skip
+  // `prepareManagedCodexHome` (which symlinks auth.json from the shared host
+  // home). Used by the credential-scoped flow to capture tokens into a temp
+  // directory without touching any other credential or the host's auth.json.
+  codexHomeOverride?: string;
 }) {
   const onLog = input.onLog ?? (async () => {});
   const onDeviceAuth = input.onDeviceAuth;
@@ -267,13 +275,28 @@ export async function runCodexLogin(input: {
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+  const overrideCodexHome = input.codexHomeOverride
+    ? path.resolve(input.codexHomeOverride)
+    : null;
+  const agent = input.agent;
+  if (!overrideCodexHome && !agent) {
+    throw new Error("runCodexLogin requires either an agent or a codexHomeOverride");
+  }
   const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, input.agent.companyId);
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, input.agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+    overrideCodexHome || configuredCodexHome || !agent
+      ? null
+      : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
+  const defaultCodexHome = agent
+    ? resolveManagedCodexHomeDir(process.env, agent.companyId)
+    : null;
+  const effectiveCodexHome =
+    overrideCodexHome ?? configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  if (!effectiveCodexHome) {
+    throw new Error("runCodexLogin could not resolve CODEX_HOME");
+  }
   await fs.mkdir(effectiveCodexHome, { recursive: true });
 
-  const env: Record<string, string> = { ...buildPaperclipEnv(input.agent) };
+  const env: Record<string, string> = agent ? { ...buildPaperclipEnv(agent) } : {};
   // CODEX_HOME is the canonical knob the Codex CLI uses to locate auth.json
   // and config files; --device-auth will write the resulting tokens there.
   env.CODEX_HOME = effectiveCodexHome;

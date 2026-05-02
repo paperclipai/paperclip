@@ -1,10 +1,15 @@
 import type { Request } from "express";
 import { Router } from "express";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
   createProviderCredentialSchema,
   updateProviderCredentialSchema,
 } from "@paperclipai/shared";
+import { runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -260,6 +265,212 @@ export function credentialRoutes(db: Db) {
 
     res.json({ credential: decrypted });
   });
+
+  // ── Codex device-auth flow for credential creation/edit ──────────────
+  // The agent-scoped flow at /agents/:id/codex-login writes auth.json into the
+  // company's managed CODEX_HOME. For *creating* a credential we don't have an
+  // agent yet (and don't want to mutate any other agent's auth.json), so this
+  // flow runs `codex login --device-auth` against an isolated temp directory,
+  // captures the resulting auth.json contents, and returns them once to the UI
+  // for storage via the existing credential CREATE endpoint. The temp dir is
+  // wiped on success/error/timeout — auth.json is NEVER persisted server-side
+  // outside the in-memory session.
+  type CodexCredLoginSession = {
+    companyId: string;
+    codexHome: string; // temp dir under os.tmpdir()
+    status: "starting" | "awaiting_user" | "success" | "error";
+    verificationUrl: string | null;
+    userCode: string | null;
+    error: string | null;
+    errorCode: "timeout" | "denied" | "device_code_disabled" | "infra" | null;
+    authJson: string | null; // populated once on success, then cleared on first read
+    stderr: string;
+    startedAt: number;
+    finishedAt: number | null;
+    cleanupTimer: NodeJS.Timeout | null;
+  };
+  const codexCredSessions = new Map<string, CodexCredLoginSession>();
+  const CODEX_CRED_LOGIN_SESSION_TTL_MS = 30 * 60 * 1000; // 30min
+
+  async function wipeCodexCredSession(sessionId: string): Promise<void> {
+    const session = codexCredSessions.get(sessionId);
+    if (!session) return;
+    if (session.cleanupTimer) {
+      clearTimeout(session.cleanupTimer);
+      session.cleanupTimer = null;
+    }
+    codexCredSessions.delete(sessionId);
+    try {
+      await fs.rm(session.codexHome, { recursive: true, force: true });
+    } catch (err) {
+      logger.warn(
+        { sessionId, codexHome: session.codexHome, err: err instanceof Error ? err.message : String(err) },
+        "failed to remove codex credential temp home",
+      );
+    }
+  }
+
+  router.post("/companies/:companyId/credentials/codex/device-auth-start", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await requireCredentialManage(req, companyId);
+
+    const sessionId = randomUUID();
+    const codexHome = path.join(os.tmpdir(), `codex-oauth-${sessionId}`);
+    await fs.mkdir(codexHome, { recursive: true });
+
+    const session: CodexCredLoginSession = {
+      companyId,
+      codexHome,
+      status: "starting",
+      verificationUrl: null,
+      userCode: null,
+      error: null,
+      errorCode: null,
+      authJson: null,
+      stderr: "",
+      startedAt: Date.now(),
+      finishedAt: null,
+      cleanupTimer: null,
+    };
+
+    // Hard TTL guard: even if the UI never polls again, wipe the temp dir
+    // and session entry after 30min so we don't leak fs space or memory.
+    session.cleanupTimer = setTimeout(() => {
+      void wipeCodexCredSession(sessionId);
+    }, CODEX_CRED_LOGIN_SESSION_TTL_MS);
+
+    codexCredSessions.set(sessionId, session);
+
+    void (async () => {
+      try {
+        const result = await runCodexLogin({
+          runId: `codex-cred-login-${sessionId}`,
+          // No agent: this is a credential-creation flow with no agent context.
+          // codexHomeOverride forces the CLI to write into the temp dir without
+          // touching the host's shared codex home or any company managed home.
+          config: {},
+          codexHomeOverride: codexHome,
+          onLog: async (stream, chunk) => {
+            if (stream !== "stderr") return;
+            const next = session.stderr + chunk;
+            session.stderr = next.length > 16384 ? next.slice(-16384) : next;
+          },
+          onDeviceAuth: ({ verificationUrl, userCode }) => {
+            session.verificationUrl = verificationUrl;
+            session.userCode = userCode;
+            session.status = "awaiting_user";
+          },
+        });
+
+        session.finishedAt = Date.now();
+        if (!session.verificationUrl && result.loginUrl) session.verificationUrl = result.loginUrl;
+        if (!session.userCode && result.userCode) session.userCode = result.userCode;
+
+        const evidence = `${result.stdout}\n${result.stderr}`.toLowerCase();
+        const deviceCodeDisabled = evidence.includes("device code login is not enabled");
+
+        if (deviceCodeDisabled) {
+          session.status = "error";
+          session.errorCode = "device_code_disabled";
+          session.error =
+            "Device Code Login is not enabled for this ChatGPT account. Enable it in your ChatGPT account security settings, then try again.";
+          await fs.rm(codexHome, { recursive: true, force: true }).catch(() => {});
+          return;
+        }
+
+        if (result.timedOut) {
+          session.status = "error";
+          session.errorCode = "timeout";
+          session.error = "Timed out waiting for browser approval.";
+          await fs.rm(codexHome, { recursive: true, force: true }).catch(() => {});
+          return;
+        }
+
+        if ((result.exitCode ?? 0) === 0) {
+          // Capture the resulting auth.json so the UI can submit it via the
+          // existing credential CREATE endpoint. The file lives in the temp
+          // dir and is wiped as soon as the UI reads it (or after TTL).
+          try {
+            const authJsonPath = path.join(codexHome, "auth.json");
+            const contents = await fs.readFile(authJsonPath, "utf8");
+            session.authJson = contents;
+            session.status = "success";
+            session.error = null;
+          } catch (err) {
+            session.status = "error";
+            session.errorCode = "infra";
+            session.error =
+              "codex login completed but auth.json could not be read: " +
+              (err instanceof Error ? err.message : String(err));
+            await fs.rm(codexHome, { recursive: true, force: true }).catch(() => {});
+          }
+          return;
+        }
+
+        session.status = "error";
+        session.errorCode = "denied";
+        session.error =
+          result.stderr?.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ??
+          `codex login --device-auth exited with code ${result.exitCode ?? -1}`;
+        await fs.rm(codexHome, { recursive: true, force: true }).catch(() => {});
+      } catch (err) {
+        session.finishedAt = Date.now();
+        session.status = "error";
+        session.errorCode = "infra";
+        session.error = err instanceof Error ? err.message : String(err);
+        await fs.rm(codexHome, { recursive: true, force: true }).catch(() => {});
+      }
+    })();
+
+    res.json({ sessionId });
+  });
+
+  router.get(
+    "/companies/:companyId/credentials/codex/device-auth-poll/:sessionId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const sessionId = req.params.sessionId as string;
+      assertCompanyAccess(req, companyId);
+      await requireCredentialManage(req, companyId);
+
+      const session = codexCredSessions.get(sessionId);
+      if (!session || session.companyId !== companyId) {
+        res.status(404).json({ error: "Codex login session not found or expired" });
+        return;
+      }
+
+      // On success: return auth.json ONCE, then wipe the temp dir + session.
+      // The UI is expected to immediately POST it to the credential CREATE
+      // endpoint. We don't keep the secret around server-side.
+      if (session.status === "success" && session.authJson) {
+        const authJson = session.authJson;
+        session.authJson = null;
+        const stderr = session.stderr;
+        await wipeCodexCredSession(sessionId);
+        res.json({
+          status: "success",
+          verificationUrl: null,
+          userCode: null,
+          error: null,
+          errorCode: null,
+          authJson,
+          stderr,
+        });
+        return;
+      }
+
+      res.json({
+        status: session.status,
+        verificationUrl: session.verificationUrl,
+        userCode: session.userCode,
+        error: session.error,
+        errorCode: session.errorCode,
+        authJson: null,
+        stderr: session.stderr,
+      });
+    },
+  );
 
   return router;
 }
