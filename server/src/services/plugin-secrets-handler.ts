@@ -47,6 +47,7 @@ import {
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { assertPluginAuthorizedForCompany } from "./plugin-company-auth.js";
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -380,12 +381,13 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Company existence check — prevent cross-company writes
+      // 2. Company existence check + plugin authorization
       // ---------------------------------------------------------------
       const company = await companyService(db).getById(companyId);
       if (!company) {
         throw new Error(`Company not found: ${companyId}`);
       }
+      await assertPluginAuthorizedForCompany(db, pluginId, companyId);
 
       // ---------------------------------------------------------------
       // 3. Resolve default provider from environment
@@ -468,12 +470,13 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Company existence check
+      // 2. Company existence check + plugin authorization
       // ---------------------------------------------------------------
       const company = await companyService(db).getById(companyId);
       if (!company) {
         throw new Error(`Company not found: ${companyId}`);
       }
+      await assertPluginAuthorizedForCompany(db, pluginId, companyId);
 
       const svc = secretService(db);
       const existing = await svc.getByName(companyId, name);
