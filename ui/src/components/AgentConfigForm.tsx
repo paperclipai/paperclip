@@ -696,7 +696,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
-            {isLocal && !props.hidePromptTemplate && (
+            {!props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
                   <MarkdownEditor
@@ -880,7 +880,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       </div>
 
       {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
@@ -1096,7 +1095,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
           </div>
         </div>
-      )}
 
       {/* ---- Run Policy ---- */}
       {isCreate && showCreateRunPolicySection ? (
