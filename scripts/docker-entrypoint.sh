@@ -34,4 +34,14 @@ gosu node git config --global user.email "246262476+Vardaan97@users.noreply.gith
 gosu node git config --global init.defaultBranch main 2>/dev/null || true
 gosu node git config --global --add safe.directory '*' 2>/dev/null || true
 
+# Koenig customization 2026-05-02 (KOEA-355): ensure hermes-py wrapper exists at /usr/local/bin.
+# The Dockerfile bakes this in, but running containers need this on restarts.
+# Running as root here so we can write to /usr/local/bin — idempotent.
+if [ ! -x /usr/local/bin/hermes-py ]; then
+    printf '#!/bin/sh\nexec /opt/hermes-venv/bin/hermes "$@"\n' > /usr/local/bin/hermes-py
+    chmod +x /usr/local/bin/hermes-py
+    ln -sf /usr/local/bin/hermes-py /usr/local/bin/hermes-container 2>/dev/null || true
+    echo "hermes-py wrapper created at /usr/local/bin/hermes-py"
+fi
+
 exec gosu node "$@"

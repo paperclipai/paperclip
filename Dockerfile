@@ -87,10 +87,12 @@ RUN apt-get update -qq \
     && python3 -m venv /opt/hermes-venv \
     && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip \
     && chown -R ${USER_UID}:${USER_GID} /opt/hermes-venv
-# Hermes install happens at runtime via entrypoint (see scripts/docker-entrypoint.sh).
-# At build time we don't have the bind-mounted source yet, so we create the wrapper
-# that lazily installs hermes-agent on first invocation.
-RUN printf '#!/bin/sh\nset -e\nHERMES_SRC="${HERMES_SRC:-/paperclip/.hermes/hermes-agent}"\nif [ ! -d "$HERMES_SRC" ]; then\n  echo "hermes-agent source not found at $HERMES_SRC; bind-mount the host ~/.hermes into /paperclip/.hermes" >&2\n  exit 127\nfi\nif ! /opt/hermes-venv/bin/python -c "import hermes_agent" 2>/dev/null; then\n  /opt/hermes-venv/bin/pip install --quiet --no-cache-dir -e "$HERMES_SRC" >&2\nfi\nexec /opt/hermes-venv/bin/hermes "$@"\n' > /usr/local/bin/hermes-py \
+# hermes-py: thin wrapper that delegates to the venv hermes binary.
+# The venv is populated at runtime from the bind-mounted ~/.hermes source
+# by docker-entrypoint.sh. At image build time the source is not yet
+# available, so we point directly at the venv binary — no lazy-install
+# check needed since entrypoint handles install before any agent runs.
+RUN printf '#!/bin/sh\nexec /opt/hermes-venv/bin/hermes "$@"\n' > /usr/local/bin/hermes-py \
     && chmod +x /usr/local/bin/hermes-py \
     && ln -sf /usr/local/bin/hermes-py /usr/local/bin/hermes-container
 
