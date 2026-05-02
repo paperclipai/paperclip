@@ -154,8 +154,14 @@ export function Layout() {
   useEffect(() => {
     if (!matchedCompany?.organizationId) return;
     if (selectedOrgId === matchedCompany.organizationId) return;
+    // Skip if a different company is selected — we're mid-switch (e.g., the
+    // sidebar org switcher just set selectedCompanyId to a company in another
+    // org and the URL hasn't caught up yet). Syncing here would revert that
+    // manual switch. useCompanyPageMemory will land us on the new company's
+    // URL, after which this effect re-runs with the correct matchedCompany.
+    if (selectedCompanyId !== null && selectedCompanyId !== matchedCompany.id) return;
     setSelectedOrgId(matchedCompany.organizationId);
-  }, [matchedCompany, selectedOrgId, setSelectedOrgId]);
+  }, [matchedCompany, selectedOrgId, selectedCompanyId, setSelectedOrgId]);
 
   const togglePanel = togglePanelVisible;
   const openSearch = useCallback(() => {

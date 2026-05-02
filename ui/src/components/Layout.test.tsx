@@ -110,12 +110,23 @@ vi.mock("../context/PanelContext", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }],
+    companies: [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip", organizationId: "org-1" }],
     loading: false,
-    selectedCompany: { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
+    selectedCompany: { id: "company-1", issuePrefix: "PAP", name: "Paperclip", organizationId: "org-1" },
     selectedCompanyId: "company-1",
     selectionSource: "manual",
     setSelectedCompanyId: mockSetSelectedCompanyId,
+  }),
+}));
+
+vi.mock("../context/OrgContext", () => ({
+  useOrg: () => ({
+    organizations: [{ id: "org-1", name: "Acme" }],
+    activeOrganizations: [{ id: "org-1", name: "Acme" }],
+    selectedOrgId: "org-1",
+    selectedOrg: { id: "org-1", name: "Acme" },
+    setSelectedOrgId: vi.fn(),
+    loading: false,
   }),
 }));
 
