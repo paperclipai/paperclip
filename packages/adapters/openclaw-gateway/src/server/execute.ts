@@ -1130,7 +1130,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  // Note: previously buildStandardPaperclipPayload(...) was called here and
+  // attached as agentParams.paperclip, but the gateway rejects unknown root
+  // properties (see comment below). Wake metadata is now carried via `message`.
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
@@ -1139,7 +1141,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // STO-315: defensively strip `paperclip` even if the user-configured
+  // payloadTemplate puts it there. The gateway rejects unknown root
+  // properties with: "invalid agent params: at root: unexpected property
+  // 'paperclip'". Wake metadata is already embedded in the `message` field
+  // via wakeText/structured wake JSON. See commit 6c9e639a (fix #606) —
+  // the property was removed there and accidentally re-added by 91e040a6
+  // ("Batch inline comment wake payloads").
+  delete agentParams.paperclip;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
