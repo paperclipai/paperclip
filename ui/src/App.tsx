@@ -51,6 +51,7 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
+import { Clippy } from "./pages/Clippy";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
@@ -75,6 +76,7 @@ function boardRoutes() {
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgChart />} />
+      <Route path="clippy" element={<Clippy />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -261,6 +263,17 @@ export function App() {
         <Route path="invite/:token" element={<InviteLandingPage />} />
 
         <Route element={<CloudAccessGate />}>
+          {/* Popup window for the pop-out drawer: bare layout, no Sidebar / CompanyRail / floating button.
+              Needs an explicit viewport-height wrapper because we don't sit inside Layout, which is what
+              normally provides the height context the Clippy page assumes. */}
+          <Route
+            path="clippy-popup"
+            element={
+              <div className="h-screen min-h-0 bg-background">
+                <Clippy />
+              </div>
+            }
+          />
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
           <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
@@ -276,6 +289,7 @@ export function App() {
             <Route path="adapters" element={<AdapterManager />} />
             <Route path="external-mcp" element={<ExternalMcpServers />} />
           </Route>
+          <Route path="clippy" element={<UnprefixedBoardRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

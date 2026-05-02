@@ -36,11 +36,15 @@ import {
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
+import { chatRoutes } from "./routes/chat.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { externalMcpServerRoutes } from "./routes/external-mcp-servers.js";
+import { createExternalMcpServerManager } from "./services/external-mcp-server-manager.js";
+import { createExternalMcpToolSource } from "./services/external-mcp-tool-source.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -213,6 +217,7 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(systemRoutes());
+  api.use(chatRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -226,10 +231,14 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  const externalMcpManager = createExternalMcpServerManager(db);
+  const externalMcpSource = createExternalMcpToolSource(db, externalMcpManager);
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
     db,
+    externalMcpToolSource: externalMcpSource,
+    externalMcpServerManager: externalMcpManager,
   });
   const jobCoordinator = createPluginJobCoordinator({
     db,
@@ -284,6 +293,9 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use(
+    externalMcpServerRoutes(db, { externalMcpServerManager: externalMcpManager }),
+  );
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

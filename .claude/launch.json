@@ -4,7 +4,7 @@
     {
       "name": "ui",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
+      "runtimeArgs": ["dev:server"],
       "port": 3100
     }
   ]

@@ -12,6 +12,7 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  MessageSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -94,6 +95,12 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
             info="Items that need your attention: failed runs, agent questions, mentions, and approvals waiting on you."
+          />
+          <SidebarNavItem
+            to="/clippy"
+            label="Clippy"
+            icon={MessageSquare}
+            info="Talk to Clippy — Paperclip's in-app assistant. Switch to Agent mode to let it run tools and make changes for you."
           />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}

@@ -519,6 +519,27 @@
       "when": 1777800000000,
       "tag": "0073_plugin_local_source_path",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1778000000000,
+      "tag": "0074_chat_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1778100000000,
+      "tag": "0075_external_mcp_servers",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1778200000000,
+      "tag": "0076_chat_adapter_session_params",
+      "breakpoints": true
     }
   ]
 }
