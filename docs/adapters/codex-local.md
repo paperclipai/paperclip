@@ -20,7 +20,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
-| `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
+| `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4`, `gpt-5.5`, and manual model IDs; burns credits faster |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
 
 ## Session Persistence
@@ -39,7 +39,7 @@ When `fastMode` is enabled, Paperclip adds Codex config overrides equivalent to:
 -c 'service_tier="fast"' -c 'features.fast_mode=true'
 ```
 
-Paperclip currently applies that only when the selected model is `gpt-5.4`. On other models, the toggle is preserved in config but ignored at execution time to avoid unsupported runs.
+Paperclip currently applies that when the selected model is `gpt-5.4`, `gpt-5.5`, or a manual model ID. On other known unsupported models, the toggle is preserved in config but ignored at execution time to avoid unsupported runs.
 
 ## Managed `CODEX_HOME`
 
