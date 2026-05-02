@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
   asNumber,
@@ -22,7 +23,7 @@ import {
   runChildProcess,
   sanitizeChildEnv,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { extractCodexLoginUrl, parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -30,6 +31,13 @@ import { buildCodexExecArgs } from "./codex-args.js";
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CODEX_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|please\s+run\s+`?codex\s+login`?)/i;
+
+function detectCodexAuthRequired(stdout: string, stderr: string, parsedError: string | null): boolean {
+  const evidence = [parsedError ?? "", stdout, stderr].join("\n");
+  return CODEX_AUTH_REQUIRED_RE.test(evidence);
+}
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -212,6 +220,66 @@ export async function ensureCodexSkillsInjected(
     skillsEntries.map((entry) => entry.runtimeName),
     onLog,
   );
+}
+
+function buildCodexLoginResult(input: { proc: RunProcessResult; loginUrl: string | null }) {
+  return {
+    exitCode: input.proc.exitCode,
+    signal: input.proc.signal,
+    timedOut: input.proc.timedOut,
+    stdout: input.proc.stdout,
+    stderr: input.proc.stderr,
+    loginUrl: input.loginUrl,
+  };
+}
+
+export async function runCodexLogin(input: {
+  runId: string;
+  agent: AdapterExecutionContext["agent"];
+  config: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  authToken?: string;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}) {
+  const onLog = input.onLog ?? (async () => {});
+  const config = input.config;
+  const command = asString(config.command, "codex");
+  const cwd = asString(config.cwd, "") || process.cwd();
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  const envConfig = parseObject(config.env);
+  const configuredCodexHome =
+    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
+      ? path.resolve(envConfig.CODEX_HOME.trim())
+      : null;
+  const preparedManagedCodexHome =
+    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, input.agent.companyId);
+  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, input.agent.companyId);
+  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  await fs.mkdir(effectiveCodexHome, { recursive: true });
+
+  const env: Record<string, string> = { ...buildPaperclipEnv(input.agent) };
+  env.CODEX_HOME = effectiveCodexHome;
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  const runtimeEnv = ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...env });
+  await ensureCommandResolvable(command, cwd, runtimeEnv);
+
+  const timeoutSec = asNumber(config.timeoutSec, 120);
+  const graceSec = asNumber(config.graceSec, 10);
+
+  const proc = await runChildProcess(input.runId, command, ["login"], {
+    cwd,
+    env,
+    timeoutSec,
+    graceSec,
+    onLog,
+  });
+
+  const loginUrl = extractCodexLoginUrl(`${proc.stdout}\n${proc.stderr}`);
+
+  return buildCodexLoginResult({ proc, loginUrl });
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -567,15 +635,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const exited = (attempt.proc.exitCode ?? 0) !== 0;
+    const authRequired = exited && detectCodexAuthRequired(attempt.proc.stdout, attempt.proc.stderr, parsedError);
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
-          ? null
-          : fallbackErrorMessage,
+      errorMessage: exited ? fallbackErrorMessage : null,
+      errorCode: authRequired ? "codex_auth_required" : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

@@ -243,6 +243,7 @@ export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 export const CREDENTIAL_TYPES = [
   "claude_oauth",
   "claude_api_key",
+  "codex_oauth",
   "gemini_api_key",
   "openai_api_key",
   "openrouter_api_key",

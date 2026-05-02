@@ -349,6 +349,25 @@ async function probeCredential(type: string, payload: Record<string, unknown>): 
       const body = await res.text().catch(() => "");
       return { ok: false, reason: classifyStatus(res.status), message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
     }
+    case "codex_oauth": {
+      const accessToken = typeof payload.accessToken === "string" ? payload.accessToken : "";
+      if (!accessToken) return { ok: false, reason: "invalid", message: "Missing accessToken" };
+      const accountId = typeof payload.accountId === "string" ? payload.accountId : "";
+      const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+      if (accountId) headers["ChatGPT-Account-Id"] = accountId;
+      const res = await probeFetch("https://chatgpt.com/backend-api/wham/usage", { headers });
+      if (res.ok) {
+        const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
+        const warnings: string[] = [];
+        if (!refreshToken) warnings.push("no refreshToken (will break when access token expires)");
+        return {
+          ok: true,
+          message: warnings.length > 0 ? `OAuth token valid. Warning: ${warnings.join("; ")}` : "OAuth token valid",
+        };
+      }
+      const body = await res.text().catch(() => "");
+      return { ok: false, reason: classifyStatus(res.status), message: `ChatGPT API returned ${res.status}: ${body.slice(0, 200)}` };
+    }
     case "openai_api_key": {
       const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
       if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };

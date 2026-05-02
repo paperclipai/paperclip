@@ -758,6 +758,7 @@ function buildResolutionTestUrl(input: AgentSnippetInput): string | null {
 const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   claude_oauth: "Claude OAuth (Max)",
   claude_api_key: "Claude API Key",
+  codex_oauth: "Codex OAuth (ChatGPT)",
   gemini_api_key: "Gemini API Key",
   openai_api_key: "OpenAI API Key",
   openrouter_api_key: "OpenRouter API Key",
@@ -766,6 +767,7 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
 const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
   "claude_oauth",
   "claude_api_key",
+  "codex_oauth",
   "gemini_api_key",
   "openai_api_key",
   "openrouter_api_key",
@@ -777,6 +779,8 @@ function credentialPlaceholder(type: CredentialType): string {
       return "sk-ant-oat01-...";
     case "claude_api_key":
       return "Paste sk-ant-... key...";
+    case "codex_oauth":
+      return "eyJ... (or paste full ~/.codex/auth.json)";
     case "gemini_api_key":
       return "Paste AIza... key...";
     case "openai_api_key":
@@ -790,29 +794,69 @@ function buildCredentialPayload(
   type: CredentialType,
   token: string,
 ): Record<string, unknown> {
-  if (type !== "claude_oauth") return { apiKey: token };
-
-  const trimmed = token.trim();
-  if (trimmed.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      const inner =
-        parsed && typeof parsed.claudeAiOauth === "object" && parsed.claudeAiOauth !== null
-          ? (parsed.claudeAiOauth as Record<string, unknown>)
-          : parsed;
-      const out: Record<string, unknown> = {};
-      if (typeof inner.accessToken === "string") out.accessToken = inner.accessToken;
-      if (typeof inner.refreshToken === "string") out.refreshToken = inner.refreshToken;
-      if (typeof inner.expiresAt === "number") out.expiresAt = inner.expiresAt;
-      if (Array.isArray(inner.scopes)) out.scopes = inner.scopes.filter((s): s is string => typeof s === "string");
-      if (typeof inner.subscriptionType === "string") out.subscriptionType = inner.subscriptionType;
-      if (typeof inner.rateLimitTier === "string") out.rateLimitTier = inner.rateLimitTier;
-      if (typeof out.accessToken === "string") return out;
-    } catch {
-      // fall through — treat as bare token
+  if (type === "claude_oauth") {
+    const trimmed = token.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        const inner =
+          parsed && typeof parsed.claudeAiOauth === "object" && parsed.claudeAiOauth !== null
+            ? (parsed.claudeAiOauth as Record<string, unknown>)
+            : parsed;
+        const out: Record<string, unknown> = {};
+        if (typeof inner.accessToken === "string") out.accessToken = inner.accessToken;
+        if (typeof inner.refreshToken === "string") out.refreshToken = inner.refreshToken;
+        if (typeof inner.expiresAt === "number") out.expiresAt = inner.expiresAt;
+        if (Array.isArray(inner.scopes)) out.scopes = inner.scopes.filter((s): s is string => typeof s === "string");
+        if (typeof inner.subscriptionType === "string") out.subscriptionType = inner.subscriptionType;
+        if (typeof inner.rateLimitTier === "string") out.rateLimitTier = inner.rateLimitTier;
+        if (typeof out.accessToken === "string") return out;
+      } catch {
+        // fall through — treat as bare token
+      }
     }
+    return { accessToken: trimmed };
   }
-  return { accessToken: trimmed };
+
+  if (type === "codex_oauth") {
+    const trimmed = token.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        const tokens =
+          parsed && typeof parsed.tokens === "object" && parsed.tokens !== null
+            ? (parsed.tokens as Record<string, unknown>)
+            : null;
+        const out: Record<string, unknown> = {};
+        const accessToken =
+          (tokens && typeof tokens.access_token === "string" ? tokens.access_token : null)
+          ?? (typeof parsed.accessToken === "string" ? parsed.accessToken : null);
+        const refreshToken =
+          (tokens && typeof tokens.refresh_token === "string" ? tokens.refresh_token : null)
+          ?? (typeof parsed.refreshToken === "string" ? parsed.refreshToken : null);
+        const idToken =
+          (tokens && typeof tokens.id_token === "string" ? tokens.id_token : null)
+          ?? (typeof parsed.idToken === "string" ? parsed.idToken : null);
+        const accountId =
+          (tokens && typeof tokens.account_id === "string" ? tokens.account_id : null)
+          ?? (typeof parsed.accountId === "string" ? parsed.accountId : null);
+        const lastRefresh = typeof parsed.last_refresh === "string"
+          ? parsed.last_refresh
+          : typeof parsed.lastRefresh === "string" ? parsed.lastRefresh : null;
+        if (accessToken) out.accessToken = accessToken;
+        if (refreshToken) out.refreshToken = refreshToken;
+        if (idToken) out.idToken = idToken;
+        if (accountId) out.accountId = accountId;
+        if (lastRefresh) out.lastRefresh = lastRefresh;
+        if (typeof out.accessToken === "string") return out;
+      } catch {
+        // fall through — treat as bare token
+      }
+    }
+    return { accessToken: trimmed };
+  }
+
+  return { apiKey: token };
 }
 
 function CredentialsSection({ companyId }: { companyId: string }) {
@@ -1249,11 +1293,13 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               </select>
             </Field>
             <Field
-              label={addType === "claude_oauth" ? "Access Token" : "API Key"}
+              label={addType === "claude_oauth" || addType === "codex_oauth" ? "Access Token" : "API Key"}
               hint={
                 addType === "claude_oauth"
                   ? "Paste your Claude OAuth access token (sk-ant-oat01-...). For auto-renewing credentials, paste the full ~/.claude/.credentials.json instead."
-                  : undefined
+                  : addType === "codex_oauth"
+                    ? "Paste your Codex OAuth access token (eyJ...). For auto-renewing credentials, paste the full ~/.codex/auth.json instead."
+                    : undefined
               }
             >
               <input

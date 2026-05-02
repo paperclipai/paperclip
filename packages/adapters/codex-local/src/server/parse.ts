@@ -71,3 +71,17 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     haystack,
   );
 }
+
+const CODEX_URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
+
+export function extractCodexLoginUrl(text: string): string | null {
+  const match = text.match(CODEX_URL_RE);
+  if (!match || match.length === 0) return null;
+  for (const rawUrl of match) {
+    const cleaned = rawUrl.replace(/[\])}.!,?;:'\"]+$/g, "");
+    if (cleaned.includes("openai.com") || cleaned.includes("chatgpt.com") || cleaned.includes("auth")) {
+      return cleaned;
+    }
+  }
+  return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
+}

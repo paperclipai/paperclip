@@ -82,6 +82,26 @@ export function credentialValidateRoutes() {
       return;
     }
 
+    if (type === "codex_oauth") {
+      const token = credential?.accessToken;
+      if (typeof token !== "string" || !token.trim()) {
+        res.json({ valid: false, error: "Missing access token" });
+        return;
+      }
+      const t = token.trim();
+      // Codex OAuth tokens are JWTs (eyJ...) issued by ChatGPT.
+      if (!t.startsWith("eyJ")) {
+        res.json({ valid: false, error: "Invalid format — Codex OAuth tokens are JWTs starting with eyJ" });
+        return;
+      }
+      if (t.length < 100) {
+        res.json({ valid: false, error: "Token looks too short" });
+        return;
+      }
+      res.json({ valid: true });
+      return;
+    }
+
     // For other types, just check the value is non-empty
     res.json({ valid: true });
   });

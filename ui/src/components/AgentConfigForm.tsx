@@ -1457,6 +1457,7 @@ function ThinkingEffortDropdown({
 const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   claude_oauth: "Claude OAuth",
   claude_api_key: "Claude API Key",
+  codex_oauth: "Codex OAuth",
   gemini_api_key: "Gemini API Key",
   openai_api_key: "OpenAI API Key",
   openrouter_api_key: "OpenRouter API Key",
@@ -1469,6 +1470,7 @@ function credentialTypesForAdapterType(adapterType: string): Set<CredentialType>
     case "gemini_local":
       return new Set<CredentialType>(["gemini_api_key"]);
     case "codex_local":
+      return new Set<CredentialType>(["codex_oauth", "openai_api_key"]);
     case "cursor":
       return new Set<CredentialType>(["openai_api_key"]);
     case "opencode_local":

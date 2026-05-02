@@ -158,6 +158,8 @@ export function credentialService(db: Db) {
  * - `claude_oauth`: writes `.credentials.json` under an agent-specific HOME and
  *   overrides HOME so the Claude CLI discovers the OAuth token.
  * - `claude_api_key`: sets ANTHROPIC_API_KEY.
+ * - `codex_oauth`: writes `auth.json` under an agent-specific CODEX_HOME and
+ *   sets CODEX_HOME so the Codex CLI discovers the ChatGPT OAuth token.
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
  * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
  * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
@@ -225,6 +227,39 @@ export async function resolveCredentialEnv(
         return { env: {} };
       }
       return { env: { ANTHROPIC_API_KEY: apiKey } };
+    }
+
+    case "codex_oauth": {
+      const accessToken = typeof payload.accessToken === "string" ? payload.accessToken : "";
+      if (!accessToken) {
+        logger.warn({ agentId, credentialId }, "codex_oauth credential missing accessToken");
+        return { env: {} };
+      }
+      const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
+      const idToken = typeof payload.idToken === "string" ? payload.idToken : "";
+      const accountId = typeof payload.accountId === "string" ? payload.accountId : "";
+      const lastRefresh = typeof payload.lastRefresh === "string" ? payload.lastRefresh : new Date().toISOString();
+      const tokens: Record<string, string> = { access_token: accessToken };
+      if (idToken) tokens.id_token = idToken;
+      if (refreshToken) tokens.refresh_token = refreshToken;
+      if (accountId) tokens.account_id = accountId;
+      const authFile: Record<string, unknown> = {
+        OPENAI_API_KEY: null,
+        tokens,
+        last_refresh: lastRefresh,
+      };
+
+      const agentHome = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId);
+      const codexDir = path.join(agentHome, ".codex");
+      await fs.mkdir(codexDir, { recursive: true });
+      const credFile = path.join(codexDir, "auth.json");
+      await fs.writeFile(credFile, JSON.stringify(authFile), "utf-8");
+      await fs.chmod(credFile, 0o600).catch(() => undefined);
+      logger.info(
+        { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, hasAccountId: accountId.length > 0 },
+        "wrote codex_oauth auth.json for agent",
+      );
+      return { env: { CODEX_HOME: codexDir, HOME: agentHome }, home: agentHome };
     }
 
     case "gemini_api_key": {
