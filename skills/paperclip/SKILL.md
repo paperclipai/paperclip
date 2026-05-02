@@ -27,7 +27,14 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 Follow these steps every time you wake up:
 
-**Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
+**Scoped-wake fast path.** You can skip Steps 1–4 entirely in either of these cases:
+
+1. The user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue.
+2. `PAPERCLIP_TASK_ID` is set AND `PAPERCLIP_WAKE_REASON` is one of `issue_assigned`, `issue_commented`, `issue_comment_mentioned`, `issue_blockers_resolved`, `issue_children_completed`, or any other issue-scoped wake.
+
+In both cases, go straight to **Step 5 (Checkout)** using `$PAPERCLIP_TASK_ID` as the issue id, then continue with Steps 6–9. Do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT search for your assignments, do NOT pick work. Your identity (`$PAPERCLIP_AGENT_ID`) and the target issue (`$PAPERCLIP_TASK_ID`) are already injected as env vars — use them directly.
+
+**Common mistake to avoid:** Never nest one curl inside another curl's URL to "look up" your agent id or the task id. Both are available as env vars. Writing something like `curl .../api/issues/$(curl .../api/agents/me | jq -r .id)/checkout` will put the JSON object (not the issue id) into the URL and fail with a 400 validation error. Use `$PAPERCLIP_AGENT_ID` and `$PAPERCLIP_TASK_ID` directly.
 
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 
