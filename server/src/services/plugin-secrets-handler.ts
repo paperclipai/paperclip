@@ -487,7 +487,6 @@ export function createPluginSecretsHandler(
         throw new Error(`Secret "${name}" is not owned by this plugin and cannot be deleted.`);
       }
 
-      await svc.remove(existing.id);
       await logActivity(db, {
         companyId,
         actorType: "plugin",
@@ -497,6 +496,7 @@ export function createPluginSecretsHandler(
         entityId: existing.id,
         details: { name },
       });
+      await svc.remove(existing.id);
       return undefined;
     },
   };
