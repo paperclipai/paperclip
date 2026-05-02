@@ -566,7 +566,7 @@ describe("fetchClaudeQuota", () => {
     expect(windows).toHaveLength(2);
     expect(windows[0]!.label).toBe("Weekly (Sonnet)");
     expect(windows[0]!.usedPercent).toBe(23);
-    expect(windows[1]!.label).toBe("Current week (Opus only)");
+    expect(windows[1]!.label).toBe("Weekly (Opus)");
     expect(windows[1]!.usedPercent).toBe(85);
   });
 
@@ -590,7 +590,7 @@ describe("fetchClaudeQuota", () => {
       "Current session",
       "Weekly (all models)",
       "Weekly (Sonnet)",
-      "Current week (Opus only)",
+      "Weekly (Opus)",
     ]);
     expect(windows.map((w: QuotaWindow) => w.usedPercent)).toEqual([10, 20, 30, 40]);
   });

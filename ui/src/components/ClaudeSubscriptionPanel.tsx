@@ -7,16 +7,22 @@ interface ClaudeSubscriptionPanelProps {
   error?: string | null;
 }
 
+// Sort order for the windows rendered inside the panel. Each slot has at most
+// one "live" key (the label our parser emits today) and zero or more legacy
+// keys retained for back-compat with older CLI scrape headings or pre-rename
+// payloads. Unknown keys (e.g. a hypothetical future `weeklyhaiku`) fall to
+// the bottom of the list — see `orderedWindows` below.
 const WINDOW_ORDER = [
-  "currentsession",
-  "weeklyallmodels",
-  "currentweekallmodels",
-  "weeklysonnet",
-  "currentweeksonnetonly",
-  "currentweeksonnet",
-  "currentweekopusonly",
-  "currentweekopus",
-  "extrausage",
+  "currentsession",            // live
+  "weeklyallmodels",           // live
+  "currentweekallmodels",      // legacy — back-compat for pre-rename payloads
+  "weeklysonnet",              // live
+  "currentweeksonnetonly",     // legacy — back-compat for pre-rename payloads
+  "currentweeksonnet",         // legacy — older CLI scrape heading
+  "weeklyopus",                // live
+  "currentweekopusonly",       // legacy — back-compat for pre-rename payloads
+  "currentweekopus",           // legacy — older CLI scrape heading
+  "extrausage",                // live
 ] as const;
 
 function normalizeLabel(text: string): string {

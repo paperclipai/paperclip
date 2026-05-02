@@ -249,7 +249,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day_opus != null) {
     windows.push({
-      label: "Current week (Opus only)",
+      label: "Weekly (Opus)",
       usedPercent: toPercent(body.seven_day_opus.utilization),
       resetsAt: body.seven_day_opus.resets_at ?? null,
       valueLabel: null,
@@ -331,33 +331,47 @@ function percentFromLine(line: string): number | null {
   return Math.round(clamped);
 }
 
+// The CLI scrape diagnostic path (`fetchClaudeCliQuota` → `parseClaudeCliUsageText`)
+// receives whatever text Anthropic's `claude` CLI happens to render in its `/usage`
+// TUI panel. We canonicalize it to the same labels `fetchClaudeQuota` emits from the
+// OAuth API, so the UI doesn't have to know which path produced the windows. The
+// `currentweek*` aliases below cover the headings the upstream CLI prints today;
+// the `weekly*` aliases match the labels we now emit ourselves so any internal
+// re-feed (or a future CLI rename) round-trips. These aliases are intended to be
+// permanent for as long as the CLI scrape diagnostic path is maintained.
 function isQuotaLabel(line: string): boolean {
   const normalized = normalizeForLabelSearch(line);
   return normalized === "currentsession"
-    || normalized === "currentweekallmodels"
-    || normalized === "weeklyallmodels"
-    || normalized === "currentweeksonnetonly"
-    || normalized === "currentweeksonnet"
-    || normalized === "weeklysonnet"
-    || normalized === "currentweekopusonly"
-    || normalized === "currentweekopus"
+    || normalized === "currentweekallmodels" // upstream CLI heading
+    || normalized === "weeklyallmodels"      // our renamed label, round-trip safety
+    || normalized === "currentweeksonnetonly" // upstream CLI heading
+    || normalized === "currentweeksonnet"     // upstream CLI heading (older form)
+    || normalized === "weeklysonnet"          // our renamed label, round-trip safety
+    || normalized === "currentweekopusonly"   // upstream CLI heading
+    || normalized === "currentweekopus"       // upstream CLI heading (older form)
+    || normalized === "weeklyopus"            // our renamed label, round-trip safety
     || normalized === "extrausage";
 }
 
+// Mirrors the alias set in `isQuotaLabel`. Each `case` block maps a recognized
+// upstream/legacy form onto the single canonical label the UI renders. Keeping
+// both old and new normalized forms is intentional and permanent for as long as
+// the CLI scrape diagnostic path is maintained — see the comment above `isQuotaLabel`.
 function canonicalQuotaLabel(line: string): string {
   switch (normalizeForLabelSearch(line)) {
     case "currentsession":
       return "Current session";
-    case "currentweekallmodels":
-    case "weeklyallmodels":
+    case "currentweekallmodels": // upstream CLI heading
+    case "weeklyallmodels":      // our renamed label, round-trip safety
       return "Weekly (all models)";
-    case "currentweeksonnetonly":
-    case "currentweeksonnet":
-    case "weeklysonnet":
+    case "currentweeksonnetonly": // upstream CLI heading
+    case "currentweeksonnet":     // upstream CLI heading (older form)
+    case "weeklysonnet":          // our renamed label, round-trip safety
       return "Weekly (Sonnet)";
-    case "currentweekopusonly":
-    case "currentweekopus":
-      return "Current week (Opus only)";
+    case "currentweekopusonly": // upstream CLI heading
+    case "currentweekopus":     // upstream CLI heading (older form)
+    case "weeklyopus":          // our renamed label, round-trip safety
+      return "Weekly (Opus)";
     case "extrausage":
       return "Extra usage";
     default:
