@@ -3592,11 +3592,21 @@ export function issueService(db: Db) {
         })
         .returning();
 
+      const now = new Date();
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await db
         .update(issues)
-        .set({ updatedAt: new Date() })
+        .set({ updatedAt: now })
         .where(eq(issues.id, issueId));
+
+      // Liveness signal: an authoring run proves agent is alive even with zero
+      // stdout chunks. recovery/service.ts detector reads lastLivenessAt.
+      if (actor.runId) {
+        await db
+          .update(heartbeatRuns)
+          .set({ lastLivenessAt: now, updatedAt: now })
+          .where(eq(heartbeatRuns.id, actor.runId));
+      }
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },

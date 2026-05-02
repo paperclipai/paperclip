@@ -85,6 +85,7 @@ export type RunOutputSilenceSummary = {
   lastOutputAt: Date | null;
   lastOutputSeq: number;
   lastOutputStream: "stdout" | "stderr" | null;
+  lastLivenessAt: Date | null;
   silenceStartedAt: Date | null;
   silenceAgeMs: number | null;
   level: "not_applicable" | "ok" | "suspicious" | "critical" | "snoozed";
@@ -579,11 +580,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return `stale_active_run:${companyId}:${runId}`;
   }
 
-  function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
-    return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+  function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastLivenessAt" | "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
+    return run.lastLivenessAt ?? run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
   }
 
-  function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
+  function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastLivenessAt" | "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
     const startedAt = silenceStartedAtForRun(run);
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
@@ -632,7 +633,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
-      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
+      "id" | "companyId" | "status" | "lastLivenessAt" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
@@ -657,6 +658,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       lastOutputStream: (run.lastOutputStream === "stdout" || run.lastOutputStream === "stderr")
         ? run.lastOutputStream
         : null,
+      lastLivenessAt: run.lastLivenessAt ?? null,
       silenceStartedAt,
       silenceAgeMs,
       level,
@@ -1066,7 +1068,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
+          sql`coalesce(${heartbeatRuns.lastLivenessAt}, ${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
         ),
       )
       .orderBy(asc(heartbeatRuns.createdAt))
