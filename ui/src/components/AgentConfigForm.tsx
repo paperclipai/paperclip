@@ -886,6 +886,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            {isLocal && (
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -920,6 +921,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 />
               </Field>
+            )}
 
               {supportsModelProfiles && (
                 <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
