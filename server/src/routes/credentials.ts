@@ -434,6 +434,8 @@ export function credentialRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       await requireCredentialManage(req, companyId);
 
+      res.set("Cache-Control", "no-store");
+
       const session = codexCredSessions.get(sessionId);
       if (!session || session.companyId !== companyId) {
         res.status(404).json({ error: "Codex login session not found or expired" });
