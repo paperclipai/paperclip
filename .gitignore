@@ -56,3 +56,8 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Personal / local-only (no van al fork ni al upstream)
+docker/docker-compose.ropebird.yml
+conocimiento/
+server/agents/
