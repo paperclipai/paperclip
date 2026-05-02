@@ -45,8 +45,17 @@ function resolveWindowsShellFallback(shellName = "sh"): string {
 }
 
 function isWindowsNativeShell(shell: string): boolean {
-  const basename = path.basename(shell).toLowerCase();
-  return basename === "powershell.exe" || basename === "pwsh.exe" || basename === "cmd.exe";
+  const basenames = new Set(
+    [path.basename(shell), path.win32.basename(shell)].map((name) => name.toLowerCase()),
+  );
+  return (
+    basenames.has("powershell.exe") ||
+    basenames.has("powershell") ||
+    basenames.has("pwsh.exe") ||
+    basenames.has("pwsh") ||
+    basenames.has("cmd.exe") ||
+    basenames.has("cmd")
+  );
 }
 
 export function resolveShell(): string {
