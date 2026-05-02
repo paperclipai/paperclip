@@ -450,28 +450,47 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return findActiveServerAdapter(type) ?? processAdapter;
 }
 
+function mergeAdapterModels(
+  dynamic: { id: string; label: string }[],
+  staticModels: { id: string; label: string }[],
+): { id: string; label: string }[] {
+  // Dynamic discovery is scoped to the server process environment and only returns
+  // models for providers whose API keys are present there.  Agent-specific provider
+  // keys (stored in adapterConfig.env) are not available to discovery, so some
+  // supported models will be absent from the discovered list even though they work
+  // at runtime.  Always append static fallback models so that known-good options
+  // remain visible in the catalog regardless of which provider keys the server
+  // process happens to hold.
+  if (dynamic.length === 0) return staticModels;
+  const seen = new Set(dynamic.map((m) => m.id));
+  const extra = staticModels.filter((m) => !seen.has(m.id));
+  return [...dynamic, ...extra];
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  const staticModels = adapter.models ?? [];
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
-    if (discovered.length > 0) return discovered;
+    return mergeAdapterModels(discovered, staticModels);
   }
-  return adapter.models ?? [];
+  return staticModels;
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  const staticModels = adapter.models ?? [];
   if (adapter.refreshModels) {
     const refreshed = await adapter.refreshModels();
-    if (refreshed.length > 0) return refreshed;
+    return mergeAdapterModels(refreshed, staticModels);
   }
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
-    if (discovered.length > 0) return discovered;
+    return mergeAdapterModels(discovered, staticModels);
   }
-  return adapter.models ?? [];
+  return staticModels;
 }
 
 export function listServerAdapters(): ServerAdapterModule[] {

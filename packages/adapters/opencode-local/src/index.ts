@@ -3,12 +3,21 @@ export const label = "OpenCode (local)";
 
 export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
 
+// Static model list — shown in the catalog regardless of which provider API keys
+// the server process holds.  Dynamic discovery (opencode models) is scoped to the
+// server environment and will miss provider keys injected per-agent via
+// adapterConfig.env.  Models added here serve as always-visible known-good options.
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  // DeepSeek — verified working in production (BUY-7170); API key is injected
+  // per-agent via adapterConfig.env so discovery cannot see it from the server process.
+  { id: "deepseek/deepseek-v4-pro", label: "deepseek/deepseek-v4-pro" },
+  { id: "deepseek/deepseek-r1", label: "deepseek/deepseek-r1" },
+  { id: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat" },
 ];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
