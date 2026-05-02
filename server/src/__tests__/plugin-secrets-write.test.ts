@@ -237,6 +237,14 @@ describe("createPluginSecretsHandler.write()", () => {
       ).rejects.toThrow(/value.*empty|empty.*value/i);
     });
 
+    it("accepts whitespace-only value (technically valid secret material)", async () => {
+      mockGetByName.mockResolvedValue(null);
+      mockCreate.mockResolvedValue(BASE_SECRET);
+      await expect(
+        handler.write({ companyId: COMPANY_ID, name: "MY_SECRET", value: "   " }),
+      ).resolves.toBe(SECRET_ID);
+    });
+
     it("rejects value over 64 KiB", async () => {
       const bigValue = "x".repeat(65537);
       await expect(
