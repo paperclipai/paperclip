@@ -1093,7 +1093,7 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
-        children: children.items.map((child) => ({
+        children: children.map((child) => ({
           id: child.id,
           identifier: child.identifier,
           title: child.title,

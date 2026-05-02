@@ -181,12 +181,7 @@ describe.sequential("issue goal context routes", () => {
       latestCommentAt: null,
     });
     mockIssueService.getComment.mockResolvedValue(null);
-    mockIssueService.list.mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 100,
-      offset: 0,
-    });
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.listAttachments.mockResolvedValue([]);
@@ -308,22 +303,17 @@ describe.sequential("issue goal context routes", () => {
       ],
       blocks: [],
     });
-    mockIssueService.list.mockResolvedValue({
-      items: [
-        {
-          id: "66666666-6666-4666-8666-666666666666",
-          identifier: "PAP-582",
-          title: "Prove umbrella hydration",
-          status: "todo",
-          priority: "high",
-          assigneeAgentId: null,
-          assigneeUserId: null,
-        },
-      ],
-      total: 1,
-      limit: 100,
-      offset: 0,
-    });
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "66666666-6666-4666-8666-666666666666",
+        identifier: "PAP-582",
+        title: "Prove umbrella hydration",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+    ]);
 
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
