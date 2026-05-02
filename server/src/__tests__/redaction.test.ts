@@ -73,6 +73,11 @@ describe("redaction", () => {
       `escaped {\\"apiKey\\":\\"escaped-json-secret\\"}`,
       `GITHUB_TOKEN=${githubToken}`,
       `session=${jwt}`,
+      "COOKIE_VALUE=session-cookie-value",
+      "CREDENTIAL_PATH=credential-path-value",
+      "SESSION_TOKEN=session-token-value",
+      "CUSTOM_AUTH=custom-auth-value",
+      `Bearer ${jwt}`,
     ].join("\n");
 
     const result = redactSensitiveText(input);
@@ -83,6 +88,10 @@ describe("redaction", () => {
     expect(result).not.toContain("escaped-json-secret");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
+    expect(result).not.toContain("session-cookie-value");
+    expect(result).not.toContain("credential-path-value");
+    expect(result).not.toContain("session-token-value");
+    expect(result).not.toContain("custom-auth-value");
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
