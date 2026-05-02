@@ -28,6 +28,13 @@ agents:
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    # V4.1 (2026-05-02): force serial runs. Four parallel CEO/Chief wakeups
+    # racing on the same directive caused the KOEA-364/365/366 + 16 child
+    # duplicate cascade. maxConcurrentRuns: 1 = at most one heartbeat in
+    # flight per agent at any moment.
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         RESEND_API_KEY:
@@ -44,18 +51,27 @@ agents:
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
   chief-content:
     adapter:
       type: claude_local
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
   chief-engineering:
     adapter:
       type: claude_local
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         GH_TOKEN:
@@ -67,6 +83,9 @@ agents:
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
 
   # ─────────────────────────── Researchers (Grok 4.1 Fast via OpenCode→OpenRouter) ───────────────────────────
   researcher-anthropic:
@@ -75,6 +94,9 @@ agents:
       config:
         model: openrouter/x-ai/grok-4.1-fast
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         TAVILY_API_KEY:
@@ -89,6 +111,9 @@ agents:
       config:
         model: openrouter/x-ai/grok-4.1-fast
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         TAVILY_API_KEY:
@@ -100,6 +125,9 @@ agents:
       config:
         model: openrouter/x-ai/grok-4.1-fast
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         TAVILY_API_KEY:
@@ -111,6 +139,9 @@ agents:
       config:
         model: openrouter/x-ai/grok-4.1-fast
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         TAVILY_API_KEY:
@@ -125,6 +156,9 @@ agents:
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
 
   # ─────────────────────────── Content team ───────────────────────────
   content-author:
@@ -135,6 +169,47 @@ agents:
       config:
         model: openrouter/google/gemini-3-flash-preview
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
+    inputs:
+      env:
+        ACADEMY_AGENT_API_KEY:
+          kind: secret
+          requirement: required
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: optional
+  # blog-author: split-out variant of content-author, dedicated to blog posts.
+  # SOUL.md exists at agents/blog-author/. Mirror content-author's adapter
+  # (Gemini 3 Flash Preview via OpenCode) and apply the V4.1 concurrency cap.
+  blog-author:
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/google/gemini-3-flash-preview
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
+    inputs:
+      env:
+        ACADEMY_AGENT_API_KEY:
+          kind: secret
+          requirement: required
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: optional
+  # course-author: split-out variant of content-author, dedicated to multi-chapter courses.
+  course-author:
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/google/gemini-3-flash-preview
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         ACADEMY_AGENT_API_KEY:
@@ -149,6 +224,9 @@ agents:
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
   slide-audio-producer:
     # NotebookLM (notebooklm-py primary, open-notebook fallback) decision logged
     # 2026-04-30 in docs/V2_PRODUCER_EXPANSION.md.
@@ -157,6 +235,9 @@ agents:
       config:
         model: claude-sonnet-4-6
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
   voice-producer:
     # Lightweight: orchestrates Kokoro CLI via Bash. Haiku 4.5 is sufficient.
     adapter:
@@ -164,6 +245,9 @@ agents:
       config:
         model: claude-haiku-4-5
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
 
   # ─────────────────────────── Engineering — harness pattern (Anthropic April 2026) ───────────────────────────
   # Planner and Executor are SAME model + SAME context + SAME tools.
@@ -176,6 +260,9 @@ agents:
         model: claude-opus-4-7
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
         extraArgs: ["--permission-mode", "plan"]
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         GH_TOKEN:
@@ -187,6 +274,9 @@ agents:
       config:
         model: claude-opus-4-7
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         GH_TOKEN:
@@ -200,6 +290,9 @@ agents:
         # variant gives an independent perspective vs Planner+Executor (both Opus 4.7).
         model: gpt-5.3-codex
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
     inputs:
       env:
         GH_TOKEN:
@@ -211,6 +304,9 @@ agents:
       config:
         model: claude-haiku-4-5
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
 
   # ─────────────────────────── Marketing/SEO ───────────────────────────
   seo-optimizer:
@@ -227,6 +323,9 @@ agents:
       config:
         model: claude-haiku-4-5
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    runtimeConfig:
+      heartbeat:
+        maxConcurrentRuns: 1
 
   # ─────────────────────────── Vault Historian — librarian/curator ───────────────────────────
   vault-historian:

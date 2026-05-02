@@ -87,10 +87,11 @@ services:
       # Other startup reconciliations (stranded-assigned, issue-graph-liveness,
       # silent-active-runs) remain enabled — they're useful state consistency.
       PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEWS: "1"
-      # Give V8 a 3GB heap so that OOM is diagnostic (visible in node logs)
+      # Give V8 a 4GB heap so that OOM is diagnostic (visible in node logs)
       # instead of silent SIGKILL. Default V8 cap is ~1.7GB, was likely the
       # actual cause of the SIGKILL crash loop on 2026-05-01 03:00 UTC peak.
-      NODE_OPTIONS: "--max-old-space-size=3072"
+      # V4.1 (2026-05-02): bumped 3072 → 4096 to match the 4g → 6g cgroup bump.
+      NODE_OPTIONS: "--max-old-space-size=4096"
     env_file:
       - ../.env.koenig
     volumes:
@@ -135,8 +136,13 @@ services:
     # Memory limit + Node V8 heap headroom — fix for SIGKILL crash loop
     # (monitor 2026-05-01 confirmed exit 137 even with cron-driver stopped;
     #  Docker Desktop allots 7.65GiB total; spend-tail + cron-driver use some;
-    #  give paperclip the lion's share with a hard ceiling so OOMs are diagnostic)
-    mem_limit: 4g
+    #  give paperclip the lion's share with a hard ceiling so OOMs are diagnostic).
+    # V4.1 (2026-05-02): bumped 4g → 6g. Multiple Sonnet/Grok subprocesses per
+    # agent + ~7 active agents at peak put 4 GB cgroup under pressure → SIGKILL
+    # → process_lost cascade. 6 GB gives breathing room. Also bumps Node heap
+    # 3072 → 4096 above. Requires `docker compose up -d --force-recreate paperclip`
+    # to take effect.
+    mem_limit: 6g
     mem_reservation: 1g
     logging:
       driver: json-file
