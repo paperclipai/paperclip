@@ -39,7 +39,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeModelPolicyViolation, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -240,14 +240,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
 
-    if (!executionTargetIsRemote) {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model,
-        command,
-        cwd,
-        env: runtimeEnv,
-      });
-    }
+    // Enforce model policy for ALL execution targets (local and remote).
+    // Removing the local-only guard prevents silent model drift on remote runners
+    // where the pre-flight check was previously skipped.
+    await ensureOpenCodeModelConfiguredAndAvailable({
+      model,
+      command,
+      cwd,
+      env: runtimeEnv,
+    });
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
@@ -484,8 +485,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
-      const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+      // Detect silent model drift: if OpenCode logged a ProviderModelNotFoundError
+      // for the configured model to stderr but the run appears to have exited 0
+      // (possible when OpenCode silently falls back to an alternative model),
+      // treat this as a hard policy violation so usage_json.model is never wrong.
+      const modelPolicyViolationInStderr =
+        model &&
+        (rawExitCode ?? 0) === 0 &&
+        !parsedError &&
+        isOpenCodeModelPolicyViolation(attempt.proc.stdout, attempt.proc.stderr, model);
+      const synthesizedExitCode =
+        modelPolicyViolationInStderr
+          ? 1
+          : parsedError && (rawExitCode ?? 0) === 0
+          ? 1
+          : rawExitCode;
+      const policyViolationMessage = modelPolicyViolationInStderr
+        ? `Model policy violation: run used a different model than the assigned "${model}". No fallback is allowed.`
+        : "";
       const fallbackErrorMessage =
+        policyViolationMessage ||
         parsedError ||
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;

@@ -88,6 +88,34 @@ export function parseOpenCodeJsonl(stdout: string) {
   };
 }
 
+/**
+ * Returns true if stderr/stdout contains evidence that OpenCode silently used a
+ * different model than the one requested (ProviderModelNotFoundError logged to
+ * stderr but execution continued via fallback).  Used to enforce the model
+ * immutability policy when OpenCode does not propagate the error through JSONL.
+ */
+export function isOpenCodeModelPolicyViolation(
+  stdout: string,
+  stderr: string,
+  configuredModel: string,
+): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  // ProviderModelNotFoundError in stderr/stdout means OpenCode could not find
+  // the requested model.  If this appears alongside a successful-looking run
+  // (non-empty summary, no fatal JSONL error), it indicates silent fallback.
+  if (!/ProviderModelNotFoundError|Model not found/i.test(haystack)) return false;
+  // Scope the check to the specific configured model to avoid false positives
+  // from unrelated tool-call errors that reference model IDs.
+  const modelFragment = configuredModel.includes("/")
+    ? configuredModel.split("/").slice(-1)[0]
+    : configuredModel;
+  return modelFragment.length > 0 && haystack.includes(modelFragment);
+}
+
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

@@ -213,7 +213,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
   }
 
-  const models = await discoverOpenCodeModelsCached({
+  let models = await discoverOpenCodeModelsCached({
     command: input.command,
     cwd: input.cwd,
     env: input.env,
@@ -224,10 +224,19 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   }
 
   if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
-    throw new Error(
-      `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
-    );
+    // Cache may be stale — retry with a fresh non-cached discovery before failing.
+    // This implements "retry model discovery first" per the model immutability policy.
+    models = await discoverOpenCodeModels({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
+    if (!models.some((entry) => entry.id === model)) {
+      const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+      throw new Error(
+        `Model policy violation: assigned model "${model}" is not available and no fallback is allowed. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      );
+    }
   }
 
   return models;
