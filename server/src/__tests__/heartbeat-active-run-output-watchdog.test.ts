@@ -94,7 +94,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(opts: {
+    now: Date;
+    ageMs: number;
+    withOutput?: boolean;
+    logChunk?: string;
+    lastLivenessAgeMs?: number;
+  }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -103,6 +109,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const startedAt = new Date(opts.now.getTime() - opts.ageMs);
     const lastOutputAt = opts.withOutput ? new Date(opts.now.getTime() - 5 * 60 * 1000) : null;
+    const lastLivenessAt = opts.lastLivenessAgeMs !== undefined
+      ? new Date(opts.now.getTime() - opts.lastLivenessAgeMs)
+      : null;
 
     await db.insert(companies).values({
       id: companyId,
@@ -159,6 +168,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
+      lastLivenessAt,
       contextSnapshot: { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
@@ -340,6 +350,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       id: runId,
       companyId,
       status: "running",
+      lastLivenessAt: null,
       lastOutputAt: null,
       lastOutputSeq: 0,
       lastOutputStream: null,
@@ -545,5 +556,55 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("does not flag a run whose lastLivenessAt is recent even when stdout is stale (BOT-28 acceptance)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60 * 60_000,
+      lastLivenessAgeMs: 5 * 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result).toMatchObject({ scanned: 0, created: 0 });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toBeDefined();
+    if (!run) return;
+    const summary = await recovery.buildRunOutputSilence(run, now);
+    expect(summary.level).toBe("ok");
+    expect(summary.lastLivenessAt?.toISOString()).toBe(new Date(now.getTime() - 5 * 60_000).toISOString());
+  });
+
+  it("flags a genuinely silent run (no stdout, no liveness) past the threshold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result).toMatchObject({ scanned: 1, created: 1 });
+  });
+
+  it("falls through to processStartedAt when lastLivenessAt and lastOutputAt are null", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toBeDefined();
+    if (!run) return;
+    expect(run.lastLivenessAt).toBeNull();
+    expect(run.lastOutputAt).toBeNull();
+    const summary = await recovery.buildRunOutputSilence(run, now);
+    expect(summary.silenceStartedAt?.toISOString()).toBe(run.processStartedAt?.toISOString());
+    expect(summary.level).toBe("suspicious");
   });
 });
