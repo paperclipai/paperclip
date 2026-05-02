@@ -9,8 +9,9 @@ import { useToastActions } from "../context/ToastContext";
 import type { Agent } from "@paperclipai/shared";
 
 interface OAuthProfile {
-  userProfile: string;
-  displayName: string;
+  id: string;
+  label: string;
+  userProfilePath: string;
 }
 
 function extractCurrentProfile(agent: Agent): string | null {
@@ -20,7 +21,7 @@ function extractCurrentProfile(agent: Agent): string | null {
 }
 
 function shortName(profile: OAuthProfile): string {
-  return profile.displayName || profile.userProfile.split(/[\\/]/).pop() || profile.userProfile;
+  return profile.label || profile.userProfilePath.split(/[\\/]/).pop() || profile.userProfilePath;
 }
 
 export function OAuthProfileSwitcher({
@@ -62,7 +63,7 @@ export function OAuthProfileSwitcher({
         {
           adapterConfig: {
             ...existingConfig,
-            env: { ...existingEnv, USERPROFILE: profile.userProfile },
+            env: { ...existingEnv, USERPROFILE: profile.userProfilePath },
           },
           replaceAdapterConfig: true,
         },
@@ -88,7 +89,7 @@ export function OAuthProfileSwitcher({
   // Don't render until backend endpoint is ready (handles pre-VOG-2730 gracefully)
   if (!profiles || profiles.length === 0) return null;
 
-  const activeProfile = profiles.find((p) => p.userProfile === currentProfile);
+  const activeProfile = profiles.find((p) => p.userProfilePath === currentProfile);
   const currentLabel = activeProfile ? shortName(activeProfile) : (currentProfile?.split(/[\\/]/).pop() ?? "默认");
 
   const isCompact = variant === "compact";
@@ -117,10 +118,10 @@ export function OAuthProfileSwitcher({
           OAuth 账号
         </div>
         {profiles.map((profile) => {
-          const isActive = profile.userProfile === currentProfile;
+          const isActive = profile.userProfilePath === currentProfile;
           return (
             <button
-              key={profile.userProfile}
+              key={profile.id}
               className={cn(
                 "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded text-left hover:bg-accent/50",
                 isActive && "bg-accent",
