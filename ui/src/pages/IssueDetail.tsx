@@ -1,12 +1,39 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+  type Ref,
+} from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
-import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useParams,
+} from "@/lib/router";
+import {
+  useInfiniteQuery,
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
-import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
+import {
+  heartbeatsApi,
+  type ActiveRunForIssue,
+  type LiveRunForIssue,
+} from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
@@ -18,8 +45,16 @@ import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
-import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "../lib/company-members";
+import {
+  assigneeValueFromSelection,
+  suggestedCommentAssigneeValue,
+} from "../lib/assignees";
+import {
+  buildCompanyUserInlineOptions,
+  buildCompanyUserLabelMap,
+  buildCompanyUserProfileMap,
+  buildMarkdownMentionOptions,
+} from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
@@ -32,7 +67,10 @@ import {
   readIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
-import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import {
+  resolveIssueActiveRun,
+  shouldTrackIssueActiveRun,
+} from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
@@ -58,12 +96,24 @@ import {
   type IssueCommentReassignment,
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
-import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
+import {
+  clearIssueExecutionRun,
+  removeLiveRunById,
+  upsertInterruptedRun,
+} from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import {
+  relativeTime,
+  cn,
+  formatTokens,
+  visibleRunCostUsd,
+} from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
-import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
+import {
+  IssueChatThread,
+  type IssueChatComposerHandle,
+} from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
@@ -80,12 +130,25 @@ import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
-import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import {
+  PluginSlotMount,
+  PluginSlotOutlet,
+  usePluginSlots,
+} from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -98,7 +161,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { formatIssueActivityAction } from "@/lib/activity-format";
+import {
+  formatIssueActivityAction,
+  getFailureReason,
+} from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
@@ -145,7 +211,9 @@ import {
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
-type ActionableIssueThreadInteraction = SuggestTasksInteraction | RequestConfirmationInteraction;
+type ActionableIssueThreadInteraction =
+  | SuggestTasksInteraction
+  | RequestConfirmationInteraction;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;
@@ -155,7 +223,9 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueReason?: "hold" | "active_run" | "other";
 };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const FEEDBACK_TERMS_URL =
+  import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() ||
+  "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
@@ -165,38 +235,55 @@ const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
   cancel: "Cancel subtree",
   restore: "Restore subtree",
 };
-const LEAF_WORK_CONTROL_MODE_LABEL: Partial<Record<IssueTreeControlMode, string>> = {
+const LEAF_WORK_CONTROL_MODE_LABEL: Partial<
+  Record<IssueTreeControlMode, string>
+> = {
   pause: "Pause work",
   resume: "Resume work",
 };
 const TREE_CONTROL_MODE_HELP_TEXT: Record<IssueTreeControlMode, string> = {
-  pause: "Pause active execution in this issue subtree until an explicit resume.",
+  pause:
+    "Pause active execution in this issue subtree until an explicit resume.",
   resume: "Release the active subtree pause hold so held work can continue.",
-  cancel: "Cancel non-terminal issues in this subtree and stop queued/running work where possible.",
-  restore: "Restore issues cancelled by this subtree operation so work can resume.",
+  cancel:
+    "Cancel non-terminal issues in this subtree and stop queued/running work where possible.",
+  restore:
+    "Restore issues cancelled by this subtree operation so work can resume.",
 };
-const LEAF_WORK_CONTROL_MODE_HELP_TEXT: Partial<Record<IssueTreeControlMode, string>> = {
+const LEAF_WORK_CONTROL_MODE_HELP_TEXT: Partial<
+  Record<IssueTreeControlMode, string>
+> = {
   pause: "Pause active execution on this issue until an explicit resume.",
   resume: "Release the active pause hold so this issue can continue.",
 };
 
-function issueTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
+function issueTreeControlLabel(
+  mode: IssueTreeControlMode,
+  scope: "leaf" | "subtree",
+) {
   return scope === "leaf"
-    ? LEAF_WORK_CONTROL_MODE_LABEL[mode] ?? TREE_CONTROL_MODE_LABEL[mode]
+    ? (LEAF_WORK_CONTROL_MODE_LABEL[mode] ?? TREE_CONTROL_MODE_LABEL[mode])
     : TREE_CONTROL_MODE_LABEL[mode];
 }
 
-function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
+function issueTreeControlHelpText(
+  mode: IssueTreeControlMode,
+  scope: "leaf" | "subtree",
+) {
   return scope === "leaf"
-    ? LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ?? TREE_CONTROL_MODE_HELP_TEXT[mode]
+    ? (LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ??
+        TREE_CONTROL_MODE_HELP_TEXT[mode])
     : TREE_CONTROL_MODE_HELP_TEXT[mode];
 }
 
 function treeControlPreviewErrorCopy(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return "Only board users can preview subtree controls.";
-    if (error.status === 409) return "Preview is stale because subtree hold state changed. Retry to refresh.";
-    if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
+    if (error.status === 403)
+      return "Only board users can preview subtree controls.";
+    if (error.status === 409)
+      return "Preview is stale because subtree hold state changed. Retry to refresh.";
+    if (error.status === 422)
+      return "This subtree action is currently invalid for the selected issues.";
   }
   return error instanceof Error ? error.message : "Unable to load preview.";
 }
@@ -207,7 +294,7 @@ function resolveRunningIssueRun(
 ) {
   return activeRun?.status === "running"
     ? activeRun
-    : (liveRuns ?? []).find((run) => run.status === "running") ?? null;
+    : ((liveRuns ?? []).find((run) => run.status === "running") ?? null);
 }
 
 function readIssueRunStateFromCache(queryClient: QueryClient, issueId: string) {
@@ -225,7 +312,8 @@ function readIssueRunStateFromCache(queryClient: QueryClient, issueId: string) {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   return value as Record<string, unknown>;
 }
 
@@ -330,7 +418,18 @@ function mergeOptimisticFeedbackVote(
   ];
 }
 
-function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; agentMap: Map<string, Agent>; userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile> }) {
+function ActorIdentity({
+  evt,
+  agentMap,
+  userProfileMap,
+}: {
+  evt: ActivityEvent;
+  agentMap: Map<string, Agent>;
+  userProfileMap?: Map<
+    string,
+    import("../lib/company-members").CompanyUserProfile
+  >;
+}) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
@@ -339,7 +438,13 @@ function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; 
   if (evt.actorType === "system") return <Identity name="System" size="sm" />;
   if (evt.actorType === "user") {
     const profile = userProfileMap?.get(id);
-    return <Identity name={profile?.label ?? "Board"} avatarUrl={profile?.image} size="sm" />;
+    return (
+      <Identity
+        name={profile?.label ?? "Board"}
+        avatarUrl={profile?.image}
+        size="sm"
+      />
+    );
   }
   return <Identity name={id || "Unknown"} size="sm" />;
 }
@@ -399,7 +504,8 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
-  const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
+  const identifier =
+    headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -409,12 +515,18 @@ function IssueDetailLoadingState({
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {headerSeed ? (
             <>
-              <StatusIcon status={headerSeed.status} blockerAttention={headerSeed.blockerAttention} />
+              <StatusIcon
+                status={headerSeed.status}
+                blockerAttention={headerSeed.blockerAttention}
+              />
               <PriorityIcon priority={headerSeed.priority} />
               {identifier ? (
-                <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
+                <span className="text-sm font-mono text-muted-foreground shrink-0">
+                  {identifier}
+                </span>
               ) : null}
-              {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
+              {headerSeed.originKind === "routine_execution" &&
+              headerSeed.originId ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0">
                   <Repeat className="h-3 w-3" />
                   Routine
@@ -446,7 +558,9 @@ function IssueDetailLoadingState({
 
         {headerSeed ? (
           <>
-            <h2 className="text-xl font-bold leading-tight">{headerSeed.title}</h2>
+            <h2 className="text-xl font-bold leading-tight">
+              {headerSeed.title}
+            </h2>
             <div className="space-y-2">
               <Skeleton className="h-4 w-full max-w-xl" />
               <Skeleton className="h-4 w-[72%]" />
@@ -541,14 +655,20 @@ function InboxMobileToolbar({
           <PopoverContent className="w-44 p-1" align="end">
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-              onClick={() => { onCopy(); setMenuOpen(false); }}
+              onClick={() => {
+                onCopy();
+                setMenuOpen(false);
+              }}
             >
               <Copy className="h-3 w-3" />
               Copy as markdown
             </button>
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-              onClick={() => { onProperties(); setMenuOpen(false); }}
+              onClick={() => {
+                onProperties();
+                setMenuOpen(false);
+              }}
             >
               <SlidersHorizontal className="h-3 w-3" />
               Properties
@@ -556,7 +676,10 @@ function InboxMobileToolbar({
             {issueIdProp && (
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => { onHide(); setMenuOpen(false); }}
+                onClick={() => {
+                  onHide();
+                  setMenuOpen(false);
+                }}
               >
                 <EyeOff className="h-3 w-3" />
                 Hide this issue
@@ -591,7 +714,10 @@ type IssueDetailChatTabProps = {
   agentMap: Map<string, Agent>;
   currentUserId: string | null;
   userLabelMap: ReadonlyMap<string, string> | null;
-  userProfileMap: ReadonlyMap<string, import("../lib/company-members").CompanyUserProfile> | null;
+  userProfileMap: ReadonlyMap<
+    string,
+    import("../lib/company-members").CompanyUserProfile
+  > | null;
   draftKey: string;
   reassignOptions: Array<{ id: string; label: string; searchText?: string }>;
   currentAssigneeValue: string;
@@ -605,7 +731,11 @@ type IssueDetailChatTabProps = {
     vote: "up" | "down",
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+  ) => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string) => Promise<void>;
@@ -618,12 +748,17 @@ type IssueDetailChatTabProps = {
     interaction: ActionableIssueThreadInteraction,
     selectedClientKeys?: string[],
   ) => Promise<void>;
-  onRejectInteraction: (interaction: ActionableIssueThreadInteraction, reason?: string) => Promise<void>;
+  onRejectInteraction: (
+    interaction: ActionableIssueThreadInteraction,
+    reason?: string,
+  ) => Promise<void>;
   onSubmitInteractionAnswers: (
     interaction: IssueThreadInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void>;
-  onCancelInteraction: (interaction: AskUserQuestionsInteraction) => Promise<void>;
+  onCancelInteraction: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void>;
 };
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
@@ -681,7 +816,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     refetchInterval: 3000,
-    placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
+    placeholderData:
+      keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const resolvedLiveRuns = liveRuns ?? [];
   const liveRunCount = resolvedLiveRuns.length;
@@ -690,10 +826,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!executionRunId || issueStatus === "in_progress",
     refetchInterval: liveRunCount > 0 ? false : 3000,
-    placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
+      issueId,
+    ),
   });
   const resolvedActiveRun = useMemo(
-    () => resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun),
+    () =>
+      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun),
     [activeRun, executionRunId, issueStatus],
   );
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
@@ -717,9 +856,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     return ids;
   }, [resolvedActiveRun, resolvedLiveRuns]);
   const timelineRuns = useMemo(() => {
-    const historicalRuns = liveRunIds.size === 0
-      ? resolvedLinkedRuns
-      : resolvedLinkedRuns.filter((run) => !liveRunIds.has(run.runId));
+    const historicalRuns =
+      liveRunIds.size === 0
+        ? resolvedLinkedRuns
+        : resolvedLinkedRuns.filter((run) => !liveRunIds.has(run.runId));
     return historicalRuns.map((run) => ({
       ...run,
       adapterType: run.adapterType,
@@ -727,8 +867,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     }));
   }, [liveRunIds, resolvedLinkedRuns]);
   const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
-    const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
-    const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
+    const activeRunStartedAt =
+      runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
+    const runMetaByCommentId = new Map<
+      string,
+      {
+        runId: string;
+        runAgentId: string | null;
+        interruptedRunId: string | null;
+      }
+    >();
     const followUpCommentIds = new Set<string>();
     const agentIdByRunId = new Map<string, string>();
 
@@ -738,10 +886,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     for (const evt of resolvedActivity) {
       if (evt.action !== "issue.comment_added" || !evt.runId) continue;
       const details = evt.details ?? {};
-      const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
+      const commentId =
+        typeof details["commentId"] === "string" ? details["commentId"] : null;
       if (!commentId || runMetaByCommentId.has(commentId)) continue;
       const interruptedRunId =
-        typeof details["interruptedRunId"] === "string" ? details["interruptedRunId"] : null;
+        typeof details["interruptedRunId"] === "string"
+          ? details["interruptedRunId"]
+          : null;
       runMetaByCommentId.set(commentId, {
         runId: evt.runId,
         runAgentId: evt.agentId ?? agentIdByRunId.get(evt.runId) ?? null,
@@ -751,25 +902,37 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     for (const evt of resolvedActivity) {
       if (evt.action !== "issue.comment_added") continue;
       const details = evt.details ?? {};
-      const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
+      const commentId =
+        typeof details["commentId"] === "string" ? details["commentId"] : null;
       if (!commentId) continue;
-      if (details["followUpRequested"] === true || details["resumeIntent"] === true) {
+      if (
+        details["followUpRequested"] === true ||
+        details["resumeIntent"] === true
+      ) {
         followUpCommentIds.add(commentId);
       }
     }
 
     return comments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
-      const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
+      const nextComment: IssueDetailComment = meta
+        ? { ...comment, ...meta }
+        : { ...comment };
       if (followUpCommentIds.has(comment.id)) {
         nextComment.followUpRequested = true;
       }
-      const queuedTargetRunId = locallyQueuedCommentRunIds.get(comment.id) ?? null;
-      const locallyQueuedComment = applyLocalQueuedIssueCommentState(nextComment, {
-        queuedTargetRunId,
-        targetRunIsLive: queuedTargetRunId ? liveRunIds.has(queuedTargetRunId) : false,
-        runningRunId: runningIssueRun?.id ?? null,
-      });
+      const queuedTargetRunId =
+        locallyQueuedCommentRunIds.get(comment.id) ?? null;
+      const locallyQueuedComment = applyLocalQueuedIssueCommentState(
+        nextComment,
+        {
+          queuedTargetRunId,
+          targetRunIsLive: queuedTargetRunId
+            ? liveRunIds.has(queuedTargetRunId)
+            : false,
+          runningRunId: runningIssueRun?.id ?? null,
+        },
+      );
       if (locallyQueuedComment !== nextComment) {
         return locallyQueuedComment;
       }
@@ -781,13 +944,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           activeRunCommentId: runningIssueRun?.contextCommentId ?? null,
           activeRunWakeCommentId: runningIssueRun?.contextWakeCommentId ?? null,
           runId: meta?.runId ?? nextComment.runId ?? null,
-          interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
+          interruptedRunId:
+            meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
         })
       ) {
         return {
           ...nextComment,
           queueState: "queued" as const,
-          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueTargetRunId:
+            runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
           queueReason: queuedCommentReason,
         };
       }
@@ -818,7 +983,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             disabled={commentsLoadingOlder}
             onClick={onLoadOlderComments}
           >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+            {commentsLoadingOlder
+              ? "Loading earlier comments..."
+              : "Load earlier comments"}
           </Button>
         </div>
       ) : null}
@@ -868,11 +1035,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           onSubmitInteractionAnswers(interaction, answers)
         }
         onCancelInteraction={onCancelInteraction}
-        onCancelRun={runningIssueRun && onPauseWorkRun
-          ? async () => {
-              await onPauseWorkRun(runningIssueRun.id);
-            }
-          : undefined}
+        onCancelRun={
+          runningIssueRun && onPauseWorkRun
+            ? async () => {
+                await onPauseWorkRun(runningIssueRun.id);
+              }
+            : undefined
+        }
         onImageClick={onImageClick}
         onRefreshLatestComments={onRefreshLatestComments}
       />
@@ -888,8 +1057,14 @@ type IssueDetailActivityTabProps = {
   agentMap: Map<string, Agent>;
   hasLiveRuns: boolean;
   currentUserId: string | null;
-  userProfileMap: Map<string, import("../lib/company-members").CompanyUserProfile>;
-  pendingApprovalAction: { approvalId: string; action: "approve" | "reject" } | null;
+  userProfileMap: Map<
+    string,
+    import("../lib/company-members").CompanyUserProfile
+  >;
+  pendingApprovalAction: {
+    approvalId: string;
+    action: "approve" | "reject";
+  } | null;
   onApprovalAction: (approvalId: string, action: "approve" | "reject") => void;
   handoffFocusSignal?: number;
 };
@@ -920,31 +1095,43 @@ function IssueDetailActivityTab({
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId),
     queryFn: () => issuesApi.listApprovals(issueId),
-    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.listApprovals>>>(issueId),
+    placeholderData:
+      keepPreviousDataForSameQueryTail<
+        Awaited<ReturnType<typeof issuesApi.listApprovals>>
+      >(issueId),
   });
   const { data: continuationHandoff } = useQuery({
-    queryKey: queryKeys.issues.document(issueId, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+    queryKey: queryKeys.issues.document(
+      issueId,
+      ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+    ),
     queryFn: async () => {
       try {
-        return await issuesApi.getDocument(issueId, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY);
+        return await issuesApi.getDocument(
+          issueId,
+          ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+        );
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
       }
     },
     retry: false,
-    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getDocument>> | null>(
-      issueId,
-    ),
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<
+      ReturnType<typeof issuesApi.getDocument>
+    > | null>(issueId),
   });
   const { data: issueTreeCostSummary } = useQuery({
     queryKey: queryKeys.issues.costSummary(issueId),
     queryFn: () => issuesApi.getCostSummary(issueId),
-    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(issueId),
+    placeholderData:
+      keepPreviousDataForSameQueryTail<
+        Awaited<ReturnType<typeof issuesApi.getCostSummary>>
+      >(issueId),
   });
   const initialLoading =
-    (activityLoading && activity === undefined)
-    || (linkedRunsLoading && linkedRuns === undefined);
+    (activityLoading && activity === undefined) ||
+    (linkedRunsLoading && linkedRuns === undefined);
   const issueCostSummary = useMemo(() => {
     let input = 0;
     let output = 0;
@@ -984,13 +1171,14 @@ function IssueDetailActivityTab({
     };
   }, [linkedRuns]);
   const issueTreeCostTokens =
-    (issueTreeCostSummary?.inputTokens ?? 0) + (issueTreeCostSummary?.outputTokens ?? 0);
+    (issueTreeCostSummary?.inputTokens ?? 0) +
+    (issueTreeCostSummary?.outputTokens ?? 0);
   const hasIssueTreeCost =
-    !!issueTreeCostSummary
-    && (issueTreeCostSummary.costCents > 0
-      || issueTreeCostTokens > 0
-      || issueTreeCostSummary.cachedInputTokens > 0
-      || issueTreeCostSummary.issueCount > 1);
+    !!issueTreeCostSummary &&
+    (issueTreeCostSummary.costCents > 0 ||
+      issueTreeCostTokens > 0 ||
+      issueTreeCostSummary.cachedInputTokens > 0 ||
+      issueTreeCostSummary.issueCount > 1);
   const shouldShowCostSummary =
     (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
 
@@ -1002,9 +1190,15 @@ function IssueDetailActivityTab({
     <>
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
-          {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !hasIssueTreeCost ? (
-            <div className="text-xs text-muted-foreground">No cost data yet.</div>
+          <div className="text-sm font-medium text-muted-foreground mb-1">
+            Cost Summary
+          </div>
+          {!issueCostSummary.hasCost &&
+          !issueCostSummary.hasTokens &&
+          !hasIssueTreeCost ? (
+            <div className="text-xs text-muted-foreground">
+              No cost data yet.
+            </div>
           ) : (
             <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
               <div className="flex flex-wrap gap-3">
@@ -1029,12 +1223,16 @@ function IssueDetailActivityTab({
               {hasIssueTreeCost && issueTreeCostSummary ? (
                 <div className="flex flex-wrap gap-3">
                   <span className="font-medium text-foreground">
-                    Including sub-issues {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
-                      style: "currency",
-                      currency: "USD",
-                      minimumFractionDigits: 4,
-                      maximumFractionDigits: 4,
-                    })}
+                    Including sub-issues{" "}
+                    {(issueTreeCostSummary.costCents / 100).toLocaleString(
+                      undefined,
+                      {
+                        style: "currency",
+                        currency: "USD",
+                        minimumFractionDigits: 4,
+                        maximumFractionDigits: 4,
+                      },
+                    )}
                   </span>
                   <span>
                     Tokens {formatTokens(issueTreeCostTokens)}
@@ -1042,7 +1240,10 @@ function IssueDetailActivityTab({
                       ? ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)}, cached ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
                       : ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)})`}
                   </span>
-                  <span>{issueTreeCostSummary.issueCount} issue{issueTreeCostSummary.issueCount === 1 ? "" : "s"}</span>
+                  <span>
+                    {issueTreeCostSummary.issueCount} issue
+                    {issueTreeCostSummary.issueCount === 1 ? "" : "s"}
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -1058,16 +1259,39 @@ function IssueDetailActivityTab({
           agentMap={agentMap}
           hasLiveRuns={hasLiveRuns}
           activityEvents={activity ?? []}
-          renderActivityEvent={(evt) => (
-            <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
-                <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId })}</span>
-                <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+          renderActivityEvent={(evt) => {
+            const details = evt.details as Record<string, unknown> | null;
+            const status =
+              typeof details?.status === "string" ? details.status : null;
+            const failureReason = getFailureReason(details);
+            return (
+              <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <ActorIdentity
+                    evt={evt}
+                    agentMap={agentMap}
+                    userProfileMap={userProfileMap}
+                  />
+                  <span>
+                    {formatIssueActivityAction(evt.action, evt.details, {
+                      agentMap,
+                      userProfileMap,
+                      currentUserId,
+                    })}
+                  </span>
+                  <span className="ml-auto shrink-0">
+                    {relativeTime(evt.createdAt)}
+                  </span>
+                </div>
+                <IssueReferenceActivitySummary event={evt} />
+                {status === "failed" && failureReason ? (
+                  <p className="text-xs text-red-600 dark:text-red-300 break-words">
+                    {failureReason}
+                  </p>
+                ) : null}
               </div>
-              <IssueReferenceActivitySummary event={evt} />
-            </div>
-          )}
+            );
+          }}
         />
       </div>
       {linkedApprovals && linkedApprovals.length > 0 && (
@@ -1076,7 +1300,11 @@ function IssueDetailActivityTab({
             <ApprovalCard
               key={approval.id}
               approval={approval}
-              requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
+              requesterAgent={
+                approval.requestedByAgentId
+                  ? (agentMap.get(approval.requestedByAgentId) ?? null)
+                  : null
+              }
               onApprove={() => onApprovalAction(approval.id, "approve")}
               onReject={() => onApprovalAction(approval.id, "reject")}
               detailLink={`/approvals/${approval.id}`}
@@ -1090,7 +1318,10 @@ function IssueDetailActivityTab({
           ))}
         </div>
       )}
-      <IssueContinuationHandoff document={continuationHandoff} focusSignal={handoffFocusSignal} />
+      <IssueContinuationHandoff
+        document={continuationHandoff}
+        focusSignal={handoffFocusSignal}
+      />
     </>
   );
 }
@@ -1122,41 +1353,63 @@ export function IssueDetail() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [treeControlOpen, setTreeControlOpen] = useState(false);
-  const [treeControlMode, setTreeControlMode] = useState<IssueTreeControlMode>("pause");
+  const [treeControlMode, setTreeControlMode] =
+    useState<IssueTreeControlMode>("pause");
   const [treeControlReason, setTreeControlReason] = useState("");
-  const [treeControlWakeAgentsOnResume, setTreeControlWakeAgentsOnResume] = useState(false);
-  const [treeControlCancelConfirmed, setTreeControlCancelConfirmed] = useState(false);
-  const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
-  const [locallyQueuedCommentRunIds, setLocallyQueuedCommentRunIds] = useState<Map<string, string>>(() => new Map());
-  const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] = useState(0);
+  const [treeControlWakeAgentsOnResume, setTreeControlWakeAgentsOnResume] =
+    useState(false);
+  const [treeControlCancelConfirmed, setTreeControlCancelConfirmed] =
+    useState(false);
+  const [optimisticComments, setOptimisticComments] = useState<
+    OptimisticIssueComment[]
+  >([]);
+  const [locallyQueuedCommentRunIds, setLocallyQueuedCommentRunIds] = useState<
+    Map<string, string>
+  >(() => new Map());
+  const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] =
+    useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
   const cancelledQueuedOptimisticCommentIdsRef = useRef(new Set<string>());
   const resolvedIssueDetailState = useMemo(
-    () => readIssueDetailLocationState(issueId, location.state, location.search),
+    () =>
+      readIssueDetailLocationState(issueId, location.state, location.search),
     [issueId, location.state, location.search],
   );
   const issueHeaderSeed = useMemo(
-    () => readIssueDetailHeaderSeed(location.state) ?? readIssueDetailHeaderSeed(resolvedIssueDetailState),
+    () =>
+      readIssueDetailHeaderSeed(location.state) ??
+      readIssueDetailHeaderSeed(resolvedIssueDetailState),
     [location.state, resolvedIssueDetailState],
   );
 
-  const { data: issue, isLoading, error } = useQuery({
+  const {
+    data: issue,
+    isLoading,
+    error,
+  } = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
-      placeholderIssue: issueHeaderSeed ? {
-        id: issueHeaderSeed.id,
-        identifier: issueHeaderSeed.identifier,
-      } : null,
+      placeholderIssue: issueHeaderSeed
+        ? {
+            id: issueHeaderSeed.id,
+            identifier: issueHeaderSeed.identifier,
+          }
+        : null,
     }),
     enabled: !!issueId,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
-    if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
+    if (
+      !issue?.currentExecutionWorkspace ||
+      !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)
+    ) {
       return null;
     }
-    return getClosedIsolatedExecutionWorkspaceMessage(issue.currentExecutionWorkspace);
+    return getClosedIsolatedExecutionWorkspaceMessage(
+      issue.currentExecutionWorkspace,
+    );
   }, [issue?.currentExecutionWorkspace]);
 
   const {
@@ -1178,7 +1431,9 @@ export function IssueDetail() {
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
-    placeholderData: keepPreviousDataForSameQueryTail<InfiniteData<IssueComment[], string | null>>(issueId ?? "pending"),
+    placeholderData: keepPreviousDataForSameQueryTail<
+      InfiniteData<IssueComment[], string | null>
+    >(issueId ?? "pending"),
   });
   const comments = useMemo(
     () => flattenIssueCommentPages(commentPages?.pages),
@@ -1194,40 +1449,63 @@ export function IssueDetail() {
         olderPageLoading: commentsLoadingOlder,
         autoLoadLimit: ISSUE_COMMENT_AUTOLOAD_LIMIT,
       }),
-    [comments.length, commentsLoading, commentsLoadingOlder, detailTab, hasOlderComments],
+    [
+      comments.length,
+      commentsLoading,
+      commentsLoadingOlder,
+      detailTab,
+      hasOlderComments,
+    ],
   );
   const { data: interactions = [] } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
     queryFn: () => issuesApi.listInteractions(issueId!),
     enabled: !!issueId,
-    placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId ?? "pending"),
+    placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(
+      issueId ?? "pending",
+    ),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId,
-    placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
+    placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(
+      issueId ?? "pending",
+    ),
   });
 
-  const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
-    queryKey: queryKeys.issues.liveRuns(issueId!),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
-    enabled: !!issueId,
-    refetchInterval: 3000,
-    select: (runs) => runs.length,
-    placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
-  });
+  const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
+    {
+      queryKey: queryKeys.issues.liveRuns(issueId!),
+      queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
+      enabled: !!issueId,
+      refetchInterval: 3000,
+      select: (runs) => runs.length,
+      placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
+        issueId ?? "pending",
+      ),
+    },
+  );
 
-  const { data: hasActiveRun = false } = useQuery<ActiveRunForIssue | null, Error, boolean>({
+  const { data: hasActiveRun = false } = useQuery<
+    ActiveRunForIssue | null,
+    Error,
+    boolean
+  >({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
-    enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
+    enabled:
+      !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
     refetchInterval: liveRunCount > 0 ? false : 3000,
     select: (run) => !!run,
-    placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
+    placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
+      issueId ?? "pending",
+    ),
   });
-  const resolvedHasActiveRun = issue ? shouldTrackIssueActiveRun(issue) && hasActiveRun : hasActiveRun;
+  const resolvedHasActiveRun = issue
+    ? shouldTrackIssueActiveRun(issue) && hasActiveRun
+    : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
   useEffect(() => {
     if (!hasLiveRuns && locallyQueuedCommentRunIds.size > 0) {
@@ -1235,25 +1513,41 @@ export function IssueDetail() {
     }
   }, [hasLiveRuns, locallyQueuedCommentRunIds.size]);
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    () =>
+      readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? {
+        label: "Issues",
+        href: "/issues",
+      },
     [issueId, location.state, location.search],
   );
 
-  const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
-    queryKey:
-      issue?.id && resolvedCompanyId
-        ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
-        : ["issues", "parent", "pending"],
-    queryFn: () => issuesApi.list(resolvedCompanyId!, { descendantOf: issue!.id, includeBlockedBy: true }),
-    enabled: !!resolvedCompanyId && !!issue?.id,
-    placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
-  });
+  const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery(
+    {
+      queryKey:
+        issue?.id && resolvedCompanyId
+          ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
+          : ["issues", "parent", "pending"],
+      queryFn: () =>
+        issuesApi.list(resolvedCompanyId!, {
+          descendantOf: issue!.id,
+          includeBlockedBy: true,
+        }),
+      enabled: !!resolvedCompanyId && !!issue?.id,
+      placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(
+        issue?.id ?? "pending",
+      ),
+    },
+  );
   const { data: companyLiveRuns } = useQuery({
-    queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
+    queryKey: resolvedCompanyId
+      ? queryKeys.liveRuns(resolvedCompanyId)
+      : ["live-runs", "pending"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
     refetchInterval: 5000,
-    placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(resolvedCompanyId ?? "pending"),
+    placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
+      resolvedCompanyId ?? "pending",
+    ),
   });
 
   const { data: agents } = useQuery({
@@ -1285,8 +1579,7 @@ export function IssueDetail() {
     retry: false,
   });
   const canManageTreeControl = Boolean(
-    selectedCompanyId
-    && boardAccess?.companyIds?.includes(selectedCompanyId),
+    selectedCompanyId && boardAccess?.companyIds?.includes(selectedCompanyId),
   );
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
@@ -1299,8 +1592,10 @@ export function IssueDetail() {
     enabled: !!issueId,
     retry: false,
   });
-  const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
-  const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
+  const keyboardShortcutsEnabled =
+    instanceGeneralSettings?.keyboardShortcuts === true;
+  const feedbackDataSharingPreference =
+    instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -1313,14 +1608,16 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId,
   });
   const issuePluginTabItems = useMemo(
-    () => issuePluginDetailSlots.map((slot) => ({
-      value: `plugin:${slot.pluginKey}:${slot.id}`,
-      label: slot.displayName,
-      slot,
-    })),
+    () =>
+      issuePluginDetailSlots.map((slot) => ({
+        value: `plugin:${slot.pluginKey}:${slot.id}`,
+        label: slot.displayName,
+        slot,
+      })),
     [issuePluginDetailSlots],
   );
-  const activePluginTab = issuePluginTabItems.find((item) => item.value === detailTab) ?? null;
+  const activePluginTab =
+    issuePluginTabItems.find((item) => item.value === detailTab) ?? null;
   const {
     data: treeControlPreview,
     isFetching: treeControlPreviewLoading,
@@ -1351,7 +1648,12 @@ export function IssueDetail() {
     retry: false,
   });
   const { data: activeRootPauseHolds = [] } = useQuery({
-    queryKey: ["issues", "tree-holds", issueId ?? "pending", "active-pause-with-members"],
+    queryKey: [
+      "issues",
+      "tree-holds",
+      issueId ?? "pending",
+      "active-pause-with-members",
+    ],
     queryFn: () =>
       issuesApi.listTreeHolds(issueId!, {
         status: "active",
@@ -1392,42 +1694,50 @@ export function IssueDetail() {
   }, [agents, companyMembers?.users, orderedProjects]);
 
   const resolvedProject = useMemo(
-    () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
+    () =>
+      issue?.projectId
+        ? (orderedProjects.find((project) => project.id === issue.projectId) ??
+          issue.project ??
+          null)
+        : null,
     [issue?.project, issue?.projectId, orderedProjects],
   );
-  const childIssues = useMemo(
-    () => {
-      const descendants = issue?.id ? filterIssueDescendants(issue.id, rawChildIssues) : rawChildIssues;
-      return [...descendants].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    },
-    [issue?.id, rawChildIssues],
+  const childIssues = useMemo(() => {
+    const descendants = issue?.id
+      ? filterIssueDescendants(issue.id, rawChildIssues)
+      : rawChildIssues;
+    return [...descendants].sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+  }, [issue?.id, rawChildIssues]);
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(companyLiveRuns),
+    [companyLiveRuns],
   );
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(companyLiveRuns), [companyLiveRuns]);
   const issuePanelKey = useMemo(
     () => buildIssuePropertiesPanelKey(issue ?? null, childIssues),
     [childIssues, issue],
   );
-  const panelIssue = useMemo(
-    () => issue ?? null,
-    [issue?.id, issuePanelKey],
+  const panelIssue = useMemo(() => issue ?? null, [issue?.id, issuePanelKey]);
+  const panelChildIssues = useMemo(() => childIssues, [issuePanelKey]);
+  const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(
+    childIssuesLoading,
+    childIssues.length,
   );
-  const panelChildIssues = useMemo(
-    () => childIssues,
-    [issuePanelKey],
-  );
-  const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
-  }, [
-    currentUserId,
-    issue,
-    openNewIssue,
-  ]);
+  }, [currentUserId, issue, openNewIssue]);
 
   const commentReassignOptions = useMemo(() => {
-    const options: Array<{ id: string; label: string; searchText?: string }> = [];
-    options.push(...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }));
+    const options: Array<{ id: string; label: string; searchText?: string }> =
+      [];
+    options.push(
+      ...buildCompanyUserInlineOptions(companyMembers?.users, {
+        excludeUserIds: [currentUserId],
+      }),
+    );
     const activeAgents = [...(agents ?? [])]
       .filter((agent) => agent.status !== "terminated")
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -1462,34 +1772,57 @@ export function IssueDetail() {
   const breadcrumbTitle = issue?.title ?? issueId ?? "Issue";
 
   const invalidateIssueDetail = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.detail(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activity(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.interactions(issueId!),
+    });
   }, [issueId, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!), refetchType: "inactive" });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!), refetchType: "inactive" });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!), refetchType: "inactive" });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.detail(issueId!),
+      refetchType: "inactive",
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activity(issueId!),
+      refetchType: "inactive",
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.interactions(issueId!),
+      refetchType: "inactive",
+    });
   }, [issueId, queryClient]);
 
   const invalidateIssueRunState = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.runs(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.liveRuns(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activeRun(issueId!),
+    });
   }, [issueId, queryClient]);
 
-  const removeCommentFromCache = useCallback((commentId: string) => {
-    queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
-      queryKeys.issues.comments(issueId!),
-      (current) => {
+  const removeCommentFromCache = useCallback(
+    (commentId: string) => {
+      queryClient.setQueryData<
+        InfiniteData<IssueComment[], string | null> | undefined
+      >(queryKeys.issues.comments(issueId!), (current) => {
         if (!current) return current;
         return {
           ...current,
           pages: removeIssueCommentFromPages(current.pages, commentId),
         };
-      },
-    );
-  }, [issueId, queryClient]);
+      });
+    },
+    [issueId, queryClient],
+  );
 
   const restoreQueuedCommentDraft = useCallback((body: string) => {
     commentComposerRef.current?.restoreDraft(body);
@@ -1497,86 +1830,138 @@ export function IssueDetail() {
 
   const invalidateIssueCollections = useCallback(() => {
     if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.list(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.listMineByMe(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.sidebarBadges(selectedCompanyId),
+      });
     }
   }, [queryClient, selectedCompanyId]);
-  const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
-    queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
-      queryKeys.issues.interactions(issueId!),
-      (current) => {
-        const existing = current ?? [];
-        const next = existing.filter((entry) => entry.id !== interaction.id);
-        next.push(interaction);
-        next.sort((left, right) => {
-          const createdAtDelta =
-            new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
-          return createdAtDelta === 0 ? left.id.localeCompare(right.id) : createdAtDelta;
-        });
-        return next;
-      },
-    );
-  }, [issueId, queryClient]);
+  const upsertInteractionInCache = useCallback(
+    (interaction: IssueThreadInteraction) => {
+      queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
+        queryKeys.issues.interactions(issueId!),
+        (current) => {
+          const existing = current ?? [];
+          const next = existing.filter((entry) => entry.id !== interaction.id);
+          next.push(interaction);
+          next.sort((left, right) => {
+            const createdAtDelta =
+              new Date(left.createdAt).getTime() -
+              new Date(right.createdAt).getTime();
+            return createdAtDelta === 0
+              ? left.id.localeCompare(right.id)
+              : createdAtDelta;
+          });
+          return next;
+        },
+      );
+    },
+    [issueId, queryClient],
+  );
 
-  const applyOptimisticIssueCacheUpdate = useCallback((refs: Iterable<string>, data: Record<string, unknown>) => {
-    queryClient.setQueriesData<Issue>(
-      { queryKey: ["issues", "detail"] },
-      (cached) => (cached && matchesIssueRef(cached, refs) ? applyOptimisticIssueFieldUpdate(cached, data) : cached),
-    );
+  const applyOptimisticIssueCacheUpdate = useCallback(
+    (refs: Iterable<string>, data: Record<string, unknown>) => {
+      queryClient.setQueriesData<Issue>(
+        { queryKey: ["issues", "detail"] },
+        (cached) =>
+          cached && matchesIssueRef(cached, refs)
+            ? applyOptimisticIssueFieldUpdate(cached, data)
+            : cached,
+      );
 
-    if (!selectedCompanyId) return;
-    queryClient.setQueryData<Issue[] | undefined>(
-      queryKeys.issues.list(selectedCompanyId),
-      (cached) => applyOptimisticIssueFieldUpdateToCollection(cached, refs, data),
-    );
-  }, [queryClient, selectedCompanyId]);
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData<Issue[] | undefined>(
+        queryKeys.issues.list(selectedCompanyId),
+        (cached) =>
+          applyOptimisticIssueFieldUpdateToCollection(cached, refs, data),
+      );
+    },
+    [queryClient, selectedCompanyId],
+  );
 
-  const mergeIssueResponseIntoCaches = useCallback((refs: Iterable<string>, nextIssue: Issue) => {
-    queryClient.setQueriesData<Issue>(
-      { queryKey: ["issues", "detail"] },
-      (cached) => (cached && matchesIssueRef(cached, refs) ? { ...cached, ...nextIssue } : cached),
-    );
+  const mergeIssueResponseIntoCaches = useCallback(
+    (refs: Iterable<string>, nextIssue: Issue) => {
+      queryClient.setQueriesData<Issue>(
+        { queryKey: ["issues", "detail"] },
+        (cached) =>
+          cached && matchesIssueRef(cached, refs)
+            ? { ...cached, ...nextIssue }
+            : cached,
+      );
 
-    if (!selectedCompanyId) return;
-    queryClient.setQueryData<Issue[] | undefined>(
-      queryKeys.issues.list(selectedCompanyId),
-      (cached) => cached?.map((item) => (matchesIssueRef(item, refs) ? { ...item, ...nextIssue } : item)),
-    );
-  }, [queryClient, selectedCompanyId]);
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData<Issue[] | undefined>(
+        queryKeys.issues.list(selectedCompanyId),
+        (cached) =>
+          cached?.map((item) =>
+            matchesIssueRef(item, refs) ? { ...item, ...nextIssue } : item,
+          ),
+      );
+    },
+    [queryClient, selectedCompanyId],
+  );
 
   const markIssueRead = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
       if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.listMineByMe(selectedCompanyId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.sidebarBadges(selectedCompanyId),
+        });
       }
     },
   });
 
   const updateIssue = useMutation({
-    mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
+    mutationFn: (data: Record<string, unknown>) =>
+      issuesApi.update(issueId!, data),
     onMutate: async (data) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.detail(issueId!),
+      });
       if (selectedCompanyId) {
-        await queryClient.cancelQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        await queryClient.cancelQueries({
+          queryKey: queryKeys.issues.list(selectedCompanyId),
+        });
       }
 
-      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const previousIssue = queryClient.getQueryData<Issue>(
+        queryKeys.issues.detail(issueId!),
+      );
       const issueRefs = new Set<string>([issueId!]);
       if (previousIssue?.id) issueRefs.add(previousIssue.id);
       if (previousIssue?.identifier) issueRefs.add(previousIssue.identifier);
 
       const previousDetailQueries = queryClient
         .getQueriesData<Issue>({ queryKey: ["issues", "detail"] })
-        .filter(([, cachedIssue]) => cachedIssue && matchesIssueRef(cachedIssue, issueRefs));
+        .filter(
+          ([, cachedIssue]) =>
+            cachedIssue && matchesIssueRef(cachedIssue, issueRefs),
+        );
       const previousList = selectedCompanyId
-        ? queryClient.getQueryData<Issue[]>(queryKeys.issues.list(selectedCompanyId))
+        ? queryClient.getQueryData<Issue[]>(
+            queryKeys.issues.list(selectedCompanyId),
+          )
         : undefined;
 
       applyOptimisticIssueCacheUpdate(issueRefs, data);
@@ -1587,26 +1972,37 @@ export function IssueDetail() {
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.activity(issueId!),
+      });
       invalidateIssueCollections();
     },
     onError: (err, _variables, context) => {
-      for (const [queryKey, previousIssue] of context?.previousDetailQueries ?? []) {
+      for (const [queryKey, previousIssue] of context?.previousDetailQueries ??
+        []) {
         queryClient.setQueryData(queryKey, previousIssue);
       }
       if (context?.selectedCompanyId) {
-        queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
+        queryClient.setQueryData(
+          queryKeys.issues.list(context.selectedCompanyId),
+          context.previousList,
+        );
       }
       pushToast({
         title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        body:
+          err instanceof Error ? err.message : "Unable to save issue changes",
         tone: "error",
       });
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.detail(issueId!),
+      });
       if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.list(selectedCompanyId),
+        });
       }
     },
   });
@@ -1615,14 +2011,20 @@ export function IssueDetail() {
       if (treeControlMode === "resume") {
         const pauseHoldId = treeControlState?.activePauseHold?.holdId;
         if (!pauseHoldId) {
-          throw new Error("No active subtree pause hold is available to resume.");
+          throw new Error(
+            "No active subtree pause hold is available to resume.",
+          );
         }
-        const releasedHold = await issuesApi.releaseTreeHold(issueId!, pauseHoldId, {
-          reason: treeControlReason.trim() || null,
-          metadata: {
-            wakeAgents: treeControlWakeAgentsOnResume,
+        const releasedHold = await issuesApi.releaseTreeHold(
+          issueId!,
+          pauseHoldId,
+          {
+            reason: treeControlReason.trim() || null,
+            metadata: {
+              wakeAgents: treeControlWakeAgentsOnResume,
+            },
           },
-        });
+        );
         return { kind: "release" as const, hold: releasedHold };
       }
       const created = await issuesApi.createTreeHold(issueId!, {
@@ -1630,54 +2032,102 @@ export function IssueDetail() {
         reason: treeControlReason.trim() || null,
         releasePolicy: {
           strategy: "manual",
-          ...(treeControlMode === "pause" ? { note: treeControlScope === "leaf" ? "leaf_pause" : "full_pause" } : {}),
+          ...(treeControlMode === "pause"
+            ? {
+                note: treeControlScope === "leaf" ? "leaf_pause" : "full_pause",
+              }
+            : {}),
         },
         ...(treeControlMode === "restore"
           ? { metadata: { wakeAgents: treeControlWakeAgentsOnResume } }
           : {}),
       });
-      return { kind: "create" as const, hold: created.hold, preview: created.preview };
+      return {
+        kind: "create" as const,
+        hold: created.hold,
+        preview: created.preview,
+      };
     },
     onSuccess: async (result) => {
-      const modeLabel = issueTreeControlLabel(result.hold.mode, treeControlScope);
+      const modeLabel = issueTreeControlLabel(
+        result.hold.mode,
+        treeControlScope,
+      );
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
-        title: result.kind === "release"
-          ? treeControlScope === "leaf" ? "Work resumed" : "Subtree resumed"
-          : result.hold.mode === "pause"
-            ? treeControlScope === "leaf" ? "Work paused" : "Subtree paused"
-            : `${modeLabel} applied`,
-        body: result.kind === "release"
-          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? "Active issue pause released." : "Active subtree pause released."))
-          : result.hold.mode === "pause"
+        title:
+          result.kind === "release"
             ? treeControlScope === "leaf"
-              ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-              : `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-            : result.hold.reason?.trim()
-              ? result.hold.reason
-              : "Subtree control applied.",
+              ? "Work resumed"
+              : "Subtree resumed"
+            : result.hold.mode === "pause"
+              ? treeControlScope === "leaf"
+                ? "Work paused"
+                : "Subtree paused"
+              : `${modeLabel} applied`,
+        body:
+          result.kind === "release"
+            ? result.hold.releaseReason?.trim() ||
+              (treeControlScope === "leaf"
+                ? "Active issue pause released."
+                : "Active subtree pause released.")
+            : result.hold.mode === "pause"
+              ? treeControlScope === "leaf"
+                ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+                : `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+              : result.hold.reason?.trim()
+                ? result.hold.reason
+                : "Subtree control applied.",
       });
       setTreeControlOpen(false);
       setTreeControlReason("");
       setTreeControlWakeAgentsOnResume(false);
       setTreeControlCancelConfirmed(false);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueId ?? "pending"] }),
-        queryClient.invalidateQueries({ queryKey: ["issues", "tree-holds", issueId ?? "pending"] }),
-        queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-preview", issueId ?? "pending"] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.detail(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.activity(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.liveRuns(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.activeRun(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.runs(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["issues", "tree-holds", issueId ?? "pending"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["issues", "tree-control-preview", issueId ?? "pending"],
+        }),
       ]);
       if (selectedCompanyId) {
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.list(selectedCompanyId),
+          }),
           ...(issue?.id
             ? [
-                queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(selectedCompanyId, issue.id) }),
-                queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByDescendantRoot(selectedCompanyId, issue.id) }),
+                queryClient.invalidateQueries({
+                  queryKey: queryKeys.issues.listByParent(
+                    selectedCompanyId,
+                    issue.id,
+                  ),
+                }),
+                queryClient.invalidateQueries({
+                  queryKey: queryKeys.issues.listByDescendantRoot(
+                    selectedCompanyId,
+                    issue.id,
+                  ),
+                }),
               ]
             : []),
         ]);
@@ -1692,11 +2142,20 @@ export function IssueDetail() {
     },
   });
   const pauseIssueWorkRun = useMutation({
-    mutationFn: async ({ runId, scope }: { runId: string; scope: "leaf" | "subtree" }) => {
+    mutationFn: async ({
+      runId,
+      scope,
+    }: {
+      runId: string;
+      scope: "leaf" | "subtree";
+    }) => {
       const created = await issuesApi.createTreeHold(issueId!, {
         mode: "pause",
         reason: "Paused from active run controls.",
-        releasePolicy: { strategy: "manual", note: scope === "leaf" ? "leaf_pause" : "full_pause" },
+        releasePolicy: {
+          strategy: "manual",
+          note: scope === "leaf" ? "leaf_pause" : "full_pause",
+        },
         metadata: { source: "issue_active_run_control", runId },
       });
       return created;
@@ -1705,20 +2164,37 @@ export function IssueDetail() {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
         title: "Work paused",
-        body: cancelCount > 0
-          ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-          : "Work paused. This issue is held until resume.",
+        body:
+          cancelCount > 0
+            ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+            : "Work paused. This issue is held until resume.",
         tone: "success",
       });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) }),
-        queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueId ?? "pending"] }),
-        queryClient.invalidateQueries({ queryKey: ["issues", "tree-holds", issueId ?? "pending"] }),
-        queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-preview", issueId ?? "pending"] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.detail(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.activity(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.liveRuns(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.activeRun(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.runs(issueId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["issues", "tree-holds", issueId ?? "pending"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["issues", "tree-control-preview", issueId ?? "pending"],
+        }),
       ]);
       invalidateIssueCollections();
     },
@@ -1730,32 +2206,52 @@ export function IssueDetail() {
       });
     },
   });
-  const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
-    updateIssue.mutate(data);
-  }, [updateIssue.mutate]);
+  const handleIssuePropertiesUpdate = useCallback(
+    (data: Record<string, unknown>) => {
+      updateIssue.mutate(data);
+    },
+    [updateIssue.mutate],
+  );
 
   const updateChildIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
     onSuccess: () => {
       if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: ["issues", resolvedCompanyId] });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: ["issues", resolvedCompanyId],
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.sidebarBadges(resolvedCompanyId),
+        });
       }
     },
     onError: (err) => {
       pushToast({
         title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save sub-issue changes",
+        body:
+          err instanceof Error
+            ? err.message
+            : "Unable to save sub-issue changes",
         tone: "error",
       });
     },
   });
-  const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
-    updateChildIssue.mutate({ id, data });
-  }, [updateChildIssue]);
+  const handleChildIssueUpdate = useCallback(
+    (id: string, data: Record<string, unknown>) => {
+      updateChildIssue.mutate({ id, data });
+    },
+    [updateChildIssue],
+  );
 
   const approvalDecision = useMutation({
-    mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
+    mutationFn: async ({
+      approvalId,
+      action,
+    }: {
+      approvalId: string;
+      action: "approve" | "reject";
+    }) => {
       if (action === "approve") {
         return approvalsApi.approve(approvalId);
       }
@@ -1766,20 +2262,32 @@ export function IssueDetail() {
     },
     onSuccess: (_approval, variables) => {
       invalidateIssueDetail();
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.approvals(issueId!),
+      });
       invalidateIssueCollections();
-      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(variables.approvalId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.detail(variables.approvalId),
+      });
       if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.approvals.list(resolvedCompanyId),
+        });
       }
       pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        title:
+          variables.action === "approve"
+            ? "Approval approved"
+            : "Approval rejected",
         tone: "success",
       });
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
+        title:
+          variables.action === "approve"
+            ? "Approval failed"
+            : "Rejection failed",
         body: err instanceof Error ? err.message : "Unable to update approval",
         tone: "error",
       });
@@ -1790,14 +2298,29 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen, interrupt),
+    mutationFn: ({
+      body,
+      reopen,
+      interrupt,
+    }: {
+      body: string;
+      reopen?: boolean;
+      interrupt?: boolean;
+    }) => issuesApi.addComment(issueId!, body, reopen, interrupt),
     onMutate: async ({ body, reopen, interrupt }) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.comments(issueId!),
+      });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.detail(issueId!),
+      });
 
-      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
-      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!).runningIssueRun : null;
+      const previousIssue = queryClient.getQueryData<Issue>(
+        queryKeys.issues.detail(issueId!),
+      );
+      const queuedComment = !interrupt
+        ? readIssueRunStateFromCache(queryClient, issueId!).runningIssueRun
+        : null;
       const optimisticComment = issue
         ? createOptimisticIssueComment({
             companyId: issue.companyId,
@@ -1828,11 +2351,20 @@ export function IssueDetail() {
     onSuccess: async (comment, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
-          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+          current.filter(
+            (entry) => entry.clientId !== context.optimisticCommentId,
+          ),
         );
       }
-      if (context?.optimisticCommentId && cancelledQueuedOptimisticCommentIdsRef.current.has(context.optimisticCommentId)) {
-        cancelledQueuedOptimisticCommentIdsRef.current.delete(context.optimisticCommentId);
+      if (
+        context?.optimisticCommentId &&
+        cancelledQueuedOptimisticCommentIdsRef.current.has(
+          context.optimisticCommentId,
+        )
+      ) {
+        cancelledQueuedOptimisticCommentIdsRef.current.delete(
+          context.optimisticCommentId,
+        );
         try {
           await issuesApi.cancelComment(issueId!, comment.id);
           invalidateIssueDetail();
@@ -1842,7 +2374,10 @@ export function IssueDetail() {
         } catch (err) {
           pushToast({
             title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            body:
+              err instanceof Error
+                ? err.message
+                : "Unable to cancel the queued comment",
             tone: "error",
           });
         }
@@ -1856,23 +2391,31 @@ export function IssueDetail() {
       }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId!),
-        (current) => current ? {
-          ...current,
-          pages: upsertIssueCommentInPages(current.pages, comment),
-        } : {
-          pageParams: [null],
-          pages: upsertIssueCommentInPages(undefined, comment),
-        },
+        (current) =>
+          current
+            ? {
+                ...current,
+                pages: upsertIssueCommentInPages(current.pages, comment),
+              }
+            : {
+                pageParams: [null],
+                pages: upsertIssueCommentInPages(undefined, comment),
+              },
       );
     },
     onError: (err, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
-          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+          current.filter(
+            (entry) => entry.clientId !== context.optimisticCommentId,
+          ),
         );
       }
       if (context?.previousIssue) {
-        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+        queryClient.setQueryData(
+          queryKeys.issues.detail(issueId!),
+          context.previousIssue,
+        );
       }
       pushToast({
         title: "Comment failed",
@@ -1897,53 +2440,79 @@ export function IssueDetail() {
     }: {
       interaction: ActionableIssueThreadInteraction;
       selectedClientKeys?: string[];
-    }) => issuesApi.acceptInteraction(issueId!, interaction.id, { selectedClientKeys }),
+    }) =>
+      issuesApi.acceptInteraction(issueId!, interaction.id, {
+        selectedClientKeys,
+      }),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
-      if (interaction.kind === "suggest_tasks" && resolvedCompanyId && issue?.id) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(resolvedCompanyId, issue.id) });
+      if (
+        interaction.kind === "suggest_tasks" &&
+        resolvedCompanyId &&
+        issue?.id
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.listByParent(resolvedCompanyId, issue.id),
+        });
       }
       invalidateIssueDetail();
       invalidateIssueCollections();
-      const createdCount = interaction.kind === "suggest_tasks"
-        ? interaction.result?.createdTasks?.length ?? 0
-        : 0;
-      const skippedCount = interaction.kind === "suggest_tasks"
-        ? interaction.result?.skippedClientKeys?.length ?? 0
-        : 0;
+      const createdCount =
+        interaction.kind === "suggest_tasks"
+          ? (interaction.result?.createdTasks?.length ?? 0)
+          : 0;
+      const skippedCount =
+        interaction.kind === "suggest_tasks"
+          ? (interaction.result?.skippedClientKeys?.length ?? 0)
+          : 0;
       pushToast({
-        title: interaction.kind === "request_confirmation"
-          ? "Request confirmed"
-          : skippedCount > 0
-          ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
-          : "Suggested tasks accepted",
+        title:
+          interaction.kind === "request_confirmation"
+            ? "Request confirmed"
+            : skippedCount > 0
+              ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
+              : "Suggested tasks accepted",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
         title: "Accept failed",
-        body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
+        body:
+          err instanceof Error
+            ? err.message
+            : "Unable to accept the suggested tasks",
         tone: "error",
       });
     },
   });
   const rejectInteraction = useMutation({
-    mutationFn: ({ interaction, reason }: { interaction: ActionableIssueThreadInteraction; reason?: string }) =>
-      issuesApi.rejectInteraction(issueId!, interaction.id, reason),
+    mutationFn: ({
+      interaction,
+      reason,
+    }: {
+      interaction: ActionableIssueThreadInteraction;
+      reason?: string;
+    }) => issuesApi.rejectInteraction(issueId!, interaction.id, reason),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: interaction.kind === "request_confirmation" ? "Request declined" : "Suggestion rejected",
+        title:
+          interaction.kind === "request_confirmation"
+            ? "Request declined"
+            : "Suggestion rejected",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
         title: "Reject failed",
-        body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
+        body:
+          err instanceof Error
+            ? err.message
+            : "Unable to reject the suggested tasks",
         tone: "error",
       });
     },
@@ -1975,8 +2544,11 @@ export function IssueDetail() {
   });
 
   const cancelInteraction = useMutation({
-    mutationFn: ({ interaction }: { interaction: AskUserQuestionsInteraction }) =>
-      issuesApi.cancelInteraction(issueId!, interaction.id),
+    mutationFn: ({
+      interaction,
+    }: {
+      interaction: AskUserQuestionsInteraction;
+    }) => issuesApi.cancelInteraction(issueId!, interaction.id),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();
@@ -1989,7 +2561,8 @@ export function IssueDetail() {
     onError: (err) => {
       pushToast({
         title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the question",
+        body:
+          err instanceof Error ? err.message : "Unable to cancel the question",
         tone: "error",
       });
     },
@@ -2015,11 +2588,19 @@ export function IssueDetail() {
         ...(interrupt ? { interrupt } : {}),
       }),
     onMutate: async ({ body, reopen, reassignment, interrupt }) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.comments(issueId!),
+      });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.detail(issueId!),
+      });
 
-      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
-      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!).runningIssueRun : null;
+      const previousIssue = queryClient.getQueryData<Issue>(
+        queryKeys.issues.detail(issueId!),
+      );
+      const queuedComment = !interrupt
+        ? readIssueRunStateFromCache(queryClient, issueId!).runningIssueRun
+        : null;
       const optimisticComment = issue
         ? createOptimisticIssueComment({
             companyId: issue.companyId,
@@ -2037,7 +2618,10 @@ export function IssueDetail() {
       if (previousIssue) {
         queryClient.setQueryData(
           queryKeys.issues.detail(issueId!),
-          applyOptimisticIssueCommentUpdate(previousIssue, { reopen, reassignment }),
+          applyOptimisticIssueCommentUpdate(previousIssue, {
+            reopen,
+            reassignment,
+          }),
         );
       }
 
@@ -2050,14 +2634,24 @@ export function IssueDetail() {
     onSuccess: async (result, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
-          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+          current.filter(
+            (entry) => entry.clientId !== context.optimisticCommentId,
+          ),
         );
       }
 
       const { comment, ...nextIssue } = result;
       queryClient.setQueryData(queryKeys.issues.detail(issueId!), nextIssue);
-      if (comment && context?.optimisticCommentId && cancelledQueuedOptimisticCommentIdsRef.current.has(context.optimisticCommentId)) {
-        cancelledQueuedOptimisticCommentIdsRef.current.delete(context.optimisticCommentId);
+      if (
+        comment &&
+        context?.optimisticCommentId &&
+        cancelledQueuedOptimisticCommentIdsRef.current.has(
+          context.optimisticCommentId,
+        )
+      ) {
+        cancelledQueuedOptimisticCommentIdsRef.current.delete(
+          context.optimisticCommentId,
+        );
         try {
           await issuesApi.cancelComment(issueId!, comment.id);
           invalidateIssueDetail();
@@ -2067,7 +2661,10 @@ export function IssueDetail() {
         } catch (err) {
           pushToast({
             title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            body:
+              err instanceof Error
+                ? err.message
+                : "Unable to cancel the queued comment",
             tone: "error",
           });
         }
@@ -2082,24 +2679,32 @@ export function IssueDetail() {
       if (comment) {
         queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
           queryKeys.issues.comments(issueId!),
-          (current) => current ? {
-            ...current,
-            pages: upsertIssueCommentInPages(current.pages, comment),
-          } : {
-            pageParams: [null],
-            pages: upsertIssueCommentInPages(undefined, comment),
-          },
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  pages: upsertIssueCommentInPages(current.pages, comment),
+                }
+              : {
+                  pageParams: [null],
+                  pages: upsertIssueCommentInPages(undefined, comment),
+                },
         );
       }
     },
     onError: (err, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
-          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+          current.filter(
+            (entry) => entry.clientId !== context.optimisticCommentId,
+          ),
         );
       }
       if (context?.previousIssue) {
-        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+        queryClient.setQueryData(
+          queryKeys.issues.detail(issueId!),
+          context.previousIssue,
+        );
       }
       pushToast({
         title: "Comment failed",
@@ -2119,23 +2724,45 @@ export function IssueDetail() {
   const interruptQueuedComment = useMutation({
     mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
     onMutate: async (runId) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.runs(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.runs(issueId!),
+      });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.liveRuns(issueId!),
+      });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.activeRun(issueId!),
+      });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.detail(issueId!),
+      });
 
-      const previousRuns = queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueId!));
-      const previousLiveRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueId!));
-      const previousActiveRun = queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(issueId!));
-      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const previousRuns = queryClient.getQueryData<RunForIssue[]>(
+        queryKeys.issues.runs(issueId!),
+      );
+      const previousLiveRuns = queryClient.getQueryData<LiveRunForIssue[]>(
+        queryKeys.issues.liveRuns(issueId!),
+      );
+      const previousActiveRun =
+        queryClient.getQueryData<ActiveRunForIssue | null>(
+          queryKeys.issues.activeRun(issueId!),
+        );
+      const previousIssue = queryClient.getQueryData<Issue>(
+        queryKeys.issues.detail(issueId!),
+      );
       const previousLocalQueuedCommentRunIds = locallyQueuedCommentRunIds;
       const liveRunList = previousLiveRuns ?? [];
       const cachedActiveRun = previousActiveRun ?? null;
-      const runningIssueRun = resolveRunningIssueRun(cachedActiveRun, liveRunList);
+      const runningIssueRun = resolveRunningIssueRun(
+        cachedActiveRun,
+        liveRunList,
+      );
       const targetRun =
         cachedActiveRun?.id === runId
           ? cachedActiveRun
-          : liveRunList?.find((run) => run.id === runId) ?? runningIssueRun ?? null;
+          : (liveRunList?.find((run) => run.id === runId) ??
+            runningIssueRun ??
+            null);
 
       if (targetRun) {
         const interruptedAt = new Date().toISOString();
@@ -2147,18 +2774,22 @@ export function IssueDetail() {
 
       queryClient.setQueryData(
         queryKeys.issues.liveRuns(issueId!),
-        (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+        (current: LiveRunForIssue[] | undefined) =>
+          removeLiveRunById(current, runId),
       );
       queryClient.setQueryData(
         queryKeys.issues.activeRun(issueId!),
-        (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+        (current: ActiveRunForIssue | null | undefined) =>
+          current?.id === runId ? null : current,
       );
       queryClient.setQueryData(
         queryKeys.issues.detail(issueId!),
         (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
       );
       setLocallyQueuedCommentRunIds((current) => {
-        const next = new Map([...current].filter(([, targetRunId]) => targetRunId !== runId));
+        const next = new Map(
+          [...current].filter(([, targetRunId]) => targetRunId !== runId),
+        );
         return next.size === current.size ? current : next;
       });
 
@@ -2180,23 +2811,39 @@ export function IssueDetail() {
       });
     },
     onError: (err, _runId, context) => {
-      queryClient.setQueryData(queryKeys.issues.runs(issueId!), context?.previousRuns);
-      queryClient.setQueryData(queryKeys.issues.liveRuns(issueId!), context?.previousLiveRuns);
-      queryClient.setQueryData(queryKeys.issues.activeRun(issueId!), context?.previousActiveRun);
-      queryClient.setQueryData(queryKeys.issues.detail(issueId!), context?.previousIssue);
+      queryClient.setQueryData(
+        queryKeys.issues.runs(issueId!),
+        context?.previousRuns,
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.liveRuns(issueId!),
+        context?.previousLiveRuns,
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.activeRun(issueId!),
+        context?.previousActiveRun,
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.detail(issueId!),
+        context?.previousIssue,
+      );
       if (context?.previousLocalQueuedCommentRunIds) {
         setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
       }
       pushToast({
         title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        body:
+          err instanceof Error
+            ? err.message
+            : "Unable to interrupt the active run",
         tone: "error",
       });
     },
   });
 
   const cancelQueuedComment = useMutation({
-    mutationFn: async ({ commentId }: { commentId: string }) => issuesApi.cancelComment(issueId!, commentId),
+    mutationFn: async ({ commentId }: { commentId: string }) =>
+      issuesApi.cancelComment(issueId!, commentId),
     onSuccess: (comment) => {
       setLocallyQueuedCommentRunIds((current) => {
         if (!current.has(comment.id)) return current;
@@ -2218,34 +2865,40 @@ export function IssueDetail() {
     onError: (err) => {
       pushToast({
         title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+        body:
+          err instanceof Error
+            ? err.message
+            : "Unable to cancel the queued comment",
         tone: "error",
       });
     },
   });
 
-  const handleCancelQueuedComment = useCallback((commentId: string) => {
-    if (commentId.startsWith("optimistic-")) {
-      cancelledQueuedOptimisticCommentIdsRef.current.add(commentId);
-      let cancelledCommentBody: string | null = null;
-      setOptimisticComments((current) => {
-        const next = takeOptimisticIssueComment(current, commentId);
-        cancelledCommentBody = next.comment?.body ?? null;
-        return next.comments;
-      });
-      if (cancelledCommentBody) {
-        restoreQueuedCommentDraft(cancelledCommentBody);
-        pushToast({
-          title: "Queued comment canceled",
-          body: "The queued message was restored to the composer.",
-          tone: "success",
+  const handleCancelQueuedComment = useCallback(
+    (commentId: string) => {
+      if (commentId.startsWith("optimistic-")) {
+        cancelledQueuedOptimisticCommentIdsRef.current.add(commentId);
+        let cancelledCommentBody: string | null = null;
+        setOptimisticComments((current) => {
+          const next = takeOptimisticIssueComment(current, commentId);
+          cancelledCommentBody = next.comment?.body ?? null;
+          return next.comments;
         });
+        if (cancelledCommentBody) {
+          restoreQueuedCommentDraft(cancelledCommentBody);
+          pushToast({
+            title: "Queued comment canceled",
+            body: "The queued message was restored to the composer.",
+            tone: "success",
+          });
+        }
+        return;
       }
-      return;
-    }
 
-    void cancelQueuedComment.mutateAsync({ commentId });
-  }, [cancelQueuedComment, restoreQueuedCommentDraft, pushToast]);
+      void cancelQueuedComment.mutateAsync({ commentId });
+    },
+    [cancelQueuedComment, restoreQueuedCommentDraft, pushToast],
+  );
 
   const feedbackVoteMutation = useMutation({
     mutationFn: (variables: {
@@ -2264,7 +2917,9 @@ export function IssueDetail() {
         ...(variables.allowSharing ? { allowSharing: true } : {}),
       }),
     onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.feedbackVotes(issueId!) });
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.issues.feedbackVotes(issueId!),
+      });
       const previousVotes = queryClient.getQueryData<FeedbackVote[]>(
         queryKeys.issues.feedbackVotes(issueId!),
       );
@@ -2285,9 +2940,13 @@ export function IssueDetail() {
       return { previousVotes };
     },
     onSuccess: (_savedVote, variables) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.feedbackVotes(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.feedbackVotes(issueId!),
+      });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.instance.generalSettings,
+      });
       pushToast({
         title:
           variables.sharingPreferenceAtSubmit === "prompt"
@@ -2302,7 +2961,10 @@ export function IssueDetail() {
     },
     onError: (err, _variables, context) => {
       if (context?.previousVotes) {
-        queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
+        queryClient.setQueryData(
+          queryKeys.issues.feedbackVotes(issueId!),
+          context.previousVotes,
+        );
       }
       pushToast({
         title: "Failed to save feedback",
@@ -2319,7 +2981,9 @@ export function IssueDetail() {
     },
     onSuccess: () => {
       setAttachmentError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.attachments(issueId!),
+      });
       invalidateIssueDetail();
     },
     onError: (err) => {
@@ -2331,7 +2995,8 @@ export function IssueDetail() {
     mutationFn: async (file: File) => {
       const baseName = fileBaseName(file.name);
       const key = slugifyDocumentKey(baseName);
-      const existing = (issue?.documentSummaries ?? []).find((doc) => doc.key === key) ?? null;
+      const existing =
+        (issue?.documentSummaries ?? []).find((doc) => doc.key === key) ?? null;
       const body = await file.text();
       const inferredTitle = titleizeFilename(baseName);
       const nextTitle = existing?.title ?? inferredTitle ?? null;
@@ -2345,18 +3010,25 @@ export function IssueDetail() {
     onSuccess: () => {
       setAttachmentError(null);
       invalidateIssueDetail();
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.documents(issueId!),
+      });
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(
+        err instanceof Error ? err.message : "Document import failed",
+      );
     },
   });
 
   const deleteAttachment = useMutation({
-    mutationFn: (attachmentId: string) => issuesApi.deleteAttachment(attachmentId),
+    mutationFn: (attachmentId: string) =>
+      issuesApi.deleteAttachment(attachmentId),
     onSuccess: () => {
       setAttachmentError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.attachments(issueId!),
+      });
       invalidateIssueDetail();
     },
     onError: (err) => {
@@ -2368,13 +3040,21 @@ export function IssueDetail() {
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onSuccess: () => {
       invalidateIssueCollections();
-      navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
+      navigate(
+        sourceBreadcrumb.href.startsWith("/inbox")
+          ? sourceBreadcrumb.href
+          : "/inbox",
+        { replace: true },
+      );
       pushToast({ title: "Issue archived from inbox", tone: "success" });
     },
     onError: (err) => {
       pushToast({
         title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        body:
+          err instanceof Error
+            ? err.message
+            : "Unable to archive this issue from the inbox",
         tone: "error",
       });
     },
@@ -2408,7 +3088,11 @@ export function IssueDetail() {
   useEffect(() => {
     const nextState = resolvedIssueDetailState ?? location.state;
     if (issue?.identifier && issueId !== issue.identifier) {
-      rememberIssueDetailLocationState(issue.identifier, nextState, location.search);
+      rememberIssueDetailLocationState(
+        issue.identifier,
+        nextState,
+        location.search,
+      );
       navigate(createIssueDetailPath(issue.identifier), {
         replace: true,
         state: nextState,
@@ -2423,7 +3107,14 @@ export function IssueDetail() {
         state: nextState,
       });
     }
-  }, [issue, issueId, navigate, location.state, location.search, resolvedIssueDetailState]);
+  }, [
+    issue,
+    issueId,
+    navigate,
+    location.state,
+    location.search,
+    resolvedIssueDetailState,
+  ]);
 
   useEffect(() => {
     if (!issue?.id) return;
@@ -2443,7 +3134,7 @@ export function IssueDetail() {
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
-      />
+      />,
     );
     return () => closePanel();
   }, [
@@ -2458,9 +3149,7 @@ export function IssueDetail() {
 
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
-  const canQuickArchiveFromInbox =
-    keyboardShortcutsEnabled &&
-    !issue?.hiddenAt;
+  const canQuickArchiveFromInbox = keyboardShortcutsEnabled && !issue?.hiddenAt;
 
   useEffect(() => {
     if (!issue?.id || !canQuickArchiveFromInbox) return;
@@ -2526,7 +3215,10 @@ export function IssueDetail() {
     };
 
     const handleFocusIn = (event: FocusEvent) => {
-      if (event.target instanceof HTMLElement && event.target !== document.body) {
+      if (
+        event.target instanceof HTMLElement &&
+        event.target !== document.body
+      ) {
         disarm();
       }
     };
@@ -2553,7 +3245,11 @@ export function IssueDetail() {
       if (action === "navigate_inbox") {
         event.preventDefault();
         event.stopPropagation();
-        navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox");
+        navigate(
+          sourceBreadcrumb.href.startsWith("/inbox")
+            ? sourceBreadcrumb.href
+            : "/inbox",
+        );
         return;
       }
       if (action === "focus_comment") {
@@ -2590,10 +3286,13 @@ export function IssueDetail() {
     commentComposerRef.current?.focus();
   }, [detailTab, pendingCommentComposerFocusKey]);
 
-  const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const isImageAttachment = (attachment: IssueAttachment) =>
+    attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
-  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+  const nonImageAttachments = attachmentList.filter(
+    (a) => !isImageAttachment(a),
+  );
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -2639,7 +3338,8 @@ export function IssueDetail() {
   // non-memoized functions change identity every render).
   const inboxToolbarCallbacksRef = useRef({
     onArchive: () => {
-      if (!archiveFromInbox.isPending && issue?.id) archiveFromInbox.mutate(issue.id);
+      if (!archiveFromInbox.isPending && issue?.id)
+        archiveFromInbox.mutate(issue.id);
     },
     onCopy: () => copyIssueToClipboard(),
     onProperties: () => setMobilePropsOpen(true),
@@ -2652,7 +3352,8 @@ export function IssueDetail() {
   });
   inboxToolbarCallbacksRef.current = {
     onArchive: () => {
-      if (!archiveFromInbox.isPending && issue?.id) archiveFromInbox.mutate(issue.id);
+      if (!archiveFromInbox.isPending && issue?.id)
+        archiveFromInbox.mutate(issue.id);
     },
     onCopy: () => copyIssueToClipboard(),
     onProperties: () => setMobilePropsOpen(true),
@@ -2690,9 +3391,17 @@ export function IssueDetail() {
     );
 
     return () => setMobileToolbar(null);
-  }, [showInboxToolbar, backHref, issue?.id, issueHidden, archivePending, setMobileToolbar]);
+  }, [
+    showInboxToolbar,
+    backHref,
+    issue?.id,
+    issueHidden,
+    archivePending,
+    setMobileToolbar,
+  ]);
 
-  const attachmentsInitialLoading = attachmentsLoading && attachments === undefined;
+  const attachmentsInitialLoading =
+    attachmentsLoading && attachments === undefined;
   const loadOlderComments = useCallback(() => {
     void fetchOlderComments();
   }, [fetchOlderComments]);
@@ -2704,7 +3413,9 @@ export function IssueDetail() {
     const refreshed = await refetchComments();
     const loaded = await loadRemainingIssueCommentPages<IssueComment>({
       pages: refreshed.data?.pages,
-      pageParams: refreshed.data?.pageParams as Array<string | null> | undefined,
+      pageParams: refreshed.data?.pageParams as
+        | Array<string | null>
+        | undefined,
       pageSize: ISSUE_COMMENT_PAGE_SIZE,
       maxPages: JUMP_TO_LATEST_MAX_COMMENT_PAGES,
       fetchPage: (afterCommentId) =>
@@ -2730,69 +3441,107 @@ export function IssueDetail() {
     if (!shouldPrefetchOlderComments) return;
     void fetchOlderComments();
   }, [fetchOlderComments, shouldPrefetchOlderComments]);
-  const handleCommentVote = useCallback(async (commentId: string, vote: "up" | "down", options?: { allowSharing?: boolean; reason?: string }) => {
-    await feedbackVoteMutation.mutateAsync({
-      targetType: "issue_comment",
-      targetId: commentId,
-      vote,
-      reason: options?.reason,
-      allowSharing: options?.allowSharing,
-      sharingPreferenceAtSubmit: feedbackDataSharingPreference,
-    });
-  }, [feedbackDataSharingPreference, feedbackVoteMutation]);
-  const handleChatAdd = useCallback(async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
-    if (reassignment) {
-      await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
-      return;
-    }
-    await addComment.mutateAsync({ body, reopen });
-  }, [addComment, addCommentAndReassign]);
-  const handleCommentImageUpload = useCallback(async (file: File) => {
-    const attachment = await uploadAttachment.mutateAsync(file);
-    return attachment.contentPath;
-  }, [uploadAttachment]);
-  const handleCommentAttachImage = useCallback(async (file: File) => {
-    return uploadAttachment.mutateAsync(file);
-  }, [uploadAttachment]);
-  const handleInterruptQueuedRun = useCallback(async (runId: string) => {
-    await interruptQueuedComment.mutateAsync(runId);
-  }, [interruptQueuedComment]);
-  const handleAcceptInteraction = useCallback(async (
-    interaction: ActionableIssueThreadInteraction,
-    selectedClientKeys?: string[],
-  ) => {
-    await acceptInteraction.mutateAsync({ interaction, selectedClientKeys });
-  }, [acceptInteraction]);
-  const handleRejectInteraction = useCallback(async (interaction: ActionableIssueThreadInteraction, reason?: string) => {
-    await rejectInteraction.mutateAsync({ interaction, reason });
-  }, [rejectInteraction]);
-  const handleSubmitInteractionAnswers = useCallback(async (
-    interaction: IssueThreadInteraction,
-    answers: AskUserQuestionsAnswer[],
-  ) => {
-    await answerInteraction.mutateAsync({ interaction, answers });
-  }, [answerInteraction]);
-  const handleCancelInteraction = useCallback(async (interaction: AskUserQuestionsInteraction) => {
-    await cancelInteraction.mutateAsync({ interaction });
-  }, [cancelInteraction]);
+  const handleCommentVote = useCallback(
+    async (
+      commentId: string,
+      vote: "up" | "down",
+      options?: { allowSharing?: boolean; reason?: string },
+    ) => {
+      await feedbackVoteMutation.mutateAsync({
+        targetType: "issue_comment",
+        targetId: commentId,
+        vote,
+        reason: options?.reason,
+        allowSharing: options?.allowSharing,
+        sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+      });
+    },
+    [feedbackDataSharingPreference, feedbackVoteMutation],
+  );
+  const handleChatAdd = useCallback(
+    async (
+      body: string,
+      reopen?: boolean,
+      reassignment?: CommentReassignment,
+    ) => {
+      if (reassignment) {
+        await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+        return;
+      }
+      await addComment.mutateAsync({ body, reopen });
+    },
+    [addComment, addCommentAndReassign],
+  );
+  const handleCommentImageUpload = useCallback(
+    async (file: File) => {
+      const attachment = await uploadAttachment.mutateAsync(file);
+      return attachment.contentPath;
+    },
+    [uploadAttachment],
+  );
+  const handleCommentAttachImage = useCallback(
+    async (file: File) => {
+      return uploadAttachment.mutateAsync(file);
+    },
+    [uploadAttachment],
+  );
+  const handleInterruptQueuedRun = useCallback(
+    async (runId: string) => {
+      await interruptQueuedComment.mutateAsync(runId);
+    },
+    [interruptQueuedComment],
+  );
+  const handleAcceptInteraction = useCallback(
+    async (
+      interaction: ActionableIssueThreadInteraction,
+      selectedClientKeys?: string[],
+    ) => {
+      await acceptInteraction.mutateAsync({ interaction, selectedClientKeys });
+    },
+    [acceptInteraction],
+  );
+  const handleRejectInteraction = useCallback(
+    async (interaction: ActionableIssueThreadInteraction, reason?: string) => {
+      await rejectInteraction.mutateAsync({ interaction, reason });
+    },
+    [rejectInteraction],
+  );
+  const handleSubmitInteractionAnswers = useCallback(
+    async (
+      interaction: IssueThreadInteraction,
+      answers: AskUserQuestionsAnswer[],
+    ) => {
+      await answerInteraction.mutateAsync({ interaction, answers });
+    },
+    [answerInteraction],
+  );
+  const handleCancelInteraction = useCallback(
+    async (interaction: AskUserQuestionsInteraction) => {
+      await cancelInteraction.mutateAsync({ interaction });
+    },
+    [cancelInteraction],
+  );
 
   const treePreviewAffectedIssues = useMemo(
-    () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
+    () =>
+      (treeControlPreview?.issues ?? []).filter(
+        (candidate) => !candidate.skipped,
+      ),
     [treeControlPreview],
   );
-  const treePreviewDisplayIssues = useMemo(
-    () => {
-      const previewIssues = treeControlPreview?.issues ?? [];
-      if (treeControlMode !== "pause") {
-        return previewIssues.filter((candidate) => !candidate.skipped);
-      }
-      return previewIssues.filter((candidate) => !candidate.skipped || candidate.skipReason === "terminal_status");
-    },
-    [treeControlMode, treeControlPreview],
-  );
+  const treePreviewDisplayIssues = useMemo(() => {
+    const previewIssues = treeControlPreview?.issues ?? [];
+    if (treeControlMode !== "pause") {
+      return previewIssues.filter((candidate) => !candidate.skipped);
+    }
+    return previewIssues.filter(
+      (candidate) =>
+        !candidate.skipped || candidate.skipReason === "terminal_status",
+    );
+  }, [treeControlMode, treeControlPreview]);
   const activePauseHold = treeControlState?.activePauseHold ?? null;
   const activeRootPauseHoldsForDisplay = useMemo(
-    () => activePauseHold?.isRoot === true ? activeRootPauseHolds : [],
+    () => (activePauseHold?.isRoot === true ? activeRootPauseHolds : []),
     [activePauseHold?.isRoot, activeRootPauseHolds],
   );
   const heldIssueIds = useMemo(() => {
@@ -2823,14 +3572,22 @@ export function IssueDetail() {
   const activePauseHoldRoot = useMemo(() => {
     if (!activePauseHold) return null;
     if (activePauseHold.rootIssueId === issue?.id) return issue ?? null;
-    return issue?.ancestors?.find((ancestor) => ancestor.id === activePauseHold.rootIssueId) ?? null;
+    return (
+      issue?.ancestors?.find(
+        (ancestor) => ancestor.id === activePauseHold.rootIssueId,
+      ) ?? null
+    );
   }, [activePauseHold, issue]);
   const activeRootPauseHold = useMemo(
-    () => activeRootPauseHoldsForDisplay.find((hold) => hold.id === activePauseHold?.holdId) ?? null,
+    () =>
+      activeRootPauseHoldsForDisplay.find(
+        (hold) => hold.id === activePauseHold?.holdId,
+      ) ?? null,
     [activePauseHold?.holdId, activeRootPauseHoldsForDisplay],
   );
 
-  if (isLoading) return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
+  if (isLoading)
+    return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
 
@@ -2867,18 +3624,33 @@ export function IssueDetail() {
 
   const hasAttachments = attachmentList.length > 0;
   const treePreviewWarnings = treeControlPreview?.warnings ?? [];
-  const heldDescendantCount = activeRootPauseHold?.members?.filter((member) => member.depth > 0 && !member.skipped).length
-    ?? Math.max(heldIssueIds.size - 1, 0);
+  const heldDescendantCount =
+    activeRootPauseHold?.members?.filter(
+      (member) => member.depth > 0 && !member.skipped,
+    ).length ?? Math.max(heldIssueIds.size - 1, 0);
   const canShowSubtreeControls = canManageTreeControl && childIssues.length > 0;
-  const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
-  const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
-  const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
-  const isAgentOwnedNonTerminalIssue = Boolean(issue.assigneeAgentId) && !isTerminalIssue;
-  const canPauseLeafWork = canManageTreeControl && childIssues.length === 0 && !activePauseHold && !isTerminalIssue;
-  const canResumeLeafWork = canManageTreeControl && childIssues.length === 0 && activePauseHold?.isRoot === true;
-  const treeControlScope: "leaf" | "subtree" = childIssues.length === 0 ? "leaf" : "subtree";
+  const canResumeSubtree =
+    canShowSubtreeControls && activePauseHold?.isRoot === true;
+  const canRestoreSubtree =
+    canShowSubtreeControls && activeCancelHolds.length > 0;
+  const isTerminalIssue =
+    issue.status === "done" || issue.status === "cancelled";
+  const isAgentOwnedNonTerminalIssue =
+    Boolean(issue.assigneeAgentId) && !isTerminalIssue;
+  const canPauseLeafWork =
+    canManageTreeControl &&
+    childIssues.length === 0 &&
+    !activePauseHold &&
+    !isTerminalIssue;
+  const canResumeLeafWork =
+    canManageTreeControl &&
+    childIssues.length === 0 &&
+    activePauseHold?.isRoot === true;
+  const treeControlScope: "leaf" | "subtree" =
+    childIssues.length === 0 ? "leaf" : "subtree";
   const previewAffectedIssueCount = treePreviewAffectedIssues.length;
-  const previewAffectedAgentCount = treeControlPreview?.totals.affectedAgents ?? 0;
+  const previewAffectedAgentCount =
+    treeControlPreview?.totals.affectedAgents ?? 0;
   const treeControlPrimaryButtonLabel =
     treeControlMode === "pause"
       ? treeControlScope === "leaf"
@@ -2886,44 +3658,50 @@ export function IssueDetail() {
         : "Pause and stop work"
       : treeControlMode === "cancel"
         ? `Cancel ${previewAffectedIssueCount} issues`
-      : treeControlMode === "restore"
+        : treeControlMode === "restore"
           ? `Restore ${previewAffectedIssueCount} issues`
           : treeControlScope === "leaf"
             ? "Resume work"
             : "Resume subtree";
-  const treePreviewAffectedIssueRows = treePreviewDisplayIssues.map((candidate) => ({
-    candidate,
-    issue: {
-      ...issue,
-      id: candidate.id,
-      identifier: candidate.identifier,
-      title: candidate.title,
-      status: candidate.status,
-      parentId: candidate.parentId,
-      assigneeAgentId: candidate.assigneeAgentId,
-      assigneeUserId: candidate.assigneeUserId,
-      executionRunId: candidate.activeRun?.id ?? null,
-    } satisfies Issue,
-  }));
-  const treePreviewAffectedAgentRows = (treeControlPreview?.affectedAgents ?? [])
+  const treePreviewAffectedIssueRows = treePreviewDisplayIssues.map(
+    (candidate) => ({
+      candidate,
+      issue: {
+        ...issue,
+        id: candidate.id,
+        identifier: candidate.identifier,
+        title: candidate.title,
+        status: candidate.status,
+        parentId: candidate.parentId,
+        assigneeAgentId: candidate.assigneeAgentId,
+        assigneeUserId: candidate.assigneeUserId,
+        executionRunId: candidate.activeRun?.id ?? null,
+      } satisfies Issue,
+    }),
+  );
+  const treePreviewAffectedAgentRows = (
+    treeControlPreview?.affectedAgents ?? []
+  )
     .map((previewAgent) => ({
       ...previewAgent,
       agent: agentMap.get(previewAgent.agentId) ?? null,
     }))
-    .sort((a, b) => (a.agent?.name ?? a.agentId).localeCompare(b.agent?.name ?? b.agentId));
+    .sort((a, b) =>
+      (a.agent?.name ?? a.agentId).localeCompare(b.agent?.name ?? b.agentId),
+    );
   const pausedComposerHint = activePauseHold
-    ? (
-      issue.assigneeAgentId
-        ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
-        : "Assign an agent to wake them for triage while the subtree remains paused."
-    )
+    ? issue.assigneeAgentId
+      ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
+      : "Assign an agent to wake them for triage while the subtree remains paused."
     : null;
   const composerHint = pausedComposerHint;
-  const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold ? "hold" : "active_run";
+  const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold
+    ? "hold"
+    : "active_run";
   const canApplyTreeControl =
-    Boolean(treeControlPreview)
-    && !treeControlPreviewLoading
-    && (treeControlMode !== "cancel" || treeControlCancelConfirmed);
+    Boolean(treeControlPreview) &&
+    !treeControlPreviewLoading &&
+    (treeControlMode !== "cancel" || treeControlCancelConfirmed);
   const attachmentUploadButton = (
     <>
       <input
@@ -2937,14 +3715,18 @@ export function IssueDetail() {
         variant="outline"
         size="sm"
         onClick={() => fileInputRef.current?.click()}
-        disabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
+        disabled={
+          uploadAttachment.isPending || importMarkdownDocument.isPending
+        }
         className={cn(
           "shadow-none",
           attachmentDragActive && "border-primary bg-primary/5",
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? (
+          "Uploading..."
+        ) : (
           <>
             <span className="hidden sm:inline">Upload attachment</span>
             <span className="sm:hidden">Upload</span>
@@ -2970,7 +3752,8 @@ export function IssueDetail() {
                     ancestor.identifier ?? ancestor.id,
                     resolvedIssueDetailState ?? location.state,
                     location.search,
-                  )}
+                  )
+                }
                 className="hover:text-foreground transition-colors truncate max-w-[200px]"
                 title={ancestor.title}
               >
@@ -2979,7 +3762,9 @@ export function IssueDetail() {
             </span>
           ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
-          <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+          <span className="text-foreground/60 truncate max-w-[200px]">
+            {issue.title}
+          </span>
         </nav>
       )}
 
@@ -2995,7 +3780,9 @@ export function IssueDetail() {
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">
-                  {childIssues.length === 0 ? "Paused by board." : "Subtree pause is active."}
+                  {childIssues.length === 0
+                    ? "Paused by board."
+                    : "Subtree pause is active."}
                 </span>
                 <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
                   {childIssues.length === 0
@@ -3007,7 +3794,9 @@ export function IssueDetail() {
                 {childIssues.length === 0
                   ? "1 issue held"
                   : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
-                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+                {activeRootPauseHold?.createdAt
+                  ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}`
+                  : ""}
               </div>
               {canShowSubtreeControls || canResumeLeafWork ? (
                 <div className="flex flex-wrap items-center gap-2">
@@ -3015,22 +3804,29 @@ export function IssueDetail() {
                     size="sm"
                     onClick={() => {
                       setTreeControlMode("resume");
-                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlWakeAgentsOnResume(
+                        isAgentOwnedNonTerminalIssue || canShowSubtreeControls,
+                      );
                       setTreeControlOpen(true);
                     }}
                   >
-                    {childIssues.length === 0 ? "Resume work" : "Resume subtree"}
+                    {childIssues.length === 0
+                      ? "Resume work"
+                      : "Resume subtree"}
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => {
                       setTreeControlMode("resume");
-                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlWakeAgentsOnResume(
+                        isAgentOwnedNonTerminalIssue || canShowSubtreeControls,
+                      );
                       setTreeControlOpen(true);
                     }}
                   >
-                    View affected ({childIssues.length === 0 ? 1 : heldDescendantCount})
+                    View affected (
+                    {childIssues.length === 0 ? 1 : heldDescendantCount})
                   </Button>
                   {canShowSubtreeControls ? (
                     <Button
@@ -3053,7 +3849,10 @@ export function IssueDetail() {
             <div className="text-xs">
               This issue is paused by ancestor{" "}
               {activePauseHoldRoot?.identifier ? (
-                <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
+                <Link
+                  to={createIssueDetailPath(activePauseHoldRoot.identifier)}
+                  className="underline"
+                >
                   {activePauseHoldRoot.identifier}
                 </Link>
               ) : (
@@ -3076,7 +3875,9 @@ export function IssueDetail() {
             priority={issue.priority}
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <span className="text-sm font-mono text-muted-foreground shrink-0">
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </span>
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
@@ -3118,7 +3919,11 @@ export function IssueDetail() {
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
             >
               <Hexagon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
+              <span className="truncate">
+                {resolvedProject?.name ??
+                  issue.project?.name ??
+                  issue.projectId.slice(0, 8)}
+              </span>
             </Link>
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
@@ -3143,7 +3948,9 @@ export function IssueDetail() {
                 </span>
               ))}
               {(issue.labels ?? []).length > 4 && (
-                <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>
+                <span className="text-[10px] text-muted-foreground">
+                  +{(issue.labels ?? []).length - 4}
+                </span>
               )}
             </div>
           )}
@@ -3156,7 +3963,11 @@ export function IssueDetail() {
                 onClick={copyIssueToClipboard}
                 title="Copy issue as markdown"
               >
-                {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                {copied ? (
+                  <Check className="h-4 w-4 text-green-500" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
               </Button>
               <Button
                 variant="ghost"
@@ -3175,7 +3986,8 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={() => {
-                  if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
+                  if (!archivePending && issue?.id)
+                    archiveFromInbox.mutate(issue.id);
                 }}
                 disabled={archivePending}
                 title="Archive from inbox"
@@ -3190,14 +4002,20 @@ export function IssueDetail() {
               onClick={copyIssueToClipboard}
               title="Copy issue as markdown"
             >
-              {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+              {copied ? (
+                <Check className="h-4 w-4 text-green-500" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
             </Button>
             <Button
               variant="ghost"
               size="icon-xs"
               className={cn(
                 "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+                panelVisible
+                  ? "opacity-0 pointer-events-none w-0 overflow-hidden"
+                  : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
               title="Show properties"
@@ -3223,37 +4041,8 @@ export function IssueDetail() {
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
-            <PopoverContent className="w-52 p-1" align="end">
-              {canPauseLeafWork ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                  onClick={() => {
-                    setTreeControlMode("pause");
-                    setTreeControlCancelConfirmed(false);
-                    setTreeControlOpen(true);
-                    setMoreOpen(false);
-                  }}
-                >
-                  <PauseCircle className="h-3 w-3" />
-                  Pause work...
-                </button>
-              ) : null}
-              {canResumeLeafWork ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                  onClick={() => {
-                    setTreeControlMode("resume");
-                    setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue);
-                    setTreeControlOpen(true);
-                    setMoreOpen(false);
-                  }}
-                >
-                  <PlayCircle className="h-3 w-3" />
-                  Resume work
-                </button>
-              ) : null}
-              {canShowSubtreeControls ? (
-                <>
+              <PopoverContent className="w-52 p-1" align="end">
+                {canPauseLeafWork ? (
                   <button
                     className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                     onClick={() => {
@@ -3264,65 +4053,96 @@ export function IssueDetail() {
                     }}
                   >
                     <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
+                    Pause work...
                   </button>
-                  {canResumeSubtree ? (
-                    <button
-                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => {
-                        setTreeControlMode("resume");
-                        setTreeControlWakeAgentsOnResume(true);
-                        setTreeControlOpen(true);
-                        setMoreOpen(false);
-                      }}
-                    >
-                      <PlayCircle className="h-3 w-3" />
-                      Resume subtree
-                    </button>
-                  ) : null}
+                ) : null}
+                {canResumeLeafWork ? (
                   <button
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                     onClick={() => {
-                      setTreeControlMode("cancel");
-                      setTreeControlCancelConfirmed(false);
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(
+                        isAgentOwnedNonTerminalIssue,
+                      );
                       setTreeControlOpen(true);
                       setMoreOpen(false);
                     }}
                   >
-                    <XCircle className="h-3 w-3" />
-                    Cancel subtree...
+                    <PlayCircle className="h-3 w-3" />
+                    Resume work
                   </button>
-                  {canRestoreSubtree ? (
+                ) : null}
+                {canShowSubtreeControls ? (
+                  <>
                     <button
                       className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                       onClick={() => {
-                        setTreeControlMode("restore");
-                        setTreeControlWakeAgentsOnResume(false);
+                        setTreeControlMode("pause");
                         setTreeControlCancelConfirmed(false);
                         setTreeControlOpen(true);
                         setMoreOpen(false);
                       }}
                     >
-                      <Repeat className="h-3 w-3" />
-                      Restore subtree...
+                      <PauseCircle className="h-3 w-3" />
+                      Pause subtree...
                     </button>
-                  ) : null}
-                </>
-              ) : null}
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
-              </button>
-            </PopoverContent>
+                    {canResumeSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("resume");
+                          setTreeControlWakeAgentsOnResume(true);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <PlayCircle className="h-3 w-3" />
+                        Resume subtree
+                      </button>
+                    ) : null}
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                      onClick={() => {
+                        setTreeControlMode("cancel");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <XCircle className="h-3 w-3" />
+                      Cancel subtree...
+                    </button>
+                    {canRestoreSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("restore");
+                          setTreeControlWakeAgentsOnResume(false);
+                          setTreeControlCancelConfirmed(false);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <Repeat className="h-3 w-3" />
+                        Restore subtree...
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") },
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this Issue
+                </button>
+              </PopoverContent>
             </Popover>
           </div>
         </div>
@@ -3397,7 +4217,9 @@ export function IssueDetail() {
       {showRichSubIssuesSection ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">
+              Sub-issues
+            </h3>
           </div>
           <IssuesList
             issues={childIssues}
@@ -3412,7 +4234,10 @@ export function IssueDetail() {
             issueLinkState={resolvedIssueDetailState ?? location.state}
             searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
             searchWithinLoadedIssues
-            baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
+            baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(
+              issue,
+              currentUserId,
+            )}
             createIssueLabel="Sub-issue"
             defaultSortField="workflow"
             showProgressSummary
@@ -3421,7 +4246,12 @@ export function IssueDetail() {
         </div>
       ) : (
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
-          <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openNewSubIssue}
+            className="shrink-0 shadow-none"
+          >
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             New Sub-issue
           </Button>
@@ -3456,131 +4286,138 @@ export function IssueDetail() {
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
       ) : hasAttachments ? (
         <div
-        className={cn(
-          "space-y-3 rounded-lg transition-colors",
-        )}
-        onDragEnter={(evt) => {
-          evt.preventDefault();
-          setAttachmentDragActive(true);
-        }}
-        onDragOver={(evt) => {
-          evt.preventDefault();
-          setAttachmentDragActive(true);
-        }}
-        onDragLeave={(evt) => {
-          if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-          setAttachmentDragActive(false);
-        }}
-        onDrop={(evt) => void handleAttachmentDrop(evt)}
-      >
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
-          {attachmentUploadButton}
-        </div>
+          className={cn("space-y-3 rounded-lg transition-colors")}
+          onDragEnter={(evt) => {
+            evt.preventDefault();
+            setAttachmentDragActive(true);
+          }}
+          onDragOver={(evt) => {
+            evt.preventDefault();
+            setAttachmentDragActive(true);
+          }}
+          onDragLeave={(evt) => {
+            if (evt.currentTarget.contains(evt.relatedTarget as Node | null))
+              return;
+            setAttachmentDragActive(false);
+          }}
+          onDrop={(evt) => void handleAttachmentDrop(evt)}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-muted-foreground">
+              Attachments
+            </h3>
+            {attachmentUploadButton}
+          </div>
 
-        {attachmentError && (
-          <p className="text-xs text-destructive">{attachmentError}</p>
-        )}
+          {attachmentError && (
+            <p className="text-xs text-destructive">{attachmentError}</p>
+          )}
 
-        {imageAttachments.length > 0 && (
-          <div className="grid grid-cols-4 gap-2">
-            {imageAttachments.map((attachment) => (
-              <div
-                key={attachment.id}
-                className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-accent/10 cursor-pointer"
-                onClick={() => {
-                  const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
-                  setGalleryIndex(idx >= 0 ? idx : 0);
-                  setGalleryOpen(true);
-                }}
-              >
-                <img
-                  src={attachment.contentPath}
-                  alt={attachment.originalFilename ?? "attachment"}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
-                {confirmDeleteId === attachment.id ? (
-                  <div
-                    className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <p className="text-xs text-white font-medium">Delete?</p>
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        className="rounded bg-destructive px-2 py-0.5 text-xs text-white hover:bg-destructive/80"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteAttachment.mutate(attachment.id);
-                          setConfirmDeleteId(null);
-                        }}
-                        disabled={deleteAttachment.isPending}
-                      >
-                        Yes
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDeleteId(null);
-                        }}
-                      >
-                        No
-                      </button>
+          {imageAttachments.length > 0 && (
+            <div className="grid grid-cols-4 gap-2">
+              {imageAttachments.map((attachment) => (
+                <div
+                  key={attachment.id}
+                  className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-accent/10 cursor-pointer"
+                  onClick={() => {
+                    const idx = imageAttachments.findIndex(
+                      (a) => a.id === attachment.id,
+                    );
+                    setGalleryIndex(idx >= 0 ? idx : 0);
+                    setGalleryOpen(true);
+                  }}
+                >
+                  <img
+                    src={attachment.contentPath}
+                    alt={attachment.originalFilename ?? "attachment"}
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
+                  {confirmDeleteId === attachment.id ? (
+                    <div
+                      className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <p className="text-xs text-white font-medium">Delete?</p>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          className="rounded bg-destructive px-2 py-0.5 text-xs text-white hover:bg-destructive/80"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteAttachment.mutate(attachment.id);
+                            setConfirmDeleteId(null);
+                          }}
+                          disabled={deleteAttachment.isPending}
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteId(null);
+                          }}
+                        >
+                          No
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmDeleteId(attachment.id);
-                    }}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {nonImageAttachments.length > 0 && (
-          <div className="space-y-2">
-            {nonImageAttachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <a
-                    href={attachment.contentPath}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs hover:underline truncate"
-                    title={attachment.originalFilename ?? attachment.id}
-                  >
-                    {attachment.originalFilename ?? attachment.id}
-                  </a>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => deleteAttachment.mutate(attachment.id)}
-                    disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(attachment.id);
+                      }}
+                      title="Delete attachment"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+
+          {nonImageAttachments.length > 0 && (
+            <div className="space-y-2">
+              {nonImageAttachments.map((attachment) => (
+                <div
+                  key={attachment.id}
+                  className="border border-border rounded-md p-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <a
+                      href={attachment.contentPath}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs hover:underline truncate"
+                      title={attachment.originalFilename ?? attachment.id}
+                    >
+                      {attachment.originalFilename ?? attachment.id}
+                    </a>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => deleteAttachment.mutate(attachment.id)}
+                      disabled={deleteAttachment.isPending}
+                      title="Delete attachment"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {attachment.contentType} ·{" "}
+                    {(attachment.byteSize / 1024).toFixed(1)} KB
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -3599,7 +4436,11 @@ export function IssueDetail() {
 
       <Separator />
 
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+      <Tabs
+        value={detailTab}
+        onValueChange={setDetailTab}
+        className="space-y-3"
+      >
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
@@ -3658,12 +4499,25 @@ export function IssueDetail() {
               onImageUpload={handleCommentImageUpload}
               onAttachImage={handleCommentAttachImage}
               onInterruptQueued={handleInterruptQueuedRun}
-              onPauseWorkRun={canManageTreeControl
-                ? (runId) => pauseIssueWorkRun.mutateAsync({ runId, scope: treeControlScope }).then(() => undefined)
-                : undefined}
+              onPauseWorkRun={
+                canManageTreeControl
+                  ? (runId) =>
+                      pauseIssueWorkRun
+                        .mutateAsync({ runId, scope: treeControlScope })
+                        .then(() => undefined)
+                  : undefined
+              }
               onCancelQueued={handleCancelQueuedComment}
-              interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
-              pausingWorkRunId={pauseIssueWorkRun.isPending ? pauseIssueWorkRun.variables?.runId ?? null : null}
+              interruptingQueuedRunId={
+                interruptQueuedComment.isPending
+                  ? (interruptQueuedComment.variables ?? null)
+                  : null
+              }
+              pausingWorkRunId={
+                pauseIssueWorkRun.isPending
+                  ? (pauseIssueWorkRun.variables?.runId ?? null)
+                  : null
+              }
               onImageClick={handleChatImageClick}
               onAcceptInteraction={handleAcceptInteraction}
               onRejectInteraction={handleRejectInteraction}
@@ -3716,7 +4570,9 @@ export function IssueDetail() {
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
-            <DialogTitle>{issueTreeControlLabel(treeControlMode, treeControlScope)}</DialogTitle>
+            <DialogTitle>
+              {issueTreeControlLabel(treeControlMode, treeControlScope)}
+            </DialogTitle>
             <DialogDescription>
               {issueTreeControlHelpText(treeControlMode, treeControlScope)}
             </DialogDescription>
@@ -3724,7 +4580,9 @@ export function IssueDetail() {
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
             {treeControlMode === "cancel" ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                Cancelling a subtree is destructive. Non-terminal issues will be marked cancelled, and running or queued work will be interrupted where possible.
+                Cancelling a subtree is destructive. Non-terminal issues will be
+                marked cancelled, and running or queued work will be interrupted
+                where possible.
               </div>
             ) : null}
 
@@ -3740,7 +4598,7 @@ export function IssueDetail() {
               />
             </div>
 
-            {(treeControlMode === "resume" || treeControlMode === "restore") ? (
+            {treeControlMode === "resume" || treeControlMode === "restore" ? (
               <div className="space-y-2">
                 <label className="flex items-start gap-2 text-sm">
                   <input
@@ -3748,10 +4606,14 @@ export function IssueDetail() {
                     className="mt-0.5"
                     disabled={previewAffectedAgentCount === 0}
                     checked={treeControlWakeAgentsOnResume}
-                    onChange={(event) => setTreeControlWakeAgentsOnResume(event.target.checked)}
+                    onChange={(event) =>
+                      setTreeControlWakeAgentsOnResume(event.target.checked)
+                    }
                   />
                   <span>
-                    <span className="block font-medium">Wake affected agents ({previewAffectedAgentCount})</span>
+                    <span className="block font-medium">
+                      Wake affected agents ({previewAffectedAgentCount})
+                    </span>
                     <span className="text-xs text-muted-foreground">
                       {previewAffectedAgentCount === 0
                         ? "No assigned agents are eligible to wake from this preview."
@@ -3759,14 +4621,23 @@ export function IssueDetail() {
                     </span>
                   </span>
                 </label>
-                {treeControlWakeAgentsOnResume && treePreviewAffectedAgentRows.length > 0 ? (
+                {treeControlWakeAgentsOnResume &&
+                treePreviewAffectedAgentRows.length > 0 ? (
                   <div className="max-h-32 space-y-1 overflow-y-auto overscroll-contain">
                     {treePreviewAffectedAgentRows.map(({ agentId, agent }) => (
-                      <div key={agentId} className="flex items-center gap-2 rounded-sm px-1 py-1 text-sm hover:bg-accent/50">
+                      <div
+                        key={agentId}
+                        className="flex items-center gap-2 rounded-sm px-1 py-1 text-sm hover:bg-accent/50"
+                      >
                         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-background">
-                          <AgentIcon icon={agent?.icon} className="h-3.5 w-3.5 text-muted-foreground" />
+                          <AgentIcon
+                            icon={agent?.icon}
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                          />
                         </span>
-                        <span className="min-w-0 flex-1 truncate">{agent?.name ?? agentId.slice(0, 8)}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {agent?.name ?? agentId.slice(0, 8)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -3780,9 +4651,14 @@ export function IssueDetail() {
                   type="checkbox"
                   className="mt-0.5"
                   checked={treeControlCancelConfirmed}
-                  onChange={(event) => setTreeControlCancelConfirmed(event.target.checked)}
+                  onChange={(event) =>
+                    setTreeControlCancelConfirmed(event.target.checked)
+                  }
                 />
-                <span>I understand this will cancel {previewAffectedIssueCount} issues.</span>
+                <span>
+                  I understand this will cancel {previewAffectedIssueCount}{" "}
+                  issues.
+                </span>
               </label>
             ) : null}
 
@@ -3796,7 +4672,9 @@ export function IssueDetail() {
                 </div>
               ) : treeControlPreviewError ? (
                 <div className="space-y-2">
-                  <p className="text-xs text-destructive">{treeControlPreviewErrorCopy(treeControlPreviewError)}</p>
+                  <p className="text-xs text-destructive">
+                    {treeControlPreviewErrorCopy(treeControlPreviewError)}
+                  </p>
                   <Button
                     variant="outline"
                     size="sm"
@@ -3812,7 +4690,10 @@ export function IssueDetail() {
                   {treePreviewWarnings.length > 0 ? (
                     <div className="space-y-1">
                       {treePreviewWarnings.map((warning) => (
-                        <p key={warning.code} className="text-xs text-amber-700 dark:text-amber-300">
+                        <p
+                          key={warning.code}
+                          className="text-xs text-amber-700 dark:text-amber-300"
+                        >
                           {warning.message}
                         </p>
                       ))}
@@ -3820,37 +4701,62 @@ export function IssueDetail() {
                   ) : null}
                   {treePreviewAffectedIssueRows.length > 0 ? (
                     <div className="max-h-56 overflow-y-auto overscroll-contain">
-                      {treePreviewAffectedIssueRows.map(({ candidate, issue: previewIssue }) => (
-                        <div key={candidate.id} style={candidate.depth > 0 ? { paddingLeft: `${Math.min(candidate.depth, 6) * 14}px` } : undefined}>
-                          <Link
-                            to={createIssueDetailPath(candidate.identifier ?? candidate.id)}
-                            issuePrefetch={previewIssue}
-                            className={cn(
-                              "group flex items-start gap-2 border-b border-border py-2 pl-1 pr-2 text-sm no-underline text-inherit transition-colors last:border-b-0 hover:bg-accent/50 sm:items-center",
-                              candidate.skipped && "opacity-60",
-                            )}
+                      {treePreviewAffectedIssueRows.map(
+                        ({ candidate, issue: previewIssue }) => (
+                          <div
+                            key={candidate.id}
+                            style={
+                              candidate.depth > 0
+                                ? {
+                                    paddingLeft: `${Math.min(candidate.depth, 6) * 14}px`,
+                                  }
+                                : undefined
+                            }
                           >
-                            <StatusIcon status={candidate.status} />
-                            <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                              {candidate.identifier ?? candidate.id.slice(0, 8)}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
-                            {candidate.skipped && candidate.skipReason === "terminal_status" ? (
-                              <span className="shrink-0 text-xs text-muted-foreground">Complete</span>
-                            ) : null}
-                          </Link>
-                        </div>
-                      ))}
+                            <Link
+                              to={createIssueDetailPath(
+                                candidate.identifier ?? candidate.id,
+                              )}
+                              issuePrefetch={previewIssue}
+                              className={cn(
+                                "group flex items-start gap-2 border-b border-border py-2 pl-1 pr-2 text-sm no-underline text-inherit transition-colors last:border-b-0 hover:bg-accent/50 sm:items-center",
+                                candidate.skipped && "opacity-60",
+                              )}
+                            >
+                              <StatusIcon status={candidate.status} />
+                              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                                {candidate.identifier ??
+                                  candidate.id.slice(0, 8)}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate">
+                                {candidate.title}
+                              </span>
+                              {candidate.skipped &&
+                              candidate.skipReason === "terminal_status" ? (
+                                <span className="shrink-0 text-xs text-muted-foreground">
+                                  Complete
+                                </span>
+                              ) : null}
+                            </Link>
+                          </div>
+                        ),
+                      )}
                     </div>
                   ) : null}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground">Preview unavailable.</p>
+                <p className="text-xs text-muted-foreground">
+                  Preview unavailable.
+                </p>
               )}
             </div>
           </div>
           <DialogFooter className="border-t border-border/60 bg-background px-6 py-4">
-            <Button variant="outline" onClick={() => setTreeControlOpen(false)} disabled={executeTreeControl.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setTreeControlOpen(false)}
+              disabled={executeTreeControl.isPending}
+            >
               Close
             </Button>
             <Button
@@ -3858,7 +4764,9 @@ export function IssueDetail() {
               disabled={executeTreeControl.isPending || !canApplyTreeControl}
               variant={treeControlMode === "cancel" ? "destructive" : "default"}
             >
-              {executeTreeControl.isPending ? "Applying..." : treeControlPrimaryButtonLabel}
+              {executeTreeControl.isPending
+                ? "Applying..."
+                : treeControlPrimaryButtonLabel}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3866,7 +4774,10 @@ export function IssueDetail() {
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
+        <SheetContent
+          side="bottom"
+          className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]"
+        >
           <SheetHeader>
             <SheetTitle className="text-sm">Properties</SheetTitle>
           </SheetHeader>
