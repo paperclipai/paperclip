@@ -91,6 +91,7 @@ async function assertLocalSkillPackage() {
     "diagnosis",
     "blockedByIssueIds",
     "PAPERCLIPAI_CMD",
+    "PAPERCLIP_HARBOR_RUNNER_CONFIG",
   ]) {
     assert(markdown.includes(expected), `Skill smoke expected ${skillPath} to mention ${expected}`);
   }
@@ -194,6 +195,8 @@ async function main() {
         `- Manifest: ${artifactRoot}/manifest.json`,
         `- Results JSONL: ${artifactRoot}/results.jsonl`,
         `- Harbor raw job folder: ${artifactRoot}/harbor/raw-job`,
+        "- Dispatch config: PAPERCLIP_HARBOR_RUNNER_CONFIG=<omitted - harness/setup no-dispatch smoke>",
+        "- Heartbeat-enabled agents: 0 (harness/setup no-dispatch; not a product signal)",
         "",
         "No benchmark process, Harbor job, model call, or provider call was started.",
       ].join("\n"),
@@ -309,6 +312,7 @@ async function main() {
     `Expected iteration issue to be in_review, got ${verifiedIteration.status}`,
   );
   assert(verifiedRunDoc.body.includes(`${artifactRoot}/results.jsonl`), "Expected run doc to include mocked results path");
+  assert(verifiedRunDoc.body.includes("PAPERCLIP_HARBOR_RUNNER_CONFIG"), "Expected run doc to record dispatch config");
   assert(
     verifiedDiagnosisDoc.body.includes("Exact stop point") && verifiedDiagnosisDoc.body.includes("Next-action owner"),
     "Expected diagnosis doc to include exact stop point and next-action owner",

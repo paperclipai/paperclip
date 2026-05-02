@@ -1071,11 +1071,17 @@ export function routineService(
     get: getRoutineById,
     getTrigger: getTriggerById,
 
-    list: async (companyId: string): Promise<RoutineListItem[]> => {
+    list: async (
+      companyId: string,
+      filters?: { projectId?: string | null },
+    ): Promise<RoutineListItem[]> => {
+      const conditions = [eq(routines.companyId, companyId)];
+      if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+
       const rows = await db
         .select()
         .from(routines)
-        .where(eq(routines.companyId, companyId))
+        .where(and(...conditions))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
       const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine] = await Promise.all([

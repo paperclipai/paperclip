@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
 describe("buildNewAgentRuntimeConfig", () => {
@@ -10,7 +11,7 @@ describe("buildNewAgentRuntimeConfig", () => {
         intervalSec: 300,
         wakeOnDemand: true,
         cooldownSec: 10,
-        maxConcurrentRuns: 5,
+        maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       },
     });
   });
@@ -27,7 +28,7 @@ describe("buildNewAgentRuntimeConfig", () => {
         intervalSec: 3600,
         wakeOnDemand: true,
         cooldownSec: 10,
-        maxConcurrentRuns: 5,
+        maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       },
     });
   });
