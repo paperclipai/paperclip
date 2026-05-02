@@ -76,8 +76,9 @@ Core fields:
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 
 Operational fields:
-- timeoutSec (number, optional): run timeout in seconds
-- graceSec (number, optional): SIGTERM grace period in seconds
+- timeoutSec (number, optional): wall-clock run timeout in seconds. Defaults to 1800 (30min). Set to 0 to disable.
+- idleTimeoutSec (number, optional): idle watchdog in seconds. Terminate the run if no stdout/stderr arrives within this window. Defaults to 300 (5min). Set to 0 to disable. Independent of timeoutSec; whichever fires first wins. On expiry the result carries errorCode=codex_idle_timeout (or codex_wall_timeout for wall-clock) and errorMeta.timeoutReason="idle"|"wall".
+- graceSec (number, optional): SIGTERM grace period in seconds before SIGKILL escalation
 
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).

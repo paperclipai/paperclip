@@ -330,6 +330,76 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")("kills a silent child via idle watchdog and tags timeoutReason=idle", async () => {
+    const start = Date.now();
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        graceSec: 1,
+        idleTimeoutSec: 0.5,
+        onLog: async () => {},
+      },
+    );
+    const elapsedMs = Date.now() - start;
+    expect(result.timedOut).toBe(true);
+    expect(result.timeoutReason).toBe("idle");
+    expect(elapsedMs).toBeLessThan(5_000);
+  });
+
+  it.skipIf(process.platform === "win32")("does not fire idle watchdog while child emits output", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "let n = 0;",
+          "const id = setInterval(() => { process.stdout.write(`tick ${++n}\\n`); if (n >= 4) { clearInterval(id); process.exit(0); } }, 100);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        graceSec: 1,
+        idleTimeoutSec: 1,
+        onLog: async () => {},
+      },
+    );
+    expect(result.timedOut).toBe(false);
+    expect(result.timeoutReason).toBeFalsy();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")("tags timeoutReason=wall when wall-clock timer fires first", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const id = setInterval(() => process.stdout.write('alive\\n'), 50);",
+          "setTimeout(() => clearInterval(id), 5000);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0.5,
+        graceSec: 1,
+        idleTimeoutSec: 5,
+        onLog: async () => {},
+      },
+    );
+    expect(result.timedOut).toBe(true);
+    expect(result.timeoutReason).toBe("wall");
+  });
 });
 
 describe("renderPaperclipWakePrompt", () => {

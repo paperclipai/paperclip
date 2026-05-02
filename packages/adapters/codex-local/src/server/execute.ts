@@ -487,8 +487,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  // Wall-clock cap. Default 30min so a wedged child cannot hang a heartbeat
+  // forever. Operators can opt out by setting `timeoutSec: 0` in adapter config.
+  const timeoutSec = asNumber(config.timeoutSec, 1800);
   const graceSec = asNumber(config.graceSec, 20);
+  // Idle watchdog: terminate the child if no stdout/stderr arrives within
+  // this window. Default 5min so genuinely silent hangs (no JSONL events)
+  // surface as a timeout instead of accumulating wall-clock time.
+  // Set to 0 to disable.
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 300);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -666,6 +673,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      idleTimeoutSec,
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
@@ -689,16 +697,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: {
+      proc: {
+        exitCode: number | null;
+        signal: string | null;
+        timedOut: boolean;
+        timeoutReason?: "wall" | "idle" | null;
+        stdout: string;
+        stderr: string;
+      };
+      rawStderr: string;
+      parsed: ReturnType<typeof parseCodexJsonl>;
+    },
     clearSessionOnMissingSession = false,
     isRetry = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
+      const isIdle = attempt.proc.timeoutReason === "idle";
+      const errorCode = isIdle ? "codex_idle_timeout" : "codex_wall_timeout";
+      const errorMessage = isIdle
+        ? `Timed out after ${idleTimeoutSec}s of no output (idle watchdog)`
+        : `Timed out after ${timeoutSec}s wall-clock`;
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode,
+        errorMessage,
+        errorMeta: {
+          timeoutReason: isIdle ? "idle" : "wall",
+          timeoutSec,
+          idleTimeoutSec,
+        },
         clearSession: clearSessionOnMissingSession,
       };
     }

@@ -78,6 +78,13 @@ export interface AdapterExecutionTargetProcessOptions {
   stdin?: string;
   timeoutSec: number;
   graceSec: number;
+  /**
+   * Idle watchdog: terminate the child if no stdout/stderr chunk arrives
+   * within this many seconds. 0 disables (default). Local execution only;
+   * sandbox runners ignore this option since their runtimes provide their
+   * own liveness handling.
+   */
+  idleTimeoutSec?: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
@@ -271,6 +278,7 @@ export async function runAdapterExecutionTargetProcess(
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
+    idleTimeoutSec: options.idleTimeoutSec,
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,

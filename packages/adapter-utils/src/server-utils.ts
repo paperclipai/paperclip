@@ -13,6 +13,12 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  /**
+   * Reason for `timedOut`: `"wall"` for `timeoutSec` cap, `"idle"` for
+   * `idleTimeoutSec` watchdog. Absent for non-timeout exits or callers
+   * that don't track this distinction.
+   */
+  timeoutReason?: "wall" | "idle" | null;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -1663,6 +1669,12 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    /**
+     * Idle watchdog: terminate child if no stdout/stderr chunk arrives
+     * within this many seconds. 0 disables (default). Independent of
+     * `timeoutSec` (wall-clock cap).
+     */
+    idleTimeoutSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -1719,6 +1731,8 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let timeoutReason: "wall" | "idle" | null = null;
+        let killEscalationTimer: NodeJS.Timeout | null = null;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -1771,17 +1785,39 @@ export async function runChildProcess(
           }, graceMs);
         };
 
+        const idleTimeoutSec = Math.max(0, opts.idleTimeoutSec ?? 0);
+        let idleTimer: NodeJS.Timeout | null = null;
+
+        const triggerTimeout = (reason: "wall" | "idle") => {
+          if (timedOut) return;
+          timedOut = true;
+          timeoutReason = reason;
+          clearTerminalCleanupTimers();
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          killEscalationTimer = setTimeout(() => {
+            killEscalationTimer = null;
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+
+        const armIdleTimer = () => {
+          if (idleTimeoutSec <= 0 || timedOut) return;
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            idleTimer = null;
+            triggerTimeout("idle");
+          }, idleTimeoutSec * 1000);
+        };
+
         const timeout =
           opts.timeoutSec > 0
-            ? setTimeout(() => {
-                timedOut = true;
-                clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
-              }, opts.timeoutSec * 1000)
+            ? setTimeout(() => triggerTimeout("wall"), opts.timeoutSec * 1000)
             : null;
+        armIdleTimer();
 
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
@@ -1789,6 +1825,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          armIdleTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -1805,6 +1842,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          armIdleTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -1826,6 +1864,14 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+          if (killEscalationTimer) {
+            clearTimeout(killEscalationTimer);
+            killEscalationTimer = null;
+          }
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
@@ -1844,6 +1890,14 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+          if (killEscalationTimer) {
+            clearTimeout(killEscalationTimer);
+            killEscalationTimer = null;
+          }
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
@@ -1854,6 +1908,7 @@ export async function runChildProcess(
                 exitCode: code,
                 signal,
                 timedOut,
+                timeoutReason,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,
