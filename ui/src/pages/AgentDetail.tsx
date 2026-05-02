@@ -5,7 +5,7 @@ import {
   agentsApi,
   type AgentKey,
   type ClaudeLoginResult,
-  type CodexLoginResult,
+  type CodexLoginPollResponse,
   type AgentPermissionUpdate,
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
@@ -73,10 +73,19 @@ import {
   ArrowLeft,
   HelpCircle,
   FolderOpen,
+  ExternalLink,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
@@ -2969,11 +2978,18 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
-  const [codexLoginResult, setCodexLoginResult] = useState<CodexLoginResult | null>(null);
+  // Codex device-auth flow runs in the background on the server and returns a
+  // verification URL + 8-char user code; we poll for status and surface it in
+  // a modal while the user approves the request in their browser.
+  const [codexLoginSessionId, setCodexLoginSessionId] = useState<string | null>(null);
+  const [codexLoginState, setCodexLoginState] = useState<CodexLoginPollResponse | null>(null);
+  const [codexLoginStartError, setCodexLoginStartError] = useState<string | null>(null);
 
   useEffect(() => {
     setClaudeLoginResult(null);
-    setCodexLoginResult(null);
+    setCodexLoginSessionId(null);
+    setCodexLoginState(null);
+    setCodexLoginStartError(null);
   }, [run.id]);
 
   const cancelRun = useMutation({
@@ -3081,10 +3097,79 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
   const runCodexLogin = useMutation({
     mutationFn: () => agentsApi.loginWithCodex(run.agentId, run.companyId),
+    onMutate: () => {
+      setCodexLoginStartError(null);
+      setCodexLoginState(null);
+    },
     onSuccess: (data) => {
-      setCodexLoginResult(data);
+      setCodexLoginSessionId(data.sessionId);
+    },
+    onError: (err) => {
+      setCodexLoginStartError(err instanceof Error ? err.message : "Failed to start Codex login");
     },
   });
+
+  // Poll the codex login session until it reaches a terminal state. Polls every
+  // 1.5s while we're still waiting for the URL/code or the user to approve, and
+  // stops on success/error. The interval is gated on having an active session.
+  useEffect(() => {
+    if (!codexLoginSessionId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const next = await agentsApi.pollCodexLogin(run.agentId, codexLoginSessionId, run.companyId);
+        if (cancelled) return;
+        setCodexLoginState(next);
+        if (next.status === "success") {
+          // Refresh runtime state so the auth-required banner clears.
+          queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(run.agentId) });
+          return;
+        }
+        if (next.status === "error") return;
+        timer = setTimeout(poll, 1500);
+      } catch (err) {
+        if (cancelled) return;
+        setCodexLoginStartError(err instanceof Error ? err.message : "Failed to poll Codex login session");
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [codexLoginSessionId, queryClient, run.agentId, run.companyId]);
+
+  const codexLoginModalOpen = Boolean(codexLoginSessionId);
+  const codexLoginShowSuccessAutoClose = codexLoginState?.status === "success";
+
+  // Auto-close the modal a couple seconds after success so the user can see the
+  // confirmation but doesn't have to dismiss it manually.
+  useEffect(() => {
+    if (!codexLoginShowSuccessAutoClose) return;
+    const timer = setTimeout(() => {
+      setCodexLoginSessionId(null);
+      setCodexLoginState(null);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [codexLoginShowSuccessAutoClose]);
+
+  const closeCodexLoginModal = () => {
+    setCodexLoginSessionId(null);
+    setCodexLoginState(null);
+  };
+
+  const copyCodexUserCode = async () => {
+    const code = codexLoginState?.userCode;
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      // best-effort; clipboard may be blocked in non-secure contexts
+    }
+  };
 
   const isRunning = run.status === "running" && !!run.startedAt && !run.finishedAt;
   const [elapsedSec, setElapsedSec] = useState<number>(() => {
@@ -3269,46 +3354,109 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   size="sm"
                   className="h-7 px-2 text-xs"
                   onClick={() => runCodexLogin.mutate()}
-                  disabled={runCodexLogin.isPending}
+                  disabled={runCodexLogin.isPending || codexLoginModalOpen}
                 >
-                  {runCodexLogin.isPending ? "Running codex login..." : "Login with ChatGPT"}
+                  {runCodexLogin.isPending ? "Starting Codex login..." : "Login with ChatGPT"}
                 </Button>
-                {runCodexLogin.isError && (
-                  <p className="text-xs text-destructive">
-                    {runCodexLogin.error instanceof Error
-                      ? runCodexLogin.error.message
-                      : "Failed to run Codex login"}
-                  </p>
-                )}
-                {codexLoginResult?.loginUrl && (
-                  <p className="text-xs">
-                    Login URL:
-                    <a
-                      href={codexLoginResult.loginUrl}
-                      className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {codexLoginResult.loginUrl}
-                    </a>
-                  </p>
-                )}
-                {codexLoginResult && (
-                  <>
-                    {!!codexLoginResult.stdout && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
-                        {codexLoginResult.stdout}
-                      </pre>
-                    )}
-                    {!!codexLoginResult.stderr && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
-                        {codexLoginResult.stderr}
-                      </pre>
-                    )}
-                  </>
+                {codexLoginStartError && (
+                  <p className="text-xs text-destructive">{codexLoginStartError}</p>
                 )}
               </div>
             )}
+            <Dialog
+              open={codexLoginModalOpen}
+              onOpenChange={(open) => {
+                if (!open) closeCodexLoginModal();
+              }}
+            >
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Login with ChatGPT</DialogTitle>
+                  <DialogDescription>
+                    First time? Enable <span className="font-medium">Device Code Login</span> in your ChatGPT account
+                    security settings before continuing.
+                  </DialogDescription>
+                </DialogHeader>
+                {codexLoginState?.status === "starting" || !codexLoginState ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Requesting a device code...
+                  </div>
+                ) : codexLoginState.status === "awaiting_user" ? (
+                  <div className="space-y-4 py-2">
+                    <ol className="list-decimal pl-5 text-sm space-y-2">
+                      <li>
+                        Open the verification URL:
+                        {codexLoginState.verificationUrl && (
+                          <div className="mt-1 flex items-center gap-2">
+                            <a
+                              href={codexLoginState.verificationUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 underline underline-offset-2 break-all dark:text-blue-400 inline-flex items-center gap-1"
+                            >
+                              {codexLoginState.verificationUrl}
+                              <ExternalLink className="h-3 w-3 shrink-0" />
+                            </a>
+                          </div>
+                        )}
+                      </li>
+                      <li>
+                        Enter this code:
+                        {codexLoginState.userCode && (
+                          <div className="mt-1 flex items-center gap-2">
+                            <code className="rounded bg-muted px-2 py-1 font-mono text-base tracking-widest">
+                              {codexLoginState.userCode}
+                            </code>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              onClick={copyCodexUserCode}
+                              aria-label="Copy code"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )}
+                      </li>
+                      <li>Approve the request in your browser.</li>
+                    </ol>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Waiting for you to approve in browser...
+                    </div>
+                  </div>
+                ) : codexLoginState.status === "success" ? (
+                  <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 py-4">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Login successful. Refreshing agent...
+                  </div>
+                ) : (
+                  <div className="space-y-2 py-2">
+                    <div className="flex items-start gap-2 text-sm text-destructive">
+                      <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <span>{codexLoginState.error ?? "Login failed."}</span>
+                    </div>
+                    {codexLoginState.errorCode === "device_code_disabled" && (
+                      <p className="text-xs text-muted-foreground">
+                        Open ChatGPT, go to Settings &rarr; Security, and enable "Device Code Login". Then try again.
+                      </p>
+                    )}
+                    {!!codexLoginState.stderr && (
+                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap max-h-32">
+                        {codexLoginState.stderr}
+                      </pre>
+                    )}
+                  </div>
+                )}
+                <DialogFooter>
+                  <Button variant="outline" size="sm" onClick={closeCodexLoginModal}>
+                    {codexLoginState?.status === "success" ? "Close" : "Cancel"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">
                 Exit code {run.exitCode}

@@ -53,6 +53,20 @@ export interface CodexLoginResult {
   stderr: string;
 }
 
+export interface CodexLoginStartResponse {
+  sessionId: string;
+}
+
+export interface CodexLoginPollResponse {
+  status: "starting" | "awaiting_user" | "success" | "error";
+  verificationUrl: string | null;
+  userCode: string | null;
+  error: string | null;
+  errorCode: "timeout" | "denied" | "device_code_disabled" | "infra" | null;
+  stdout: string;
+  stderr: string;
+}
+
 export interface OrgNode {
   id: string;
   name: string;
@@ -237,7 +251,11 @@ export const agentsApi = {
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   loginWithCodex: (id: string, companyId?: string) =>
-    api.post<CodexLoginResult>(agentPath(id, companyId, "/codex-login"), {}),
+    api.post<CodexLoginStartResponse>(agentPath(id, companyId, "/codex-login"), {}),
+  pollCodexLogin: (id: string, sessionId: string, companyId?: string) =>
+    api.get<CodexLoginPollResponse>(
+      agentPath(id, companyId, `/codex-login/${encodeURIComponent(sessionId)}`),
+    ),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };

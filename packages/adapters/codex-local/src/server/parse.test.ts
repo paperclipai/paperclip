@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "./parse.js";
+import {
+  extractCodexDeviceAuth,
+  isCodexUnknownSessionError,
+  parseCodexJsonl,
+  stripAnsi,
+} from "./parse.js";
 
 describe("parseCodexJsonl", () => {
   it("captures session id, assistant summary, usage, and error message", () => {
@@ -79,5 +84,40 @@ describe("isCodexUnknownSessionError", () => {
 
   it("does not classify unrelated Codex failures as stale sessions", () => {
     expect(isCodexUnknownSessionError("", "model overloaded")).toBe(false);
+  });
+});
+
+describe("stripAnsi", () => {
+  it("strips ANSI color and cursor sequences", () => {
+    const input = "\u001B[31mred\u001B[0m \u001B[1;33mbold-yellow\u001B[0m \u001B[2J";
+    expect(stripAnsi(input)).toBe("red bold-yellow ");
+  });
+});
+
+describe("extractCodexDeviceAuth", () => {
+  it("parses URL and 8-char user code from styled device-auth output", () => {
+    const stdout = [
+      "\u001B[32mVisit:\u001B[0m \u001B[36mhttps://auth.openai.com/codex/device\u001B[0m",
+      "\u001B[32mThen enter the code:\u001B[0m \u001B[1mABCD-EFGH\u001B[0m",
+    ].join("\n");
+    expect(extractCodexDeviceAuth(stdout)).toEqual({
+      verificationUrl: "https://auth.openai.com/codex/device",
+      userCode: "ABCD-EFGH",
+    });
+  });
+
+  it("returns nulls when URL or code missing", () => {
+    expect(extractCodexDeviceAuth("nothing here")).toEqual({
+      verificationUrl: null,
+      userCode: null,
+    });
+  });
+
+  it("normalizes a code with no separator into XXXX-XXXX form", () => {
+    const stdout = "Visit https://auth.openai.com/codex/device and enter ABCD1234";
+    expect(extractCodexDeviceAuth(stdout)).toEqual({
+      verificationUrl: "https://auth.openai.com/codex/device",
+      userCode: "ABCD-1234",
+    });
   });
 });

@@ -23,7 +23,13 @@ import {
   runChildProcess,
   sanitizeChildEnv,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractCodexLoginUrl, parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import {
+  extractCodexLoginUrl,
+  extractCodexDeviceAuth,
+  parseCodexJsonl,
+  isCodexUnknownSessionError,
+  stripAnsi,
+} from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -222,7 +228,11 @@ export async function ensureCodexSkillsInjected(
   );
 }
 
-function buildCodexLoginResult(input: { proc: RunProcessResult; loginUrl: string | null }) {
+function buildCodexLoginResult(input: {
+  proc: RunProcessResult;
+  loginUrl: string | null;
+  userCode: string | null;
+}) {
   return {
     exitCode: input.proc.exitCode,
     signal: input.proc.signal,
@@ -230,6 +240,7 @@ function buildCodexLoginResult(input: { proc: RunProcessResult; loginUrl: string
     stdout: input.proc.stdout,
     stderr: input.proc.stderr,
     loginUrl: input.loginUrl,
+    userCode: input.userCode,
   };
 }
 
@@ -240,8 +251,12 @@ export async function runCodexLogin(input: {
   context?: Record<string, unknown>;
   authToken?: string;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  // Called as soon as the device-auth URL and user code are detected on stdout.
+  // Allows the caller to surface the URL+code to the UI before the process completes.
+  onDeviceAuth?: (info: { verificationUrl: string; userCode: string }) => Promise<void> | void;
 }) {
   const onLog = input.onLog ?? (async () => {});
+  const onDeviceAuth = input.onDeviceAuth;
   const config = input.config;
   const command = asString(config.command, "codex");
   const cwd = asString(config.cwd, "") || process.cwd();
@@ -259,6 +274,8 @@ export async function runCodexLogin(input: {
   await fs.mkdir(effectiveCodexHome, { recursive: true });
 
   const env: Record<string, string> = { ...buildPaperclipEnv(input.agent) };
+  // CODEX_HOME is the canonical knob the Codex CLI uses to locate auth.json
+  // and config files; --device-auth will write the resulting tokens there.
   env.CODEX_HOME = effectiveCodexHome;
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -266,20 +283,53 @@ export async function runCodexLogin(input: {
   const runtimeEnv = ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
-  const timeoutSec = asNumber(config.timeoutSec, 120);
+  // Device-auth flow polls every few seconds for up to 15min — give it room to breathe.
+  // Caller can override via config.timeoutSec but we default to 16min instead of 2min.
+  const timeoutSec = asNumber(config.timeoutSec, 960);
   const graceSec = asNumber(config.graceSec, 10);
 
-  const proc = await runChildProcess(input.runId, command, ["login"], {
+  // Track URL/code emission so we only fire onDeviceAuth once. Use a buffer of
+  // accumulated stdout so we can match patterns that span multiple chunks.
+  let emittedDeviceAuth = false;
+  let stdoutAccumulator = "";
+
+  const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    await onLog(stream, chunk);
+    if (stream !== "stdout" || emittedDeviceAuth) return;
+    stdoutAccumulator = (stdoutAccumulator + chunk).slice(-8192);
+    const detected = extractCodexDeviceAuth(stdoutAccumulator);
+    if (detected.verificationUrl && detected.userCode && onDeviceAuth) {
+      emittedDeviceAuth = true;
+      try {
+        await onDeviceAuth({ verificationUrl: detected.verificationUrl, userCode: detected.userCode });
+      } catch (err) {
+        await onLog(
+          "stderr",
+          `[paperclip] codex device-auth callback failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+  };
+
+  const proc = await runChildProcess(input.runId, command, ["login", "--device-auth"], {
     cwd,
     env,
     timeoutSec,
     graceSec,
-    onLog,
+    onLog: wrappedOnLog,
   });
 
-  const loginUrl = extractCodexLoginUrl(`${proc.stdout}\n${proc.stderr}`);
+  // Final pass: if we somehow missed the device-auth on the streaming path
+  // (e.g. callback wasn't supplied), still parse from the full stdout.
+  const finalDetect = extractCodexDeviceAuth(`${proc.stdout}\n${proc.stderr}`);
+  const loginUrl = finalDetect.verificationUrl ?? extractCodexLoginUrl(`${proc.stdout}\n${proc.stderr}`);
+  const userCode = finalDetect.userCode;
 
-  return buildCodexLoginResult({ proc, loginUrl });
+  return buildCodexLoginResult({
+    proc: { ...proc, stdout: stripAnsi(proc.stdout), stderr: stripAnsi(proc.stderr) },
+    loginUrl,
+    userCode,
+  });
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {

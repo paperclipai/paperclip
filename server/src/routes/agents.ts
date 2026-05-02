@@ -2355,6 +2355,36 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
+  // ── Codex device-auth login session state ────────────────────────────
+  // `codex login --device-auth` takes up to 15min: it prints a verification URL
+  // and 8-char code immediately, then polls OpenAI until the user approves in
+  // a browser. We can't block the HTTP request that long, so the start route
+  // kicks the process off in the background and returns a session id, then a
+  // poll route reports current state (URL/code/result) back to the UI.
+  type CodexLoginSession = {
+    agentId: string;
+    companyId: string;
+    status: "starting" | "awaiting_user" | "success" | "error";
+    verificationUrl: string | null;
+    userCode: string | null;
+    error: string | null;
+    errorCode: "timeout" | "denied" | "device_code_disabled" | "infra" | null;
+    stdout: string;
+    stderr: string;
+    startedAt: number;
+    finishedAt: number | null;
+  };
+  const codexLoginSessions = new Map<string, CodexLoginSession>();
+  const CODEX_LOGIN_SESSION_TTL_MS = 30 * 60 * 1000; // 30min
+
+  function cleanupCodexLoginSessions() {
+    const now = Date.now();
+    for (const [id, session] of codexLoginSessions) {
+      const ageMs = now - (session.finishedAt ?? session.startedAt);
+      if (ageMs > CODEX_LOGIN_SESSION_TTL_MS) codexLoginSessions.delete(id);
+    }
+  }
+
   router.post("/agents/:id/codex-login", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -2370,21 +2400,130 @@ export function agentRoutes(db: Db) {
       return;
     }
 
+    cleanupCodexLoginSessions();
+
     const config = asRecord(agent.adapterConfig) ?? {};
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
-    const result = await runCodexLogin({
-      runId: `codex-login-${randomUUID()}`,
-      agent: {
-        id: agent.id,
-        companyId: agent.companyId,
-        name: agent.name,
-        adapterType: agent.adapterType,
-        adapterConfig: agent.adapterConfig,
-      },
-      config: runtimeConfig,
-    });
 
-    res.json(result);
+    const sessionId = randomUUID();
+    const session: CodexLoginSession = {
+      agentId: agent.id,
+      companyId: agent.companyId,
+      status: "starting",
+      verificationUrl: null,
+      userCode: null,
+      error: null,
+      errorCode: null,
+      stdout: "",
+      stderr: "",
+      startedAt: Date.now(),
+      finishedAt: null,
+    };
+    codexLoginSessions.set(sessionId, session);
+
+    // Run the device-auth flow in the background. Keep it referenced via the
+    // session map so logs/state are visible to subsequent poll requests.
+    void (async () => {
+      try {
+        const result = await runCodexLogin({
+          runId: `codex-login-${sessionId}`,
+          agent: {
+            id: agent.id,
+            companyId: agent.companyId,
+            name: agent.name,
+            adapterType: agent.adapterType,
+            adapterConfig: agent.adapterConfig,
+          },
+          config: runtimeConfig,
+          onLog: async (stream, chunk) => {
+            const next = (stream === "stdout" ? session.stdout : session.stderr) + chunk;
+            // Cap log buffer to keep the in-memory session small.
+            const capped = next.length > 16384 ? next.slice(-16384) : next;
+            if (stream === "stdout") session.stdout = capped;
+            else session.stderr = capped;
+          },
+          onDeviceAuth: ({ verificationUrl, userCode }) => {
+            session.verificationUrl = verificationUrl;
+            session.userCode = userCode;
+            session.status = "awaiting_user";
+          },
+        });
+
+        session.finishedAt = Date.now();
+        // Surface the URL even if the streaming detection raced past us.
+        if (!session.verificationUrl && result.loginUrl) session.verificationUrl = result.loginUrl;
+        if (!session.userCode && result.userCode) session.userCode = result.userCode;
+
+        const evidence = `${result.stdout}\n${result.stderr}`.toLowerCase();
+        const deviceCodeDisabled = evidence.includes("device code login is not enabled");
+
+        if (deviceCodeDisabled) {
+          session.status = "error";
+          session.errorCode = "device_code_disabled";
+          session.error =
+            "Device Code Login is not enabled for this ChatGPT account. Enable it in your ChatGPT account security settings, then try again.";
+          return;
+        }
+
+        if (result.timedOut) {
+          session.status = "error";
+          session.errorCode = "timeout";
+          session.error = "Timed out waiting for browser approval.";
+          return;
+        }
+
+        if ((result.exitCode ?? 0) === 0) {
+          session.status = "success";
+          session.error = null;
+          return;
+        }
+
+        session.status = "error";
+        session.errorCode = "denied";
+        session.error =
+          result.stderr?.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ??
+          `codex login --device-auth exited with code ${result.exitCode ?? -1}`;
+      } catch (err) {
+        session.finishedAt = Date.now();
+        session.status = "error";
+        session.errorCode = "infra";
+        session.error = err instanceof Error ? err.message : String(err);
+      }
+    })();
+
+    // Synchronous response: return the session id immediately so the UI can poll.
+    // The UI shows a spinner and starts polling /agents/:id/codex-login/:sessionId
+    // until status is no longer "starting" (URL+code available) or terminal.
+    res.json({ sessionId });
+  });
+
+  router.get("/agents/:id/codex-login/:sessionId", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const sessionId = req.params.sessionId as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
+
+    const session = codexLoginSessions.get(sessionId);
+    if (!session || session.agentId !== agent.id) {
+      res.status(404).json({ error: "Codex login session not found or expired" });
+      return;
+    }
+
+    res.json({
+      status: session.status,
+      verificationUrl: session.verificationUrl,
+      userCode: session.userCode,
+      error: session.error,
+      errorCode: session.errorCode,
+      stdout: session.stdout,
+      stderr: session.stderr,
+    });
   });
 
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {

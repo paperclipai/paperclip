@@ -85,3 +85,29 @@ export function extractCodexLoginUrl(text: string): string | null {
   }
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
+
+// Strip ANSI escape sequences (CSI, OSC, SGR, cursor moves, etc.) from terminal output.
+// The Codex CLI emits color codes in stdout that confuse downstream regex parsing.
+const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g;
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE_RE, "");
+}
+
+// `codex login --device-auth` output looks like:
+//   Visit:    https://auth.openai.com/codex/device
+//   Then enter the code:    ABCD-EFGH
+// (typically with ANSI styling around the URL/code). Codes are 8 alphanumeric
+// chars often broken by a single dash, occasionally other separators.
+const CODEX_DEVICE_AUTH_URL_RE = /https?:\/\/auth\.openai\.com\/[^\s]*device[^\s]*/i;
+const CODEX_USER_CODE_RE = /\b([A-Z0-9]{4})[\s-]?([A-Z0-9]{4})\b/;
+
+export function extractCodexDeviceAuth(text: string): { verificationUrl: string | null; userCode: string | null } {
+  const cleaned = stripAnsi(text);
+  const urlMatch = cleaned.match(CODEX_DEVICE_AUTH_URL_RE);
+  const codeMatch = cleaned.match(CODEX_USER_CODE_RE);
+  return {
+    verificationUrl: urlMatch ? urlMatch[0].replace(/[\])}.!,?;:'\"]+$/g, "") : null,
+    userCode: codeMatch ? `${codeMatch[1]}-${codeMatch[2]}` : null,
+  };
+}
