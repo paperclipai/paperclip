@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 
 export function CompanySettingsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -32,7 +33,10 @@ export function CompanySettingsSidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      <div className="flex flex-col gap-1 px-3 py-3 shrink-0">
+      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
+        <SidebarCompanyMenu />
+      </div>
+      <div className="flex flex-col gap-1 px-3 pb-3 shrink-0">
         <Link
           to="/dashboard"
           onClick={() => {
