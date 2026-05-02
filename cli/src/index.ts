@@ -24,6 +24,7 @@ import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
 import { registerProjectCommands } from "./commands/client/project.js";
+import { registerGoalCommands } from "./commands/client/goal.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
 
@@ -152,6 +153,7 @@ registerWorktreeCommands(program);
 registerEnvLabCommands(program);
 registerPluginCommands(program);
 registerProjectCommands(program);
+registerGoalCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 
