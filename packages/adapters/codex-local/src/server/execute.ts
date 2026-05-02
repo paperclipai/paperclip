@@ -738,8 +738,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const failedRun = (attempt.proc.exitCode ?? 0) !== 0 || attempt.proc.signal !== null;
     const transientRetryNotBefore =
-      (attempt.proc.exitCode ?? 0) !== 0
+      failedRun
         ? extractCodexRetryNotBefore({
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -747,18 +748,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : null;
     const transientUpstream =
-      (attempt.proc.exitCode ?? 0) !== 0 &&
+      failedRun &&
       isCodexTransientUpstreamError({
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
         errorMessage: fallbackErrorMessage,
       });
-    const authRefreshFailure = isCodexAuthRefreshFailure({
+    const authRefreshFailure =
+      failedRun &&
+      isCodexAuthRefreshFailure({
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
       errorMessage: fallbackErrorMessage,
     });
-    const authRequired = isCodexAuthRequiredError({
+    const authRequired =
+      failedRun &&
+      isCodexAuthRequiredError({
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
       errorMessage: fallbackErrorMessage,
@@ -769,7 +774,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+        !failedRun
           ? null
           : fallbackErrorMessage,
       errorCode:
