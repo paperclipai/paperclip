@@ -731,7 +731,7 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
-      let created: IssueThreadInteractionRow;
+      let created: IssueThreadInteractionRow | null = null;
       try {
         await db.transaction(async (tx) => {
           [created] = await tx
@@ -781,6 +781,10 @@ export function issueThreadInteractionService(db: Db) {
           await normalizePendingRequestConfirmationIssueStatus(issue, actor);
         }
         return hydrateInteraction(existing);
+      }
+
+      if (!created) {
+        throw conflict("Interaction creation did not return a created row");
       }
 
       return hydrateInteraction(created);
