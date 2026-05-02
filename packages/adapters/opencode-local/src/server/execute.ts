@@ -25,6 +25,7 @@ import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { reapBunTempSharedLibs } from "./bun-cleanup.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -418,6 +419,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toResult(initial);
   } finally {
-    await preparedRuntimeConfig.cleanup();
+    try {
+      await preparedRuntimeConfig.cleanup();
+    } catch (err) {
+      await onLog("stderr", `[paperclip] Warning: runtime config cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    try {
+      const tmpdir = os.tmpdir();
+      const reapedCount = await reapBunTempSharedLibs(tmpdir);
+      if (reapedCount > 0) {
+        await onLog("stderr", `[paperclip] Cleaned up ${reapedCount} orphaned .so file${reapedCount === 1 ? "" : "s"} from ${tmpdir}\n`);
+      }
+    } catch {
+      // Cleanup is best-effort — never fail the adapter execution.
+    }
   }
 }
