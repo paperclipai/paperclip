@@ -110,7 +110,7 @@ describe("plugin-manifest-validator (PLA-159 roll-in)", () => {
     entrypoints: { worker: "dist/worker.js" },
   };
 
-  it("rejects tool names containing ':' with a clear, name-pointing error", () => {
+  it("rejects tool names containing ':' via the allowlist regex with a name-targeted error", () => {
     const validator = pluginManifestValidator();
     const result = validator.parse({
       ...baseManifest,
@@ -126,10 +126,12 @@ describe("plugin-manifest-validator (PLA-159 roll-in)", () => {
 
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.errors).toContain('"cad:run_script"');
-    expect(result.errors).toContain("must not contain ':'");
-    // Suggests the bare-name fix the author should apply.
-    expect(result.errors).toContain('"run_script"');
+    // The allowlist regex on pluginToolDeclarationSchema.name produces a
+    // shape-focused error message — the colon is rejected because it is
+    // not in `[a-z0-9._-]`, alongside whitespace, control chars, path
+    // separators, and unicode lookalikes.
+    expect(result.errors.toLowerCase()).toContain("tool name");
+    expect(result.errors).toContain("lowercase");
     // And targets the offending field path so UIs can highlight it.
     expect(
       result.details.some(
@@ -139,7 +141,25 @@ describe("plugin-manifest-validator (PLA-159 roll-in)", () => {
     ).toBe(true);
   });
 
-  it("accepts bare tool names without ':'", () => {
+  it("rejects tool names with whitespace, uppercase, or path separators", () => {
+    const validator = pluginManifestValidator();
+    for (const badName of ["Run Script", "RUN_SCRIPT", "run script", "run/script", "run\\script", " run", "run\t"]) {
+      const result = validator.parse({
+        ...baseManifest,
+        tools: [
+          {
+            name: badName,
+            displayName: "Run script",
+            description: "runs a script",
+            parametersSchema: { type: "object", properties: {} },
+          },
+        ],
+      });
+      expect(result.success, `should reject ${JSON.stringify(badName)}`).toBe(false);
+    }
+  });
+
+  it("accepts bare lowercase tool names within the allowlist", () => {
     const validator = pluginManifestValidator();
     const result = validator.parse({
       ...baseManifest,
