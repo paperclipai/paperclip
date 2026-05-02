@@ -32,17 +32,18 @@ describe("run log store", () => {
       stream: "stdout",
       ts: "2026-05-02T00:00:00.000Z",
       chunk: [
-        "PAPERCLIP_API_KEY=paperclip-api-key-value",
-        "POSTGRES_PASSWORD=postgres-password-value",
+        'PAPERCLIP_API_KEY="paperclip-api-key-value"',
+        "POSTGRES_PASSWORD='postgres-password-value'",
         "SAFE_VALUE=visible",
       ].join("\n"),
     });
 
     const result = await store.read(handle);
+    const storedEvent = JSON.parse(result.content.trim()) as { chunk: string };
 
-    expect(result.content).toContain(`PAPERCLIP_API_KEY=${REDACTED_EVENT_VALUE}`);
-    expect(result.content).toContain(`POSTGRES_PASSWORD=${REDACTED_EVENT_VALUE}`);
-    expect(result.content).toContain("SAFE_VALUE=visible");
+    expect(storedEvent.chunk).toContain(`PAPERCLIP_API_KEY="${REDACTED_EVENT_VALUE}"`);
+    expect(storedEvent.chunk).toContain(`POSTGRES_PASSWORD='${REDACTED_EVENT_VALUE}'`);
+    expect(storedEvent.chunk).toContain("SAFE_VALUE=visible");
     expect(result.content).not.toContain("paperclip-api-key-value");
     expect(result.content).not.toContain("postgres-password-value");
   });

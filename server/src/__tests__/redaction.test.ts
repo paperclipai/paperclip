@@ -77,6 +77,15 @@ describe("redaction", () => {
       "CREDENTIAL_PATH=credential-path-value",
       "SESSION_TOKEN=session-token-value",
       "CUSTOM_AUTH=custom-auth-value",
+      'PAPERCLIP_API_KEY="quoted-api-key-value"',
+      "ACCESS_TOKEN='quoted-token-value'",
+      'APP_SECRET="quoted-secret-value"',
+      "POSTGRES_PASSWORD='quoted-password-value'",
+      'SERVICE_CREDENTIAL="quoted-credential-value"',
+      "SIGNED_JWT='quoted-jwt-value'",
+      'SESSION_COOKIE="quoted-cookie-value"',
+      "USER_SESSION='quoted-session-value'",
+      'AUTH_HEADER="quoted-auth-value"',
       `Bearer ${jwt}`,
     ].join("\n");
 
@@ -92,6 +101,24 @@ describe("redaction", () => {
     expect(result).not.toContain("credential-path-value");
     expect(result).not.toContain("session-token-value");
     expect(result).not.toContain("custom-auth-value");
+    expect(result).toContain(`PAPERCLIP_API_KEY="${REDACTED_EVENT_VALUE}"`);
+    expect(result).toContain(`ACCESS_TOKEN='${REDACTED_EVENT_VALUE}'`);
+    expect(result).toContain(`APP_SECRET="${REDACTED_EVENT_VALUE}"`);
+    expect(result).toContain(`POSTGRES_PASSWORD='${REDACTED_EVENT_VALUE}'`);
+    expect(result).toContain(`SERVICE_CREDENTIAL="${REDACTED_EVENT_VALUE}"`);
+    expect(result).toContain(`SIGNED_JWT='${REDACTED_EVENT_VALUE}'`);
+    expect(result).toContain(`SESSION_COOKIE="${REDACTED_EVENT_VALUE}"`);
+    expect(result).toContain(`USER_SESSION='${REDACTED_EVENT_VALUE}'`);
+    expect(result).toContain(`AUTH_HEADER="${REDACTED_EVENT_VALUE}"`);
+    expect(result).not.toContain("quoted-api-key-value");
+    expect(result).not.toContain("quoted-token-value");
+    expect(result).not.toContain("quoted-secret-value");
+    expect(result).not.toContain("quoted-password-value");
+    expect(result).not.toContain("quoted-credential-value");
+    expect(result).not.toContain("quoted-jwt-value");
+    expect(result).not.toContain("quoted-cookie-value");
+    expect(result).not.toContain("quoted-session-value");
+    expect(result).not.toContain("quoted-auth-value");
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {

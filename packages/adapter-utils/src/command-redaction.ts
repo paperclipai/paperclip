@@ -3,7 +3,7 @@ export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 const COMMAND_CLI_SECRET_OPTION_RE =
   /(\B-{1,2}(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\s+|=)(["']?))[^\s"'`]+(\2)/gi;
 const COMMAND_ENV_SECRET_ASSIGNMENT_RE =
-  /(\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|JWT|COOKIE|SESSION|AUTH)[A-Za-z0-9_]*\s*=\s*)[^\s"'`]+/gi;
+  /(\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|JWT|COOKIE|SESSION|AUTH)[A-Za-z0-9_]*\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"'`]+)/gi;
 const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const COMMAND_JWT_BEARER_RE =
   /(\bBearer\s+)[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/gi;
@@ -17,7 +17,14 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_JWT_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
-    .replace(COMMAND_ENV_SECRET_ASSIGNMENT_RE, `$1${redactedValue}`)
+    .replace(COMMAND_ENV_SECRET_ASSIGNMENT_RE, (match: string, prefix: string) => {
+      const value = match.slice(prefix.length);
+      const quote = value[0];
+      if ((quote === `"` || quote === `'`) && value.endsWith(quote)) {
+        return `${prefix}${quote}${redactedValue}${quote}`;
+      }
+      return `${prefix}${redactedValue}`;
+    })
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
     .replace(COMMAND_JWT_RE, redactedValue);
