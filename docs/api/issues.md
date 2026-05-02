@@ -170,6 +170,8 @@ Supported `kind` values:
 
 For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one.
 
+When a `request_confirmation` becomes the active gate, Paperclip normalizes non-terminal issues into `in_review` unless unresolved issue blockers still exist. That keeps confirmation waits out of drifted `todo` or dependency-free `blocked` states.
+
 ### Resolve Interaction
 
 ```
