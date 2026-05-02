@@ -57,18 +57,16 @@ test.describe("Plugin-Managed Secrets panel", () => {
       },
     });
 
+    // Seed must succeed — if the API rejects, the test environment is broken, not the panel.
+    expect(seedRes.ok()).toBe(true);
+
     await page.goto("/instance/settings/heartbeats");
     await expect(page.locator("h2", { hasText: "Plugin-Managed Secrets" })).toBeVisible({
       timeout: 10_000,
     });
 
-    if (seedRes.ok()) {
-      // Board-user secret must not appear in the plugin panel.
-      await expect(page.locator("text=No plugin-managed secrets")).toBeVisible({ timeout: 5_000 });
-    } else {
-      // API rejected the seed — panel still expected to render and show empty state.
-      await expect(page.locator("text=No plugin-managed secrets")).toBeVisible({ timeout: 5_000 });
-    }
+    // Board-user secret must not appear in the plugin panel.
+    await expect(page.locator("text=No plugin-managed secrets")).toBeVisible({ timeout: 5_000 });
   });
 
   test("secrets.write capability description is visible in panel", async ({ page }) => {
