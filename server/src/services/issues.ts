@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import { clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -2750,6 +2751,26 @@ export function issueService(db: Db) {
                 isolatedWorkspacesEnabled,
               ),
             ) as Record<string, unknown> | null;
+        }
+        if (data.assigneeAgentId && isolatedWorkspacesEnabled) {
+          const currentWorkspaceSettings = executionWorkspaceSettings == null
+            ? {}
+            : parseObject(executionWorkspaceSettings);
+          const hasExplicitEnvironmentSelection =
+            Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
+          if (!hasExplicitEnvironmentSelection) {
+            const assigneeAgent = await tx
+              .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
+              .from(agents)
+              .where(and(eq(agents.id, data.assigneeAgentId), eq(agents.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            if (typeof assigneeAgent?.defaultEnvironmentId === "string" && assigneeAgent.defaultEnvironmentId.length > 0) {
+              executionWorkspaceSettings = {
+                ...currentWorkspaceSettings,
+                environmentId: assigneeAgent.defaultEnvironmentId,
+              };
+            }
+          }
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
