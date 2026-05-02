@@ -214,6 +214,9 @@ describe("WHAM used_percent normalization via fetchCodexQuota", () => {
 
 describe("readClaudeToken", () => {
   const savedEnv = process.env.CLAUDE_CONFIG_DIR;
+  // Stub out the macOS Keychain fallback so these filesystem-focused tests stay
+  // isolated from whatever credentials the host machine happens to have stored.
+  const noKeychain = { readKeychain: async () => null };
 
   afterEach(() => {
     if (savedEnv === undefined) {
@@ -227,7 +230,7 @@ describe("readClaudeToken", () => {
   it("returns null when credentials.json does not exist", async () => {
     // Point to a directory that does not have credentials.json
     process.env.CLAUDE_CONFIG_DIR = "/tmp/__no_such_paperclip_dir__";
-    const token = await readClaudeToken();
+    const token = await readClaudeToken(noKeychain);
     expect(token).toBe(null);
   });
 
@@ -239,7 +242,7 @@ describe("readClaudeToken", () => {
       ),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
-    const token = await readClaudeToken();
+    const token = await readClaudeToken(noKeychain);
     expect(token).toBe(null);
     await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
   });
@@ -252,7 +255,7 @@ describe("readClaudeToken", () => {
       ),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
-    const token = await readClaudeToken();
+    const token = await readClaudeToken(noKeychain);
     expect(token).toBe(null);
     await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
   });
@@ -266,7 +269,7 @@ describe("readClaudeToken", () => {
       ),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
-    const token = await readClaudeToken();
+    const token = await readClaudeToken(noKeychain);
     expect(token).toBe(null);
     await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
   });
