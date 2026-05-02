@@ -125,6 +125,18 @@ export type PluginEnvironmentDriverDeclarationInput = z.infer<
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;
 
 /**
+ * The subset of {@link PLUGIN_UI_SLOT_TYPES} that the host actually mounts in
+ * v1. `PLUGIN_UI_SLOT_TYPES` remains the canonical list of *planned* slot
+ * types for the host registry and future SDK versions; the manifest validator
+ * narrows to the host-rendered subset here so plugins fail at install time
+ * instead of installing successfully and then silently never rendering.
+ *
+ * Tracked in PLA-122 (B4 UI stability contract) / PLA-123. Expand this list
+ * as additional slot types reach the v1 host-rendered floor.
+ */
+const PLUGIN_UI_SLOT_TYPES_V1_SUPPORTED = ["dashboardWidget"] as const;
+
+/**
  * Validates a {@link PluginUiSlotDeclaration} — a UI extension slot the plugin
  * fills with a React component. Includes `superRefine` checks for slot-specific
  * requirements such as `entityTypes` for context-sensitive slots.
@@ -132,7 +144,13 @@ export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSch
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */
 export const pluginUiSlotDeclarationSchema = z.object({
-  type: z.enum(PLUGIN_UI_SLOT_TYPES),
+  type: z.enum(PLUGIN_UI_SLOT_TYPES).refine(
+    (value) =>
+      (PLUGIN_UI_SLOT_TYPES_V1_SUPPORTED as readonly string[]).includes(value),
+    (value) => ({
+      message: `Invalid slot type "${value}". v1 supports: ${PLUGIN_UI_SLOT_TYPES_V1_SUPPORTED.join(", ")}`,
+    }),
+  ),
   id: z.string().min(1),
   displayName: z.string().min(1),
   exportName: z.string().min(1),
