@@ -86,6 +86,45 @@ If company setting disables required approval, `approval` is `null` and the agen
 `desiredSkills` accepts company skill ids, canonical keys, or a unique slug. The server resolves and stores canonical company skill keys.
 Leave timer heartbeats disabled by default. Only set `runtimeConfig.heartbeat.enabled=true` and include an `intervalSec` when the role truly needs scheduled recurring work or the user explicitly requested it.
 
+### `claude_k8s` adapterConfig requirements
+
+The control plane rejects `claude_k8s` agents (POST and PATCH) whose `adapterConfig` is missing any of `tolerations`, `nodeSelector`, or `serviceAccountName`. Copy the values from a healthy peer `claude_k8s` agent in the same company — they are cluster-specific. Example payload:
+
+```json
+{
+  "name": "ExampleK8sEngineer",
+  "role": "engineer",
+  "title": "Example Engineer",
+  "icon": "code",
+  "reportsTo": "uuid-or-null",
+  "capabilities": "Owns example workstream end-to-end",
+  "desiredSkills": ["paperclipai/paperclip/paperclip"],
+  "adapterType": "claude_k8s",
+  "adapterConfig": {
+    "model": "claude-sonnet-4-5-20250929",
+    "tolerations": [
+      { "key": "dedicated", "value": "paperclip", "effect": "NoSchedule", "operator": "Equal" }
+    ],
+    "nodeSelector": { "workload": "paperclip" },
+    "serviceAccountName": "paperclip",
+    "graceSec": 15,
+    "timeoutSec": 0,
+    "paperclipSkillSync": { "desiredSkills": ["paperclipai/paperclip/paperclip"] }
+  },
+  "instructionsBundle": { "files": { "AGENTS.md": "You are ExampleK8sEngineer..." } },
+  "runtimeConfig": { "heartbeat": { "enabled": false, "wakeOnDemand": true } },
+  "sourceIssueId": "uuid-or-null"
+}
+```
+
+Error response shape on a missing field (HTTP 422):
+
+```json
+{
+  "error": "Invalid claude_k8s adapterConfig: tolerations must be a non-empty array (Job pods need to tolerate the paperclip-workload taint)"
+}
+```
+
 ## Approval Lifecycle
 
 Statuses:

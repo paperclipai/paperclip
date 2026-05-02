@@ -112,6 +112,26 @@ const externalAdapter: ServerAdapterModule = {
   }),
 };
 
+const claudeK8sStub: ServerAdapterModule = {
+  type: "claude_k8s",
+  execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+  testEnvironment: async () => ({
+    adapterType: "claude_k8s",
+    status: "pass",
+    checks: [],
+    testedAt: new Date(0).toISOString(),
+  }),
+};
+
+const validClaudeK8sAdapterConfig = {
+  model: "claude-sonnet-4-5-20250929",
+  tolerations: [
+    { key: "dedicated", value: "paperclip", effect: "NoSchedule", operator: "Equal" },
+  ],
+  nodeSelector: { workload: "paperclip" },
+  serviceAccountName: "paperclip",
+};
+
 const missingAdapterType = "missing_adapter_validation_test";
 
 async function createApp() {
@@ -222,11 +242,13 @@ describe("agent routes adapter validation", () => {
     }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+    await unregisterTestAdapter("claude_k8s");
   });
 
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+    await unregisterTestAdapter("claude_k8s");
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {
@@ -260,5 +282,108 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  describe("claude_k8s schedulability validation (BLO-2657)", () => {
+    async function postClaudeK8sAgent(adapterConfig: Record<string, unknown>) {
+      const { registerServerAdapter } = await import("../adapters/index.js");
+      registerServerAdapter(claudeK8sStub);
+      const app = await createApp();
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Test K8s Agent",
+            adapterType: "claude_k8s",
+            adapterConfig,
+          }),
+      );
+    }
+
+    it("accepts a claude_k8s POST that has all schedulability fields (passes validation)", async () => {
+      // Mock the instructions-bundle pipeline so the request gets past the
+      // claude_k8s schedulability check and through agent creation. The point
+      // of this test is to confirm the validation does NOT reject a complete
+      // config — the downstream wiring is not the focus.
+      mockAgentInstructionsService.materializeManagedBundle.mockResolvedValue({
+        adapterConfig: { ...validClaudeK8sAdapterConfig, instructionsFilePath: "/paperclip/agents/test/AGENTS.md" },
+      });
+      const res = await postClaudeK8sAgent(validClaudeK8sAdapterConfig);
+      // 201 (success) is the intended outcome; the assertion is "not 422 from
+      // the new claude_k8s schedulability check". Anything other than 422 with
+      // a "tolerations|nodeSelector|serviceAccountName" message means the
+      // validation accepted the config.
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+      const errorMessage = String(res.body.error ?? res.body.message ?? "");
+      expect(errorMessage).not.toMatch(/tolerations|nodeSelector|serviceAccountName/i);
+    });
+
+    it("rejects POST with missing tolerations", async () => {
+      const { tolerations: _drop, ...rest } = validClaudeK8sAdapterConfig;
+      const res = await postClaudeK8sAgent(rest);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("tolerations");
+    });
+
+    it("rejects POST with empty tolerations array", async () => {
+      const res = await postClaudeK8sAgent({ ...validClaudeK8sAdapterConfig, tolerations: [] });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("tolerations");
+    });
+
+    it("rejects POST with missing nodeSelector", async () => {
+      const { nodeSelector: _drop, ...rest } = validClaudeK8sAdapterConfig;
+      const res = await postClaudeK8sAgent(rest);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("nodeSelector");
+    });
+
+    it("rejects POST with empty nodeSelector object", async () => {
+      const res = await postClaudeK8sAgent({ ...validClaudeK8sAdapterConfig, nodeSelector: {} });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("nodeSelector");
+    });
+
+    it("rejects POST with missing serviceAccountName", async () => {
+      const { serviceAccountName: _drop, ...rest } = validClaudeK8sAdapterConfig;
+      const res = await postClaudeK8sAgent(rest);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("serviceAccountName");
+    });
+
+    it("rejects POST with blank serviceAccountName", async () => {
+      const res = await postClaudeK8sAgent({ ...validClaudeK8sAdapterConfig, serviceAccountName: "  " });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("serviceAccountName");
+    });
+
+    it("rejects PATCH that drops tolerations + nodeSelector via replaceAdapterConfig", async () => {
+      // The validation throws unprocessable before svc.update is reached, so we
+      // only need getById to find the existing claude_k8s agent.
+      const { registerServerAdapter } = await import("../adapters/index.js");
+      registerServerAdapter(claudeK8sStub);
+      const existingAgent = {
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        adapterType: "claude_k8s",
+        adapterConfig: { ...validClaudeK8sAdapterConfig },
+        permissions: { canCreateAgents: false },
+      };
+      mockAgentService.getById.mockResolvedValue(existingAgent);
+
+      const app = await createApp();
+      const { tolerations: _t, nodeSelector: _n, ...partial } = validClaudeK8sAdapterConfig;
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(`/api/agents/${existingAgent.id}`)
+          .send({
+            adapterConfig: partial,
+            replaceAdapterConfig: true,
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("tolerations");
+    });
   });
 });
