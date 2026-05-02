@@ -100,8 +100,26 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
   return { dataDir, port, instance };
 }
 
-function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
+async function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await fs.promises.rm(dataDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "ENOTEMPTY") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  const staleDir = `${dataDir}.stale-${process.pid}-${Date.now()}`;
+  try {
+    await fs.promises.rename(dataDir, staleDir);
+    void fs.promises.rm(staleDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  } catch {
+    // Windows can retain handles briefly after postgres exits; leave the temp
+    // directory behind instead of failing unrelated tests during cleanup.
+  }
 }
 
 function formatEmbeddedPostgresError(error: unknown): string {
@@ -126,7 +144,7 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
     };
   } finally {
     await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await cleanupEmbeddedPostgresTestDirs(dataDir);
   }
 }
 
@@ -155,12 +173,12 @@ export async function startEmbeddedPostgresTestDatabase(
       connectionString,
       cleanup: async () => {
         await instance.stop().catch(() => {});
-        cleanupEmbeddedPostgresTestDirs(dataDir);
+        await cleanupEmbeddedPostgresTestDirs(dataDir);
       },
     };
   } catch (error) {
     await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await cleanupEmbeddedPostgresTestDirs(dataDir);
     throw new Error(
       `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
     );

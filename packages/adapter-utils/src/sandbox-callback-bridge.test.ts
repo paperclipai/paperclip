@@ -15,6 +15,12 @@ import {
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
 import type { RunProcessResult } from "./server-utils.js";
+import {
+  fromWindowsTestShellPath,
+  normalizeWindowsPathsForTestShell,
+  resolveTestShellCommand,
+  runtimeShellTestTimeoutMs,
+} from "./test-shell.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -37,8 +43,11 @@ describe("sandbox callback bridge", () => {
           ...process.env,
           ...input.env,
         };
-        const command = input.command === "sh" ? "/bin/sh" : input.command;
+        const command = input.command === "sh" ? resolveTestShellCommand() : input.command;
         const args = [...(input.args ?? [])];
+        if (input.command === "sh" && args[0] === "-lc" && typeof args[1] === "string") {
+          args[1] = normalizeWindowsPathsForTestShell(args[1]);
+        }
         if (input.stdin != null && input.command === "sh" && args[0] === "-lc" && typeof args[1] === "string") {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
           args[1] = `printf '%s' \"$PAPERCLIP_TEST_STDIN\" | (${args[1]})`;
@@ -83,8 +92,9 @@ describe("sandbox callback bridge", () => {
 
   async function waitForJsonFile(directory: string, timeoutMs = 2_000): Promise<string> {
     const deadline = Date.now() + timeoutMs;
+    const localDirectory = fromWindowsTestShellPath(directory);
     while (Date.now() < deadline) {
-      const entries = await readdir(directory).catch(() => []);
+      const entries = await readdir(localDirectory).catch(() => []);
       const match = entries.find((entry) => entry.endsWith(".json"));
       if (match) return match;
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -247,7 +257,7 @@ describe("sandbox callback bridge", () => {
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
     expect(seenRequests[0]?.headers["x-paperclip-run-id"]).toBeUndefined();
 
-  });
+  }, runtimeShellTestTimeoutMs);
 
   it("denies non-allowlisted requests by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-default-policy-"));
@@ -456,7 +466,7 @@ describe("sandbox callback bridge", () => {
     });
 
     await writeFile(
-      path.posix.join(directories.requestsDir, "existing.json"),
+      fromWindowsTestShellPath(path.posix.join(directories.requestsDir, "existing.json")),
       `${JSON.stringify({
         id: "existing",
         method: "GET",
@@ -479,7 +489,7 @@ describe("sandbox callback bridge", () => {
       error: "Bridge request queue is full.",
     });
 
-    await rm(path.posix.join(directories.requestsDir, "existing.json"), { force: true });
+    await rm(fromWindowsTestShellPath(path.posix.join(directories.requestsDir, "existing.json")), { force: true });
 
     const nonJsonResponse = await fetch(`${bridge.baseUrl}/api/issues/issue-1/comments`, {
       method: "POST",
@@ -493,7 +503,7 @@ describe("sandbox callback bridge", () => {
     await expect(nonJsonResponse.json()).resolves.toEqual({
       error: "Bridge only accepts JSON request bodies.",
     });
-  });
+  }, runtimeShellTestTimeoutMs);
 
   it("returns a 502 when the host response times out", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-timeout-"));
@@ -545,7 +555,7 @@ describe("sandbox callback bridge", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Timed out waiting for host bridge response.",
     });
-  });
+  }, runtimeShellTestTimeoutMs);
 
   it("returns a 502 for malformed host response files", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-malformed-response-"));
@@ -596,7 +606,7 @@ describe("sandbox callback bridge", () => {
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      fromWindowsTestShellPath(path.posix.join(directories.responsesDir, requestFile)),
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
@@ -606,5 +616,5 @@ describe("sandbox callback bridge", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringMatching(/JSON|Unexpected|Unterminated/i),
     });
-  });
+  }, runtimeShellTestTimeoutMs);
 });

@@ -80,6 +80,21 @@ function createFreshConfigPath() {
 }
 
 describe("onboard", () => {
+  async function withoutTailscaleOnPath<T>(fn: () => Promise<T>): Promise<T> {
+    const originalPath = process.env.PATH;
+    const originalPathAlt = process.env.Path;
+    process.env.PATH = "";
+    process.env.Path = "";
+    try {
+      return await fn();
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalPathAlt === undefined) delete process.env.Path;
+      else process.env.Path = originalPathAlt;
+    }
+  }
+
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
@@ -142,7 +157,9 @@ describe("onboard", () => {
     const configPath = createFreshConfigPath();
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
 
-    await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
+    await withoutTailscaleOnPath(() =>
+      onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" })
+    );
 
     const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as PaperclipConfig;
     expect(raw.server.deploymentMode).toBe("authenticated");

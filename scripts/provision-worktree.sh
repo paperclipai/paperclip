@@ -127,10 +127,16 @@ function parseEnvFile(contents) {
       entries[key] = "";
       continue;
     }
-    if (
-      (value.startsWith("\"") && value.endsWith("\"")) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    if (value.startsWith("\"") && value.endsWith("\"")) {
+      try {
+        entries[key] = JSON.parse(value);
+        continue;
+      } catch {
+        entries[key] = value.slice(1, -1);
+        continue;
+      }
+    }
+    if (value.startsWith("'") && value.endsWith("'")) {
       entries[key] = value.slice(1, -1);
       continue;
     }
@@ -193,6 +199,16 @@ function resolveRuntimeLikePath(value, configPath) {
   const expanded = expandHomePrefix(value);
   if (path.isAbsolute(expanded)) return expanded;
   return path.resolve(path.dirname(configPath), expanded);
+}
+
+function formatEnvValue(value) {
+  if (/^[A-Za-z0-9_./:@\\-]+$/.test(value)) {
+    return value;
+  }
+  if (value.includes("\\") && !value.includes("'")) {
+    return `'${value}'`;
+  }
+  return JSON.stringify(value);
 }
 
 async function main() {
@@ -309,17 +325,17 @@ async function main() {
   }
 
   const envLines = [
-    "PAPERCLIP_HOME=" + JSON.stringify(worktreeHome),
-    "PAPERCLIP_INSTANCE_ID=" + JSON.stringify(instanceId),
-    "PAPERCLIP_CONFIG=" + JSON.stringify(configPath),
-    "PAPERCLIP_CONTEXT=" + JSON.stringify(path.resolve(worktreeHome, "context.json")),
+    "PAPERCLIP_HOME=" + formatEnvValue(worktreeHome),
+    "PAPERCLIP_INSTANCE_ID=" + formatEnvValue(instanceId),
+    "PAPERCLIP_CONFIG=" + formatEnvValue(configPath),
+    "PAPERCLIP_CONTEXT=" + formatEnvValue(path.resolve(worktreeHome, "context.json")),
     "PAPERCLIP_IN_WORKTREE=true",
-    "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
+    "PAPERCLIP_WORKTREE_NAME=" + formatEnvValue(worktreeName),
   ];
 
   const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
   if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + formatEnvValue(agentJwtSecret));
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });

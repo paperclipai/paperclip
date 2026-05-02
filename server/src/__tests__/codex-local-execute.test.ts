@@ -58,6 +58,51 @@ type LogEntry = {
   chunk: string;
 };
 
+const SANDBOX_REMOTE_TEST_TIMEOUT_MS = process.platform === "win32" ? 60_000 : 10_000;
+
+function withWindowsSandboxShellPath(env: Record<string, string>): Record<string, string> {
+  if (process.platform !== "win32") return env;
+  const candidates = [
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Git", "usr", "bin") : null,
+    process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Git", "usr", "bin") : null,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin") : null,
+    "C:\\Program Files\\Git\\usr\\bin",
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return {
+    ...env,
+    PATH: [...candidates, env.PATH, env.Path, process.env.PATH, process.env.Path].filter(Boolean).join(path.delimiter),
+  };
+}
+
+async function expectSharedFilePreserved(targetPath: string, sourcePath: string): Promise<void> {
+  const targetStat = await fs.lstat(targetPath);
+  expect(targetStat.isFile() || targetStat.isSymbolicLink()).toBe(true);
+  expect(await fs.readFile(targetPath, "utf8")).toBe(await fs.readFile(sourcePath, "utf8"));
+  if (targetStat.isSymbolicLink()) {
+    expect(await fs.realpath(targetPath)).toBe(await fs.realpath(sourcePath));
+  }
+}
+
+function toWindowsPosixPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  return value
+    .replace(/\\/g, "/")
+    .replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
+function fromWindowsSandboxShellPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  const drivePath = value.match(/^\/([A-Za-z])\/(.+)$/);
+  if (drivePath) {
+    return `${drivePath[1].toUpperCase()}:\\${drivePath[2].replace(/\//g, "\\")}`;
+  }
+  if (value === "/tmp") return os.tmpdir();
+  if (value.startsWith("/tmp/")) {
+    return path.join(os.tmpdir(), value.slice("/tmp/".length).replace(/\//g, path.sep));
+  }
+  return value;
+}
+
 function createLocalSandboxRunner() {
   let counter = 0;
   return {
@@ -77,8 +122,8 @@ function createLocalSandboxRunner() {
         input.command,
         input.args ?? [],
         {
-          cwd: input.cwd ?? process.cwd(),
-          env: input.env ?? {},
+          cwd: fromWindowsSandboxShellPath(input.cwd ?? process.cwd()),
+          env: withWindowsSandboxShellPath(input.env ?? {}),
           stdin: input.stdin,
           timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
           graceSec: 5,
@@ -165,8 +210,7 @@ describe("codex execute", () => {
 
       const managedAuth = path.join(managedCodexHome, "auth.json");
       const managedConfig = path.join(managedCodexHome, "config.toml");
-      expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
-      expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
+      await expectSharedFilePreserved(managedAuth, path.join(sharedCodexHome, "auth.json"));
       expect((await fs.lstat(managedConfig)).isFile()).toBe(true);
       expect(await fs.readFile(managedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
       await expect(fs.lstat(path.join(sharedCodexHome, "companies", "company-1"))).rejects.toThrow();
@@ -372,7 +416,7 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.codexHome).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home"));
+      expect(capture.codexHome).toBe(toWindowsPosixPath(path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home")));
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
       expect(capture.paperclipApiBridgeMode).toBe("queue_v1");
@@ -383,7 +427,7 @@ describe("codex execute", () => {
       else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, SANDBOX_REMOTE_TEST_TIMEOUT_MS);
 
   it("injects structured Paperclip wake payloads into env and prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
@@ -1126,8 +1170,7 @@ describe("codex execute", () => {
       const isolatedAuth = path.join(isolatedCodexHome, "auth.json");
       const isolatedConfig = path.join(isolatedCodexHome, "config.toml");
 
-      expect((await fs.lstat(isolatedAuth)).isSymbolicLink()).toBe(true);
-      expect(await fs.realpath(isolatedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
+      await expectSharedFilePreserved(isolatedAuth, path.join(sharedCodexHome, "auth.json"));
       expect((await fs.lstat(isolatedConfig)).isFile()).toBe(true);
       expect(await fs.readFile(isolatedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
       expect((await fs.lstat(homeSkill)).isSymbolicLink()).toBe(true);

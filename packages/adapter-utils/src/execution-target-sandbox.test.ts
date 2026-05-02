@@ -13,6 +13,11 @@ import {
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
 import { runChildProcess } from "./server-utils.js";
+import {
+  normalizeWindowsPathsForTestShell,
+  resolveTestShellCommand,
+  runtimeShellTestTimeoutMs,
+} from "./test-shell.js";
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
@@ -39,7 +44,12 @@ describe("sandbox adapter execution targets", () => {
         onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
       }) => {
         counter += 1;
-        return runChildProcess(`sandbox-run-${counter}`, input.command, input.args ?? [], {
+        const command = input.command === "sh" ? resolveTestShellCommand() : input.command;
+        const args = [...(input.args ?? [])];
+        if (input.command === "sh" && args[0] === "-lc" && typeof args[1] === "string") {
+          args[1] = normalizeWindowsPathsForTestShell(args[1]);
+        }
+        return runChildProcess(`sandbox-run-${counter}`, command, args, {
           cwd: input.cwd ?? process.cwd(),
           env: input.env ?? {},
           stdin: input.stdin,
@@ -212,7 +222,7 @@ describe("sandbox adapter execution targets", () => {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
-  });
+  }, runtimeShellTestTimeoutMs);
 
   it("fails oversized host responses with a 502 before returning them to the sandbox client", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-limit-"));
@@ -288,5 +298,5 @@ describe("sandbox adapter execution targets", () => {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
-  });
+  }, runtimeShellTestTimeoutMs);
 });

@@ -23,8 +23,11 @@ function parseEnvFile(contents: string) {
 }
 
 function formatEnvValue(value: string): string {
-  if (/^[A-Za-z0-9_./:@-]+$/.test(value)) {
+  if (/^[A-Za-z0-9_./:@\\-]+$/.test(value)) {
     return value;
+  }
+  if (value.includes("\\") && !value.includes("'")) {
+    return `'${value}'`;
   }
   return JSON.stringify(value);
 }

@@ -3,6 +3,21 @@ import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/sha
 import { buildPresetServerConfig } from "../config/server-bind.js";
 
 describe("network bind helpers", () => {
+  function withoutTailscaleOnPath<T>(fn: () => T): T {
+    const originalPath = process.env.PATH;
+    const originalPathAlt = process.env.Path;
+    process.env.PATH = "";
+    process.env.Path = "";
+    try {
+      return fn();
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalPathAlt === undefined) delete process.env.Path;
+      else process.env.Path = originalPathAlt;
+    }
+  }
+
   it("rejects non-loopback bind modes in local_trusted", () => {
     expect(
       validateConfiguredBindMode({
@@ -51,11 +66,11 @@ describe("network bind helpers", () => {
   it("falls back to loopback when no tailscale address is available for tailnet presets", () => {
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
 
-    const preset = buildPresetServerConfig("tailnet", {
+    const preset = withoutTailscaleOnPath(() => buildPresetServerConfig("tailnet", {
       port: 3100,
       allowedHostnames: [],
       serveUi: true,
-    });
+    }));
 
     expect(preset.server.host).toBe("127.0.0.1");
   });

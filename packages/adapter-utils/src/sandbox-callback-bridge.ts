@@ -12,7 +12,6 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
-const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
@@ -104,6 +103,19 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+function toHostFileSystemPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  const drivePath = value.match(/^\/([A-Za-z])\/(.*)$/);
+  if (drivePath) {
+    return `${drivePath[1].toUpperCase()}:\\${drivePath[2].replace(/\//g, "\\")}`;
+  }
+  if (value === "/tmp") return os.tmpdir();
+  if (value.startsWith("/tmp/")) {
+    return path.join(os.tmpdir(), value.slice("/tmp/".length).replace(/\//g, path.sep));
+  }
+  return value;
+}
+
 function normalizeMethod(value: string | null | undefined): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toUpperCase() : "GET";
 }
@@ -133,26 +145,20 @@ async function runShell(
   cwd: string,
   script: string,
   timeoutMs: number,
+  stdin?: string,
 ): Promise<RunProcessResult> {
   return await runner.execute({
     command: "sh",
     args: ["-lc", script],
     cwd,
     timeoutMs,
+    stdin,
   });
 }
 
 function requireSuccessfulResult(action: string, result: RunProcessResult): RunProcessResult {
   if (!result.timedOut && result.exitCode === 0) return result;
   throw new Error(buildRunnerFailureMessage(action, result));
-}
-
-function base64Chunks(body: string): string[] {
-  const out: string[] = [];
-  for (let offset = 0; offset < body.length; offset += REMOTE_WRITE_BASE64_CHUNK_SIZE) {
-    out.push(body.slice(offset, offset + REMOTE_WRITE_BASE64_CHUNK_SIZE));
-  }
-  return out;
 }
 
 export function createSandboxCallbackBridgeToken(bytes = DEFAULT_BRIDGE_TOKEN_BYTES): string {
@@ -238,26 +244,28 @@ export async function createSandboxCallbackBridgeAsset(): Promise<SandboxCallbac
 export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallbackBridgeQueueClient {
   return {
     makeDir: async (remotePath) => {
-      await fs.mkdir(remotePath, { recursive: true });
+      await fs.mkdir(toHostFileSystemPath(remotePath), { recursive: true });
     },
     listJsonFiles: async (remotePath) => {
-      const entries = await fs.readdir(remotePath, { withFileTypes: true }).catch(() => []);
+      const entries = await fs.readdir(toHostFileSystemPath(remotePath), { withFileTypes: true }).catch(() => []);
       return entries
         .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
         .map((entry) => entry.name)
         .sort((left, right) => left.localeCompare(right));
     },
-    readTextFile: async (remotePath) => await fs.readFile(remotePath, "utf8"),
+    readTextFile: async (remotePath) => await fs.readFile(toHostFileSystemPath(remotePath), "utf8"),
     writeTextFile: async (remotePath, body) => {
-      await fs.mkdir(path.posix.dirname(remotePath), { recursive: true });
-      await fs.writeFile(remotePath, body, "utf8");
+      const localPath = toHostFileSystemPath(remotePath);
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await fs.writeFile(localPath, body, "utf8");
     },
     rename: async (fromPath, toPath) => {
-      await fs.mkdir(path.posix.dirname(toPath), { recursive: true });
-      await fs.rename(fromPath, toPath);
+      const localToPath = toHostFileSystemPath(toPath);
+      await fs.mkdir(path.dirname(localToPath), { recursive: true });
+      await fs.rename(toHostFileSystemPath(fromPath), localToPath);
     },
     remove: async (remotePath) => {
-      await fs.rm(remotePath, { recursive: true, force: true }).catch(() => undefined);
+      await fs.rm(toHostFileSystemPath(remotePath), { recursive: true, force: true }).catch(() => undefined);
     },
   };
 }
@@ -268,8 +276,8 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   timeoutMs?: number | null;
 }): SandboxCallbackBridgeQueueClient {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
-  const runChecked = async (action: string, script: string) =>
-    requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs));
+  const runChecked = async (action: string, script: string, stdin?: string) =>
+    requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs, stdin));
 
   return {
     makeDir: async (remotePath) => {
@@ -302,21 +310,10 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
     },
     writeTextFile: async (remotePath, body) => {
       const remoteDir = path.posix.dirname(remotePath);
-      const tempPath = `${remotePath}.paperclip-upload.b64`;
       await runChecked(
-        `prepare upload ${remotePath}`,
-        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(tempPath)} && : > ${shellQuote(tempPath)}`,
-      );
-      const base64Body = toBuffer(Buffer.from(body, "utf8")).toString("base64");
-      for (const chunk of base64Chunks(base64Body)) {
-        await runChecked(
-          `append upload chunk ${remotePath}`,
-          `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(tempPath)}`,
-        );
-      }
-      await runChecked(
-        `finalize upload ${remotePath}`,
-        `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
+        `upload ${remotePath}`,
+        `mkdir -p ${shellQuote(remoteDir)} && base64 -d > ${shellQuote(remotePath)}`,
+        toBuffer(Buffer.from(body, "utf8")).toString("base64"),
       );
     },
     rename: async (fromPath, toPath) => {

@@ -935,7 +935,7 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
       process.platform === "win32"
         ? hasExtension
           ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
+          : [...exts.map((ext) => path.join(dir, `${command}${ext}`)), path.join(dir, command)]
         : [path.join(dir, command)];
     for (const candidate of candidates) {
       if (await pathExists(candidate)) return candidate;
@@ -943,6 +943,27 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   }
 
   return null;
+}
+
+async function resolveWindowsShebangSpawnTarget(executable: string, args: string[]): Promise<SpawnTarget | null> {
+  if (process.platform !== "win32") return null;
+  if (/\.(exe|cmd|bat|com)$/i.test(executable)) return null;
+
+  const file = await fs.open(executable, "r").catch(() => null);
+  if (!file) return null;
+  try {
+    const buffer = Buffer.alloc(160);
+    const result = await file.read(buffer, 0, buffer.length, 0);
+    const firstLine = buffer.subarray(0, result.bytesRead).toString("utf8").split(/\r?\n/, 1)[0] ?? "";
+    if (!firstLine.startsWith("#!")) return null;
+    if (!/\b(?:env\s+)?node(?:\.exe)?\b/i.test(firstLine)) return null;
+    return {
+      command: process.execPath,
+      args: [executable, ...args],
+    };
+  } finally {
+    await file.close().catch(() => {});
+  }
 }
 
 export async function resolveCommandForLogs(
@@ -1009,6 +1030,9 @@ async function resolveSpawnTarget(
   if (process.platform !== "win32") {
     return { command: executable, args };
   }
+
+  const shebangTarget = await resolveWindowsShebangSpawnTarget(executable, args);
+  if (shebangTarget) return shebangTarget;
 
   if (/\.(cmd|bat)$/i.test(executable)) {
     // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
@@ -1380,7 +1404,7 @@ export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+    fs.symlink(linkSource, linkTarget, process.platform === "win32" ? "junction" : "dir"),
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {

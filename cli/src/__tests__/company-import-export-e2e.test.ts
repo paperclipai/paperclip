@@ -15,6 +15,22 @@ import { createStoredZipArchive } from "./helpers/zip.js";
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
 
+function resolvePnpmInvocation(): { command: string; argsPrefix: string[] } {
+  if (process.platform !== "win32") return { command: "pnpm", argsPrefix: [] };
+
+  const candidates = [
+    process.env.npm_execpath,
+    process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "node_modules", "pnpm", "bin", "pnpm.cjs") : "",
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const pnpmScript = candidates.find((candidate) => existsSync(candidate));
+  if (!pnpmScript) {
+    throw new Error("Could not resolve pnpm.cjs for Windows test execution.");
+  }
+  return { command: process.execPath, argsPrefix: [pnpmScript] };
+}
+
+const pnpmInvocation = resolvePnpmInvocation();
+
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -222,8 +238,8 @@ async function runCliJson<T>(
   }
   cliArgs.push("--json");
   const result = await execFileAsync(
-    "pnpm",
-    cliArgs,
+    pnpmInvocation.command,
+    [...pnpmInvocation.argsPrefix, ...cliArgs],
     {
       cwd: repoRoot,
       env: createCliEnv(opts),
@@ -296,8 +312,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
     const child = spawn(
-      "pnpm",
-      ["paperclipai", "run", "--config", configPath],
+      pnpmInvocation.command,
+      [...pnpmInvocation.argsPrefix, "paperclipai", "run", "--config", configPath],
       {
         cwd: repoRoot,
         env: createServerEnv(configPath, port, tempDb.connectionString, {
@@ -323,7 +339,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     await stopServerProcess(serverProcess);
     await tempDb?.cleanup();
     if (tempRoot) {
-      rmSync(tempRoot, { recursive: true, force: true });
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 

@@ -5,7 +5,8 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-pi-local/server";
 
 async function writeFakePiCommand(binDir: string, mode: "success" | "stale-package"): Promise<void> {
-  const commandPath = path.join(binDir, "pi");
+  const commandPath = path.join(binDir, process.platform === "win32" ? "pi.cmd" : "pi");
+  const scriptPath = process.platform === "win32" ? path.join(binDir, "pi.js") : commandPath;
   const script =
     mode === "success"
       ? `#!/usr/bin/env node
@@ -34,8 +35,12 @@ if (process.argv.includes("--list-models")) {
 }
 process.exit(1);
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await fs.writeFile(scriptPath, script, "utf8");
+  if (process.platform === "win32") {
+    await fs.writeFile(commandPath, "@echo off\r\nnode \"%~dp0pi.js\" %*\r\n", "utf8");
+  } else {
+    await fs.chmod(commandPath, 0o755);
+  }
 }
 
 describe("pi_local environment diagnostics", () => {

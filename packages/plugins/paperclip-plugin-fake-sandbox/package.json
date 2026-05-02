@@ -14,7 +14,7 @@
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "tsc",
-    "clean": "rm -rf dist",
+    "clean": "node ../../../scripts/remove-path.mjs dist",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },

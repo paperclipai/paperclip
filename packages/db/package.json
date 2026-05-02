@@ -36,8 +36,8 @@
   ],
   "scripts": {
     "check:migrations": "tsx src/check-migration-numbering.ts",
-    "build": "pnpm run check:migrations && tsc && cp -r src/migrations dist/migrations",
-    "clean": "rm -rf dist",
+    "build": "pnpm run check:migrations && tsc && node ../../scripts/copy-path.mjs --clean-dest src/migrations dist/migrations",
+    "clean": "node ../../scripts/remove-path.mjs dist",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
     "generate": "pnpm run check:migrations && tsc -p tsconfig.json && drizzle-kit generate",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",

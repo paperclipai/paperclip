@@ -11,6 +11,10 @@ async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+async function linkSkillDir(source: string, target: string): Promise<void> {
+  await fs.symlink(source, target, process.platform === "win32" ? "junction" : "dir");
+}
+
 describe("paperclip skill utils", () => {
   const cleanupDirs = new Set<string>();
 
@@ -83,10 +87,11 @@ describe("paperclip skill utils", () => {
     await fs.mkdir(skillsHome, { recursive: true });
     await fs.mkdir(runtimeSkill, { recursive: true });
     await fs.mkdir(customSkill, { recursive: true });
+    await fs.mkdir(staleMaintainerSkill, { recursive: true });
 
-    await fs.symlink(runtimeSkill, path.join(skillsHome, "paperclip"));
-    await fs.symlink(customSkill, path.join(skillsHome, "release-notes"));
-    await fs.symlink(staleMaintainerSkill, path.join(skillsHome, "release"));
+    await linkSkillDir(runtimeSkill, path.join(skillsHome, "paperclip"));
+    await linkSkillDir(customSkill, path.join(skillsHome, "release-notes"));
+    await linkSkillDir(staleMaintainerSkill, path.join(skillsHome, "release"));
 
     const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, ["paperclip"]);
 

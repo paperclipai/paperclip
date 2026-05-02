@@ -10,6 +10,12 @@ import {
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
+import {
+  fromWindowsTestShellPath,
+  normalizeWindowsPathsForTestShell,
+  resolveTestShellCommand,
+  runtimeShellTestTimeoutMs,
+} from "./test-shell.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -62,29 +68,38 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "._README.md"), "appledouble\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "{\"local\":true}\n", "utf8");
     await writeFile(linkedAssetPath, "skill body\n", "utf8");
-    await symlink(linkedAssetPath, path.join(localAssetsDir, "skill.md"));
+    try {
+      await symlink(linkedAssetPath, path.join(localAssetsDir, "skill.md"));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) {
+        throw error;
+      }
+      await writeFile(path.join(localAssetsDir, "skill.md"), "skill body\n", "utf8");
+    }
 
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
+        await mkdir(fromWindowsTestShellPath(remotePath), { recursive: true });
       },
       writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
+        const localPath = fromWindowsTestShellPath(remotePath);
+        await mkdir(path.dirname(localPath), { recursive: true });
+        await writeFile(localPath, Buffer.from(bytes));
       },
-      readFile: async (remotePath) => await readFile(remotePath),
+      readFile: async (remotePath) => await readFile(fromWindowsTestShellPath(remotePath)),
       listFiles: async (remotePath) => {
-        const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+        const entries = await readdir(fromWindowsTestShellPath(remotePath), { withFileTypes: true }).catch(() => []);
         return entries
           .filter((entry) => entry.isFile())
           .map((entry) => entry.name)
           .sort((left, right) => left.localeCompare(right));
       },
       remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
+        await rm(fromWindowsTestShellPath(remotePath), { recursive: true, force: true });
       },
       run: async (command) => {
-        await execFile("sh", ["-lc", command], {
+        await execFile(resolveTestShellCommand(), ["-lc", normalizeWindowsPathsForTestShell(command)], {
           maxBuffer: 32 * 1024 * 1024,
         });
       },
@@ -114,8 +129,8 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "._README.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(remoteWorkspaceDir, ".claude", "settings.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readFile(path.join(prepared.assetDirs.skills, "skill.md"), "utf8")).resolves.toBe("skill body\n");
-    expect((await lstat(path.join(prepared.assetDirs.skills, "skill.md"))).isFile()).toBe(true);
+    await expect(readFile(fromWindowsTestShellPath(path.posix.join(prepared.assetDirs.skills, "skill.md")), "utf8")).resolves.toBe("skill body\n");
+    expect((await lstat(fromWindowsTestShellPath(path.posix.join(prepared.assetDirs.skills, "skill.md")))).isFile()).toBe(true);
 
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
     await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "sync back\n", "utf8");
@@ -129,5 +144,5 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
-  });
+  }, runtimeShellTestTimeoutMs);
 });
