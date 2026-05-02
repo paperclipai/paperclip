@@ -1,6 +1,7 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
+import { PageErrorBoundary } from "./components/PageErrorBoundary";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
@@ -81,9 +82,9 @@ function boardRoutes() {
       <Route path="agents/paused" element={<Agents />} />
       <Route path="agents/error" element={<Agents />} />
       <Route path="agents/new" element={<NewAgent />} />
-      <Route path="agents/:agentId" element={<AgentDetail />} />
-      <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
-      <Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />
+      <Route path="agents/:agentId" element={<PageErrorBoundary><AgentDetail /></PageErrorBoundary>} />
+      <Route path="agents/:agentId/:tab" element={<PageErrorBoundary><AgentDetail /></PageErrorBoundary>} />
+      <Route path="agents/:agentId/runs/:runId" element={<PageErrorBoundary><AgentDetail /></PageErrorBoundary>} />
       <Route path="projects" element={<Projects />} />
       <Route path="projects/:projectId" element={<ProjectDetail />} />
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />

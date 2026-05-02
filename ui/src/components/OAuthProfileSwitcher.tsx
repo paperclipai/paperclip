@@ -35,15 +35,16 @@ export function OAuthProfileSwitcher({
   onSwitched?: () => void;
   variant?: "default" | "compact";
 }) {
+  const isClaudeLocal = agent.adapterType === "claude_local";
   const [open, setOpen] = useState(false);
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
 
-  // Only meaningful for claude_local adapters (Claude Max subscriptions)
-  if (agent.adapterType !== "claude_local") return null;
-
   const currentProfile = extractCurrentProfile(agent);
 
+  // Early-return must come after all hook calls — React requires identical
+  // hook order across renders, otherwise navigating between adapter types
+  // crashes the page ("Rendered fewer hooks than during the previous render").
   const { data: profiles } = useQuery<OAuthProfile[]>({
     queryKey: ["oauth-profiles", companyId],
     queryFn: () =>
@@ -52,6 +53,7 @@ export function OAuthProfileSwitcher({
         .then((r) => r.profiles),
     retry: false,
     staleTime: 5 * 60 * 1000,
+    enabled: isClaudeLocal,
   });
 
   const switchProfile = useMutation({
@@ -86,6 +88,7 @@ export function OAuthProfileSwitcher({
     },
   });
 
+  if (!isClaudeLocal) return null;
   // Don't render until backend endpoint is ready (handles pre-VOG-2730 gracefully)
   if (!profiles || profiles.length === 0) return null;
 
