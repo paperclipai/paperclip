@@ -45,6 +45,7 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { stampAdapterModel } from "./adapter-comment-stamp.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import {
@@ -3576,10 +3577,25 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
+      // SOP-914: Stamp adapter+model from agent config on every agent comment.
+      let stampedBody = body;
+      if (actor.agentId) {
+        const agentRow = await db
+          .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+          .from(agents)
+          .where(eq(agents.id, actor.agentId))
+          .then((rows) => rows[0] ?? null);
+        if (agentRow) {
+          const config = agentRow.adapterConfig as Record<string, unknown> | null;
+          const model = typeof config?.model === "string" ? config.model : null;
+          stampedBody = stampAdapterModel(body, agentRow.adapterType, model);
+        }
+      }
+
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = redactCurrentUserText(stampedBody, currentUserRedactionOptions);
       const [comment] = await db
         .insert(issueComments)
         .values({
