@@ -2444,6 +2444,41 @@ describeEmbeddedPostgres("issueService.addComment publish guardrails", () => {
     expect(comments).toHaveLength(0);
   });
 
+  it("treats runId-only actors as machine-authored for structured status enforcement", async () => {
+    const { issueId } = await seedIssue();
+
+    await expect(
+      svc.addComment(issueId, "修复已经完成，准备交给 Sawyer review。", { runId: randomUUID() }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Machine-authored issue comment must use the structured status format",
+      details: expect.objectContaining({
+        missingSections: expect.arrayContaining([
+          "当前结论",
+          "当前执行 owner",
+          "当前 gate",
+          "下一步动作",
+          "完成后回到",
+        ]),
+      }),
+    });
+  });
+
+  it("allows human troubleshooting comments that mention api keys and shell commands without raw bootstrap payloads", async () => {
+    const { issueId } = await seedIssue();
+    const stored = await svc.addComment(
+      issueId,
+      [
+        "I am having trouble using API key rotation in this flow.",
+        "I reproduced it after running bash -lc for the local script and checking curl -sS output.",
+      ].join("\n"),
+      { userId: randomUUID() },
+    );
+
+    expect(stored.body).toContain("using API key rotation");
+    expect(stored.body).toContain("bash -lc");
+  });
+
   it("allows structured agent comments while redacting non-blocked secret assignments", async () => {
     const { issueId, agentId } = await seedIssue();
     const stored = await svc.addComment(

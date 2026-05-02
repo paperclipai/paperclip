@@ -33,7 +33,7 @@ const BLOCKED_COMMENT_PATTERNS = [
   {
     kind: "api_key_bootstrap_log",
     reason: "包含 API-key 启动日志短语",
-    regex: /\bUsing API key\b/i,
+    regex: /^\s*Using API key(?:\s+from)?\s+PAPERCLIP_API_KEY\b.*$/im,
   },
   {
     kind: "paperclip_env_dump",
@@ -107,7 +107,7 @@ function uniqueList(values: string[]) {
   return Array.from(new Set(values));
 }
 
-function collectBlockedReasons(input: string) {
+function collectBlockedReasons(input: string, options: { machineAuthored?: boolean } = {}) {
   const reasons: string[] = [];
   for (const pattern of BLOCKED_COMMENT_PATTERNS) {
     if (matchesRegex(pattern.regex, input)) {
@@ -115,7 +115,7 @@ function collectBlockedReasons(input: string) {
     }
   }
   const toolDumpMarkerHits = TOOL_DUMP_MARKERS.filter((pattern) => matchesRegex(pattern, input)).length;
-  if (toolDumpMarkerHits >= 2) {
+  if (options.machineAuthored === true && toolDumpMarkerHits >= 2) {
     reasons.push("包含原始 tool/bootstrap dump 片段");
   }
   return uniqueList(reasons);
@@ -135,10 +135,14 @@ function validateMachineAuthoredCommentStructure(input: string) {
 }
 
 function sanitizeSecrets(input: string) {
-  return redactSensitiveText(input)
-    .replace(PEM_BLOCK_RE, "[REDACTED_PEM_BLOCK]")
-    .replace(SECRET_ASSIGNMENT_RE, (_match, key: string) => `${key}=[REDACTED]`)
-    .replace(DSN_RE, "[REDACTED_CONNECTION_STRING]");
+  let sanitized = redactSensitiveText(input);
+  sanitized = sanitized.replace(PEM_BLOCK_RE, "[REDACTED_PEM_BLOCK]");
+  resetRegex(PEM_BLOCK_RE);
+  sanitized = sanitized.replace(SECRET_ASSIGNMENT_RE, (_match, key: string) => `${key}=[REDACTED]`);
+  resetRegex(SECRET_ASSIGNMENT_RE);
+  sanitized = sanitized.replace(DSN_RE, "[REDACTED_CONNECTION_STRING]");
+  resetRegex(DSN_RE);
+  return sanitized;
 }
 
 export function sanitizeIssueCommentBody(
@@ -146,7 +150,7 @@ export function sanitizeIssueCommentBody(
   options: { machineAuthored?: boolean } = {},
 ) {
   const trimmed = input.trim();
-  const blockedReasons = collectBlockedReasons(trimmed);
+  const blockedReasons = collectBlockedReasons(trimmed, options);
   if (blockedReasons.length > 0) {
     throw unprocessable("Issue comment blocked by publish guardrail", {
       blockedReasons,

@@ -3520,7 +3520,7 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const guardedBody = sanitizeIssueCommentBody(body, {
-        machineAuthored: Boolean(actor.agentId),
+        machineAuthored: Boolean(actor.agentId ?? actor.runId),
       });
       const redactedBody = redactCurrentUserText(guardedBody, currentUserRedactionOptions);
       const [comment] = await db
