@@ -58,6 +58,16 @@ describe("wake-assignment-outcome", () => {
     expect(outcome.kind).toBe("blocked_with_owner");
   });
 
+  it("maps dependency blocker owners for non-blocked rows when unresolved blockers exist", () => {
+    const dep = new Map([["i1", { unresolvedBlockerIssueIds: ["b1"] }]]);
+    const candidates = issuesToWakeCandidates(
+      [{ id: "i1", status: "todo", assigneeAgentId: "self" }],
+      dep,
+      new Map([["b1", "owner-a"]]),
+    );
+    expect(candidates[0]?.blockedByOwnerId).toBe("owner-a");
+  });
+
   it("enforceNonEmptyRetryWakeResult covers null", () => {
     const r = enforceNonEmptyRetryWakeResult(null, 2);
     expect(r.schemaVersion).toBe(ASSIGNMENT_OUTCOME_SCHEMA_VERSION);

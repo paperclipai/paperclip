@@ -93,6 +93,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import {
   collectUnresolvedBlockerIds,
   computeSharedInboxLiteAssignmentOutcome,
+  defaultInboxLiteRetryWindow,
   fetchAssigneesForIssueIds,
 } from "../lib/wake-assignment-outcome.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -1572,16 +1573,17 @@ export function agentRoutes(
       status: issue.status,
       assigneeAgentId: issue.assigneeAgentId,
     }));
+    const { retryAttempt, maxRetries } = defaultInboxLiteRetryWindow();
     const assignmentOutcome = computeSharedInboxLiteAssignmentOutcome({
       rows: rowLite,
       dependencyReadiness,
       blockerAssigneeByIssueId: blockerAssignees,
-      retryAttempt: 0,
-      maxRetries: 3,
+      retryAttempt,
+      maxRetries,
     });
 
-    res.json(
-      rows.map((issue) => ({
+    res.json({
+      issues: rows.map((issue) => ({
         id: issue.id,
         identifier: issue.identifier,
         title: issue.title,
@@ -1595,9 +1597,9 @@ export function agentRoutes(
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
         unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
-        assignmentOutcome,
       })),
-    );
+      assignmentOutcome,
+    });
   });
 
   router.get("/agents/me/inbox/mine", async (req, res) => {

@@ -279,7 +279,7 @@ export function issuesToWakeCandidates(
     const blockerIds = dep?.unresolvedBlockerIssueIds ?? [];
     let blockedByOwnerId: string | null = null;
     let blockedReason: string | null = null;
-    if (row.status === "blocked" && blockerIds.length > 0) {
+    if (blockerIds.length > 0) {
       const ordered = [...blockerIds].sort((a, b) => a.localeCompare(b));
       for (const bid of ordered) {
         const owner = blockerAssigneeByIssueId.get(bid) ?? null;
