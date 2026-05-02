@@ -387,6 +387,15 @@ describe("createPluginSecretsHandler.delete()", () => {
     await expect(handler.delete({ companyId: COMPANY_ID, name: "NONEXISTENT" })).resolves.toBeUndefined();
     expect(mockRemove).not.toHaveBeenCalled();
   });
+
+  it("does NOT call svc.remove when logActivity fails (log-first ordering)", async () => {
+    mockGetByName.mockResolvedValue(BASE_SECRET);
+    mockLogActivity.mockRejectedValueOnce(new Error("audit DB down"));
+    await expect(
+      handler.delete({ companyId: COMPANY_ID, name: "MY_SECRET" }),
+    ).rejects.toThrow("audit DB down");
+    expect(mockRemove).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
