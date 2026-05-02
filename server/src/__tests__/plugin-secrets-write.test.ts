@@ -187,7 +187,7 @@ describe("secrets.write capability gating", () => {
 
 describe("secrets.write in PLUGIN_CAPABILITIES", () => {
   it("includes secrets.write in the capabilities array", async () => {
-    const { PLUGIN_CAPABILITIES } = await import("@paperclipai/shared");
+    const { PLUGIN_CAPABILITIES } = await import("../../../packages/shared/src/constants.js");
     expect(PLUGIN_CAPABILITIES).toContain("secrets.write");
   });
 });
