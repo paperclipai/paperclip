@@ -647,6 +647,29 @@ describe.sequential("agent skill routes", () => {
     );
   });
 
+  it("preserves existing adapterConfig keys during instruction bundle materialization", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "SD",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: { cwd: "/tmp/workspace", model: "claude-3-5-sonnet", dangerouslySkipPermissions: true, env: { FOO: "bar" } },
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    const updateCalls = mockAgentService.update.mock.calls;
+    const lastUpdate = updateCalls.at(-1)?.[1] as Record<string, unknown> | undefined;
+    const finalAdapterConfig = (lastUpdate?.adapterConfig ?? {}) as Record<string, unknown>;
+    expect(finalAdapterConfig.cwd).toBe("/tmp/workspace");
+    expect(finalAdapterConfig.model).toBe("claude-3-5-sonnet");
+    expect(finalAdapterConfig.dangerouslySkipPermissions).toBe(true);
+    expect(finalAdapterConfig.env).toBeDefined();
+    expect(finalAdapterConfig.instructionsBundleMode).toBe("managed");
+    expect(finalAdapterConfig.promptTemplate).toBeUndefined();
+    expect(finalAdapterConfig.bootstrapPromptTemplate).toBeUndefined();
+  });
+
   it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")

@@ -950,7 +950,10 @@ export function agentRoutes(
       files,
       { entryFile: input?.entryFile ?? "AGENTS.md", replaceExisting: false },
     );
-    const nextAdapterConfig = { ...materialized.adapterConfig };
+    const nextAdapterConfig = {
+      ...asRecord(agent.adapterConfig),
+      ...materialized.adapterConfig,
+    };
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
 

@@ -33,6 +33,11 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export {
+  performStaleRunCleanup,
+  type StaleRunCleanupConfig,
+  type StaleRunCleanupResult,
+} from "./stale-run-cleanup/service.js";
+export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
 } from "./productivity-review.js";

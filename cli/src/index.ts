@@ -24,6 +24,7 @@ import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
+import { fleetMigrateCommand } from "./commands/fleet-migrate.js";
 import { cliVersion } from "./version.js";
 
 const program = new Command();
@@ -103,6 +104,19 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(addAllowedHostname);
+
+program
+  .command("fleet:migrate")
+  .description("One-time fleet migration: move agents with high adapter error rates to a stable adapter")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--dry-run", "Show which agents would be migrated without making changes", false)
+  .option("--json", "Output results as JSON", false)
+  .option("-o, --output <path>", "Write rollback script to a file")
+  .option("--threshold <ratio>", "Adapter error rate threshold (default 0.05 = 5%)", (v) => Number(v))
+  .option("--days <n>", "Number of days to look back (default 7)", (v) => Number(v))
+  .option("--target-adapter <type>", "Target adapter type to migrate to (default opencode_local)")
+  .action(fleetMigrateCommand);
 
 program
   .command("run")

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -2431,5 +2430,123 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+});
+
+describeEmbeddedPostgres("issueService.recordIssueTaskOutcome", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-task-outcome-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssue(initialFailures = 0) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Task outcome test",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      consecutiveTaskFailures: initialFailures,
+      lastTaskFailureAt: initialFailures > 0 ? new Date() : null,
+    });
+
+    return { companyId, agentId, issueId };
+  }
+
+  it("increments consecutiveTaskFailures on failure", async () => {
+    const { issueId } = await seedIssue(0);
+
+    const result = await svc.recordIssueTaskOutcome(issueId, "failure");
+    expect(result.blocked).toBe(false);
+    expect(result.issue).not.toBeNull();
+    expect(result.issue!.consecutiveTaskFailures).toBe(1);
+    expect(result.issue!.lastTaskFailureAt).toBeInstanceOf(Date);
+  });
+
+  it("resets consecutiveTaskFailures and lastTaskFailureAt on success", async () => {
+    const { issueId } = await seedIssue(2);
+
+    const result = await svc.recordIssueTaskOutcome(issueId, "success");
+    expect(result.blocked).toBe(false);
+    expect(result.issue).not.toBeNull();
+    expect(result.issue!.consecutiveTaskFailures).toBe(0);
+    expect(result.issue!.lastTaskFailureAt).toBeNull();
+  });
+
+  it("blocks the issue on the 3rd consecutive failure", async () => {
+    const { issueId, agentId } = await seedIssue(2);
+
+    const result = await svc.recordIssueTaskOutcome(issueId, "failure", {
+      actorAgentId: agentId,
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.issue).not.toBeNull();
+    expect(result.issue!.consecutiveTaskFailures).toBe(3);
+    expect(result.issue!.status).toBe("blocked");
+    expect(result.issue!.executionRunId).toBeNull();
+    expect(result.issue!.executionAgentNameKey).toBeNull();
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, result.issue!.companyId), eq(activityLog.entityId, issueId)))
+      .then((rows) => rows);
+    expect(activityRows.length).toBeGreaterThanOrEqual(1);
+    expect(activityRows[0]!.action).toBe("issue.task_execution_blocked");
+  });
+
+  it("does not block non-in_progress issues on 3rd failure", async () => {
+    const { issueId } = await seedIssue(2);
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+
+    const result = await svc.recordIssueTaskOutcome(issueId, "failure");
+    expect(result.blocked).toBe(false);
+    const row = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(row?.status).toBe("todo");
+  });
+
+  it("does nothing for a missing issue", async () => {
+    const result = await svc.recordIssueTaskOutcome(randomUUID(), "failure");
+    expect(result.blocked).toBe(false);
+    expect(result.issue).toBeNull();
   });
 });
