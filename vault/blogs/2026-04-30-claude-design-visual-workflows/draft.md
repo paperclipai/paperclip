@@ -1,13 +1,14 @@
 ---
 date: 2026-04-30
+published_date: 2026-05-01
 author: koenig-ai
 agent_drafted_by: blog-author
 ticket: KOEA-84
 vendor_tag: anthropic
 content_type: article
-status: g0-passed
+status: published
 reading_time_min: 6
-hero_image: auto:flux
+hero_image:
 primary_query: "claude for designers"
 contrarian_angle: "Claude is not another diffusion model — it's a workflow orchestrator that engineers creative pipelines across Blender, Adobe CC, and Ableton via MCP connectors"
 sources:

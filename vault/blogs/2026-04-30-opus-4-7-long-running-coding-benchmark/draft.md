@@ -5,7 +5,7 @@ agent_drafted_by: blog-author
 ticket: KOE-19
 vendor_tag: anthropic
 content_type: article
-status: awaiting-g0
+status: g0-passed
 reading_time_min: 6
 primary_query: "Claude Opus 4.7 long-running coding tasks"
 contrarian_angle: "The 3× production task gain is real — but a new tokenizer inflates long-session costs 35%, and context drift past step 100 remains unsolved by any of the published benchmarks"
@@ -82,7 +82,7 @@ The compounding problem is prompt caching. Anthropic offers up to 90% cost reduc
 ### Safety and Stability: Project Glasswing
 Opus 4.7 is the first model to fully integrate the safeguards developed under **Project Glasswing**, Anthropic's cybersecurity initiative that automatically detects and blocks high-risk cybersecurity uses.[1] In the context of long-running coding tasks, this manifests as a more robust "refusal boundary" for dangerous operations. If an agent tries to modify a sensitive security configuration in a way that introduces a known vulnerability (e.g., hardcoding a credential during a refactor), Opus 4.7 is significantly more likely to catch the error and suggest a secure alternative.
 
-While this adds friction to some edge-case workflows, it is a critical safety net for autonomous agents operating in production environments. Anthropic’s assessment rated Opus 4.7 as "largely well-aligned," showing lower rates of misaligned behavior during multi-step tasks than its predecessors.[2]
+While this adds friction to some edge-case workflows, it is a critical safety net for autonomous agents operating in production environments. Anthropic’s safety evaluation reports lower rates of misaligned behavior during multi-step tasks for Opus 4.7 compared to its predecessors, with the model scoring 98.5% on the XBOW autonomous penetration-testing benchmark.[2]
 
 ## Where context drift still happens
 
@@ -94,7 +94,7 @@ Unlike the transient context window, the new file-system-based memory in Opus 4.
 ### Visual Acuity: The 3.75MP Upgrade for Frontend QA
 One of the most significant yet under-discussed upgrades in 4.7 is the jump to **3.75 megapixel visual resolution**—a 3x improvement over prior models.[1] In long-running coding tasks, this acuity is transformative for frontend engineering and automated QA agents. 
 
-Previously, an agent trying to debug a CSS alignment issue or a "pixel-perfect" design discrepancy often hallucinated the cause because it couldn't see the fine-grained details of a dense screenshot. Opus 4.7 can resolve small text elements, complex SVG paths, and overlapping z-index issues with 98.5% resolution in visual benchmarks.[2] For teams building autonomous "UI fix-it" agents, this means the model can now effectively "look" at the terminal output and the browser window simultaneously to identify where a build failed visually.
+Previously, an agent trying to debug a CSS alignment issue or a "pixel-perfect" design discrepancy often hallucinated the cause because it couldn't see the fine-grained details of a dense screenshot. Opus 4.7 can resolve small text elements and complex layout issues in screenshots at significantly higher fidelity than its predecessors.[1] For teams building autonomous "UI fix-it" agents, this means the model can now effectively "look" at the terminal output and the browser window simultaneously to identify where a build failed visually.
 
 ## Adaptive thinking: When to let the model reason deeper
 
@@ -106,7 +106,7 @@ The trade-off is latency and token spend: the model consumes more tokens in its 
 
 To quantify the 4.6 → 4.7 delta for your own task distribution, set up a fixed benchmark: the same 200-step coding task run on each model with identical prompts (adjusted for the tokenizer), measured on step-completion count, first-tool-failure step, and total token spend.
 
-The internal determinism benchmark dataset at `/data/claude-tool-use-determinism/2026-Q2/` provides a reproducible 200-task harness for this comparison. Each task includes a deterministic pass/fail oracle (the target repository's test suite), making success rate objective.
+For a reproducible harness, the SWE-bench dataset provides real-world GitHub issues with deterministic pass/fail oracles (the target repository's test suite), making success rate objective.[5]
 
 The setup — initializing the model client and dispatching a single benchmark task — looks like this:
 

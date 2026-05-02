@@ -2,6 +2,8 @@
 date: 2026-04-30
 author: blog-author
 ticket: KOE-29
+delta_tickets:
+  - KOEA-345
 vendor_tag: community
 content_type: article
 status: awaiting-g0
@@ -14,6 +16,7 @@ sources:
   - https://qwenlm.github.io/blog/qwen3/
   - https://huggingface.co/Qwen/Qwen3-235B-A22B
   - https://huggingface.co/mistralai/Mistral-Medium-3.5-128B
+  - https://huggingface.co/moonshotai/Kimi-K2.6/blob/main/LICENSE
 hero_image: auto:flux
 references:
   - n: 1
@@ -60,6 +63,9 @@ Most coverage answers the wrong question. Reviews stack benchmark rows and crown
 - Llama 4 Maverick (17B active / 400B total) beats GPT-4o and Gemini 2.0 Flash on standard benchmarks while running on a single H100 DGX host.[^1]
 - Qwen3's **hybrid thinking mode** lets you toggle between reasoning-heavy and fast inference at the API call level — no separate model deployment required.[^4]
 - All three families support 100+ languages and multimodal input.[^1][^2][^3]
+
+> **⚠ Licensing notice — Llama 4+**
+> Meta Llama 4 (Scout, Maverick, Behemoth) is distributed under Meta's custom [Llama Community Licence](https://llama.meta.com/llama4/license/), which restricts commercial use above 700 million monthly active users and requires any AI model trained on Llama 4 and distributed publicly to carry "Llama" at the start of its name (Section 1.b.i). Meta has historically tightened licensing terms between Llama generations, and a move toward more restrictive terms for Llama 4+ is an active community concern. **Verify the licence for the exact version you deploy before using in production.** For deployments where licensing certainty is critical, Gemma 4 (Apache 2.0) and Qwen3 (Apache 2.0) carry no comparable risk. Kimi K2.6 (Moonshot AI, Modified MIT licence) is an emerging alternative for coding-heavy pipelines — see the deployment matrix below.
 
 ## Edge and Offline: Gemma 4 Owns This Niche
 
@@ -154,6 +160,7 @@ for name, base_url in MODELS.items():
 | Cloud-batch, benchmark-optimized | **Llama 4 Maverick** | Beats GPT-4o; single H100 DGX host; broad community |
 | Cloud-batch, agent pipelines | **Qwen3-235B-A22B** | Thinking mode + MCP; 22B active params = lower token cost |
 | Cost-sensitive general-purpose | **Gemma 4 26B** | Strong across all benchmarks; mature fine-tune ecosystem; no licensing restrictions |
+| Coding pipelines, licence-sensitive | **Kimi K2.6 (Moonshot AI)** | Modified MIT licence (attribution display required above 100 M MAU / $20 M MRR); competitive coding benchmarks; good fallback if Llama licensing tightens |
 
 ## What to Do Next
 
