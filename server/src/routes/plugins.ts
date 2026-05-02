@@ -734,6 +734,12 @@ export function pluginRoutes(
       return;
     }
 
+    // Plugin tools are instance-global by design: installation is gated by
+    // assertInstanceAdmin, so the registry is shared across all companies on
+    // the instance. Any authenticated actor (board or agent) sees the same
+    // tool list. Per-company isolation lives on the execute path via
+    // assertCompanyAccess + validateToolRunContextScope. If per-company plugin
+    // registration is ever added, this route must add a companyId filter.
     const pluginId = req.query.pluginId as string | undefined;
     const filter = pluginId ? { pluginId } : undefined;
     const tools = toolDeps.toolDispatcher.listToolsForAgent(filter);

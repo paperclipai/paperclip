@@ -602,6 +602,27 @@ describe.sequential("plugin tool dispatch agent actor access", () => {
     expect(listToolsForAgent).toHaveBeenCalled();
   });
 
+  it("returns the same instance-global tool list to agents from any company on GET /plugins/tools", async () => {
+    // Plugin tools are installed instance-wide (assertInstanceAdmin-gated),
+    // so a companyB agent receives the same tool list as a companyA agent.
+    // This documents the intentional instance-global semantic; if per-company
+    // plugin registration is ever added, this test must change to assert
+    // company-scoped filtering.
+    const tool = { name: "paperclip.example:search" };
+    const listToolsForAgent = vi.fn().mockReturnValue([tool]);
+    const { app } = await createApp(agentActor({ companyId: companyB }), {}, {
+      toolDeps: {
+        toolDispatcher: { listToolsForAgent, getTool: vi.fn(), executeTool: vi.fn() },
+      },
+    });
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([tool]);
+    expect(listToolsForAgent).toHaveBeenCalled();
+  });
+
   it("allows agent actors in-company to execute tools via POST /plugins/tools/execute", async () => {
     const executeTool = vi.fn().mockResolvedValue({ content: "result" });
     const { app } = await createApp(agentActor(), {}, {
