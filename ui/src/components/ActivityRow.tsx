@@ -4,17 +4,31 @@ import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { formatActivityVerb, getFailureReason } from "../lib/activity-format";
-import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
+import {
+  deriveProjectUrlKey,
+  type ActivityEvent,
+  type Agent,
+} from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 
-function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
+function entityLink(
+  entityType: string,
+  entityId: string,
+  name?: string | null,
+): string | null {
   switch (entityType) {
-    case "issue": return `/issues/${name ?? entityId}`;
-    case "agent": return `/agents/${entityId}`;
-    case "project": return `/projects/${deriveProjectUrlKey(name, entityId)}`;
-    case "goal": return `/goals/${entityId}`;
-    case "approval": return `/approvals/${entityId}`;
-    default: return null;
+    case "issue":
+      return `/issues/${name ?? entityId}`;
+    case "agent":
+      return `/agents/${entityId}`;
+    case "project":
+      return `/projects/${deriveProjectUrlKey(name, entityId)}`;
+    case "goal":
+      return `/goals/${entityId}`;
+    case "approval":
+      return `/approvals/${entityId}`;
+    default:
+      return null;
   }
 }
 
@@ -27,8 +41,18 @@ interface ActivityRowProps {
   className?: string;
 }
 
-export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+export function ActivityRow({
+  event,
+  agentMap,
+  userProfileMap,
+  entityNameMap,
+  entityTitleMap,
+  className,
+}: ActivityRowProps) {
+  const verb = formatActivityVerb(event.action, event.details, {
+    agentMap,
+    userProfileMap,
+  });
   const details = event.details as Record<string, unknown> | null;
   const status = typeof details?.status === "string" ? details.status : null;
   const failureReason = getFailureReason(details);
@@ -36,22 +60,36 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
-    ? (event.details as Record<string, unknown> | null)?.agentId as string | undefined
+    ? ((event.details as Record<string, unknown> | null)?.agentId as
+        | string
+        | undefined)
     : undefined;
 
   const name = isHeartbeatEvent
-    ? (heartbeatAgentId ? entityNameMap.get(`agent:${heartbeatAgentId}`) : null)
+    ? heartbeatAgentId
+      ? entityNameMap.get(`agent:${heartbeatAgentId}`)
+      : null
     : entityNameMap.get(`${event.entityType}:${event.entityId}`);
 
-  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
+  const entityTitle = entityTitleMap?.get(
+    `${event.entityType}:${event.entityId}`,
+  );
 
-  const link = isHeartbeatEvent && heartbeatAgentId
-    ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
-    : entityLink(event.entityType, event.entityId, name);
+  const link =
+    isHeartbeatEvent && heartbeatAgentId
+      ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
+      : entityLink(event.entityType, event.entityId, name);
 
-  const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
-  const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actor =
+    event.actorType === "agent" ? agentMap.get(event.actorId) : null;
+  const userProfile =
+    event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
+  const actorName =
+    actor?.name ??
+    (event.actorType === "system"
+      ? "System"
+      : (userProfile?.label ??
+        (event.actorType === "user" ? "Board" : event.actorId || "Unknown")));
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
@@ -66,9 +104,13 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
           />
           <span className="text-muted-foreground ml-1">{verb} </span>
           {name && <span className="font-medium">{name}</span>}
-          {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
+          {entityTitle && (
+            <span className="text-muted-foreground ml-1">— {entityTitle}</span>
+          )}
         </p>
-        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">
+          {timeAgo(event.createdAt)}
+        </span>
       </div>
       <IssueReferenceActivitySummary event={event} />
       {showFailureReason ? (
@@ -87,15 +129,14 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   if (link) {
     return (
-      <Link to={link} className={cn(classes, "no-underline text-inherit block")}>
+      <Link
+        to={link}
+        className={cn(classes, "no-underline text-inherit block")}
+      >
         {inner}
       </Link>
     );
   }
 
-  return (
-    <div className={classes}>
-      {inner}
-    </div>
-  );
+  return <div className={classes}>{inner}</div>;
 }
