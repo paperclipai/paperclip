@@ -92,8 +92,10 @@ describe("claude remote execution", () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
+    const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
     const instructionsPath = path.join(rootDir, "instructions.md");
     await mkdir(workspaceDir, { recursive: true });
+    await mkdir(alternateWorkspaceDir, { recursive: true });
     await writeFile(instructionsPath, "Use the remote workspace.\n", "utf8");
 
     await execute({
@@ -119,7 +121,27 @@ describe("claude remote execution", () => {
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
+          strategy: "git_worktree",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "main",
+          branchName: "feature/remote-claude",
+          worktreePath: workspaceDir,
         },
+        paperclipWorkspaces: [
+          {
+            workspaceId: "workspace-1",
+            cwd: workspaceDir,
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "main",
+          },
+          {
+            workspaceId: "workspace-2",
+            cwd: alternateWorkspaceDir,
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "feature/other",
+          },
+        ],
       },
       executionTransport: {
         remoteExecution: {
@@ -154,6 +176,21 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("/remote/workspace/.paperclip-runtime/claude/skills/agent-instructions.md");
     expect(call?.[2]).toContain("--add-dir");
     expect(call?.[2]).toContain("/remote/workspace/.paperclip-runtime/claude/skills");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/remote/workspace");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
+    expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
+      {
+        workspaceId: "workspace-1",
+        cwd: "/remote/workspace",
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoRef: "main",
+      },
+      {
+        workspaceId: "workspace-2",
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoRef: "feature/other",
+      },
+    ]);
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");

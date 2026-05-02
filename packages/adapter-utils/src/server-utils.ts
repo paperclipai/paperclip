@@ -885,6 +885,66 @@ export function applyPaperclipWorkspaceEnv(
   return env;
 }
 
+export function shapePaperclipWorkspaceEnvForExecution(input: {
+  workspaceCwd?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const workspaceCwd =
+    typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+      ? input.workspaceCwd.trim()
+      : null;
+  const workspaceWorktreePath =
+    typeof input.workspaceWorktreePath === "string" && input.workspaceWorktreePath.trim().length > 0
+      ? input.workspaceWorktreePath.trim()
+      : null;
+  const workspaceHints = Array.isArray(input.workspaceHints) ? input.workspaceHints : [];
+
+  if (!input.executionTargetIsRemote) {
+    return {
+      workspaceCwd,
+      workspaceWorktreePath,
+      workspaceHints,
+    };
+  }
+
+  const executionCwd =
+    typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+      ? input.executionCwd.trim()
+      : null;
+  const realizedWorkspaceCwd = executionCwd ?? workspaceCwd;
+  const localWorkspaceCwd = workspaceCwd ? path.resolve(workspaceCwd) : null;
+  const shapedWorkspaceHints = workspaceHints.map((hint) => {
+    const nextHint = { ...hint };
+    const hintCwd = typeof nextHint.cwd === "string" ? nextHint.cwd.trim() : "";
+    if (!hintCwd) return nextHint;
+
+    if (localWorkspaceCwd && path.resolve(hintCwd) === localWorkspaceCwd) {
+      if (realizedWorkspaceCwd) {
+        nextHint.cwd = realizedWorkspaceCwd;
+      } else {
+        delete nextHint.cwd;
+      }
+      return nextHint;
+    }
+
+    delete nextHint.cwd;
+    return nextHint;
+  });
+
+  return {
+    workspaceCwd: realizedWorkspaceCwd,
+    workspaceWorktreePath: null,
+    workspaceHints: shapedWorkspaceHints,
+  };
+}
+
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
