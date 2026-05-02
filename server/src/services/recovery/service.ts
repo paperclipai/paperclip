@@ -19,6 +19,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -362,6 +363,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake);
+  }
+
+  async function hasActiveSourceRoutine(companyId: string, originId: string) {
+    const row = await db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.id, originId),
+          eq(routines.status, "active"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -1706,6 +1723,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } else {
           result.skipped += 1;
         }
+        continue;
+      }
+
+      // Routine-execution issues cycle through "agent exits, routine refires" by design.
+      // If their source routine is still active the next wake is coming — skip stranded detection.
+      if (
+        issue.originKind === "routine_execution" &&
+        issue.originId &&
+        await hasActiveSourceRoutine(issue.companyId, issue.originId)
+      ) {
+        result.skipped += 1;
         continue;
       }
 
