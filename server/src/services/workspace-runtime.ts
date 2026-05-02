@@ -999,6 +999,20 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
+  if (!await isGitCheckout(input.base.baseCwd)) {
+    return {
+      ...input.base,
+      strategy: "project_primary",
+      cwd: input.base.baseCwd,
+      branchName: null,
+      worktreePath: null,
+      warnings: [
+        `git_worktree workspace strategy requires a git checkout; "${input.base.baseCwd}" is not one. Falling back to project_primary.`,
+      ],
+      created: false,
+    };
+  }
+
   const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
