@@ -6592,6 +6592,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+    // Generic idempotency gate: if an idempotencyKey is provided and a non-failed
+    // wakeup with the same key already exists for this agent, skip insertion.
+    if (opts.idempotencyKey) {
+      const existing = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existing) return null;
+    }
+
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
@@ -6634,6 +6652,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
+    const idempotencyConflictTarget = {
+      target: [agentWakeupRequests.agentId, agentWakeupRequests.idempotencyKey],
+      where: sql`${agentWakeupRequests.idempotencyKey} IS NOT NULL AND ${agentWakeupRequests.status} IN ('queued', 'deferred_issue_execution')`,
+    };
 
     const writeSkippedRequest = async (skipReason: string) => {
       await db.insert(agentWakeupRequests).values({
@@ -7079,18 +7101,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "deferred" as const };
           }
 
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_execution_deferred",
-            payload: deferredPayload,
-            status: "deferred_issue_execution",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-          });
+          const deferredWakeupRequest = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_execution_deferred",
+              payload: deferredPayload,
+              status: "deferred_issue_execution",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            })
+            .onConflictDoNothing(idempotencyConflictTarget)
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!deferredWakeupRequest) return { kind: "skipped" as const };
 
           return { kind: "deferred" as const };
         }
@@ -7109,8 +7137,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
+          .onConflictDoNothing(idempotencyConflictTarget)
           .returning()
-          .then((rows) => rows[0]);
+          .then((rows) => rows[0] ?? null);
+        if (!wakeupRequest) return { kind: "skipped" as const };
 
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -7238,8 +7268,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
       })
+      .onConflictDoNothing(idempotencyConflictTarget)
       .returning()
-      .then((rows) => rows[0]);
+      .then((rows) => rows[0] ?? null);
+    if (!wakeupRequest) return null;
 
     const newRun = await db
       .insert(heartbeatRuns)

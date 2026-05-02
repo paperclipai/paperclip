@@ -2652,10 +2652,12 @@ export function issueRoutes(
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
+          const minuteBucket = Math.floor(Date.now() / 60_000);
           addWakeup(parent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_children_completed",
+            idempotencyKey: `issue_children_completed:${parent.id}:${minuteBucket}`,
             payload: {
               issueId: parent.id,
               completedChildIssueId: issue.id,

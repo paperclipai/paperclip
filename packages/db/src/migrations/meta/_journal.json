@@ -526,6 +526,13 @@
       "when": 1777384535070,
       "tag": "0074_striped_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1777384535071,
+      "tag": "0075_agent_wakeup_request_idempotency",
+      "breakpoints": true
     }
   ]
 }

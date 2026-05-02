@@ -248,6 +248,7 @@ describe("issue dependency wakeups in issue routes", () => {
         "agent-9",
         expect.objectContaining({
           reason: "issue_children_completed",
+          idempotencyKey: expect.stringMatching(/^issue_children_completed:parent-1:\d+$/),
           payload: expect.objectContaining({
             issueId: "parent-1",
             completedChildIssueId: "child-1",
