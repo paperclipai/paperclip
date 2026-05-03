@@ -5992,6 +5992,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
+        if (
+          issueId &&
+          (outcome === "failed" || outcome === "timed_out") &&
+          !readTransientRecoveryContractFromRun(livenessRun)
+        ) {
+          try {
+            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
+            if (!existingRunComment) {
+              const errorDetail = adapterResult.errorMessage
+                ? `\n- Error: ${redactCurrentUserText(adapterResult.errorMessage, currentUserRedactionOptions)}`
+                : "";
+              const exitDetail = adapterResult.exitCode != null
+                ? `\n- Exit code: ${adapterResult.exitCode}`
+                : "";
+              const failureComment = `## Run ${outcome === "timed_out" ? "timed out" : "failed"}${errorDetail}${exitDetail}`;
+              await issuesSvc.addComment(issueId, failureComment, { agentId: agent.id, runId: livenessRun.id });
+            }
+          } catch (err) {
+            await onLog(
+              "stderr",
+              `[paperclip] Failed to post run failure comment: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
         if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -6076,6 +6100,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
+        // Post the failure comment BEFORE finalizeIssueCommentPolicy so the
+        // policy check sees the just-written comment and does not queue a
+        // spurious missing_issue_comment retry run.
+        if (issueId && readNonEmptyString(parseObject(livenessRun.contextSnapshot).retryReason) !== "issue_continuation_needed") {
+          try {
+            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
+            if (!existingRunComment) {
+              await issuesSvc.addComment(
+                issueId,
+                `## Run failed\n- Error: ${message}`,
+                { agentId: agent.id, runId: livenessRun.id },
+              );
+            }
+          } catch (_) { /* best-effort */ }
+        }
         await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
 
@@ -6107,7 +6146,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const rawMessage = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const message = redactCurrentUserText(rawMessage, await getCurrentUserRedactionOptions());
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
@@ -6139,6 +6179,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
+            }
+            // Post the failure comment BEFORE finalizeIssueCommentPolicy so
+            // the policy check sees the just-written comment and does not
+            // queue a spurious missing_issue_comment retry run.
+            const outerContextSnapshot = parseObject(failedRun.contextSnapshot);
+            const outerIssueId = readNonEmptyString(outerContextSnapshot.issueId);
+            const isContinuationRecovery =
+              readNonEmptyString(outerContextSnapshot.retryReason) === "issue_continuation_needed";
+            if (outerIssueId && !isContinuationRecovery) {
+              const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, outerIssueId).catch(() => null);
+              if (!existingRunComment) {
+                await issuesSvc.addComment(
+                  outerIssueId,
+                  `## Run failed during setup\n- Error: ${message}`,
+                  { agentId: failedRun.agentId, runId: livenessRun.id },
+                ).catch(() => undefined);
+              }
+            }
+            if (failedAgent) {
               await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);

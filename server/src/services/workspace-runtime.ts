@@ -1013,6 +1013,16 @@ export async function realizeExecutionWorkspace(input: {
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
+  const worktreeWarnings: string[] = [];
+  // On Windows, paths longer than ~200 chars leave little room for nested files
+  // before hitting the 260-char MAX_PATH limit. Warn so operators know to enable
+  // long-path support or configure a shorter worktreeParentDir.
+  if (process.platform === "win32" && worktreePath.length > 200) {
+    worktreeWarnings.push(
+      `Worktree path is ${worktreePath.length} characters long, which may exceed the Windows MAX_PATH (260) limit for deeply nested files. ` +
+      `Consider enabling long paths in Windows (registry: LongPathsEnabled=1) or configuring a shorter worktreeParentDir.`,
+    );
+  }
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1059,7 +1069,7 @@ export async function realizeExecutionWorkspace(input: {
       cwd: reusablePath,
       branchName,
       worktreePath: reusablePath,
-      warnings: [],
+      warnings: [...worktreeWarnings],
       created: false,
     };
   }
@@ -1156,7 +1166,7 @@ export async function realizeExecutionWorkspace(input: {
     cwd: worktreePath,
     branchName,
     worktreePath,
-    warnings: [],
+    warnings: [...worktreeWarnings],
     created: true,
   };
 }
