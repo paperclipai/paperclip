@@ -52,6 +52,14 @@ import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FRESH_MANIFEST_LOADER_SCRIPT = `
+import { pathToFileURL } from "node:url";
+
+const manifestPath = process.argv[1];
+const mod = await import(pathToFileURL(manifestPath).href);
+const raw = mod.default ?? mod;
+process.stdout.write(JSON.stringify(raw));
+`;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -794,8 +802,12 @@ export function pluginLoader(
    */
   async function fetchAndValidate(
     installOptions: PluginInstallOptions,
+    options: {
+      freshManifest?: boolean;
+    } = {},
   ): Promise<DiscoveredPlugin> {
     const { packageName, localPath, version, installDir } = installOptions;
+    const { freshManifest = false } = options;
 
     if (!packageName && !localPath) {
       throw new Error("Either packageName or localPath must be provided");
@@ -877,7 +889,7 @@ export function pluginLoader(
       );
     }
 
-    const manifest = await loadManifestFromPath(manifestPath);
+    const manifest = await loadManifestFromPath(manifestPath, { fresh: freshManifest });
 
     // Step 4: Reject incompatible plugin API versions
     if (!manifestValidator.getSupportedVersions().includes(manifest.apiVersion)) {
@@ -927,11 +939,32 @@ export function pluginLoader(
    */
   async function loadManifestFromPath(
     manifestPath: string,
+    options: {
+      fresh?: boolean;
+    } = {},
   ): Promise<PaperclipPluginManifestV1> {
+    const { fresh = false } = options;
     let raw: unknown;
 
+    if (fresh) {
+      try {
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          ["--input-type=module", "-e", FRESH_MANIFEST_LOADER_SCRIPT, manifestPath],
+          { timeout: 15_000, maxBuffer: 1024 * 1024 },
+        );
+        raw = JSON.parse(stdout);
+      } catch (err) {
+        throw new Error(
+          `Failed to load fresh manifest module at ${manifestPath}: ${String(err)}`,
+        );
+      }
+
+      return manifestValidator.parseOrThrow(raw);
+    }
+
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
+      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests.
       const mod = await import(manifestPath) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
@@ -1333,6 +1366,8 @@ export function pluginLoader(
         localPath,
         version,
         installDir: localPluginDir,
+      }, {
+        freshManifest: Boolean(localPath),
       });
 
       const newManifest = discovered.manifest!;
