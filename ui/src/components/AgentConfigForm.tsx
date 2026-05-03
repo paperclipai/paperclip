@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
-import { cn } from "../lib/utils";
+import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -174,6 +174,19 @@ const claudeThinkingEffortOptions = [
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
 ] as const;
+
+const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
+const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
+const MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC = 1;
+const MAX_TURN_CONTINUATION_MAX_DELAY_SEC = 300;
+
+function clampInteger(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function clampDelayMsFromSeconds(value: number) {
+  return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
+}
 
 
 /* ---- Form ---- */
@@ -628,6 +641,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const currentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
+  const effectiveHeartbeat = asObject(effectiveRuntimeConfig.heartbeat);
+  const maxTurnContinuation = asObject(effectiveHeartbeat.maxTurnContinuation);
+  const maxTurnContinuationEnabled = asBoolean(maxTurnContinuation.enabled, true);
+  const maxTurnContinuationMaxAttempts = clampInteger(
+    asFiniteNumber(maxTurnContinuation.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS),
+    0,
+    MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP,
+  );
+  const maxTurnContinuationDelaySec = clampInteger(
+    asFiniteNumber(maxTurnContinuation.delayMs, MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC * 1000) / 1000,
+    0,
+    MAX_TURN_CONTINUATION_MAX_DELAY_SEC,
+  );
+
+  function updateMaxTurnContinuation(patch: Record<string, unknown>) {
+    mark("heartbeat", "maxTurnContinuation", {
+      ...maxTurnContinuation,
+      ...patch,
+    });
+  }
+
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -1182,6 +1216,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              <div className="rounded-md border border-border/70 px-3 py-2">
+                <ToggleField
+                  label="Continue after max-turn stop"
+                  hint={help.maxTurnContinuationEnabled}
+                  checked={maxTurnContinuationEnabled}
+                  onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
+                />
+                {maxTurnContinuationEnabled ? (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <Field label="Continuation attempts" hint={help.maxTurnContinuationMaxAttempts}>
+                      <DraftNumberInput
+                        value={maxTurnContinuationMaxAttempts}
+                        onCommit={(v) =>
+                          updateMaxTurnContinuation({
+                            maxAttempts: clampInteger(v, 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
+                          })}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field label="Continuation delay (sec)" hint={help.maxTurnContinuationDelaySec}>
+                      <DraftNumberInput
+                        value={maxTurnContinuationDelaySec}
+                        onCommit={(v) =>
+                          updateMaxTurnContinuation({
+                            delayMs: clampDelayMsFromSeconds(v),
+                          })}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </CollapsibleSection>
           </div>

@@ -70,6 +70,7 @@ import {
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
+  normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -189,11 +190,24 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
+export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
+const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
+const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
+const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
+const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
+const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
   | "fresh_session"
   | "fresh_session_safer_invocation";
+
+interface MaxTurnContinuationPolicy {
+  enabled: boolean;
+  maxAttempts: number;
+  delayMs: number;
+}
 
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
   if (attempt <= 1) return "same_session";
@@ -213,6 +227,16 @@ function readHeartbeatRunErrorFamily(
     return "transient_upstream";
   }
   return null;
+}
+
+function isMaxTurnExhaustionRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  const resultJson = parseObject(run.resultJson);
+  return Boolean(
+    normalizeMaxTurnStopReason(resultJson.stopReason) ??
+      normalizeMaxTurnStopReason(run.errorCode),
+  );
 }
 
 function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">) {
@@ -4289,6 +4313,274 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return queued;
   }
 
+  type ScheduledRetryGate =
+    | { allowed: true }
+    | {
+        allowed: false;
+        reason: string;
+        errorCode:
+          | "agent_not_invokable"
+          | "budget_blocked"
+          | "issue_not_found"
+          | "issue_reassigned"
+          | "issue_cancelled"
+          | "issue_terminal_status"
+          | "issue_not_in_progress"
+          | "issue_execution_lock_changed"
+          | "issue_review_participant_changed"
+          | "issue_paused"
+          | "issue_dependencies_blocked";
+        issueId: string | null;
+        details: Record<string, unknown>;
+      };
+
+  async function evaluateScheduledRetryGate(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    contextSnapshot: Record<string, unknown>;
+    retryReason?: string | null;
+    enforceIssueExecutionLock?: boolean;
+  }): Promise<ScheduledRetryGate> {
+    const { run, agent, contextSnapshot } = input;
+    const retryReason =
+      input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const projectId = readNonEmptyString(contextSnapshot.projectId);
+
+    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+      issueId,
+      projectId,
+    });
+    if (budgetBlock) {
+      return {
+        allowed: false,
+        reason: budgetBlock.reason,
+        errorCode: "budget_blocked",
+        issueId,
+        details: {
+          scopeType: budgetBlock.scopeType,
+          scopeId: budgetBlock.scopeId,
+        },
+      };
+    }
+
+    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      return {
+        allowed: false,
+        reason: "Scheduled retry suppressed because the agent is not invokable",
+        errorCode: "agent_not_invokable",
+        issueId,
+        details: {
+          agentId: agent.id,
+          agentStatus: agent.status,
+        },
+      };
+    }
+
+    if (!issueId) return { allowed: true };
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issue) {
+      return {
+        allowed: false,
+        reason: "Scheduled retry suppressed because the target issue no longer exists",
+        errorCode: "issue_not_found",
+        issueId,
+        details: { issueId },
+      };
+    }
+
+    if (issue.assigneeAgentId !== run.agentId) {
+      return {
+        allowed: false,
+        reason: "Scheduled retry suppressed because issue ownership changed",
+        errorCode: "issue_reassigned",
+        issueId,
+        details: {
+          issueId,
+          previousAssigneeAgentId: run.agentId,
+          currentAssigneeAgentId: issue.assigneeAgentId,
+        },
+      };
+    }
+
+    if (issue.status === "cancelled" || issue.status === "done") {
+      return {
+        allowed: false,
+        reason: `Scheduled retry suppressed because issue reached terminal status (${issue.status})`,
+        errorCode: issue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+        issueId,
+        details: { issueId, currentStatus: issue.status },
+      };
+    }
+
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
+      return {
+        allowed: false,
+        reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${issue.status})`,
+        errorCode: "issue_not_in_progress",
+        issueId,
+        details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress" },
+      };
+    }
+
+    if (
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+      input.enforceIssueExecutionLock &&
+      issue.executionRunId !== run.id
+    ) {
+      return {
+        allowed: false,
+        reason: "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+        errorCode: "issue_execution_lock_changed",
+        issueId,
+        details: {
+          issueId,
+          expectedExecutionRunId: run.id,
+          currentExecutionRunId: issue.executionRunId,
+        },
+      };
+    }
+
+    if (issue.status === "in_review") {
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const currentParticipant = executionState?.currentParticipant ?? null;
+      if (currentParticipant) {
+        const participantMatches =
+          currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
+        if (!participantMatches) {
+          return {
+            allowed: false,
+            reason: "Scheduled retry suppressed because the issue is waiting on another review participant",
+            errorCode: "issue_review_participant_changed",
+            issueId,
+            details: {
+              issueId,
+              currentStageType: executionState?.currentStageType ?? null,
+              currentParticipant,
+            },
+          };
+        }
+      }
+    }
+
+    const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
+    if (activePauseHold) {
+      return {
+        allowed: false,
+        reason: "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
+        errorCode: "issue_paused",
+        issueId,
+        details: {
+          issueId,
+          holdId: activePauseHold.holdId,
+          rootIssueId: activePauseHold.rootIssueId,
+        },
+      };
+    }
+
+    const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
+    const readiness = dependencyReadiness.get(issueId);
+    if (readiness && !readiness.isDependencyReady) {
+      return {
+        allowed: false,
+        reason: "Scheduled retry suppressed because issue dependencies are still blocked",
+        errorCode: "issue_dependencies_blocked",
+        issueId,
+        details: {
+          issueId,
+          unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+          unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+        },
+      };
+    }
+
+    return { allowed: true };
+  }
+
+  async function cancelScheduledRetryForGate(
+    run: typeof heartbeatRuns.$inferSelect,
+    gate: Extract<ScheduledRetryGate, { allowed: false }>,
+    now: Date,
+  ) {
+    const cancelled = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: gate.reason,
+        errorCode: gate.errorCode,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          lte(heartbeatRuns.scheduledRetryAt, now),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (!cancelled) return null;
+
+    if (cancelled.wakeupRequestId) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: gate.reason,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
+    }
+
+    if (gate.issueId) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.companyId, cancelled.companyId),
+            eq(issues.id, gate.issueId),
+            eq(issues.executionRunId, cancelled.id),
+          ),
+        );
+    }
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: gate.reason,
+      payload: {
+        ...gate.details,
+        scheduledRetryAttempt: cancelled.scheduledRetryAttempt,
+        scheduledRetryAt: cancelled.scheduledRetryAt ? new Date(cancelled.scheduledRetryAt).toISOString() : null,
+        scheduledRetryReason: cancelled.scheduledRetryReason,
+      },
+    });
+
+    return cancelled;
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -4297,13 +4589,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       random?: () => number;
       retryReason?: string;
       wakeReason?: string;
+      maxAttempts?: number;
+      delayMs?: number;
     },
   ) {
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
-    const baseSchedule = computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random);
+    const baseSchedule = opts?.delayMs != null
+      ? nextAttempt <= maxAttempts
+        ? {
+            attempt: nextAttempt,
+            baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
+            delayMs: Math.max(0, Math.floor(opts.delayMs)),
+            dueAt: new Date(now.getTime() + Math.max(0, Math.floor(opts.delayMs))),
+            maxAttempts,
+          }
+        : null
+      : nextAttempt <= maxAttempts
+        ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
+        : null;
     const transientRecovery =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
         ? readTransientRecoveryContractFromRun(run)
@@ -4323,13 +4630,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         payload: {
           retryReason,
           scheduledRetryAttempt: run.scheduledRetryAttempt ?? 0,
-          maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+          maxAttempts,
         },
       });
       return {
         outcome: "retry_exhausted" as const,
         attempt: nextAttempt,
-        maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+        maxAttempts,
       };
     }
     const schedule =
@@ -4343,6 +4650,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+      const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
+      if (!gate.allowed) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: gate.reason,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            ...gate.details,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: gate.reason,
+          errorCode: gate.errorCode,
+          issueId: gate.issueId,
+        };
+      }
+    }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot: Record<string, unknown> = {
@@ -4356,8 +4686,158 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
     };
+    const maxTurnContinuationIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+      ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
+      : null;
 
-    const retryRun = await db.transaction(async (tx) => {
+    type ScheduledRetryTransactionResult =
+      | {
+          outcome: "scheduled";
+          run: typeof heartbeatRuns.$inferSelect;
+          reusedExisting: boolean;
+        }
+      | {
+          outcome: "not_scheduled";
+          reason: string;
+          errorCode:
+            | "issue_not_found"
+            | "issue_reassigned"
+            | "issue_cancelled"
+            | "issue_terminal_status"
+            | "issue_not_in_progress"
+            | "issue_execution_lock_changed";
+          issueId: string | null;
+          details: Record<string, unknown>;
+        };
+
+    const scheduleResult = await db.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
+      if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+        if (issueId) {
+          await tx.execute(
+            sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+          );
+        } else {
+          await tx.execute(
+            sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
+          );
+        }
+
+        const existingContinuation = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.retryOfRunId, run.id),
+              eq(heartbeatRuns.scheduledRetryReason, retryReason),
+              eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+              inArray(heartbeatRuns.status, [...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES]),
+              issueId
+                ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+                : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existingContinuation) {
+          if (existingContinuation.wakeupRequestId) {
+            const existingWakeup = await tx
+              .select({ coalescedCount: agentWakeupRequests.coalescedCount })
+              .from(agentWakeupRequests)
+              .where(eq(agentWakeupRequests.id, existingContinuation.wakeupRequestId))
+              .then((rows) => rows[0] ?? null);
+
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                coalescedCount: (existingWakeup?.coalescedCount ?? 0) + 1,
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, existingContinuation.wakeupRequestId));
+          }
+
+          return {
+            outcome: "scheduled",
+            run: existingContinuation,
+            reusedExisting: true,
+          };
+        }
+
+        if (issueId) {
+          const lockedIssue = await tx
+            .select({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              executionRunId: issues.executionRunId,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .then((rows) => rows[0] ?? null);
+
+          if (!lockedIssue) {
+            return {
+              outcome: "not_scheduled",
+              reason: "Scheduled max-turn continuation suppressed because the target issue no longer exists",
+              errorCode: "issue_not_found",
+              issueId,
+              details: { issueId },
+            };
+          }
+
+          if (lockedIssue.assigneeAgentId !== run.agentId) {
+            return {
+              outcome: "not_scheduled",
+              reason: "Scheduled max-turn continuation suppressed because issue ownership changed",
+              errorCode: "issue_reassigned",
+              issueId,
+              details: {
+                issueId,
+                previousAssigneeAgentId: run.agentId,
+                currentAssigneeAgentId: lockedIssue.assigneeAgentId,
+              },
+            };
+          }
+
+          if (lockedIssue.status === "cancelled" || lockedIssue.status === "done") {
+            return {
+              outcome: "not_scheduled",
+              reason: `Scheduled max-turn continuation suppressed because issue reached terminal status (${lockedIssue.status})`,
+              errorCode: lockedIssue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+              issueId,
+              details: { issueId, currentStatus: lockedIssue.status },
+            };
+          }
+
+          if (lockedIssue.status !== "in_progress") {
+            return {
+              outcome: "not_scheduled",
+              reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${lockedIssue.status})`,
+              errorCode: "issue_not_in_progress",
+              issueId,
+              details: { issueId, currentStatus: lockedIssue.status, requiredStatus: "in_progress" },
+            };
+          }
+
+          if (lockedIssue.executionRunId !== run.id) {
+            return {
+              outcome: "not_scheduled",
+              reason:
+                "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+              errorCode: "issue_execution_lock_changed",
+              issueId,
+              details: {
+                issueId,
+                expectedExecutionRunId: run.id,
+                currentExecutionRunId: lockedIssue.executionRunId,
+              },
+            };
+          }
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -4379,6 +4859,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
+          idempotencyKey: maxTurnContinuationIdempotencyKey,
           updatedAt: now,
         })
         .returning()
@@ -4425,8 +4906,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return scheduledRun;
+      return {
+        outcome: "scheduled",
+        run: scheduledRun,
+        reusedExisting: false,
+      };
     });
+
+    if (scheduleResult.outcome === "not_scheduled") {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: scheduleResult.reason,
+        payload: {
+          retryReason,
+          scheduledRetryAttempt: nextAttempt,
+          maxAttempts,
+          ...scheduleResult.details,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: scheduleResult.reason,
+        errorCode: scheduleResult.errorCode,
+        issueId: scheduleResult.issueId,
+      };
+    }
+
+    const retryRun = scheduleResult.run;
+    const dueAt = retryRun.scheduledRetryAt ? new Date(retryRun.scheduledRetryAt) : schedule.dueAt;
+
+    if (scheduleResult.reusedExisting) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: `Reused existing max-turn continuation ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
+        payload: {
+          retryRunId: retryRun.id,
+          retryReason,
+          idempotencyKey: maxTurnContinuationIdempotencyKey,
+          scheduledRetryAttempt: retryRun.scheduledRetryAttempt,
+          scheduledRetryAt: dueAt.toISOString(),
+        },
+      });
+
+      return {
+        outcome: "scheduled" as const,
+        run: retryRun,
+        dueAt,
+        attempt: retryRun.scheduledRetryAttempt,
+        maxAttempts: schedule.maxAttempts,
+        reusedExisting: true,
+      };
+    }
 
     await appendRunEvent(run, await nextRunEventSeq(run.id), {
       eventType: "lifecycle",
@@ -4449,7 +4983,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       outcome: "scheduled" as const,
       run: retryRun,
-      dueAt: schedule.dueAt,
+      dueAt,
       attempt: schedule.attempt,
       maxAttempts: schedule.maxAttempts,
     };
@@ -4471,86 +5005,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const promotedRunIds: string[] = [];
 
     for (const dueRun of dueRuns) {
-      const dueRunIssueId = readNonEmptyString(parseObject(dueRun.contextSnapshot).issueId);
-      if (dueRunIssueId) {
-        const issue = await db
-          .select({
-            id: issues.id,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-            executionRunId: issues.executionRunId,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, dueRunIssueId), eq(issues.companyId, dueRun.companyId)))
-          .then((rows) => rows[0] ?? null);
+      const agent = await getAgent(dueRun.agentId);
+      if (!agent) {
+        await cancelScheduledRetryForGate(dueRun, {
+          allowed: false,
+          reason: "Scheduled retry suppressed because the agent no longer exists",
+          errorCode: "agent_not_invokable",
+          issueId: readNonEmptyString(parseObject(dueRun.contextSnapshot).issueId),
+          details: { agentId: dueRun.agentId },
+        }, now);
+        continue;
+      }
 
-        if (issue && (issue.assigneeAgentId !== dueRun.agentId || issue.status === "cancelled")) {
-          const issueCancelled = issue.status === "cancelled";
-          const reason = issueCancelled
-            ? "Cancelled because the issue was cancelled before the scheduled retry became due"
-            : "Cancelled because the issue was reassigned before the scheduled retry became due";
-          const cancelled = await db
-            .update(heartbeatRuns)
-            .set({
-              status: "cancelled",
-              finishedAt: now,
-              error: reason,
-              errorCode: issueCancelled ? "issue_cancelled" : "issue_reassigned",
-              updatedAt: now,
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, dueRun.id),
-                eq(heartbeatRuns.status, "scheduled_retry"),
-                lte(heartbeatRuns.scheduledRetryAt, now),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
-
-          if (!cancelled) continue;
-
-          if (cancelled.wakeupRequestId) {
-            await db
-              .update(agentWakeupRequests)
-              .set({
-                status: "cancelled",
-                finishedAt: now,
-                error: reason,
-                updatedAt: now,
-              })
-              .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
-          }
-
-          if (issue.executionRunId === cancelled.id) {
-            await db
-              .update(issues)
-              .set({
-                executionRunId: null,
-                executionAgentNameKey: null,
-                executionLockedAt: null,
-                updatedAt: now,
-              })
-              .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, cancelled.id)));
-          }
-
-          await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
-            eventType: "lifecycle",
-            stream: "system",
-            level: "warn",
-            message: issueCancelled
-              ? "Scheduled retry cancelled because issue was cancelled before it became due"
-              : "Scheduled retry cancelled because issue ownership changed before it became due",
-            payload: {
-              issueId: issue.id,
-              issueStatus: issue.status,
-              scheduledRetryAttempt: cancelled.scheduledRetryAttempt,
-              scheduledRetryAt: cancelled.scheduledRetryAt ? new Date(cancelled.scheduledRetryAt).toISOString() : null,
-              scheduledRetryReason: cancelled.scheduledRetryReason,
-              previousRetryAgentId: cancelled.agentId,
-              currentAssigneeAgentId: issue.assigneeAgentId,
-            },
-          });
+      const contextSnapshot = parseObject(dueRun.contextSnapshot);
+      const gate = await evaluateScheduledRetryGate({
+        run: dueRun,
+        agent,
+        contextSnapshot,
+        retryReason: dueRun.scheduledRetryReason,
+        enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
+      });
+      if (!gate.allowed) {
+        if (
+          gate.errorCode === "issue_not_found" &&
+          dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
+        ) {
+          // Preserve legacy transient retry behavior for runs that only carry a
+          // loose task context rather than a persisted issue row.
+        } else {
+          await cancelScheduledRetryForGate(dueRun, gate, now);
           continue;
         }
       }
@@ -4614,6 +5097,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+    };
+  }
+
+  function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const configured = parseObject(heartbeat.maxTurnContinuation);
+    const rawMaxAttempts = Math.floor(asNumber(configured.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS));
+    const rawDelayMs = Math.floor(asNumber(configured.delayMs, MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS));
+
+    return {
+      enabled: asBoolean(configured.enabled, true),
+      maxAttempts: Math.max(0, Math.min(MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP, rawMaxAttempts)),
+      delayMs: Math.max(0, Math.min(MAX_TURN_CONTINUATION_MAX_DELAY_MS, rawDelayMs)),
     };
   }
 
@@ -4857,6 +5354,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_found"
           | "issue_assignee_changed"
           | "issue_terminal_status"
+          | "issue_not_in_progress"
+          | "issue_execution_lock_changed"
           | "issue_review_participant_changed";
         details: Record<string, unknown>;
       };
@@ -4871,6 +5370,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: issues.id,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
         executionState: issues.executionState,
       })
       .from(issues)
@@ -4889,6 +5389,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
+    const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
     if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
       return {
@@ -4913,6 +5414,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           details: { issueId, currentStatus: issue.status },
         };
       }
+    }
+
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
+      return {
+        stale: true,
+        errorCode: "issue_not_in_progress",
+        reason: `Cancelled because max-turn continuation issue is no longer in_progress (current status: ${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress" },
+      };
+    }
+
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.executionRunId !== run.id) {
+      return {
+        stale: true,
+        errorCode: "issue_execution_lock_changed",
+        reason:
+          "Cancelled because max-turn continuation no longer owns the issue execution lock before the queued run could start",
+        details: {
+          issueId,
+          expectedExecutionRunId: run.id,
+          currentExecutionRunId: issue.executionRunId,
+        },
+      };
     }
 
     if (issue.status === "in_review") {
@@ -6683,7 +7207,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+          const policy = parseMaxTurnContinuationPolicy(agent);
+          if (policy.enabled && policy.maxAttempts > 0) {
+            await scheduleBoundedRetryForRun(livenessRun, agent, {
+              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+              maxAttempts: policy.maxAttempts,
+              delayMs: policy.delayMs,
+            });
+          } else {
+            await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "Max-turn continuation suppressed because the policy is disabled",
+              payload: {
+                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                policy,
+              },
+            });
+          }
+        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         await finalizeIssueCommentPolicy(livenessRun, agent);
@@ -8443,6 +8988,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         random?: () => number;
         retryReason?: string;
         wakeReason?: string;
+        maxAttempts?: number;
+        delayMs?: number;
       },
     ) => {
       const run = await getRun(runId, { unsafeFullResultJson: true });
