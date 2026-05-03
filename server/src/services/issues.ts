@@ -1435,6 +1435,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  idempotencyKey: issues.idempotencyKey,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };

@@ -80,7 +80,7 @@ export const heartbeatRuns = pgTable(
     ),
     agentFinishedIdx: index("heartbeat_runs_agent_finished_idx").on(
       table.agentId,
-      table.finishedAt,
+      table.finishedAt.desc(),
     ),
   }),
 );
