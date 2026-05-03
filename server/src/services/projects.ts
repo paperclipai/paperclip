@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
@@ -337,6 +338,25 @@ function deriveWorkspaceName(input: {
   return "Workspace";
 }
 
+async function provisionLocalProjectWorkspace(cwd: string | null): Promise<boolean> {
+  if (!cwd) return true;
+
+  const sentinelPath = `${cwd}/.paperclip-writable`;
+  try {
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.writeFile(sentinelPath, "verified", { mode: 0o644 });
+    await fs.rm(sentinelPath, { force: true });
+    return true;
+  } catch {
+    try {
+      await fs.rm(sentinelPath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return false;
+  }
+}
+
 export function resolveProjectNameForUniqueShortname(
   requestedName: string,
   existingProjects: ProjectShortnameRow[],
@@ -610,6 +630,10 @@ export function projectService(db: Db) {
         repoUrl,
       });
 
+      if (cwd && !(await provisionLocalProjectWorkspace(cwd))) {
+        return null;
+      }
+
       const existing = await db
         .select()
         .from(projectWorkspaces)
@@ -701,6 +725,10 @@ export function projectService(db: Db) {
       if (nextSourceType === "remote_managed") {
         if (!nextRemoteWorkspaceRef && !nextRepoUrl) return null;
       } else if (!nextCwd && !nextRepoUrl) {
+        return null;
+      }
+
+      if (data.cwd !== undefined && nextCwd && !(await provisionLocalProjectWorkspace(nextCwd))) {
         return null;
       }
 
