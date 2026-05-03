@@ -45,6 +45,7 @@ import { registerPluginExtensionCommands } from "./commands/client/plugin-extras
 import { registerAccessCommands } from "./commands/client/access.js";
 import { registerLlmsCommands } from "./commands/client/llms.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
+import { registerAttachmentExtensionCommands } from "./commands/client/attachment-extras.js";
 import { registerApprovalExtensionCommands } from "./commands/client/approval-extras.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
@@ -188,6 +189,7 @@ registerCompanySkillCommands(program);
 registerInstanceCommands(program);
 registerUserCommands(program);
 registerIssueExtensionCommands(program);
+registerAttachmentExtensionCommands(program);
 registerIssueTreeControlCommands(program);
 registerAgentExtensionCommands(program);
 registerCompanyExtensionCommands(program);

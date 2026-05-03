@@ -1,4 +1,7 @@
+import { createWriteStream } from "node:fs";
 import { readFileSync } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { Command } from "commander";
 import {
   companyPortabilityExportSchema,
@@ -24,6 +27,14 @@ interface PayloadOptions extends BaseClientOptions {
 interface CompanyOnly extends BaseClientOptions {
   companyId?: string;
 }
+
+interface OrgChartOptions extends CompanyOnly {
+  format: string;
+  style?: string;
+  output?: string;
+}
+
+const ORG_CHART_STYLES = ["monochrome", "nebula", "circuit", "warmth", "schematic"];
 
 function readJson(opts: PayloadOptions, name: string): unknown {
   if (opts.payload !== undefined && opts.payloadFile !== undefined) {
@@ -158,6 +169,42 @@ export function registerCompanyExtensionCommands(program: Command): void {
             {},
           );
           printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    company
+      .command("org-chart")
+      .description("Download a rendered company org chart (svg or png)")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("--format <fmt>", "Output format: svg or png", "svg")
+      .option("--style <style>", `Visual style: ${ORG_CHART_STYLES.join("|")}`)
+      .option("--output <path>", "Output file path (omit to write to stdout)")
+      .action(async (opts: OrgChartOptions) => {
+        try {
+          const fmt = opts.format.toLowerCase();
+          if (fmt !== "svg" && fmt !== "png") {
+            throw new Error("--format must be svg or png");
+          }
+          if (opts.style !== undefined && !ORG_CHART_STYLES.includes(opts.style)) {
+            throw new Error(`--style must be one of: ${ORG_CHART_STYLES.join(", ")}`);
+          }
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const query = opts.style ? `?style=${encodeURIComponent(opts.style)}` : "";
+          const { body } = await ctx.api.getStream(
+            `/api/companies/${ctx.companyId}/org.${fmt}${query}`,
+          );
+          const nodeStream = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]);
+          if (opts.output) {
+            await pipeline(nodeStream, createWriteStream(opts.output));
+            console.error(`wrote ${opts.output}`);
+          } else {
+            await pipeline(nodeStream, process.stdout);
+          }
         } catch (err) {
           handleCommandError(err);
         }

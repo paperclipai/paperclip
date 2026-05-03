@@ -110,6 +110,26 @@ export class PaperclipApiClient {
   }
 
   /**
+   * Issue a GET that streams the binary response body. Caller is responsible
+   * for piping the returned ReadableStream into a writable destination.
+   */
+  async getStream(path: string): Promise<{ body: ReadableStream<Uint8Array>; contentType: string | null }> {
+    const url = buildUrl(this.apiBase, path);
+    const headers: Record<string, string> = { accept: "*/*" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    if (this.runId) headers["x-paperclip-run-id"] = this.runId;
+    let response: Response;
+    try {
+      response = await fetch(url, { headers });
+    } catch (error) {
+      throw new ApiConnectionError({ apiBase: this.apiBase, path, method: "GET", cause: error });
+    }
+    if (!response.ok) throw await toApiError(response);
+    if (!response.body) throw new Error("Empty response body");
+    return { body: response.body, contentType: response.headers.get("content-type") };
+  }
+
+  /**
    * Issue a POST whose body is multipart form data. Used for asset/image
    * upload endpoints.
    */

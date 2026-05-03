@@ -113,21 +113,10 @@ export function registerAssetCommands(program: Command): void {
       .action(async (assetId: string, opts: ContentDownloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const url = `${ctx.api.apiBase}/api/assets/${encodeURIComponent(assetId)}/content`;
-          const headers: Record<string, string> = { accept: "*/*" };
-          // Reach into the bare api key by re-using fetch directly; the generic
-          // client only handles JSON. We replicate auth header + run id here.
-          const apiKey = (ctx.api as unknown as { apiKey?: string }).apiKey;
-          if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-          const response = await fetch(url, { headers });
-          if (!response.ok) {
-            const body = await response.text().catch(() => "");
-            throw new Error(`HTTP ${response.status}: ${body || response.statusText}`);
-          }
-          if (!response.body) {
-            throw new Error("Empty response body");
-          }
-          const nodeStream = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+          const { body } = await ctx.api.getStream(
+            `/api/assets/${encodeURIComponent(assetId)}/content`,
+          );
+          const nodeStream = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]);
           if (opts.output) {
             await pipeline(nodeStream, createWriteStream(opts.output));
             console.error(`wrote ${opts.output}`);
