@@ -2781,11 +2781,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   }
 
   async function assertImportAdapterConfigConstraints(
-    companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
   ) {
-    void companyId;
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -2818,7 +2816,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       nextAdapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertImportAdapterConfigConstraints(companyId, effectiveAdapterType, normalizedAdapterConfig);
+    await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
     return {
       adapterType: effectiveAdapterType,
       adapterConfig: normalizedAdapterConfig,

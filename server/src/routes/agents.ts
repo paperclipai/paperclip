@@ -768,7 +768,6 @@ export function agentRoutes(
       { strictMode: strictSecretsMode },
     );
     await assertAdapterConfigConstraints(
-      input.companyId,
       input.adapterType,
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
@@ -876,11 +875,9 @@ export function agentRoutes(
   }
 
   async function assertAdapterConfigConstraints(
-    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    void companyId;
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
