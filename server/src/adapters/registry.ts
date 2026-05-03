@@ -1,4 +1,5 @@
 import type { AdapterModelProfileDefinition, ServerAdapterModule } from "./types.js";
+import fs from "node:fs/promises";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
@@ -332,11 +333,41 @@ const hermesLocalAdapter: ServerAdapterModule = {
     // for promptTemplate-only agents, and would inject the placeholder sentinel string
     // for agents with no configuration at all — silently overriding Hermes' built-in
     // default heartbeat/task prompt.
+    //
+    // Additionally, we verify the path actually resolves to readable content before
+    // calling exportFiles(). If instructionsRootPath is set but the directory doesn't
+    // exist yet (operator pre-configured path before bundle was materialized) or is
+    // empty, exportFiles() falls through to readLegacyInstructions which returns
+    // { "AGENTS.md": <promptTemplate> } — our injection would then duplicate
+    // promptTemplate in the final prompt.
     const instructions = agentInstructionsService();
-    const hasBundle =
-      typeof existingConfig.instructionsRootPath === "string" ||
-      typeof existingConfig.instructionsFilePath === "string";
-    const exported = hasBundle
+    const filePath =
+      typeof existingConfig.instructionsFilePath === "string"
+        ? existingConfig.instructionsFilePath
+        : null;
+    const rootPath =
+      typeof existingConfig.instructionsRootPath === "string"
+        ? existingConfig.instructionsRootPath
+        : null;
+
+    let bundleAvailable = false;
+    if (filePath) {
+      try {
+        const stat = await fs.stat(filePath);
+        bundleAvailable = stat.isFile() && stat.size > 0;
+      } catch {
+        // missing or unreadable — leave bundleAvailable false
+      }
+    } else if (rootPath) {
+      try {
+        const entries = await fs.readdir(rootPath);
+        bundleAvailable = entries.length > 0;
+      } catch {
+        // missing or unreadable — leave bundleAvailable false
+      }
+    }
+
+    const exported = bundleAvailable
       ? await instructions.exportFiles(normalizedCtx.agent as Parameters<typeof instructions.exportFiles>[0]).catch(() => null)
       : null;
     const bundleEntries = exported
