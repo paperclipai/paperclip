@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { isOpenCodeModelPolicyViolation, parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,22 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("detects model policy violations via stderr ProviderModelNotFoundError", () => {
+    const stdout = JSON.stringify({ type: "text", sessionID: "s_1", part: { text: "done" } });
+    const stderrWithViolation = "ProviderModelNotFoundError: MiniMax-M2.7 not available in this region";
+    expect(isOpenCodeModelPolicyViolation(stdout, stderrWithViolation, "minimax/MiniMax-M2.7")).toBe(true);
+  });
+
+  it("returns false when stderr contains unrelated model not found error", () => {
+    const stdout = JSON.stringify({ type: "text", sessionID: "s_1", part: { text: "done" } });
+    const stderrUnrelated = "ProviderModelNotFoundError: some-other-model not available";
+    expect(isOpenCodeModelPolicyViolation(stdout, stderrUnrelated, "minimax/MiniMax-M2.7")).toBe(false);
+  });
+
+  it("returns false when no policy violation in stderr", () => {
+    const stdout = JSON.stringify({ type: "text", sessionID: "s_1", part: { text: "done" } });
+    expect(isOpenCodeModelPolicyViolation(stdout, "", "minimax/MiniMax-M2.7")).toBe(false);
   });
 });

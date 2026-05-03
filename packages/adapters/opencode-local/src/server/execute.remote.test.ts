@@ -12,23 +12,37 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    stdout: [
-      JSON.stringify({ type: "step_start", sessionID: "session_123" }),
-      JSON.stringify({ type: "text", sessionID: "session_123", part: { text: "hello" } }),
-      JSON.stringify({
-        type: "step_finish",
-        sessionID: "session_123",
-        part: { cost: 0.001, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } },
-      }),
-    ].join("\n"),
-    stderr: "",
-    pid: 123,
-    startedAt: new Date().toISOString(),
-  })),
+  runChildProcess: vi.fn(async (_id: string, _cmd: string, args: string[]) => {
+    // Return model list for discovery calls so ensureOpenCodeModelConfiguredAndAvailable passes.
+    if (args[0] === "models") {
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "opencode/gpt-5-nano  GPT-5 Nano\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      };
+    }
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "session_123" }),
+        JSON.stringify({ type: "text", sessionID: "session_123", part: { text: "hello" } }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "session_123",
+          part: { cost: 0.001, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } },
+        }),
+      ].join("\n"),
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    };
+  }),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: opencode"),
   prepareWorkspaceForSshExecution: vi.fn(async () => undefined),
@@ -153,9 +167,10 @@ describe("opencode remote execution", () => {
       expect.stringContaining(".claude/skills"),
       expect.anything(),
     );
-    const call = runChildProcess.mock.calls[0] as unknown as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
-      | undefined;
+    // Find the actual opencode run call (not the model discovery call which uses ["models"]).
+    type RunCallArgs = [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }];
+    const call = (runChildProcess.mock.calls as unknown as RunCallArgs[])
+      .find(([, , args]) => args[0] === "run");
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://198.51.100.10:3102");
     expect(call?.[3].env.XDG_CONFIG_HOME).toBe("/remote/workspace/.paperclip-runtime/opencode/xdgConfig");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
@@ -218,7 +233,9 @@ describe("opencode remote execution", () => {
       onLog: async () => {},
     });
 
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    // Find the actual opencode run call (not the model discovery call which uses ["models"]).
+    const call = (runChildProcess.mock.calls as unknown as [string, string, string[]][])
+      .find(([, , args]) => args[0] === "run");
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("session-123");
   });
