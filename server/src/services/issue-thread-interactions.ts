@@ -579,6 +579,21 @@ export function issueThreadInteractionService(db: Db) {
               status: transitioned.status,
             };
           } else {
+            // Defensive: should be unreachable. `issueContext` was just read
+            // from the same `tx` a few lines above, so the row must still
+            // exist when we reach `update()`. If we ever land here it means
+            // either (a) something raced an issue delete inside this tx, or
+            // (b) `update()`'s internal guards (status guard, blocker
+            // re-check, etc.) rejected the patch and returned `null`. Either
+            // way the board accept just lost its `issue.updated` audit row,
+            // so surface the divergence loudly so it's debuggable.
+            console.warn(
+              "[issue-thread-interactions] acceptRequestConfirmation: "
+                + "issueService.update() returned null while transitioning "
+                + "blocked → in_progress; falling back to touchIssue. "
+                + `issueId=${args.issue.id} interactionId=${args.current.id} `
+                + `companyId=${issueContext.companyId}`,
+            );
             await touchIssue(tx, args.issue.id);
           }
         } else {

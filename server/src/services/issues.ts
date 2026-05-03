@@ -344,6 +344,7 @@ export async function listUnresolvedBlockerIssueIdsForIssue(
   const readinessMap = await listIssueDependencyReadinessMap(dbOrTx, companyId, [issueId]);
   return readinessMap.get(issueId)?.unresolvedBlockerIssueIds ?? [];
 }
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
