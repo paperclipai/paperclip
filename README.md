@@ -1,4 +1,14 @@
 <p align="center">
+  <sub>
+    🇰🇷 <a href="./README.ko.md"><strong>한국어 README</strong></a>
+    &middot;
+    Korean translation fork of <a href="https://github.com/paperclipai/paperclip">paperclipai/paperclip</a>
+    &middot;
+    <a href="./ATTRIBUTION.md">Attribution</a>
+  </sub>
+</p>
+
+<p align="center">
   <img src="doc/assets/header.png" alt="Paperclip — runs your business" width="720" />
 </p>
 
