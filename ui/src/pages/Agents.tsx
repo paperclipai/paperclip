@@ -41,6 +41,13 @@ function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean):
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function getConfiguredModel(agent: Agent): string | null {
+  const value = agent.adapterConfig?.model;
+  if (typeof value !== "string") return null;
+  const model = value.trim();
+  return model.length > 0 ? model : null;
+}
+
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
@@ -253,8 +260,14 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       )}
-                      <span className="w-28 whitespace-nowrap text-right font-mono text-xs text-muted-foreground">
+                      <span className="w-28 whitespace-nowrap text-left font-mono text-xs text-muted-foreground">
                         {getAdapterLabel(agent.adapterType)}
+                      </span>
+                      <span
+                        className="w-36 truncate text-left font-mono text-xs text-muted-foreground"
+                        title={getConfiguredModel(agent) ?? undefined}
+                      >
+                        {getConfiguredModel(agent) ?? "—"}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
                         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
@@ -356,8 +369,14 @@ function OrgTreeNode({
             )}
             {agent && (
               <>
-                <span className="w-28 whitespace-nowrap text-right font-mono text-xs text-muted-foreground">
+                <span className="w-28 whitespace-nowrap text-left font-mono text-xs text-muted-foreground">
                   {getAdapterLabel(agent.adapterType)}
+                </span>
+                <span
+                  className="w-36 truncate text-left font-mono text-xs text-muted-foreground"
+                  title={getConfiguredModel(agent) ?? undefined}
+                >
+                  {getConfiguredModel(agent) ?? "—"}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
                   {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}

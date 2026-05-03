@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups } from "./Routines";
+import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
 
 let currentSearch = "";
 
@@ -355,6 +355,97 @@ describe("Routines page", () => {
     expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Project Beta"]);
     expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
     expect(groups[1]?.items.map((item) => item.title)).toEqual(["Weekly digest"]);
+  });
+
+  it("sorts routines by selected field and direction without mutating the source list", () => {
+    const routines = [
+      createRoutine({
+        id: "routine-1",
+        title: "Weekly digest",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-03T00:00:00.000Z"),
+        lastRun: {
+          id: "run-1",
+          companyId: "company-1",
+          routineId: "routine-1",
+          triggerId: null,
+          source: "manual",
+          status: "succeeded",
+          triggeredAt: new Date("2026-04-02T00:00:00.000Z"),
+          idempotencyKey: null,
+          triggerPayload: null,
+          dispatchFingerprint: null,
+          linkedIssueId: null,
+          coalescedIntoRunId: null,
+          failureReason: null,
+          completedAt: null,
+          createdAt: new Date("2026-04-02T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+          linkedIssue: null,
+          trigger: null,
+        },
+      }),
+      createRoutine({
+        id: "routine-2",
+        title: "Morning sync",
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-04T00:00:00.000Z"),
+        lastRun: null,
+      }),
+    ];
+
+    expect(sortRoutines(routines, "title", "asc").map((routine) => routine.title)).toEqual([
+      "Morning sync",
+      "Weekly digest",
+    ]);
+    expect(sortRoutines(routines, "updated", "desc").map((routine) => routine.id)).toEqual([
+      "routine-2",
+      "routine-1",
+    ]);
+    expect(sortRoutines(routines, "lastRun", "desc").map((routine) => routine.id)).toEqual([
+      "routine-1",
+      "routine-2",
+    ]);
+    expect(routines.map((routine) => routine.id)).toEqual(["routine-1", "routine-2"]);
+  });
+
+  it("renders the routines sort control before the group control", async () => {
+    routinesListMock.mockResolvedValue([]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    let sortButton = container.querySelector<HTMLButtonElement>('button[title="Sort"]');
+    let groupButton = container.querySelector<HTMLButtonElement>('button[title="Group"]');
+    for (let attempts = 0; attempts < 5 && (!sortButton || !groupButton); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+      sortButton = container.querySelector<HTMLButtonElement>('button[title="Sort"]');
+      groupButton = container.querySelector<HTMLButtonElement>('button[title="Group"]');
+    }
+
+    expect(sortButton).not.toBeNull();
+    expect(groupButton).not.toBeNull();
+    expect(sortButton!.compareDocumentPosition(groupButton!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("passes company mention options to the routine description editor", async () => {

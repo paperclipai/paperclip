@@ -74,7 +74,9 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  AgentModelProfileConfig,
   AgentPermissions,
+  AgentRuntimeConfig,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,
@@ -143,6 +145,8 @@ export type {
   IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueExecutionMonitorPolicy,
+  IssueExecutionMonitorState,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,
@@ -227,7 +231,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,

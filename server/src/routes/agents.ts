@@ -63,6 +63,7 @@ import {
   findActiveServerAdapter,
   findServerAdapter,
   listAdapterModels,
+  listAdapterModelProfiles,
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
@@ -72,12 +73,19 @@ import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle,
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
+  DEFAULT_ACPX_LOCAL_AGENT,
+  DEFAULT_ACPX_LOCAL_MODE,
+  DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
+  DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
+} from "@paperclipai/adapter-acpx-local";
+import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -98,7 +106,8 @@ function readRunLogLimitBytes(value: unknown) {
 function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(0, Math.min(max, Math.trunc(parsed)));
+  if (parsed <= 0) return fallback;
+  return Math.min(max, Math.trunc(parsed));
 }
 
 export function agentRoutes(
@@ -108,6 +117,7 @@ export function agentRoutes(
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
+    acpx_local: "instructionsFilePath",
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
@@ -710,6 +720,98 @@ export function agentRoutes(
     return normalizedRuntimeConfig;
   }
 
+  function listRuntimeModelProfileAdapterConfigs(runtimeConfig: unknown): Array<{
+    profileKey: string;
+    profile: Record<string, unknown>;
+    adapterConfig: Record<string, unknown>;
+    path: string;
+  }> {
+    const runtimeRecord = asRecord(runtimeConfig);
+    const modelProfiles = asRecord(runtimeRecord?.modelProfiles);
+    if (!modelProfiles) return [];
+
+    const entries: Array<{
+      profileKey: string;
+      profile: Record<string, unknown>;
+      adapterConfig: Record<string, unknown>;
+      path: string;
+    }> = [];
+    for (const [profileKey, rawProfile] of Object.entries(modelProfiles)) {
+      const profile = asRecord(rawProfile);
+      const adapterConfig = asRecord(profile?.adapterConfig);
+      if (!profile || !adapterConfig) continue;
+      entries.push({
+        profileKey,
+        profile,
+        adapterConfig,
+        path: `runtimeConfig.modelProfiles.${profileKey}.adapterConfig`,
+      });
+    }
+    return entries;
+  }
+
+  function assertNoAgentRuntimeConfigAdapterConfigMutation(req: Request, runtimeConfig: unknown) {
+    for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
+      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
+    }
+  }
+
+  async function normalizeMediatedAdapterConfigForPersistence(input: {
+    companyId: string;
+    adapterType: string | null | undefined;
+    adapterConfig: Record<string, unknown>;
+    constraintAdapterConfig?: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      input.companyId,
+      input.adapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    await assertAdapterConfigConstraints(
+      input.adapterType,
+      input.constraintAdapterConfig
+        ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
+        : normalizedAdapterConfig,
+    );
+    return normalizedAdapterConfig;
+  }
+
+  async function normalizeRuntimeConfigAdapterConfigsForPersistence(
+    companyId: string,
+    adapterType: string,
+    runtimeConfig: Record<string, unknown>,
+    baseAdapterConfig: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
+    if (entries.length === 0) return runtimeConfig;
+    const adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+
+    const normalizedRuntimeConfig = { ...runtimeConfig };
+    const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
+    const normalizedModelProfiles = { ...modelProfiles };
+    normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
+
+    for (const entry of entries) {
+      const adapterProfile = adapterModelProfiles.find((profile) => profile.key === entry.profileKey);
+      const adapterDefaultConfig = asRecord(adapterProfile?.adapterConfig) ?? {};
+      const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+        companyId,
+        adapterType,
+        adapterConfig: entry.adapterConfig,
+        constraintAdapterConfig: {
+          ...baseAdapterConfig,
+          ...adapterDefaultConfig,
+        },
+      });
+      normalizedModelProfiles[entry.profileKey] = {
+        ...entry.profile,
+        adapterConfig: normalizedAdapterConfig,
+      };
+    }
+
+    return normalizedRuntimeConfig;
+  }
+
   function generateEd25519PrivateKeyPem(): string {
     const { privateKey } = generateKeyPairSync("ed25519");
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -731,6 +833,21 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "acpx_local") {
+      if (!asNonEmptyString(next.agent)) {
+        next.agent = DEFAULT_ACPX_LOCAL_AGENT;
+      }
+      if (!asNonEmptyString(next.mode)) {
+        next.mode = DEFAULT_ACPX_LOCAL_MODE;
+      }
+      if (!asNonEmptyString(next.permissionMode)) {
+        next.permissionMode = DEFAULT_ACPX_LOCAL_PERMISSION_MODE;
+      }
+      if (!asNonEmptyString(next.nonInteractivePermissions)) {
+        next.nonInteractivePermissions = DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS;
+      }
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "codex_local") {
       if (!asNonEmptyString(next.model)) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;
@@ -747,7 +864,10 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-    // OpenCode requires explicit model selection — no default
+    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
@@ -755,20 +875,12 @@ export function agentRoutes(
   }
 
   async function assertAdapterConfigConstraints(
-    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType !== "opencode_local") return;
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
     try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
-      });
+      requireOpenCodeModelId(adapterConfig.model);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
@@ -866,12 +978,31 @@ export function agentRoutes(
   function assertNoAgentInstructionsConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
+    path = "adapterConfig",
   ) {
     if (req.actor.type !== "agent" || !adapterConfig) return;
-    const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS.filter((key) => adapterConfig[key] !== undefined);
+    const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS
+      .filter((key) => adapterConfig[key] !== undefined)
+      .map((key) => `${path}.${key}`);
     if (changedSensitiveKeys.length === 0) return;
     throw forbidden(
       `Agent-authenticated callers cannot modify instructions path or bundle configuration (${changedSensitiveKeys.join(", ")})`,
+    );
+  }
+
+  function adapterConfigTouchesInstructionsConfig(adapterConfig: Record<string, unknown>) {
+    return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
+  }
+
+  function assertNoAgentAdapterConfigMutation(
+    req: Request,
+    adapterConfig: Record<string, unknown>,
+    path = "adapterConfig",
+  ) {
+    assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
     );
   }
 
@@ -1058,10 +1189,29 @@ export function agentRoutes(
     const refresh = typeof req.query.refresh === "string"
       ? ["1", "true", "yes"].includes(req.query.refresh.toLowerCase())
       : false;
+    const environmentId = asNonEmptyString(req.query.environmentId);
+    const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
+    if (environmentId && (!environment || environment.companyId !== companyId)) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    if (type === "opencode_local" && environment && environment.driver !== "local") {
+      const adapter = requireServerAdapter(type);
+      res.json(adapter.models ?? []);
+      return;
+    }
     const models = refresh
       ? await refreshAdapterModels(type)
       : await listAdapterModels(type);
     res.json(models);
+  });
+
+  router.get("/companies/:companyId/adapters/:type/model-profiles", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const type = assertKnownAdapterType(req.params.type as string);
+    const profiles = await listAdapterModelProfiles(type);
+    res.json(profiles);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
@@ -1624,21 +1774,16 @@ export function agentRoutes(
       ...hireInput
     } = req.body;
     hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
-      (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+      rawHireAdapterConfig,
     );
-    assertNoAgentHostWorkspaceCommandMutation(
-      req,
-      collectAgentAdapterWorkspaceCommandPaths(hireInput.adapterConfig),
-    );
-    assertNoAgentInstructionsConfigMutation(
-      req,
-      (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
-    );
+    assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
-      ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
+      rawHireAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -1646,20 +1791,21 @@ export function agentRoutes(
       requestedAdapterConfig,
       Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
     );
-    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+    const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
-      desiredSkillAssignment.adapterConfig,
-      { strictMode: strictSecretsMode },
-    );
-    await assertAdapterConfigConstraints(
+      adapterType: hireInput.adapterType,
+      adapterConfig: desiredSkillAssignment.adapterConfig,
+    });
+    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       hireInput.adapterType,
+      normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
       normalizedAdapterConfig,
     );
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
-      runtimeConfig: normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
+      runtimeConfig: normalizedRuntimeConfig,
     };
 
     const company = await db
@@ -1814,21 +1960,16 @@ export function agentRoutes(
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
+    const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
-      (createInput.adapterConfig ?? {}) as Record<string, unknown>,
+      rawCreateAdapterConfig,
     );
-    assertNoAgentHostWorkspaceCommandMutation(
-      req,
-      collectAgentAdapterWorkspaceCommandPaths(createInput.adapterConfig),
-    );
-    assertNoAgentInstructionsConfigMutation(
-      req,
-      (createInput.adapterConfig ?? {}) as Record<string, unknown>,
-    );
+    assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
-      ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
+      rawCreateAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -1836,14 +1977,15 @@ export function agentRoutes(
       requestedAdapterConfig,
       Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
     );
-    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+    const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
-      desiredSkillAssignment.adapterConfig,
-      { strictMode: strictSecretsMode },
-    );
-    await assertAdapterConfigConstraints(
+      adapterType: createInput.adapterType,
+      adapterConfig: desiredSkillAssignment.adapterConfig,
+    });
+    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       createInput.adapterType,
+      normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
@@ -1855,7 +1997,7 @@ export function agentRoutes(
     const createdAgent = await svc.create(companyId, {
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
-      runtimeConfig: normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
+      runtimeConfig: normalizedRuntimeConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
@@ -2230,14 +2372,8 @@ export function agentRoutes(
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentInstructionsConfigMutation(req, adapterConfig);
-      assertNoAgentHostWorkspaceCommandMutation(
-        req,
-        collectAgentAdapterWorkspaceCommandPaths(adapterConfig),
-      );
-      const changingInstructionsConfig = Object.keys(adapterConfig).some((key) =>
-        KNOWN_INSTRUCTIONS_BUNDLE_KEYS.includes(key as (typeof KNOWN_INSTRUCTIONS_BUNDLE_KEYS)[number]),
-      );
+      assertNoAgentAdapterConfigMutation(req, adapterConfig);
+      const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(adapterConfig);
       if (changingInstructionsConfig) {
         await assertCanManageInstructionsPath(req, existing);
       }
@@ -2247,6 +2383,16 @@ export function agentRoutes(
     const requestedAdapterType = hasOwn(patchData, "adapterType")
       ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
+    let requestedRuntimeConfig: Record<string, unknown> | null = null;
+    if (hasOwn(patchData, "runtimeConfig")) {
+      const runtimeConfig = asRecord(patchData.runtimeConfig);
+      if (!runtimeConfig) {
+        res.status(422).json({ error: "runtimeConfig must be an object" });
+        return;
+      }
+      assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      requestedRuntimeConfig = runtimeConfig;
+    }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
@@ -2292,19 +2438,20 @@ export function agentRoutes(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
       );
-      const normalizedEffectiveAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        existing.companyId,
-        effectiveAdapterConfig,
-        { strictMode: strictSecretsMode },
-      );
+      const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+        companyId: existing.companyId,
+        adapterType: requestedAdapterType,
+        adapterConfig: effectiveAdapterConfig,
+      });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
-      const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
-      await assertAdapterConfigConstraints(
+    if (requestedRuntimeConfig) {
+      const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
+      patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
         existing.companyId,
         requestedAdapterType,
-        effectiveAdapterConfig,
+        requestedRuntimeConfig,
+        baseAdapterConfig,
       );
     }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
@@ -2703,8 +2850,13 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
-    const minCount = readLiveRunsQueryInt(req.query.minCount, 50);
-    const limit = readLiveRunsQueryInt(req.query.limit, 50);
+    // `minCount` is a padding floor for callers that want a minimum number of
+    // recent runs to render (e.g. dashboard cards). It must default to 0 so
+    // callers asking for "live runs" get only actually-live runs — otherwise
+    // every caller with no minCount param gets up to 50 historical runs
+    // padded in and renders bogus "live" counts.
+    const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
+    const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
 
     const columns = {
       id: heartbeatRuns.id,
@@ -2712,6 +2864,8 @@ export function agentRoutes(
       status: heartbeatRuns.status,
       invocationSource: heartbeatRuns.invocationSource,
       triggerDetail: heartbeatRuns.triggerDetail,
+      contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+      contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
       startedAt: heartbeatRuns.startedAt,
       finishedAt: heartbeatRuns.finishedAt,
       createdAt: heartbeatRuns.createdAt,
@@ -2744,8 +2898,8 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    const liveRuns = limit > 0 ? await liveRunsQuery.limit(limit) : await liveRunsQuery;
-    const targetRunCount = limit > 0 ? Math.min(minCount, limit) : minCount;
+    const liveRuns = await liveRunsQuery.limit(limit);
+    const targetRunCount = Math.min(minCount, limit);
 
     if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
       const activeIds = liveRuns.map((r) => r.id);
@@ -2948,6 +3102,8 @@ export function agentRoutes(
         status: heartbeatRuns.status,
         invocationSource: heartbeatRuns.invocationSource,
         triggerDetail: heartbeatRuns.triggerDetail,
+        contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+        contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
         startedAt: heartbeatRuns.startedAt,
         finishedAt: heartbeatRuns.finishedAt,
         createdAt: heartbeatRuns.createdAt,

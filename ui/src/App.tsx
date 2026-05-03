@@ -110,6 +110,7 @@ function boardRoutes() {
       <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
+      <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
@@ -262,6 +263,7 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
@@ -305,6 +307,7 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>
