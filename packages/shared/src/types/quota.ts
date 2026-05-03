@@ -2,6 +2,8 @@
 export interface QuotaWindow {
   /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
   label: string;
+  /** machine-readable window key, e.g. "five_hour", "seven_day", "weekly", "credits" */
+  windowId?: string | null;
   /** percent of the window already consumed (0-100), null when not reported */
   usedPercent: number | null;
   /** iso timestamp when this window resets, null when not reported */

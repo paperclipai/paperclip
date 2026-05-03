@@ -389,8 +389,14 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "provider_rate_limit"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
+
+export const PROVIDER_LIMIT_KINDS = [
+  "five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus",
+  "extra_usage", "weekly", "credits", "generic",
+] as const;
+export type ProviderLimitKind = (typeof PROVIDER_LIMIT_KINDS)[number];
 
 export const PROJECT_COLORS = [
   "#6366f1", // indigo

@@ -242,6 +242,7 @@ export async function fetchCodexQuota(
     const w = rateLimit.primary_window;
     windows.push({
       label: "5h limit",
+      windowId: "five_hour",
       usedPercent: normalizeCodexUsedPercent(w.used_percent),
       resetsAt:
         typeof w.reset_at === "number"
@@ -255,6 +256,7 @@ export async function fetchCodexQuota(
     const w = rateLimit.secondary_window;
     windows.push({
       label: "Weekly limit",
+      windowId: "weekly",
       usedPercent: normalizeCodexUsedPercent(w.used_percent),
       resetsAt:
         typeof w.reset_at === "number"
@@ -269,6 +271,7 @@ export async function fetchCodexQuota(
     const valueLabel = balance != null ? `$${(balance / 100).toFixed(2)} remaining` : "N/A";
     windows.push({
       label: "Credits",
+      windowId: "credits",
       usedPercent: null,
       resetsAt: null,
       valueLabel,
@@ -324,10 +327,11 @@ function unixSecondsToIso(value: number | null | undefined): string | null {
   return new Date(value * 1000).toISOString();
 }
 
-function buildCodexRpcWindow(label: string, window: CodexRpcWindow | null | undefined): QuotaWindow | null {
+function buildCodexRpcWindow(label: string, windowId: string, window: CodexRpcWindow | null | undefined): QuotaWindow | null {
   if (!window) return null;
   return {
     label,
+    windowId,
     usedPercent: normalizeCodexUsedPercent(window.usedPercent),
     resetsAt: unixSecondsToIso(window.resetsAt),
     valueLabel: null,
@@ -372,13 +376,14 @@ export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: Cod
       limitId === "codex"
         ? ""
         : `${limit.limitName ?? limitId} · `;
-    const primary = buildCodexRpcWindow(`${prefix}5h limit`, limit.primary);
+    const primary = buildCodexRpcWindow(`${prefix}5h limit`, `${limitId === "codex" ? "" : limitId + ":"}five_hour`, limit.primary);
     if (primary) windows.push(primary);
-    const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, limit.secondary);
+    const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, `${limitId === "codex" ? "" : limitId + ":"}weekly`, limit.secondary);
     if (secondary) windows.push(secondary);
     if (limitId === "codex" && limit.credits && limit.credits.unlimited !== true) {
       windows.push({
         label: "Credits",
+        windowId: "credits",
         usedPercent: null,
         resetsAt: null,
         valueLabel: parseCreditBalance(limit.credits.balance) ?? "N/A",

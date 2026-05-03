@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@paperclipai/shared";
+import type { CostByProviderModel, CostWindowSpendRow, ProviderRateLimitBlock, QuotaWindow } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
@@ -33,6 +33,9 @@ interface ProviderQuotaCardProps {
   quotaError?: string | null;
   quotaSource?: string | null;
   quotaLoading?: boolean;
+  /** active provider rate-limit blocks for this provider */
+  activeBlocks?: ProviderRateLimitBlock[];
+  onReleaseBlock?: (blockId: string) => void;
 }
 
 export function ProviderQuotaCard({
@@ -47,6 +50,8 @@ export function ProviderQuotaCard({
   quotaError = null,
   quotaSource = null,
   quotaLoading = false,
+  activeBlocks = [],
+  onReleaseBlock,
 }: ProviderQuotaCardProps) {
   // single-pass aggregation over rows — memoized so the 8 derived values are not
   // recomputed on every parent render tick (providers tab polls every 30s, and each
@@ -300,6 +305,57 @@ export function ProviderQuotaCard({
                   </div>
                 );
               })}
+            </div>
+          </>
+        )}
+
+        {/* active provider rate-limit blocks */}
+        {activeBlocks.length > 0 && (
+          <>
+            <div className="border-t border-border" />
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Rate limit blocks
+              </p>
+              <div className="space-y-1.5">
+                {activeBlocks.map((block) => (
+                  <div
+                    key={block.id}
+                    className="flex items-start justify-between gap-2 border border-destructive/40 bg-destructive/5 px-3 py-2"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-destructive">
+                          gesperrt
+                        </span>
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {block.limitKind}
+                        </span>
+                        {block.modelFamily && (
+                          <span className="font-mono text-xs text-muted-foreground">
+                            · {block.modelFamily}
+                          </span>
+                        )}
+                      </div>
+                      {block.resetsAt ? (
+                        <p className="text-xs text-muted-foreground">
+                          resets {new Date(block.resetsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">reset time unknown</p>
+                      )}
+                    </div>
+                    {onReleaseBlock && (
+                      <button
+                        className="shrink-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                        onClick={() => onReleaseBlock(block.id)}
+                      >
+                        Freigeben
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           </>
         )}
