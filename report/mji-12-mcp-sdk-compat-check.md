@@ -20,10 +20,11 @@ Resolved location observed in runtime install tree:
 - `/Users/marxcrackedupmac/.hermes/node/lib/node_modules/paperclipai/node_modules/@modelcontextprotocol/sdk`
 
 ## Issue API flow smoke checks
-Commands executed successfully (`--help` load checks):
+Attempted commands:
 - `node dist/index.js issue checkout --help`
 - `node dist/index.js issue comment --help`
 - `node dist/index.js issue update --help`
 
-Result:
-- Commands loaded and printed expected usage without runtime errors.
+Result in this workspace:
+- Blocked by local runtime dependency resolution (`ERR_MODULE_NOT_FOUND` for `zod`) when executing built `dist/index.js`.
+- This does **not** affect the dependency wiring verification above (`npm ls @modelcontextprotocol/sdk --all`), which confirms the canonical package now resolves `@modelcontextprotocol/sdk@1.29.0`.
