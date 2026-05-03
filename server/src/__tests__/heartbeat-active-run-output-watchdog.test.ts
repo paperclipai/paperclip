@@ -186,7 +186,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   it("creates one medium-priority evaluation issue for a suspicious silent run", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, managerId, runId } = await seedRunningRun({
+    const { companyId, managerId, runId, issueId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
@@ -209,10 +209,51 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       priority: "medium",
       assigneeAgentId: managerId,
       originId: runId,
-      originFingerprint: `stale_active_run:${companyId}:${runId}`,
     });
+    expect(evaluations[0]?.originFingerprint).toContain(`stale_active_run_v2:${companyId}:${runId}:${issueId}:suspicious:`);
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("suppresses duplicate evaluations for unchanged run state after a review issue is closed", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationId = first.evaluationIssueIds[0];
+    expect(firstEvaluationId).toBeTruthy();
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, firstEvaluationId!));
+
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second).toMatchObject({ created: 0, existing: 1 });
+
+    const stableEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(stableEvaluations).toHaveLength(1);
+
+    const later = new Date(now.getTime() + ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 5 * 60 * 1000);
+    const nextOutputAt = new Date(later.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: nextOutputAt, lastOutputSeq: 9, lastOutputStream: "stdout" })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const third = await heartbeat.scanSilentActiveRuns({ now: later, companyId });
+    expect(third.created).toBe(1);
+
+    const refreshedEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(refreshedEvaluations).toHaveLength(2);
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {
@@ -458,7 +499,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       identifier: `${issuePrefix}-21`,
       originKind: "stale_active_run_evaluation",
       originId: otherRunId,
-      originFingerprint: `stale_active_run:${companyId}:${otherRunId}`,
+      originFingerprint: `stale_active_run_v2:${companyId}:${otherRunId}:none:suspicious:seq=0:at=none:stream=none`,
     });
 
     const attempts = [

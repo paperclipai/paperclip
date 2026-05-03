@@ -575,8 +575,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0]?.issuePrefix ?? "PAP");
   }
 
-  function staleActiveRunOriginFingerprint(companyId: string, runId: string) {
-    return `stale_active_run:${companyId}:${runId}`;
+  function staleActiveRunOriginFingerprint(input: {
+    companyId: string;
+    runId: string;
+    sourceIssueId: string | null;
+    level: "suspicious" | "critical";
+    lastOutputAt: Date | null;
+    lastOutputSeq: number | null;
+    lastOutputStream: string | null;
+  }) {
+    const lastOutputAtIso = input.lastOutputAt?.toISOString() ?? "none";
+    const sourceIssueId = input.sourceIssueId ?? "none";
+    const stream = input.lastOutputStream ?? "none";
+    return [
+      "stale_active_run_v2",
+      input.companyId,
+      input.runId,
+      sourceIssueId,
+      input.level,
+      `seq=${input.lastOutputSeq ?? 0}`,
+      `at=${lastOutputAtIso}`,
+      `stream=${stream}`,
+    ].join(":");
   }
 
   function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
@@ -605,6 +625,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function latestOutputWatchdogDecision(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        decision: heartbeatRunWatchdogDecisions.decision,
+        snoozedUntil: heartbeatRunWatchdogDecisions.snoozedUntil,
+        createdAt: heartbeatRunWatchdogDecisions.createdAt,
+      })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+        ),
+      )
+      .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
     const [row] = await db
       .select({
@@ -625,6 +664,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function findStaleRunEvaluationByFingerprint(companyId: string, originFingerprint: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originFingerprint, originFingerprint),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
       .limit(1);
     return row ?? null;
   }
@@ -943,6 +1006,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const dedupeFingerprint = staleActiveRunOriginFingerprint({
+      companyId: input.run.companyId,
+      runId: input.run.id,
+      sourceIssueId: sourceIssue?.id ?? null,
+      level,
+      lastOutputAt: input.run.lastOutputAt ?? null,
+      lastOutputSeq: input.run.lastOutputSeq ?? 0,
+      lastOutputStream: input.run.lastOutputStream ?? null,
+    });
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
@@ -973,6 +1045,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
+    const duplicate = await findStaleRunEvaluationByFingerprint(input.run.companyId, dedupeFingerprint);
+    if (duplicate) {
+      const latestDecision = await latestOutputWatchdogDecision(input.run.companyId, input.run.id);
+      const allowRearmReevaluation = (
+        (latestDecision?.decision === "continue" || latestDecision?.decision === "snooze")
+        && !!latestDecision.snoozedUntil
+        && latestDecision.snoozedUntil.getTime() <= input.now.getTime()
+      );
+      if (!allowRearmReevaluation) {
+        return { kind: "existing" as const, evaluationIssueId: duplicate.id };
+      }
+    }
+
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
@@ -998,7 +1083,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originKind: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
         originId: input.run.id,
         originRunId: input.run.id,
-        originFingerprint: staleActiveRunOriginFingerprint(input.run.companyId, input.run.id),
+        originFingerprint: dedupeFingerprint,
       });
     } catch (error) {
       if (!isUniqueStaleRunEvaluationConflict(error)) throw error;
