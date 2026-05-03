@@ -4,6 +4,7 @@ import LanguageDetector from "i18next-browser-languagedetector";
 
 import enCommon from "./locales/en/common.json";
 import koCommon from "./locales/ko/common.json";
+import { syncKoreanRuntimeTranslation } from "./runtime-ko";
 
 const resources = {
   en: { common: enCommon },
@@ -28,6 +29,10 @@ void i18n
       caches: ["localStorage"],
     },
     returnNull: false,
+  })
+  .then(() => {
+    syncKoreanRuntimeTranslation(i18n.language);
+    i18n.on("languageChanged", syncKoreanRuntimeTranslation);
   });
 
 export default i18n;
