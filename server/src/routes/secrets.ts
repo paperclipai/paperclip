@@ -141,8 +141,8 @@ export function secretRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const agents = await svc.usages(existing.companyId, id);
-    res.json({ agents });
+    const used = await svc.usages(existing.companyId, id);
+    res.json({ agents: used.agents, skills: used.skills });
   });
 
   router.delete("/secrets/:id", async (req, res) => {
