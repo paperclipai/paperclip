@@ -28,10 +28,19 @@ export type EmitFn = (event: EmittableEvent) => Promise<void>;
 /**
  * Build an EmitFn from Paperclip's onLog. Each event becomes one stdout line so
  * downstream parsers see canonical NDJSON.
+ *
+ * Emits are serialized through an internal chain so concurrent callers (e.g.
+ * the SDK's `onDidChangeStatus` listener firing while the `for await` stream
+ * loop is iterating) cannot interleave NDJSON lines. Both call sites await the
+ * returned promise; the chain guarantees they hit `onLog` one at a time.
  */
 export function makeEmitter(onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>): EmitFn {
-  return async (event) => {
-    await onLog("stdout", `${JSON.stringify(event)}\n`);
+  let chain: Promise<void> = Promise.resolve();
+  return (event) => {
+    const next = chain.then(() => onLog("stdout", `${JSON.stringify(event)}\n`));
+    // Swallow rejections in the chain so one failed emit doesn't poison subsequent ones.
+    chain = next.catch(() => undefined);
+    return next;
   };
 }
 

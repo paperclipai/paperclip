@@ -112,15 +112,44 @@ function buildEnv(
   return env;
 }
 
-function partitionSessionEnv(env: Record<string, string>): Record<string, string> {
-  // Cloud envVars cannot start with CURSOR_; PAPERCLIP_* are fine.
+function partitionSessionEnv(
+  env: Record<string, string>,
+  options: { enableCallback: boolean },
+): Record<string, string> {
+  // Cloud envVars cannot start with CURSOR_; the SDK rejects those keys.
+  // PAPERCLIP_API_KEY (= ctx.authToken) is only forwarded when the operator
+  // opts in via enableCallback: true — otherwise the cloud agent has no need
+  // for a Paperclip auth token, and forwarding it would expose the token to
+  // any tool-call result, log, or error message that echoed the environment.
+  // Other PAPERCLIP_* identity vars (run id, task id, workspace, etc.) are
+  // forwarded unconditionally because they are non-secret identifiers that
+  // help cloud agents log and self-describe.
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith("CURSOR_")) continue;
     if (typeof value !== "string" || value.length === 0) continue;
+    if (key === "PAPERCLIP_API_KEY" && !options.enableCallback) continue;
     out[key] = value;
   }
   return out;
+}
+
+async function raceWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ kind: "ok"; value: T } | { kind: "timeout" }> {
+  if (timeoutMs <= 0) {
+    return { kind: "ok", value: await promise };
+  }
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise.then((value) => ({ kind: "ok" as const, value })), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function resolveTimeoutWait<T>(
@@ -208,13 +237,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     || env.CURSOR_API_KEY
     || (typeof process.env.CURSOR_API_KEY === "string" ? process.env.CURSOR_API_KEY : "");
 
+  const enableCallback = config.enableCallback === true;
   const sessionEnvVars = parseObject(config.sessionEnvVars);
   const cloudSessionEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(sessionEnvVars)) {
     if (typeof value === "string") cloudSessionEnv[key] = value;
   }
-  // Forward Paperclip identity vars too so cloud agents can call back if needed.
-  Object.assign(cloudSessionEnv, partitionSessionEnv(env));
+  // Forward Paperclip identity vars; PAPERCLIP_API_KEY only when enableCallback opts in.
+  Object.assign(cloudSessionEnv, partitionSessionEnv(env, { enableCallback }));
 
   const resolved = buildRuntimeOptions({
     config,
@@ -426,11 +456,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } catch {
           // best-effort cancel; continue to dispose
         }
-        // give the stream a brief grace window to drain
-        await new Promise((resolve) => setTimeout(resolve, Math.min(graceSec, 5) * 1000));
+        // give the stream the full configured grace window to drain
+        await new Promise((resolve) => setTimeout(resolve, graceSec * 1000));
       },
     );
-    await streamPromise;
+    // Bound the post-wait drain too: a stalled SDK stream should not hang the
+    // executor. graceSec is the same budget the cancel handshake gets.
+    const drainMs = Math.max(graceSec * 1000, 1000);
+    const drainOutcome = await raceWithTimeout(streamPromise, drainMs);
+    if (drainOutcome.kind === "timeout") {
+      await emit({
+        type: "error",
+        message: `Cursor SDK stream did not drain within ${graceSec}s after run completion; abandoning.`,
+      });
+    }
 
     if (waited.timedOut) {
       await emit({ type: "result", subtype: "cancelled", result: "", is_error: true });
