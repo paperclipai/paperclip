@@ -651,7 +651,7 @@ export async function startServer(): Promise<StartedServer> {
   // The public URL (authPublicBaseUrl) is preserved separately for OAuth/external access.
   const agentRuntimeApiUrl =
     config.deploymentMode === "local_trusted"
-      ? `http://${runtimeListenHost}:${listenPort}`
+      ? `http://${runtimeListenHost.includes(":") ? `[${runtimeListenHost}]` : runtimeListenHost}:${listenPort}`
       : runtimeApiUrl;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
