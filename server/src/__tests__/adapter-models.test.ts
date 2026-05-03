@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import os from "os";
+import path from "path";
+import fs from "fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
@@ -8,7 +11,11 @@ import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 describe("adapter model listing", () => {
+  let emptyCodexHome: string;
+
   beforeEach(() => {
+    emptyCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-no-cache-"));
+    process.env.CODEX_HOME = emptyCodexHome;
     delete process.env.OPENAI_API_KEY;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetCodexModelsCacheForTests();
@@ -16,6 +23,11 @@ describe("adapter model listing", () => {
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.CODEX_HOME;
+    fs.rmSync(emptyCodexHome, { recursive: true, force: true });
   });
 
   it("returns an empty list for unknown adapters", async () => {
@@ -128,4 +140,84 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "composer-1")).toBe(true);
   });
 
+});
+
+
+describe("loadCodexModels — cache path", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-test-"));
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.CODEX_HOME;
+    resetCodexModelsCacheForTests();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.CODEX_HOME;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("reads cache and filters out non-list visibility entries", async () => {
+    process.env.CODEX_HOME = tmpDir;
+    fs.writeFileSync(
+      path.join(tmpDir, "models_cache.json"),
+      JSON.stringify({
+        models: [
+          { slug: "codex-cache-visible", display_name: "Visible Model", visibility: "list" },
+          { slug: "codex-cache-hidden", display_name: "Hidden Model", visibility: "hidden" },
+          { slug: "codex-cache-internal", display_name: "Internal Model", visibility: "internal" },
+        ],
+      }),
+    );
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(models.some((m) => m.id === "codex-cache-visible")).toBe(true);
+    expect(models.some((m) => m.id === "codex-cache-hidden")).toBe(false);
+    expect(models.some((m) => m.id === "codex-cache-internal")).toBe(false);
+    // mergedWithFallback ensures static fallback ids are still present
+    expect(models.some((m) => m.id === "codex-mini-latest")).toBe(true);
+  });
+
+  it("honors CODEX_HOME env var for cache lookup, not ~/.codex", async () => {
+    process.env.CODEX_HOME = tmpDir;
+    fs.writeFileSync(
+      path.join(tmpDir, "models_cache.json"),
+      JSON.stringify({
+        models: [
+          { slug: "codex-from-env-dir", display_name: "From Env Dir", visibility: "list" },
+        ],
+      }),
+    );
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(models.some((m) => m.id === "codex-from-env-dir")).toBe(true);
+  });
+
+  it("returns static fallback models when cache file is missing, without throwing", async () => {
+    // tmpDir has no models_cache.json — simulates missing cache
+    process.env.CODEX_HOME = tmpDir;
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("returns static fallback models when cache file contains malformed JSON, without throwing", async () => {
+    process.env.CODEX_HOME = tmpDir;
+    fs.writeFileSync(path.join(tmpDir, "models_cache.json"), "{ not valid json ~~~");
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(models).toEqual(codexFallbackModels);
+  });
 });
