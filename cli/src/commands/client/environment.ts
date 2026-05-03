@@ -33,8 +33,8 @@ interface EnvironmentCreateOptions extends BaseClientOptions {
   driver: string;
   description?: string;
   status?: string;
-  config?: string;
-  configFile?: string;
+  driverConfig?: string;
+  driverConfigFile?: string;
   metadata?: string;
   metadataFile?: string;
 }
@@ -44,8 +44,8 @@ interface EnvironmentUpdateOptions extends BaseClientOptions {
   description?: string;
   driver?: string;
   status?: string;
-  config?: string;
-  configFile?: string;
+  driverConfig?: string;
+  driverConfigFile?: string;
   metadata?: string;
   metadataFile?: string;
 }
@@ -59,8 +59,8 @@ interface EnvironmentProbeConfigOptions extends BaseClientOptions {
   name?: string;
   description?: string;
   driver: string;
-  config?: string;
-  configFile?: string;
+  driverConfig?: string;
+  driverConfigFile?: string;
   metadata?: string;
   metadataFile?: string;
 }
@@ -269,14 +269,14 @@ export function registerEnvironmentCommands(program: Command): void {
       .requiredOption("--driver <driver>", "Environment driver (e.g. local, ssh, sandbox)")
       .option("--description <text>", "Description")
       .option("--status <status>", "Environment status (e.g. active, disabled)")
-      .option("--config <json>", "Driver config as JSON object")
-      .option("--config-file <path>", "Path to JSON file with driver config")
+      .option("--driver-config <json>", "Driver config as JSON object")
+      .option("--driver-config-file <path>", "Path to JSON file with driver config")
       .option("--metadata <json>", "Metadata as JSON object")
       .option("--metadata-file <path>", "Path to JSON file with metadata")
       .action(async (opts: EnvironmentCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const config = readJsonOption(opts.config, opts.configFile, "config");
+          const config = readJsonOption(opts.driverConfig, opts.driverConfigFile, "driver-config");
           const metadata = readJsonOption(opts.metadata, opts.metadataFile, "metadata");
 
           const payload: Record<string, unknown> = {
@@ -310,14 +310,14 @@ export function registerEnvironmentCommands(program: Command): void {
       .option("--description <text>", "New description")
       .option("--driver <driver>", "New driver (resets config unless --config provided)")
       .option("--status <status>", "New status")
-      .option("--config <json>", "Replacement/merge driver config as JSON object")
-      .option("--config-file <path>", "Path to JSON file with driver config")
+      .option("--driver-config <json>", "Replacement/merge driver config as JSON object")
+      .option("--driver-config-file <path>", "Path to JSON file with driver config")
       .option("--metadata <json>", "Metadata as JSON object")
       .option("--metadata-file <path>", "Path to JSON file with metadata")
       .action(async (environmentId: string, opts: EnvironmentUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const config = readJsonOption(opts.config, opts.configFile, "config");
+          const config = readJsonOption(opts.driverConfig, opts.driverConfigFile, "driver-config");
           const metadata = readJsonOption(opts.metadata, opts.metadataFile, "metadata");
 
           const payload: Record<string, unknown> = {};
@@ -400,14 +400,14 @@ export function registerEnvironmentCommands(program: Command): void {
       .requiredOption("--driver <driver>", "Environment driver")
       .option("--name <name>", "Display name (defaults to 'Unsaved environment')")
       .option("--description <text>", "Description")
-      .option("--config <json>", "Driver config as JSON object")
-      .option("--config-file <path>", "Path to JSON file with driver config")
+      .option("--driver-config <json>", "Driver config as JSON object")
+      .option("--driver-config-file <path>", "Path to JSON file with driver config")
       .option("--metadata <json>", "Metadata as JSON object")
       .option("--metadata-file <path>", "Path to JSON file with metadata")
       .action(async (opts: EnvironmentProbeConfigOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const config = readJsonOption(opts.config, opts.configFile, "config");
+          const config = readJsonOption(opts.driverConfig, opts.driverConfigFile, "driver-config");
           const metadata = readJsonOption(opts.metadata, opts.metadataFile, "metadata");
 
           const payload: Record<string, unknown> = { driver: opts.driver };

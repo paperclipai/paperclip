@@ -86,7 +86,9 @@ function printRunRow(row: HeartbeatRun & { agentName?: string | null }): void {
 }
 
 export function registerRunCommands(program: Command): void {
-  const run = program.command("run").description("Heartbeat run observability");
+  const run = program
+    .command("heartbeat-run")
+    .description("Heartbeat run observability");
 
   addCommonClientOptions(
     run

@@ -34,7 +34,7 @@ interface WorkspaceUpdateOptions extends BaseClientOptions {
   status?: string;
   cleanupEligibleAt?: string;
   cleanupReason?: string;
-  config?: string;
+  workspaceConfig?: string;
   metadata?: string;
 }
 
@@ -218,7 +218,7 @@ export function registerExecutionWorkspaceCommands(program: Command): void {
       .option("--status <status>", "Status (active, idle, in_review, archived, cleanup_failed)")
       .option("--cleanup-eligible-at <iso>", "Cleanup eligibility timestamp (or empty to clear)")
       .option("--cleanup-reason <text>", "Cleanup reason")
-      .option("--config <json>", "Config patch as JSON object")
+      .option("--workspace-config <json>", "Config patch as JSON object")
       .option("--metadata <json>", "Metadata as JSON object")
       .action(async (id: string, opts: WorkspaceUpdateOptions) => {
         try {
@@ -237,7 +237,7 @@ export function registerExecutionWorkspaceCommands(program: Command): void {
             payload.cleanupEligibleAt = opts.cleanupEligibleAt === "" ? null : opts.cleanupEligibleAt;
           if (opts.cleanupReason !== undefined)
             payload.cleanupReason = opts.cleanupReason === "" ? null : opts.cleanupReason;
-          const config = parseJsonObject(opts.config, "config");
+          const config = parseJsonObject(opts.workspaceConfig, "workspace-config");
           if (config !== undefined) payload.config = config;
           const metadata = parseJsonObject(opts.metadata, "metadata");
           if (metadata !== undefined) payload.metadata = metadata;
