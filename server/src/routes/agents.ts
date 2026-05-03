@@ -84,7 +84,8 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -767,7 +768,6 @@ export function agentRoutes(
       { strictMode: strictSecretsMode },
     );
     await assertAdapterConfigConstraints(
-      input.companyId,
       input.adapterType,
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
@@ -864,7 +864,10 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-    // OpenCode requires explicit model selection — no default
+    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
@@ -872,20 +875,12 @@ export function agentRoutes(
   }
 
   async function assertAdapterConfigConstraints(
-    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType !== "opencode_local") return;
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
     try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
-      });
+      requireOpenCodeModelId(adapterConfig.model);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
@@ -1194,6 +1189,17 @@ export function agentRoutes(
     const refresh = typeof req.query.refresh === "string"
       ? ["1", "true", "yes"].includes(req.query.refresh.toLowerCase())
       : false;
+    const environmentId = asNonEmptyString(req.query.environmentId);
+    const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
+    if (environmentId && (!environment || environment.companyId !== companyId)) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    if (type === "opencode_local" && environment && environment.driver !== "local") {
+      const adapter = requireServerAdapter(type);
+      res.json(adapter.models ?? []);
+      return;
+    }
     const models = refresh
       ? await refreshAdapterModels(type)
       : await listAdapterModels(type);
