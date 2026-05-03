@@ -579,11 +579,26 @@ export interface PluginActivityClient {
  * await ctx.state.set({ scopeKind: "project", scopeId: projectId, namespace: "github", stateKey: "last-event" }, eventId);
  * ```
  *
- * `plugin.state.read` capability required for `get()`.
+ * `plugin.state.read` capability required for `get()` and `list()`.
  * `plugin.state.write` capability required for `set()` and `delete()`.
  *
  * @see PLUGIN_SPEC.md §21.3 `plugin_state`
  */
+export interface ListStateFilter {
+  scopeKind?: PluginStateScopeKind;
+  scopeId?: string;
+  namespace?: string;
+}
+
+export interface PluginStateEntry {
+  scopeKind: PluginStateScopeKind;
+  scopeId: string | null;
+  namespace: string;
+  stateKey: string;
+  value: unknown;
+  updatedAt: string;
+}
+
 export interface PluginStateClient {
   /**
    * Read a state value.
@@ -616,6 +631,25 @@ export interface PluginStateClient {
    * @param input - Scope key identifying the entry to delete
    */
   delete(input: ScopeKey): Promise<void>;
+
+  /**
+   * List all entries owned by this plugin matching the optional filter.
+   *
+   * Returns row-shaped entries (scope + key + value + `updatedAt`). Results
+   * are always scoped to the calling plugin's own rows — a plugin cannot
+   * enumerate state owned by other plugins.
+   *
+   * Intended for enumeration of bounded per-plugin state (startup
+   * reconciliation, TTL purge, metrics). Pagination is not provided in v1;
+   * plugins that need to enumerate large state should partition via
+   * `namespace` and filter per-namespace.
+   *
+   * Requires `plugin.state.read` capability.
+   *
+   * @param filter - Optional scope filters; omit for full enumeration
+   * @returns Array of matching entries (empty if none)
+   */
+  list(filter?: ListStateFilter): Promise<PluginStateEntry[]>;
 }
 
 /**

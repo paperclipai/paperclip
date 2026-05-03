@@ -90,11 +90,12 @@ export interface HostServices {
     get(): Promise<Record<string, unknown>>;
   };
 
-  /** Provides `state.get`, `state.set`, `state.delete`. */
+  /** Provides `state.get`, `state.set`, `state.delete`, `state.list`. */
   state: {
     get(params: WorkerToHostMethods["state.get"][0]): Promise<WorkerToHostMethods["state.get"][1]>;
     set(params: WorkerToHostMethods["state.set"][0]): Promise<void>;
     delete(params: WorkerToHostMethods["state.delete"][0]): Promise<void>;
+    list(params: WorkerToHostMethods["state.list"][0]): Promise<WorkerToHostMethods["state.list"][1]>;
   };
 
   /** Provides restricted plugin database namespace methods. */
@@ -285,6 +286,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "state.get": "plugin.state.read",
   "state.set": "plugin.state.write",
   "state.delete": "plugin.state.write",
+  "state.list": "plugin.state.read",
 
   "db.namespace": "database.namespace.read",
   "db.query": "database.namespace.read",
@@ -448,6 +450,9 @@ export function createHostClientHandlers(
     }),
     "state.delete": gated("state.delete", async (params) => {
       return services.state.delete(params);
+    }),
+    "state.list": gated("state.list", async (params) => {
+      return services.state.list(params);
     }),
 
     "db.namespace": gated("db.namespace", async (params) => {
