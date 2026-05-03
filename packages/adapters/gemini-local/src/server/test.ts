@@ -21,7 +21,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
-import { firstNonEmptyLine } from "./utils.js";
+import { firstNonEmptyLine, firstSignificantStderrLine } from "./utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -39,7 +39,7 @@ function commandLooksLike(command: string, expected: string): boolean {
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
-  const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  const raw = parsedError?.trim() || firstSignificantStderrLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
