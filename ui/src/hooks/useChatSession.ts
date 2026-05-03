@@ -28,7 +28,7 @@ export interface UseChatSessionResult {
   loading: boolean;
   streaming: boolean;
   pendingPermissions: PendingPermission[];
-  send: (text: string) => Promise<void>;
+  send: (text: string, attachmentIds?: string[]) => Promise<void>;
   decidePermission: (toolUseId: string, decision: "approve" | "deny") => Promise<void>;
   patchSession: (
     patch: Parameters<typeof chatApi.patchSession>[1],
@@ -65,22 +65,34 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
     };
   }, [sessionId]);
 
+  // Lightweight refresh: only re-pull the per-session data that actually
+  // changes during a turn. The sessions LIST is invalidated separately at
+  // turn end (or when the title changes via session_state) so we don't
+  // re-fetch the entire rail on every text_delta-adjacent event.
   const refresh = useCallback(() => {
     if (!sessionId) return;
     qc.invalidateQueries({ queryKey: ["clippy", "messages", sessionId] });
     qc.invalidateQueries({ queryKey: ["clippy", "session", sessionId] });
-    qc.invalidateQueries({ queryKey: ["clippy", "sessions"] });
   }, [qc, sessionId]);
 
+  const refreshSessionsList = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["clippy", "sessions"] });
+  }, [qc]);
+
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachmentIds: string[] = []) => {
       if (!sessionId) throw new Error("No active session");
       if (streaming) throw new Error("A turn is already streaming");
       // Optimistically add user message + start an empty assistant entry.
+      const optimisticBlocks: ChatContentBlock[] = [];
+      if (text.length > 0) optimisticBlocks.push({ type: "text", text });
+      // Server resolves attachment metadata when persisting; the optimistic
+      // entry is replaced by the canonical message after `done`. We don't
+      // duplicate attachment metadata here.
       const optimisticUser: ClippyTranscriptEntry = {
         id: `optimistic-user-${Date.now()}`,
         role: "user",
-        blocks: [{ type: "text", text }],
+        blocks: optimisticBlocks,
       };
       qc.setQueryData<ChatMessage[] | undefined>(
         ["clippy", "messages", sessionId],
@@ -106,33 +118,55 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
         pending: true,
       });
 
-      const handle = postChatMessageStream(sessionId, text, (event) => {
-        handleStreamEvent(event);
-      });
+      const handle = postChatMessageStream(
+        sessionId,
+        text,
+        (event) => {
+          handleStreamEvent(event);
+        },
+        attachmentIds,
+      );
       abortRef.current = handle.abort;
+
+      // Helper that lazily ensures a pending assistant entry exists so a
+      // `text_delta` arriving after `message_completed` (i.e. the second LLM
+      // turn after a tool call in agent mode) still streams visibly.
+      const ensurePending = (prev: ClippyTranscriptEntry | null): ClippyTranscriptEntry =>
+        prev ?? {
+          id: `pending-${Date.now()}`,
+          role: "assistant",
+          blocks: [],
+          pending: true,
+        };
 
       function handleStreamEvent(event: ChatStreamEvent) {
         switch (event.type) {
+          case "message_started":
+            // Server is starting a new assistant turn. Make sure we have a
+            // pending entry so subsequent text_deltas render — this is what
+            // covers the gap between tool-loop iterations.
+            setPendingAssistant((prev) => ensurePending(prev));
+            break;
           case "text_delta":
             setPendingAssistant((prev) => {
-              if (!prev) return prev;
-              const blocks = [...prev.blocks];
+              const base = ensurePending(prev);
+              const blocks = [...base.blocks];
               const last = blocks[blocks.length - 1];
               if (last && last.type === "text") {
                 blocks[blocks.length - 1] = { type: "text", text: last.text + event.delta };
               } else {
                 blocks.push({ type: "text", text: event.delta });
               }
-              return { ...prev, blocks };
+              return { ...base, blocks };
             });
             break;
           case "tool_use_block":
             setPendingAssistant((prev) => {
-              if (!prev) return prev;
+              const base = ensurePending(prev);
               return {
-                ...prev,
+                ...base,
                 blocks: [
-                  ...prev.blocks,
+                  ...base.blocks,
                   { type: "tool_use", id: event.toolUseId, name: event.name, input: event.input },
                 ],
               };
@@ -157,11 +191,15 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
             break;
           case "session_state":
             qc.setQueryData(["clippy", "session", sessionId], event.session);
+            // Title may have changed (e.g. auto-derived from the first user
+            // message) — refresh the rail so the dropdown reflects it.
+            refreshSessionsList();
             break;
           case "done":
             setStreaming(false);
             setPendingAssistant(null);
             refresh();
+            refreshSessionsList();
             break;
           case "error":
             setPendingAssistant({
@@ -174,7 +212,6 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
             refresh();
             break;
           case "ping":
-          case "message_started":
             break;
           default:
             break;
@@ -188,7 +225,7 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
         setStreaming(false);
       }
     },
-    [qc, refresh, sessionId, streaming],
+    [qc, refresh, refreshSessionsList, sessionId, streaming],
   );
 
   const decidePermission = useCallback(

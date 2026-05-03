@@ -5,20 +5,73 @@ import type { AnthropicToolSpec } from "./chat-tools.js";
 
 // Canonical (Anthropic-shape) content blocks. Both providers translate
 // to/from this so storage and the rest of the system stay provider-agnostic.
+//
+// `image` and `file` blocks are produced when the user attaches media in the
+// composer. `attachmentId` is the row in `chat_attachments` (so we can
+// re-resolve bytes on demand for provider replays); `url` is the in-app
+// download path used by the UI to display the attachment.
 export type CanonicalContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
+  | {
+      type: "image";
+      attachmentId: string;
+      url: string;
+      mediaType: string;
+      name: string;
+    }
+  | {
+      type: "file";
+      attachmentId: string;
+      url: string;
+      mediaType: string;
+      name: string;
+      sizeBytes: number;
+    };
 
 export type CanonicalMessage =
   | { role: "user"; content: CanonicalContentBlock[] | string }
   | { role: "assistant"; content: CanonicalContentBlock[] | string };
+
+export type EffortLevel = "auto" | "low" | "medium" | "high";
+
+/**
+ * Resolved bytes for an attachment, keyed by attachmentId. The chat
+ * orchestrator pre-loads everything referenced in the message history so
+ * providers can splice base64 inline without touching disk during the
+ * stream.
+ */
+export interface ResolvedAttachment {
+  data: Buffer;
+  mediaType: string;
+  name: string;
+}
+export type ResolvedAttachments = Map<string, ResolvedAttachment>;
 
 export type ProviderTurnInput = {
   model: string;
   system: string;
   messages: CanonicalMessage[];
   tools?: AnthropicToolSpec[];
+  /**
+   * "auto" leaves the provider's defaults alone. low/medium/high enable
+   * provider-native reasoning controls where supported (Anthropic
+   * `thinking`, OpenAI `reasoning_effort`); other providers ignore.
+   */
+  effort?: EffortLevel;
+  /**
+   * Cancels the in-flight request — both the network call and any
+   * provider-side token generation. Wired to the runTurn abort flag so the
+   * Stop button actually stops billing, not just the UI.
+   */
+  signal?: AbortSignal;
+  /**
+   * Pre-resolved bytes for canonical `image` / `file` blocks referenced in
+   * `messages`. Providers that send media inline read from this map; ones
+   * that can't use it gracefully fall back to a text mention.
+   */
+  resolvedAttachments?: ResolvedAttachments;
   /**
    * Adapter-specific extras populated when the chat is routed through an
    * AdapterExecuteProvider. Native providers ignore this field.
@@ -86,23 +139,28 @@ class AnthropicProvider implements ChatProvider {
 
   async *streamTurn(input: ProviderTurnInput): AsyncGenerator<ProviderStreamEvent, ProviderTurnResult, void> {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
+    // Map effort → extended thinking budget. Budget must be >=1024 and
+    // strictly less than max_tokens, so we bump max_tokens to fit.
+    const thinking = anthropicThinkingFor(input.effort);
+    const maxTokens = thinking ? thinking.budget_tokens + MAX_TOKENS : MAX_TOKENS;
     const params: Anthropic.MessageCreateParamsStreaming = {
       model: input.model,
-      max_tokens: MAX_TOKENS,
+      max_tokens: maxTokens,
       system: input.system,
       messages: input.messages.map((m) => ({
         role: m.role,
         content: typeof m.content === "string"
           ? m.content
-          : (m.content as Anthropic.ContentBlockParam[]),
+          : translateBlocksForAnthropic(m.content, input.resolvedAttachments),
       })),
       stream: true,
     };
+    if (thinking) params.thinking = thinking;
     if (input.tools && input.tools.length > 0) {
       params.tools = input.tools as Anthropic.Tool[];
     }
 
-    const stream = client.messages.stream(params);
+    const stream = client.messages.stream(params, { signal: input.signal ?? null });
     for await (const event of stream) {
       if (
         event.type === "content_block_delta" &&
@@ -122,6 +180,81 @@ class AnthropicProvider implements ChatProvider {
       }).filter((b) => !(b.type === "text" && b.text === "")),
       stopReason: mapAnthropicStopReason(finalMessage.stop_reason),
     };
+  }
+}
+
+function translateBlocksForAnthropic(
+  blocks: CanonicalContentBlock[],
+  resolved: ResolvedAttachments | undefined,
+): Anthropic.ContentBlockParam[] {
+  const out: Anthropic.ContentBlockParam[] = [];
+  for (const b of blocks) {
+    if (b.type === "image") {
+      const r = resolved?.get(b.attachmentId);
+      if (r && /^image\/(png|jpeg|jpg|gif|webp)$/.test(r.mediaType)) {
+        const mediaType = r.mediaType === "image/jpg" ? "image/jpeg" : r.mediaType;
+        out.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+            data: r.data.toString("base64"),
+          },
+        });
+      } else {
+        // Couldn't resolve / unsupported image type — describe it instead so
+        // the model at least knows it was attached.
+        out.push({ type: "text", text: `[Attached image: ${b.name}]` });
+      }
+      continue;
+    }
+    if (b.type === "file") {
+      const r = resolved?.get(b.attachmentId);
+      if (r && r.mediaType === "application/pdf") {
+        out.push({
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: r.data.toString("base64"),
+          },
+        });
+      } else if (r && r.mediaType.startsWith("text/")) {
+        // Text files inline — Claude reads text directly anyway.
+        out.push({
+          type: "text",
+          text: `Attached file ${b.name}:\n\n${r.data.toString("utf8").slice(0, 200_000)}`,
+        });
+      } else {
+        out.push({
+          type: "text",
+          text: `[Attached file: ${b.name} (${b.mediaType}, ${formatBytes(b.sizeBytes)})]`,
+        });
+      }
+      continue;
+    }
+    // text, tool_use, tool_result already match Anthropic shape.
+    out.push(b as unknown as Anthropic.ContentBlockParam);
+  }
+  return out;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function anthropicThinkingFor(effort: EffortLevel | undefined): Anthropic.ThinkingConfigEnabled | null {
+  switch (effort) {
+    case "low":
+      return { type: "enabled", budget_tokens: 1024 };
+    case "medium":
+      return { type: "enabled", budget_tokens: 4096 };
+    case "high":
+      return { type: "enabled", budget_tokens: 16384 };
+    default:
+      return null;
   }
 }
 
@@ -173,6 +306,12 @@ class OpenAIProvider implements ChatProvider {
         const textBlocks = m.content.filter(
           (b): b is Extract<CanonicalContentBlock, { type: "text" }> => b.type === "text",
         );
+        const imageBlocks = m.content.filter(
+          (b): b is Extract<CanonicalContentBlock, { type: "image" }> => b.type === "image",
+        );
+        const fileBlocks = m.content.filter(
+          (b): b is Extract<CanonicalContentBlock, { type: "file" }> => b.type === "file",
+        );
         if (toolResultBlocks.length > 0) {
           for (const tr of toolResultBlocks) {
             messages.push({
@@ -182,10 +321,15 @@ class OpenAIProvider implements ChatProvider {
             });
           }
         }
-        if (textBlocks.length > 0) {
+        if (textBlocks.length > 0 || imageBlocks.length > 0 || fileBlocks.length > 0) {
           messages.push({
             role: "user",
-            content: textBlocks.map((t) => t.text).join("\n"),
+            content: buildOpenAIUserContent(
+              textBlocks,
+              imageBlocks,
+              fileBlocks,
+              input.resolvedAttachments,
+            ),
           });
         }
       } else {
@@ -221,6 +365,10 @@ class OpenAIProvider implements ChatProvider {
       messages,
       stream: true,
     };
+    // reasoning_effort is only honored by reasoning-capable models
+    // (o-series, gpt-5). For others OpenAI rejects the param, so we gate it.
+    const reasoningEffort = openaiReasoningEffortFor(input.effort, input.model);
+    if (reasoningEffort) params.reasoning_effort = reasoningEffort;
     if (input.tools && input.tools.length > 0) {
       params.tools = input.tools.map((t) => ({
         type: "function" as const,
@@ -239,7 +387,7 @@ class OpenAIProvider implements ChatProvider {
     >();
     let finishReason: string | null = null;
 
-    const stream = await client.chat.completions.create(params);
+    const stream = await client.chat.completions.create(params, { signal: input.signal ?? null });
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
@@ -291,6 +439,56 @@ function mapOpenAiStopReason(reason: string | null): ProviderTurnResult["stopRea
   if (reason === "tool_calls") return "tool_use";
   if (reason === "length") return "max_tokens";
   return "other";
+}
+
+function buildOpenAIUserContent(
+  textBlocks: Array<Extract<CanonicalContentBlock, { type: "text" }>>,
+  imageBlocks: Array<Extract<CanonicalContentBlock, { type: "image" }>>,
+  fileBlocks: Array<Extract<CanonicalContentBlock, { type: "file" }>>,
+  resolved: ResolvedAttachments | undefined,
+): string | OpenAI.Chat.ChatCompletionContentPart[] {
+  const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+  const text = textBlocks.map((t) => t.text).join("\n").trim();
+  if (text.length > 0) parts.push({ type: "text", text });
+  for (const f of fileBlocks) {
+    const r = resolved?.get(f.attachmentId);
+    if (r && r.mediaType.startsWith("text/")) {
+      parts.push({
+        type: "text",
+        text: `Attached file ${f.name}:\n\n${r.data.toString("utf8").slice(0, 200_000)}`,
+      });
+    } else {
+      parts.push({ type: "text", text: `[Attached file: ${f.name} (${f.mediaType})]` });
+    }
+  }
+  for (const img of imageBlocks) {
+    const r = resolved?.get(img.attachmentId);
+    if (r) {
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:${r.mediaType};base64,${r.data.toString("base64")}` },
+      });
+    } else {
+      parts.push({ type: "text", text: `[Attached image: ${img.name}]` });
+    }
+  }
+  // OpenAI accepts string OR array — collapse to plain text when there's no
+  // media so older non-vision models work too.
+  if (parts.length === 1 && parts[0].type === "text") return parts[0].text;
+  if (parts.length === 0) return "";
+  return parts;
+}
+
+function openaiReasoningEffortFor(
+  effort: EffortLevel | undefined,
+  model: string,
+): "low" | "medium" | "high" | null {
+  if (!effort || effort === "auto") return null;
+  // o-series (o1, o3, o4, ...) and gpt-5 support reasoning_effort. Older
+  // gpt-4.x models reject the parameter.
+  const isReasoning = /^o[1-9]/.test(model) || model.startsWith("gpt-5");
+  if (!isReasoning) return null;
+  return effort;
 }
 
 // ---------- Ollama (local) ----------
@@ -345,11 +543,33 @@ class OllamaProvider implements ChatProvider {
         continue;
       }
       if (m.role === "user") {
-        const text = m.content
-          .filter((b): b is Extract<CanonicalContentBlock, { type: "text" }> => b.type === "text")
-          .map((b) => b.text)
-          .join("\n");
-        if (text) messages.push({ role: "user", content: text });
+        const textParts: string[] = [];
+        const images: string[] = [];
+        for (const b of m.content) {
+          if (b.type === "text" && b.text) textParts.push(b.text);
+          if (b.type === "image") {
+            const r = input.resolvedAttachments?.get(b.attachmentId);
+            if (r) images.push(r.data.toString("base64"));
+            else textParts.push(`[Attached image: ${b.name}]`);
+          }
+          if (b.type === "file") {
+            const r = input.resolvedAttachments?.get(b.attachmentId);
+            if (r && r.mediaType.startsWith("text/")) {
+              textParts.push(`Attached file ${b.name}:\n\n${r.data.toString("utf8").slice(0, 200_000)}`);
+            } else {
+              textParts.push(`[Attached file: ${b.name} (${b.mediaType})]`);
+            }
+          }
+        }
+        const text = textParts.join("\n");
+        if (text || images.length > 0) {
+          const userMsg: { role: string; content: string; images?: string[] } = {
+            role: "user",
+            content: text,
+          };
+          if (images.length > 0) userMsg.images = images;
+          messages.push(userMsg);
+        }
         for (const b of m.content) {
           if (b.type === "tool_result") {
             messages.push({
@@ -390,6 +610,7 @@ class OllamaProvider implements ChatProvider {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: input.signal,
       });
     } catch (err) {
       throw new Error(
@@ -502,7 +723,8 @@ class GeminiProvider implements ChatProvider {
     type GeminiPart =
       | { text: string }
       | { functionCall: { name: string; args: unknown } }
-      | { functionResponse: { name: string; response: unknown } };
+      | { functionResponse: { name: string; response: unknown } }
+      | { inlineData: { mimeType: string; data: string } };
     type GeminiContent = { role: "user" | "model"; parts: GeminiPart[] };
 
     const contents: GeminiContent[] = [];
@@ -522,6 +744,18 @@ class GeminiProvider implements ChatProvider {
                 response: { content: b.content },
               },
             });
+          }
+          if (b.type === "image" || b.type === "file") {
+            const r = input.resolvedAttachments?.get(b.attachmentId);
+            if (r) {
+              parts.push({
+                inlineData: { mimeType: r.mediaType, data: r.data.toString("base64") },
+              });
+            } else {
+              parts.push({
+                text: b.type === "image" ? `[Attached image: ${b.name}]` : `[Attached file: ${b.name}]`,
+              });
+            }
           }
         }
         if (parts.length > 0) contents.push({ role: "user", parts });
@@ -558,6 +792,7 @@ class GeminiProvider implements ChatProvider {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: input.signal,
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
@@ -709,8 +944,13 @@ class AdapterExecuteProvider implements ChatProvider {
       ? typeof lastUserMsg.content === "string"
         ? lastUserMsg.content
         : lastUserMsg.content
-            .filter((b): b is Extract<CanonicalContentBlock, { type: "text" }> => b.type === "text")
-            .map((b) => b.text)
+            .map((b) => {
+              if (b.type === "text") return b.text;
+              if (b.type === "image") return `[Attached image: ${b.name}]`;
+              if (b.type === "file") return `[Attached file: ${b.name} (${b.mediaType})]`;
+              return "";
+            })
+            .filter(Boolean)
             .join("\n")
       : "";
 
@@ -831,17 +1071,26 @@ class AdapterExecuteProvider implements ChatProvider {
     })();
     void cwd; // reserved for future per-turn cwd injection into adapter config
 
-    // Drain queue until execute() resolves.
-    while (true) {
-      if (queue.length > 0) {
-        yield queue.shift()!;
-      } else if (executeDone) {
-        break;
-      } else {
-        await new Promise<void>((res) => {
-          resolveNext = res;
-        });
+    // Drain queue until execute() resolves — or the caller aborts. We can't
+    // reach inside adapter.execute() to terminate the underlying CLI, but
+    // we stop yielding events so the SSE consumer winds down immediately.
+    const onAbort = () => wake();
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      while (true) {
+        if (input.signal?.aborted) break;
+        if (queue.length > 0) {
+          yield queue.shift()!;
+        } else if (executeDone) {
+          break;
+        } else {
+          await new Promise<void>((res) => {
+            resolveNext = res;
+          });
+        }
       }
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
     }
 
     if (executeError) {
@@ -870,6 +1119,19 @@ async function ensureClippyWorkspace(sessionId: string): Promise<string> {
   const dir = path.join(os.homedir(), ".paperclip", "clippy-workspaces", sessionId);
   await fs.mkdir(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Best-effort delete of the per-session adapter workspace created by
+ * {@link ensureClippyWorkspace}. Called when a chat session is deleted so
+ * we don't leak directories under `~/.paperclip/clippy-workspaces/`.
+ */
+export async function removeClippyWorkspace(sessionId: string): Promise<void> {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { promises: fs } = await import("node:fs");
+  const dir = path.join(os.homedir(), ".paperclip", "clippy-workspaces", sessionId);
+  await fs.rm(dir, { recursive: true, force: true });
 }
 
 function randomId(): string {

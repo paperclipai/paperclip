@@ -540,6 +540,13 @@
       "when": 1778200000000,
       "tag": "0076_chat_adapter_session_params",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1778900000000,
+      "tag": "0077_chat_attachments",
+      "breakpoints": true
     }
   ]
 }

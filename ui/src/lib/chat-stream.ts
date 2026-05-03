@@ -27,6 +27,7 @@ export function postChatMessageStream(
   sessionId: string,
   text: string,
   onEvent: (event: ChatStreamEvent) => void,
+  attachmentIds: string[] = [],
 ): StreamHandle {
   const controller = new AbortController();
   const done = (async () => {
@@ -35,7 +36,7 @@ export function postChatMessageStream(
       res = await fetch(`/api/chat/sessions/${sessionId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, attachmentIds }),
         credentials: "include",
         signal: controller.signal,
       });

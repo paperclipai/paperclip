@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const chatSessions = pgTable(
@@ -37,5 +37,26 @@ export const chatMessages = pgTable(
       table.sessionId,
       table.createdAt,
     ),
+  }),
+);
+
+export const chatAttachments = pgTable(
+  "chat_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    boardUserId: text("board_user_id").notNull(),
+    kind: text("kind").notNull(),
+    mediaType: text("media_type").notNull(),
+    name: text("name").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    storagePath: text("storage_path").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    sessionIdx: index("chat_attachments_session_idx").on(table.sessionId, table.createdAt),
   }),
 );

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, MessageSquare } from "lucide-react";
+import { ArrowDown, Download, FileText, MessageSquare } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
@@ -135,6 +135,12 @@ function MessageBubble({
   const toolUses = blocks.filter(
     (b): b is ChatContentBlock & { type: "tool_use" } => b.type === "tool_use",
   );
+  const images = blocks.filter(
+    (b): b is ChatContentBlock & { type: "image" } => b.type === "image",
+  );
+  const files = blocks.filter(
+    (b): b is ChatContentBlock & { type: "file" } => b.type === "file",
+  );
 
   return (
     <div className={cn("flex flex-col", isUser ? "items-end" : "items-start")}>
@@ -146,6 +152,16 @@ function MessageBubble({
             : "bg-muted/50 text-foreground",
         )}
       >
+        {(images.length > 0 || files.length > 0) && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {images.map((img) => (
+              <ImageAttachment key={img.attachmentId} block={img} />
+            ))}
+            {files.map((f) => (
+              <FileAttachment key={f.attachmentId} block={f} onUserBubble={isUser} />
+            ))}
+          </div>
+        )}
         {text && (
           isUser ? (
             // User messages render as plain text. MarkdownBody injects its own
@@ -158,7 +174,9 @@ function MessageBubble({
             <MarkdownBody className="[&_p]:my-1 [&_pre]:my-2">{text}</MarkdownBody>
           )
         )}
-        {!text && pending && <span className="text-xs text-muted-foreground">…</span>}
+        {!text && pending && images.length === 0 && files.length === 0 && (
+          <span className="text-xs text-muted-foreground">…</span>
+        )}
         {!isUser && toolUses.length > 0 && (
           <div className="mt-1">
             {toolUses.map((block) => {
@@ -200,5 +218,67 @@ function tryParse(s: string): unknown {
   } catch {
     return s;
   }
+}
+
+function ImageAttachment({
+  block,
+}: {
+  block: ChatContentBlock & { type: "image" };
+}) {
+  return (
+    <a
+      href={block.url}
+      target="_blank"
+      rel="noreferrer"
+      className="block overflow-hidden rounded-md border border-border bg-background"
+      title={block.name}
+    >
+      <img
+        src={block.url}
+        alt={block.name}
+        className="block max-h-72 max-w-[280px] object-contain"
+        loading="lazy"
+      />
+    </a>
+  );
+}
+
+function FileAttachment({
+  block,
+  onUserBubble,
+}: {
+  block: ChatContentBlock & { type: "file" };
+  onUserBubble: boolean;
+}) {
+  return (
+    <a
+      href={block.url}
+      target="_blank"
+      rel="noreferrer"
+      download={block.name}
+      className={cn(
+        "flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs",
+        onUserBubble
+          ? "border-primary-foreground/30 bg-primary/30 text-primary-foreground hover:bg-primary/40"
+          : "border-border bg-background hover:bg-accent",
+      )}
+      title={`${block.name} · ${formatBytesShort(block.sizeBytes)}`}
+    >
+      <FileText className="h-3.5 w-3.5 shrink-0" />
+      <div className="min-w-0 max-w-[200px]">
+        <div className="truncate font-medium">{block.name}</div>
+        <div className="truncate text-[10px] opacity-70">
+          {block.mediaType} · {formatBytesShort(block.sizeBytes)}
+        </div>
+      </div>
+      <Download className="h-3 w-3 shrink-0 opacity-60" />
+    </a>
+  );
+}
+
+function formatBytesShort(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 

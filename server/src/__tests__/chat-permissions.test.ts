@@ -12,16 +12,16 @@ describe("chatPermissionStore", () => {
   it("resolves with the decision when the client approves", async () => {
     const store = chatPermissionStore();
     const promise = store.await("tool-1", "session-1", 60_000);
-    expect(store.hasPending("tool-1")).toBe(true);
-    expect(store.resolve("tool-1", "approve")).toBe(true);
+    expect(store.hasPending("session-1", "tool-1")).toBe(true);
+    expect(store.resolve("session-1", "tool-1", "approve")).toBe(true);
     await expect(promise).resolves.toBe("approve");
-    expect(store.hasPending("tool-1")).toBe(false);
+    expect(store.hasPending("session-1", "tool-1")).toBe(false);
   });
 
   it("resolves with deny when the client denies", async () => {
     const store = chatPermissionStore();
     const promise = store.await("tool-2", "session-1", 60_000);
-    store.resolve("tool-2", "deny");
+    store.resolve("session-1", "tool-2", "deny");
     await expect(promise).resolves.toBe("deny");
   });
 
@@ -30,7 +30,7 @@ describe("chatPermissionStore", () => {
     const promise = store.await("tool-3", "session-1", 5_000);
     vi.advanceTimersByTime(5_001);
     await expect(promise).resolves.toBe("deny");
-    expect(store.hasPending("tool-3")).toBe(false);
+    expect(store.hasPending("session-1", "tool-3")).toBe(false);
   });
 
   it("cancelSession denies all pending tool calls for that session", async () => {
@@ -41,8 +41,8 @@ describe("chatPermissionStore", () => {
     store.cancelSession("session-X");
     await expect(a).resolves.toBe("deny");
     await expect(b).resolves.toBe("deny");
-    expect(store.hasPending("tool-c")).toBe(true);
-    store.resolve("tool-c", "approve");
+    expect(store.hasPending("session-Y", "tool-c")).toBe(true);
+    store.resolve("session-Y", "tool-c", "approve");
     await expect(c).resolves.toBe("approve");
   });
 
@@ -51,12 +51,24 @@ describe("chatPermissionStore", () => {
     const first = store.await("tool-rep", "session-1", 60_000);
     const second = store.await("tool-rep", "session-1", 60_000);
     await expect(first).resolves.toBe("deny");
-    store.resolve("tool-rep", "approve");
+    store.resolve("session-1", "tool-rep", "approve");
     await expect(second).resolves.toBe("approve");
   });
 
   it("resolve returns false for unknown toolUseId", () => {
     const store = chatPermissionStore();
-    expect(store.resolve("nope", "approve")).toBe(false);
+    expect(store.resolve("session-1", "nope", "approve")).toBe(false);
+  });
+
+  it("isolates tool ids across sessions (synthetic ids like 'call_0' don't collide)", async () => {
+    const store = chatPermissionStore();
+    const a = store.await("call_0", "session-A", 60_000);
+    const b = store.await("call_0", "session-B", 60_000);
+    expect(store.hasPending("session-A", "call_0")).toBe(true);
+    expect(store.hasPending("session-B", "call_0")).toBe(true);
+    store.resolve("session-A", "call_0", "approve");
+    store.resolve("session-B", "call_0", "deny");
+    await expect(a).resolves.toBe("approve");
+    await expect(b).resolves.toBe("deny");
   });
 });

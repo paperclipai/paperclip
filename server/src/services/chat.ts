@@ -17,9 +17,15 @@ import {
   listAvailableModels,
   listConfiguredProviders,
   pickBestDefaultModel,
+  removeClippyWorkspace,
   type CanonicalContentBlock,
   type CanonicalMessage,
 } from "./chat-providers.js";
+import {
+  attachmentDownloadUrl,
+  chatAttachmentService,
+  type ChatAttachment,
+} from "./chat-attachments.js";
 
 const MAX_TOOL_LOOPS = 12;
 
@@ -118,6 +124,12 @@ function systemPromptFor(session: ChatSession, defaultCompanyId: string | null):
   return lines.join("\n\n");
 }
 
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: string; message?: string };
+  return e.name === "AbortError" || /aborted|abort/i.test(e.message ?? "");
+}
+
 function buildCanonicalMessages(messages: ChatMessage[]): CanonicalMessage[] {
   // chat_messages.content stores Anthropic-shape blocks already.
   // user messages map directly. tool_result messages (stored under role 'tool')
@@ -133,7 +145,59 @@ function buildCanonicalMessages(messages: ChatMessage[]): CanonicalMessage[] {
   });
 }
 
+function collectAttachmentIds(messages: CanonicalMessage[]): string[] {
+  const ids = new Set<string>();
+  for (const m of messages) {
+    if (typeof m.content === "string") continue;
+    for (const b of m.content) {
+      if (b.type === "image" || b.type === "file") ids.add(b.attachmentId);
+    }
+  }
+  return [...ids];
+}
+
+function attachmentToBlock(att: ChatAttachment): CanonicalContentBlock {
+  if (att.kind === "image") {
+    return {
+      type: "image",
+      attachmentId: att.id,
+      url: attachmentDownloadUrl(att.id),
+      mediaType: att.mediaType,
+      name: att.name,
+    };
+  }
+  return {
+    type: "file",
+    attachmentId: att.id,
+    url: attachmentDownloadUrl(att.id),
+    mediaType: att.mediaType,
+    name: att.name,
+    sizeBytes: att.sizeBytes,
+  };
+}
+
 export function chatService(db: Db) {
+  const attachments = chatAttachmentService(db);
+
+  // Pre-load attachment bytes referenced anywhere in the conversation so
+  // providers can splice base64 inline without async fanout during the stream.
+  async function loadAttachmentsForMessages(messages: CanonicalMessage[]) {
+    const ids = collectAttachmentIds(messages);
+    if (ids.length === 0) return new Map();
+    const map = new Map<string, { data: Buffer; mediaType: string; name: string }>();
+    for (const id of ids) {
+      const att = await attachments.getById(id);
+      if (!att) continue;
+      try {
+        const data = await attachments.readContent(att);
+        map.set(id, { data, mediaType: att.mediaType, name: att.name });
+      } catch (err) {
+        logger.warn({ err, attachmentId: id }, "failed to read chat attachment bytes");
+      }
+    }
+    return map;
+  }
+
   async function listSessions(actor: ChatActor) {
     const rows = await db
       .select()
@@ -217,6 +281,15 @@ export function chatService(db: Db) {
   async function deleteSession(actor: ChatActor, id: string) {
     await getSession(actor, id);
     await db.delete(chatSessions).where(eq(chatSessions.id, id));
+    // Best-effort cleanup of on-disk artefacts. The DB cascades remove the
+    // chat_attachments rows; we still need to drop the files and any adapter
+    // workspace this session created so ~/.paperclip/ doesn't grow forever.
+    await Promise.all([
+      removeClippyWorkspace(id).catch((err) => {
+        logger.warn({ err, sessionId: id }, "failed to remove clippy workspace");
+      }),
+      attachments.removeAllForSession(id),
+    ]);
   }
 
   async function listMessages(actor: ChatActor, sessionId: string) {
@@ -229,13 +302,20 @@ export function chatService(db: Db) {
     return rows.map(rowToMessage);
   }
 
-  async function appendUserMessage(sessionId: string, text: string) {
+  async function appendUserMessage(
+    sessionId: string,
+    text: string,
+    attachmentBlocks: CanonicalContentBlock[] = [],
+  ) {
+    const blocks: CanonicalContentBlock[] = [];
+    if (text.length > 0) blocks.push({ type: "text", text });
+    for (const b of attachmentBlocks) blocks.push(b);
     const created = await db
       .insert(chatMessages)
       .values({
         sessionId,
         role: "user",
-        content: [{ type: "text", text }],
+        content: blocks,
       })
       .returning()
       .then((rows) => rows[0]);
@@ -244,6 +324,22 @@ export function chatService(db: Db) {
       .set({ updatedAt: new Date() })
       .where(eq(chatSessions.id, sessionId));
     return rowToMessage(created);
+  }
+
+  // Derive a short title from the first user message: first line, trimmed,
+  // capped to 60 chars. The dropdown rail is otherwise a wall of "New chat".
+  function deriveTitleFromText(text: string): string {
+    const firstLine = text.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    if (firstLine.length === 0) return "New chat";
+    if (firstLine.length <= 60) return firstLine;
+    return `${firstLine.slice(0, 59).trimEnd()}…`;
+  }
+
+  function deriveTitleFromAttachments(atts: ChatAttachment[]): string {
+    if (atts.length === 0) return "New chat";
+    const head = atts[0].name || (atts[0].kind === "image" ? "Image" : "File");
+    if (atts.length === 1) return head.slice(0, 60);
+    return `${head.slice(0, 50)} + ${atts.length - 1} more`;
   }
 
   async function appendAssistantMessage(sessionId: string, blocks: CanonicalContentBlock[]) {
@@ -269,6 +365,7 @@ export function chatService(db: Db) {
     sessionId: string,
     userText: string,
     onAbort?: (cb: () => void) => void,
+    attachmentIds: string[] = [],
   ): AsyncGenerator<StreamEvent, void, void> {
     let session = await getSession(actor, sessionId);
     const provider = getProviderForModel(session.model);
@@ -303,11 +400,44 @@ export function chatService(db: Db) {
     const defaultCompanyId = await resolveDefaultCompanyId(db, actor, session.companyId);
     yield { type: "session_state", session };
 
-    await appendUserMessage(sessionId, userText);
+    // Resolve attachments up front so we can fail the whole turn if the user
+    // somehow referenced an attachment from another session/user.
+    const attachmentRows: ChatAttachment[] = attachmentIds.length > 0
+      ? await attachments.findByIdsForSession(attachmentIds, sessionId, actor.userId)
+      : [];
+    const attachmentBlocks: CanonicalContentBlock[] = attachmentRows.map(attachmentToBlock);
+    await appendUserMessage(sessionId, userText, attachmentBlocks);
+
+    // First-turn auto-title: replace the placeholder "New chat" with a
+    // short version of what the user actually asked, so the rail dropdown
+    // is browsable. Skip if the user manually picked a title.
+    if (session.title === "New chat") {
+      // Fall back to "Image" / "Image + 2 more" etc. when the user only
+      // attached files without typing text.
+      const newTitle = userText.trim().length > 0
+        ? deriveTitleFromText(userText)
+        : deriveTitleFromAttachments(attachmentRows);
+      if (newTitle !== session.title) {
+        const updated = await db
+          .update(chatSessions)
+          .set({ title: newTitle, updatedAt: new Date() })
+          .where(eq(chatSessions.id, sessionId))
+          .returning()
+          .then((rows) => rows[0]);
+        if (updated) {
+          session = rowToSession(updated);
+          yield { type: "session_state", session };
+        }
+      }
+    }
 
     let aborted = false;
+    const abortController = new AbortController();
     onAbort?.(() => {
       aborted = true;
+      // Aborts the in-flight provider HTTP/SDK call so we stop generating
+      // (and stop being billed) the moment the user clicks Stop.
+      abortController.abort();
       chatPermissions.cancelSession(sessionId);
     });
 
@@ -318,11 +448,16 @@ export function chatService(db: Db) {
     while (loops < MAX_TOOL_LOOPS && !aborted) {
       loops += 1;
       const allMessages = await listMessages(actor, sessionId);
+      const canonical = buildCanonicalMessages(allMessages);
+      const resolved = await loadAttachmentsForMessages(canonical);
       const turnStream = provider.streamTurn({
         model: session.model,
         system: systemPromptFor(session, defaultCompanyId),
-        messages: buildCanonicalMessages(allMessages),
+        messages: canonical,
         tools,
+        effort: session.effort,
+        signal: abortController.signal,
+        resolvedAttachments: resolved,
         // Adapter-execute providers use this to resume their own session
         // (e.g. Claude Code session id) and persist updated params after each turn.
         adapterContext: {
@@ -358,6 +493,9 @@ export function chatService(db: Db) {
           }
         }
       } catch (err) {
+        // Aborts are user-initiated (Stop button or socket close) and not
+        // actually errors — don't log noise or emit an error event.
+        if (aborted || isAbortError(err)) return;
         const message = err instanceof Error ? err.message : String(err);
         logger.error({ err, sessionId, provider: provider.name }, "Chat provider stream errored");
         yield { type: "error", error: message };
@@ -468,7 +606,7 @@ export function chatService(db: Db) {
     decision: "approve" | "deny",
   ) {
     await getSession(actor, sessionId);
-    const ok = chatPermissions.resolve(toolUseId, decision);
+    const ok = chatPermissions.resolve(sessionId, toolUseId, decision);
     if (!ok) throw notFound("No pending permission for this tool use");
   }
 

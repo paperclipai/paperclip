@@ -38,13 +38,14 @@ export function ClippyConversation({ sessionId }: Props) {
         streaming={streaming}
       />
       <ClippyComposer
+        sessionId={sessionId}
         mode={session?.mode ?? "chat"}
         permissionMode={session?.permissionMode ?? "ask"}
         effort={session?.effort ?? "auto"}
         model={session?.model ?? "claude-opus-4-7"}
         streaming={streaming}
-        onSend={(text) => {
-          void send(text);
+        onSend={(text, attachmentIds) => {
+          void send(text, attachmentIds);
         }}
         onAbort={abort}
         onPatch={(patch) => {

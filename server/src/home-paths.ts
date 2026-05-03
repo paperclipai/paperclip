@@ -54,6 +54,15 @@ export function resolveDefaultBackupDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
 }
 
+export function resolveClippyAttachmentDir(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  // Session ids are UUIDs, but defend against path traversal anyway.
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+    throw new Error(`Invalid session id for attachment path '${sessionId}'.`);
+  }
+  return path.resolve(resolvePaperclipInstanceRoot(), "data", "clippy-attachments", trimmed);
+}
+
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   const trimmed = agentId.trim();
   if (!PATH_SEGMENT_RE.test(trimmed)) {

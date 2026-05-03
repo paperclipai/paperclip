@@ -1,10 +1,16 @@
 import { Router, type Request, type Response } from "express";
+import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { chatService, type ChatActor, type StreamEvent } from "../services/chat.js";
 import { listAvailableModels } from "../services/chat-providers.js";
+import {
+  attachmentSummary,
+  chatAttachmentService,
+} from "../services/chat-attachments.js";
 import { badRequest, forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 function requireBoardActor(req: Request): ChatActor {
   if (req.actor.type !== "board") {
@@ -36,8 +42,12 @@ const patchSessionSchema = z.object({
 });
 
 const sendMessageSchema = z.object({
-  text: z.string().min(1).max(50_000),
-});
+  text: z.string().max(50_000),
+  attachmentIds: z.array(z.string().uuid()).max(8).optional(),
+}).refine(
+  (val) => val.text.trim().length > 0 || (val.attachmentIds?.length ?? 0) > 0,
+  { message: "Message must have text or at least one attachment" },
+);
 
 const permissionDecisionSchema = z.object({
   decision: z.enum(["approve", "deny"]),
@@ -51,6 +61,11 @@ function writeSseEvent(res: Response, event: StreamEvent | { type: "ping" }) {
 export function chatRoutes(db: Db) {
   const router = Router();
   const svc = chatService(db);
+  const attachments = chatAttachmentService(db);
+  const attachmentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+  });
 
   router.get("/chat/models", async (req, res) => {
     requireBoardActor(req);
@@ -110,9 +125,12 @@ export function chatRoutes(db: Db) {
     });
     res.flushHeaders?.();
 
+    // SSE heartbeat as a comment frame (`: ping\n\n`). Client doesn't need
+    // to JSON-parse it, and proxies that strip empty data lines still keep
+    // the connection alive.
     const heartbeat = setInterval(() => {
       try {
-        writeSseEvent(res, { type: "ping" });
+        res.write(": ping\n\n");
       } catch {
         /* socket closed */
       }
@@ -134,6 +152,7 @@ export function chatRoutes(db: Db) {
         (cb) => {
           abortFn = cb;
         },
+        parsed.data.attachmentIds ?? [],
       )) {
         writeSseEvent(res, event);
       }
@@ -152,6 +171,66 @@ export function chatRoutes(db: Db) {
       } catch {
         /* already ended */
       }
+    }
+  });
+
+  router.post("/chat/sessions/:id/attachments", async (req, res) => {
+    const actor = requireBoardActor(req);
+    const sessionId = req.params.id as string;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        attachmentUpload.single("file")(req, res, (err: unknown) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } catch (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          return;
+        }
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const file = (req as Request & {
+      file?: { mimetype: string; buffer: Buffer; originalname: string };
+    }).file;
+    if (!file) {
+      res.status(400).json({ error: "Missing file field 'file'" });
+      return;
+    }
+
+    const att = await attachments.upload({
+      sessionId,
+      boardUserId: actor.userId,
+      buffer: file.buffer,
+      mediaType: file.mimetype,
+      originalName: file.originalname,
+    });
+    res.status(201).json({ attachment: attachmentSummary(att) });
+  });
+
+  router.get("/chat/attachments/:attachmentId/content", async (req, res, next) => {
+    const actor = requireBoardActor(req);
+    const att = await attachments.getOwnedById(
+      req.params.attachmentId as string,
+      actor.userId,
+    );
+    try {
+      const buf = await attachments.readContent(att);
+      res.setHeader("Content-Type", att.mediaType);
+      res.setHeader("Content-Length", String(buf.length));
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      const safeName = att.name.replaceAll('"', "");
+      res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+      res.end(buf);
+    } catch (err) {
+      next(err);
     }
   });
 

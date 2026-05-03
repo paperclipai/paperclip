@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ExternalLink, MessageCircle, Plus, X } from "lucide-react";
+import { ChevronDown, ExternalLink, MessageCircle, Pencil, Plus, X } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -78,6 +79,8 @@ export function ClippyDrawer() {
     readActiveSessionId(),
   );
   const [width, setWidth] = useState<number>(() => readDrawerWidth());
+  const widthRef = useRef<number>(width);
+  widthRef.current = width;
   const draggingRef = useRef(false);
   const { selectedCompanyId } = useCompany();
   const qc = useQueryClient();
@@ -103,6 +106,52 @@ export function ClippyDrawer() {
       setActiveSessionId(session.id);
     },
   });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      chatApi.patchSession(id, { title }).then((r) => r.session),
+    onSuccess: (session) => {
+      qc.setQueryData(["clippy", "session", session.id], session);
+      qc.invalidateQueries({ queryKey: ["clippy", "sessions"] });
+    },
+  });
+
+  // Inline rename of the currently-active chat in the header.
+  const [renaming, setRenaming] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const beginRename = useCallback(() => {
+    if (!activeSessionId) return;
+    const current = sessions.find((s) => s.id === activeSessionId);
+    setDraftTitle(current?.title ?? "");
+    setRenaming(true);
+  }, [activeSessionId, sessions]);
+
+  const commitRename = useCallback(() => {
+    if (!activeSessionId) {
+      setRenaming(false);
+      return;
+    }
+    const trimmed = draftTitle.trim();
+    const current = sessions.find((s) => s.id === activeSessionId);
+    if (trimmed.length === 0 || trimmed === current?.title) {
+      setRenaming(false);
+      return;
+    }
+    renameMutation.mutate({ id: activeSessionId, title: trimmed });
+    setRenaming(false);
+  }, [activeSessionId, draftTitle, renameMutation, sessions]);
+
+  // Focus the input when entering rename mode.
+  useEffect(() => {
+    if (!renaming) return;
+    const id = window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [renaming]);
 
   // When opened, ensure an active session exists.
   useEffect(() => {
@@ -138,12 +187,14 @@ export function ClippyDrawer() {
         }
         document.removeEventListener("pointermove", handleMove);
         document.removeEventListener("pointerup", handleUp);
-        writeDrawerWidth(width);
+        // Read the latest width from the ref — the local `width` captured in
+        // this closure is the value at pointer-down time, not after the drag.
+        writeDrawerWidth(widthRef.current);
       };
       document.addEventListener("pointermove", handleMove);
       document.addEventListener("pointerup", handleUp);
     },
-    [width],
+    [],
   );
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
@@ -165,6 +216,7 @@ export function ClippyDrawer() {
           side="right"
           style={{ width: `${width}px`, maxWidth: "100vw" }}
           className="flex flex-col gap-0 p-0 sm:max-w-none"
+          showCloseButton={false}
         >
           {/* Resize handle on the left edge */}
           <div
@@ -179,43 +231,77 @@ export function ClippyDrawer() {
             )}
           />
           <div className="flex items-center gap-1 border-b border-border px-3 py-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="ghost" className="-ml-1 h-7 max-w-[180px] gap-1 px-2">
-                  <span className="truncate text-sm font-semibold">
-                    {activeSession?.title ?? "Clippy"}
-                  </span>
-                  <ChevronDown className="h-3 w-3 shrink-0" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-72">
-                <DropdownMenuLabel>Recent chats</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {sessions.length === 0 && (
-                  <div className="px-2 py-1.5 text-xs text-muted-foreground">No chats yet.</div>
-                )}
-                {sessions.slice(0, 12).map((s) => (
-                  <DropdownMenuItem
-                    key={s.id}
-                    onSelect={() => setActiveSessionId(s.id)}
-                    className={cn("flex flex-col items-start gap-0", s.id === activeSessionId && "bg-accent")}
+            {renaming ? (
+              <Input
+                ref={renameInputRef}
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setRenaming(false);
+                  }
+                }}
+                className="h-7 max-w-[220px] px-2 text-sm font-semibold"
+                aria-label="Rename chat"
+                placeholder="Chat name"
+              />
+            ) : (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="-ml-1 h-7 max-w-[180px] gap-1 px-2"
+                    onDoubleClick={beginRename}
+                    title="Click to switch chats — double-click to rename"
                   >
-                    <span className="w-full truncate text-sm">{s.title}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {s.mode === "agent" ? "Agent" : "Chat"} · {s.model}
+                    <span className="truncate text-sm font-semibold">
+                      {activeSession?.title ?? "Clippy"}
                     </span>
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-72">
+                  <DropdownMenuLabel>Recent chats</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {sessions.length === 0 && (
+                    <div className="px-2 py-1.5 text-xs text-muted-foreground">No chats yet.</div>
+                  )}
+                  {sessions.slice(0, 12).map((s) => (
+                    <DropdownMenuItem
+                      key={s.id}
+                      onSelect={() => setActiveSessionId(s.id)}
+                      className={cn("flex flex-col items-start gap-0", s.id === activeSessionId && "bg-accent")}
+                    >
+                      <span className="w-full truncate text-sm">{s.title}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {s.mode === "agent" ? "Agent" : "Chat"} · {s.model}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    disabled={!activeSessionId}
+                    onSelect={() => beginRename()}
+                  >
+                    <Pencil className="mr-2 h-3.5 w-3.5" />
+                    Rename current chat
                   </DropdownMenuItem>
-                ))}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (typeof window !== "undefined") window.location.assign("/clippy");
-                  }}
-                >
-                  View all chats…
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      if (typeof window !== "undefined") window.location.assign("/clippy");
+                    }}
+                  >
+                    View all chats…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <div className="ml-auto flex items-center gap-1">
               <Button
                 size="sm"

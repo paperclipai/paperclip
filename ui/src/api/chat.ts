@@ -35,7 +35,37 @@ export interface ChatContentBlockToolResult {
   content: string;
   is_error?: boolean;
 }
-export type ChatContentBlock = ChatContentBlockText | ChatContentBlockToolUse | ChatContentBlockToolResult;
+export interface ChatContentBlockImage {
+  type: "image";
+  attachmentId: string;
+  url: string;
+  mediaType: string;
+  name: string;
+}
+export interface ChatContentBlockFile {
+  type: "file";
+  attachmentId: string;
+  url: string;
+  mediaType: string;
+  name: string;
+  sizeBytes: number;
+}
+export type ChatContentBlock =
+  | ChatContentBlockText
+  | ChatContentBlockToolUse
+  | ChatContentBlockToolResult
+  | ChatContentBlockImage
+  | ChatContentBlockFile;
+
+export interface ChatAttachmentSummary {
+  id: string;
+  sessionId: string;
+  kind: "image" | "file";
+  mediaType: string;
+  name: string;
+  sizeBytes: number;
+  url: string;
+}
 
 export interface ChatMessage {
   id: string;
@@ -78,4 +108,25 @@ export const chatApi = {
   decidePermission: (sessionId: string, toolUseId: string, decision: "approve" | "deny") =>
     api.post<{ ok: true }>(`/chat/sessions/${sessionId}/permissions/${toolUseId}`, { decision }),
   listModels: () => api.get<{ models: AvailableModel[] }>("/chat/models"),
+  uploadAttachment: async (sessionId: string, file: File): Promise<ChatAttachmentSummary> => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const res = await fetch(`/api/chat/sessions/${sessionId}/attachments`, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        /* ignore */
+      }
+      const msg = (body as { error?: string } | null)?.error ?? `Upload failed: ${res.status}`;
+      throw new Error(msg);
+    }
+    const json = (await res.json()) as { attachment: ChatAttachmentSummary };
+    return json.attachment;
+  },
 };
