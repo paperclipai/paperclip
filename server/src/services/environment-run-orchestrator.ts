@@ -63,12 +63,30 @@ export type EnvironmentErrorCode =
   | "lease_release_failed"
   | "lease_cleanup_failed";
 
+/**
+ * Per-attempt detail surfaced from the SSH lease probe (see
+ * findReachablePaperclipApiUrlOverSsh). Re-declared here as the structural
+ * shape so the orchestrator stays decoupled from the adapter-utils package.
+ */
+export interface EnvironmentRunErrorProbeAttempt {
+  candidate: string;
+  attempt: number;
+  ok: boolean;
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  classification: string;
+  error: string | null;
+}
+
 export class EnvironmentRunError extends Error {
   code: EnvironmentErrorCode;
   environmentId?: string;
   driver?: string;
   provider?: string;
   cause?: unknown;
+  probeAttempts?: EnvironmentRunErrorProbeAttempt[];
 
   constructor(
     code: EnvironmentErrorCode,
@@ -78,6 +96,7 @@ export class EnvironmentRunError extends Error {
       driver?: string;
       provider?: string;
       cause?: unknown;
+      probeAttempts?: EnvironmentRunErrorProbeAttempt[];
     },
   ) {
     super(message);
@@ -87,6 +106,7 @@ export class EnvironmentRunError extends Error {
     this.driver = details?.driver;
     this.provider = details?.provider;
     this.cause = details?.cause;
+    if (details?.probeAttempts) this.probeAttempts = details.probeAttempts;
   }
 }
 
@@ -212,6 +232,10 @@ export function environmentRunOrchestrator(
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      // SSH probe failures attach .probeAttempts to the inner Error; hoist
+      // them onto the EnvironmentRunError so structured callers (alerting,
+      // tests) can read attempt detail without unwrapping `cause`.
+      const probeAttempts = (err as { probeAttempts?: EnvironmentRunErrorProbeAttempt[] })?.probeAttempts;
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
@@ -219,6 +243,7 @@ export function environmentRunOrchestrator(
           environmentId: input.environment.id,
           driver: input.environment.driver,
           cause: err,
+          probeAttempts: Array.isArray(probeAttempts) ? probeAttempts : undefined,
         },
       );
     }

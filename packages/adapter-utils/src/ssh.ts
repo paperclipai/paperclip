@@ -112,34 +112,392 @@ function normalizeHttpUrlCandidate(value: string): string | null {
   }
 }
 
+const DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS = 10_000;
+const DEFAULT_PAPERCLIP_API_PROBE_ATTEMPTS = 3;
+const MAX_PAPERCLIP_API_PROBE_ATTEMPTS = 10;
+const DEFAULT_PAPERCLIP_API_PROBE_TOTAL_BUDGET_MS = 30_000;
+// Per BLO-1490: 300 ms base, sampled uniform from [250, 750] ms per attempt.
+// Short-and-jittered absorbs the sub-second SSH-handshake stalls observed on
+// the worker host without pathologically inflating lease-acquire latency.
+const PROBE_BACKOFF_JITTER_MIN_MS = 250;
+const PROBE_BACKOFF_JITTER_MAX_MS = 750;
+const PROBE_STDERR_TAIL_BYTES = 512;
+
+function resolveProbeTimeoutMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_TIMEOUT_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS;
+}
+
+function resolveProbeAttempts(explicit?: number): number {
+  // Cap at MAX_PAPERCLIP_API_PROBE_ATTEMPTS so a fat-fingered "9999" can't
+  // strand a heartbeat looping over a flapping upstream.
+  const clamp = (value: number): number =>
+    Math.min(MAX_PAPERCLIP_API_PROBE_ATTEMPTS, Math.max(1, Math.floor(value)));
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 1) {
+    return clamp(explicit);
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return clamp(parsed);
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_ATTEMPTS;
+}
+
+function resolveProbeTotalBudgetMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_TOTAL_BUDGET_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_TOTAL_BUDGET_MS;
+}
+
+/**
+ * Backoff is either an explicit array of sleep durations (one per attempt
+ * boundary) or a function that samples per-attempt with optional jitter.
+ * Tests inject deterministic arrays; production defaults to jittered.
+ */
+type ProbeBackoffSource =
+  | readonly number[]
+  | ((attemptIndex: number, randomMs: () => number) => number);
+
+function defaultJitteredBackoff(_attemptIndex: number, randomMs: () => number): number {
+  return randomMs();
+}
+
+function defaultRandomBackoffMs(): number {
+  // Uniform inclusive [PROBE_BACKOFF_JITTER_MIN_MS, PROBE_BACKOFF_JITTER_MAX_MS].
+  const span = PROBE_BACKOFF_JITTER_MAX_MS - PROBE_BACKOFF_JITTER_MIN_MS;
+  return PROBE_BACKOFF_JITTER_MIN_MS + Math.floor(Math.random() * (span + 1));
+}
+
+function resolveProbeBackoff(explicit?: readonly number[]): ProbeBackoffSource {
+  const sanitize = (values: unknown): number[] | null => {
+    if (!Array.isArray(values)) return null;
+    const cleaned = values
+      .map((entry) => (typeof entry === "number" ? entry : Number(entry)))
+      .filter((entry): entry is number => Number.isFinite(entry) && entry >= 0)
+      // Cap each sleep at 30s so a fat-fingered config can never strand a heartbeat.
+      .map((entry) => Math.min(entry, 30_000));
+    return cleaned.length > 0 ? cleaned : null;
+  };
+  if (explicit) {
+    const cleaned = sanitize(explicit);
+    if (cleaned) return cleaned;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON;
+  if (raw) {
+    try {
+      const cleaned = sanitize(JSON.parse(raw));
+      if (cleaned) return cleaned;
+    } catch {
+      // Fall through to the default. A malformed knob must never crash acquireRunLease.
+    }
+  }
+  return defaultJitteredBackoff;
+}
+
+function resolveBackoffMs(
+  source: ProbeBackoffSource,
+  attemptIndex: number,
+  randomMs: () => number,
+): number {
+  if (typeof source === "function") return source(attemptIndex, randomMs);
+  return source[Math.min(attemptIndex, source.length - 1)] ?? 0;
+}
+
+/**
+ * Per-attempt detail captured during a Paperclip API probe over SSH. Surfaced
+ * via {@link ProbeResult.attempts} so callers can attach the full failure
+ * trail to their thrown error / structured log instead of swallowing it.
+ */
+export interface PaperclipApiProbeAttempt {
+  candidate: string;
+  attempt: number; // 1-indexed within this candidate
+  ok: boolean;
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  classification: "ok" | "transient" | "permanent";
+  error: string | null;
+}
+
+export interface PaperclipApiProbeResult {
+  url: string | null;
+  attempts: PaperclipApiProbeAttempt[];
+}
+
+const TRANSIENT_HTTP_STATUSES = new Set<number>([408, 425, 429]);
+
+// Spec deviation note (BLO-1489 vs BLO-1490): BLO-1490 says "fast-fail on
+// non-2xx, the API is reachable but unhealthy". We deliberately keep BLO-1489's
+// 5xx-as-transient behavior because the BLO-1489 incident on 2026-04-28 was a
+// real ~50ms 503 from nginx during an upstream restart — exactly the blip the
+// retry budget is designed to absorb. Switching 5xx to permanent here would
+// re-introduce BLO-1489 in single-candidate prod setups. The total-budget cap
+// (PAPERCLIP_RUNTIME_API_PROBE_TOTAL_BUDGET_MS, default 30s) bounds the worst
+// case so a sustained 5xx storm still falls through to the next candidate.
+function classifyHttpStatus(status: number | null): "ok" | "transient" | "permanent" {
+  if (status === null) return "transient";
+  if (status >= 200 && status < 300) return "ok";
+  if (status >= 500 && status < 600) return "transient";
+  if (TRANSIENT_HTTP_STATUSES.has(status)) return "transient";
+  return "permanent";
+}
+
+const PROBE_STATUS_SENTINEL = "__PAPERCLIP_PROBE_HTTP_CODE__:";
+
+/**
+ * Test seam: the probe runner. Production code uses {@link runSingleProbe}
+ * which executes curl over SSH; tests can pass a fake to avoid spinning up
+ * a real sshd + http server per case.
+ */
+export type SingleProbeRunner = (input: {
+  config: SshConnectionConfig;
+  healthUrl: string;
+  curlSeconds: number;
+  timeoutMs: number;
+}) => Promise<SingleProbeAttempt>;
+
+export interface SingleProbeAttempt {
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  sshError: string | null;
+}
+
+async function runSingleProbe(input: {
+  config: SshConnectionConfig;
+  healthUrl: string;
+  curlSeconds: number;
+  timeoutMs: number;
+}): Promise<SingleProbeAttempt> {
+  // Capture %{http_code} explicitly. We deliberately drop curl's `-f` so a 5xx
+  // returns exit 0 with the actual status code in stdout — letting us
+  // distinguish transient (5xx) from permanent (4xx) without parsing stderr.
+  // Connection errors keep their non-zero curl exit and surface as null status.
+  const remote = `curl -sS -m ${input.curlSeconds} -o /dev/null -w '${PROBE_STATUS_SENTINEL}%{http_code}\\n' ${shellQuote(input.healthUrl)}`;
+  const startedAt = Date.now();
+  try {
+    const result = await runSshCommand(
+      input.config,
+      `sh -lc ${shellQuote(remote)}`,
+      { timeoutMs: input.timeoutMs },
+    );
+    const durationMs = Date.now() - startedAt;
+    const httpStatus = parseProbeHttpStatus(result.stdout);
+    return {
+      exitCode: 0,
+      httpStatus,
+      durationMs,
+      stderrTail: tailString(result.stderr, PROBE_STDERR_TAIL_BYTES),
+      sshError: null,
+    };
+  } catch (err) {
+    const durationMs = Date.now() - startedAt;
+    const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string };
+    const stdout = typeof e?.stdout === "string" ? e.stdout : "";
+    const stderr = typeof e?.stderr === "string" ? e.stderr : "";
+    const exitCodeRaw = (e as { code?: unknown })?.code;
+    const exitCode =
+      typeof exitCodeRaw === "number"
+        ? exitCodeRaw
+        : typeof exitCodeRaw === "string" && /^\d+$/.test(exitCodeRaw)
+          ? Number(exitCodeRaw)
+          : null;
+    return {
+      exitCode,
+      httpStatus: parseProbeHttpStatus(stdout),
+      durationMs,
+      stderrTail: tailString(stderr, PROBE_STDERR_TAIL_BYTES),
+      sshError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function parseProbeHttpStatus(stdout: string): number | null {
+  const idx = stdout.lastIndexOf(PROBE_STATUS_SENTINEL);
+  if (idx < 0) return null;
+  const tail = stdout.slice(idx + PROBE_STATUS_SENTINEL.length).trim();
+  const match = tail.match(/^(\d{3})/);
+  if (!match) return null;
+  const status = Number.parseInt(match[1], 10);
+  // curl writes 000 when no HTTP response was received (DNS/TCP/TLS failure).
+  return status === 0 ? null : status;
+}
+
+function tailString(value: string | null | undefined, bytes: number): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= bytes) return trimmed;
+  return `…${trimmed.slice(-bytes)}`;
+}
+
+function dedupeCandidates(...sources: ReadonlyArray<readonly string[]>): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const source of sources) {
+    for (const candidate of source) {
+      const normalized = normalizeHttpUrlCandidate(candidate);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      ordered.push(normalized);
+    }
+  }
+  return ordered;
+}
+
 export async function findReachablePaperclipApiUrlOverSsh(input: {
   config: SshConnectionConfig;
   candidates: string[];
+  /** If provided, this candidate is probed first (cache short-circuit). */
+  preferredCandidate?: string | null;
   timeoutMs?: number;
-}): Promise<string | null> {
-  const uniqueCandidates = Array.from(
-    new Set(
-      input.candidates
-        .map((candidate) => normalizeHttpUrlCandidate(candidate))
-        .filter((candidate): candidate is string => candidate !== null),
-    ),
+  /** Per-candidate attempt count. Env: PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS. */
+  attempts?: number;
+  /**
+   * Wall-clock cap across the whole candidate sweep. Prevents pathological
+   * lease-acquire latency when every candidate is flapping. Env:
+   * PAPERCLIP_RUNTIME_API_PROBE_TOTAL_BUDGET_MS.
+   */
+  totalBudgetMs?: number;
+  /** Sleep between retries in ms; index N is the wait BEFORE attempt N+2. */
+  backoffMs?: readonly number[];
+  /** Test-only seam to skip real sleeps in unit tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test-only seam: fake the curl-over-SSH runner. */
+  runProbe?: SingleProbeRunner;
+  /** Test-only seam: deterministic clock for total-budget enforcement. */
+  now?: () => number;
+  /** Test-only seam: deterministic jitter sample. */
+  randomBackoffMs?: () => number;
+}): Promise<PaperclipApiProbeResult> {
+  const orderedCandidates = dedupeCandidates(
+    input.preferredCandidate ? [input.preferredCandidate] : [],
+    input.candidates,
   );
 
-  for (const candidate of uniqueCandidates) {
+  const timeoutMs = resolveProbeTimeoutMs(input.timeoutMs);
+  const curlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const probeAttempts = resolveProbeAttempts(input.attempts);
+  const totalBudgetMs = resolveProbeTotalBudgetMs(input.totalBudgetMs);
+  const backoffSource = resolveProbeBackoff(input.backoffMs);
+  const sleep = input.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const runProbe: SingleProbeRunner = input.runProbe ?? runSingleProbe;
+  const now = input.now ?? (() => Date.now());
+  const randomBackoffMs = input.randomBackoffMs ?? defaultRandomBackoffMs;
+
+  const startedAt = now();
+  const elapsedMs = (): number => now() - startedAt;
+  const isBudgetExhausted = (): boolean => elapsedMs() >= totalBudgetMs;
+
+  const attemptsLog: PaperclipApiProbeAttempt[] = [];
+
+  outer: for (const candidate of orderedCandidates) {
     const healthUrl = new URL("/api/health", candidate).toString();
-    try {
-      await runSshCommand(
-        input.config,
-        `sh -lc ${shellQuote(`curl -fsS -m ${Math.max(1, Math.ceil((input.timeoutMs ?? 5_000) / 1000))} ${shellQuote(healthUrl)} >/dev/null`)}`,
-        { timeoutMs: input.timeoutMs ?? 5_000 },
-      );
-      return candidate;
-    } catch {
-      continue;
+    for (let attemptIndex = 0; attemptIndex < probeAttempts; attemptIndex++) {
+      // Budget check BEFORE issuing a probe — we don't want to start a curl
+      // we can't afford. The check is intentionally on entry to each attempt,
+      // not just before sleep, so a slow probe + tight budget can't sneak in
+      // an extra request after the budget elapsed.
+      if (isBudgetExhausted()) break outer;
+
+      const probe = await runProbe({ config: input.config, healthUrl, curlSeconds, timeoutMs });
+      // Classification rules:
+      //  - ok: HTTP 2xx with curl exit 0
+      //  - permanent: HTTP 3xx/4xx (except 408/425/429) — retrying won't help
+      //  - transient: anything else (5xx, 408/425/429, curl exit != 0, ssh
+      //    timeout / network blip). Default to transient on uncertainty so a
+      //    misclassified failure still gets the retry budget rather than
+      //    falling through to "all candidates dead" on the first hiccup.
+      const classification: PaperclipApiProbeAttempt["classification"] = (() => {
+        if (probe.exitCode === 0 && probe.httpStatus !== null) {
+          return classifyHttpStatus(probe.httpStatus);
+        }
+        return "transient";
+      })();
+
+      const ok = classification === "ok";
+      const errorMessage = ok
+        ? null
+        : probe.sshError ??
+          (probe.httpStatus !== null ? `HTTP ${probe.httpStatus}` : `curl exit ${probe.exitCode ?? "?"}`);
+      const recorded: PaperclipApiProbeAttempt = {
+        candidate,
+        attempt: attemptIndex + 1,
+        ok,
+        exitCode: probe.exitCode,
+        httpStatus: probe.httpStatus,
+        durationMs: probe.durationMs,
+        stderrTail: probe.stderrTail,
+        classification,
+        error: errorMessage,
+      };
+      attemptsLog.push(recorded);
+
+      if (ok) {
+        return { url: candidate, attempts: attemptsLog };
+      }
+
+      // Spec (BLO-1490): "Log (at info) each failed attempt with: candidate
+      // URL, attempt index, error class, elapsed ms." Emit here so the line
+      // shape is identical regardless of caller. Caller can attach further
+      // context (env id, host) but cannot drop these fields.
+      logFailedProbeAttempt(recorded);
+
+      // Permanent failures — don't burn the retry budget on this candidate.
+      if (classification === "permanent") {
+        break;
+      }
+
+      const isLastAttempt = attemptIndex === probeAttempts - 1;
+      if (isLastAttempt) break;
+
+      const waitMs = resolveBackoffMs(backoffSource, attemptIndex, randomBackoffMs);
+      // Cap the sleep so we don't sit idle past the total budget. If there's
+      // no budget left for *any* sleep, drop straight into the next attempt
+      // — but the budget check at the top of the next iteration will catch
+      // an exhausted budget and exit the sweep cleanly.
+      const remainingBudget = totalBudgetMs - elapsedMs();
+      if (remainingBudget <= 0) break outer;
+      const cappedWait = Math.min(Math.max(0, waitMs), remainingBudget);
+      if (cappedWait > 0) {
+        await sleep(cappedWait);
+      }
     }
   }
 
-  return null;
+  return { url: null, attempts: attemptsLog };
+}
+
+function logFailedProbeAttempt(attempt: PaperclipApiProbeAttempt): void {
+  // Structured single-line log. Keep field order stable so log-scrapers
+  // (Loki / journalctl greps) can parse without a schema bump.
+  // eslint-disable-next-line no-console
+  console.info(
+    `[ssh-probe] ` +
+      `candidate=${attempt.candidate} ` +
+      `attempt=${attempt.attempt} ` +
+      `class=${attempt.classification} ` +
+      `status=${attempt.httpStatus ?? "none"} ` +
+      `exit=${attempt.exitCode ?? "none"} ` +
+      `durationMs=${attempt.durationMs}` +
+      (attempt.error ? ` error="${attempt.error.replace(/"/g, "'")}"` : ""),
+  );
 }
 
 async function execFileText(
