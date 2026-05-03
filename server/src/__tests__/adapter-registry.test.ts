@@ -523,6 +523,59 @@ describe("server adapter registry", () => {
     expect(promptTemplate.indexOf("Custom base prompt")).toBeGreaterThan(promptTemplate.indexOf("Be empathetic."));
   });
 
+  it("prepends instructions bundle content to promptTemplate when instructionsFilePath is set (UI-configured path)", async () => {
+    agentInstructionsExportFilesMock.mockResolvedValueOnce({
+      files: {
+        "AGENTS.md": "Bundle content via filePath",
+        "SOUL.md": "Voice content",
+      },
+      entryFile: "AGENTS.md",
+      warnings: [],
+    });
+
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-filepath",
+        companyId: "company-123",
+        name: "Hermes FilePath Bundle Agent",
+        role: "general",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          instructionsFilePath: "/some/path/AGENTS.md",
+          promptTemplate: "Custom base prompt via filePath",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    // exportFiles() must have been called — the gate passes via instructionsFilePath.
+    expect(agentInstructionsExportFilesMock).toHaveBeenCalledTimes(1);
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const { promptTemplate } = patchedCtx.agent.adapterConfig;
+    // Auth guard present.
+    expect(promptTemplate).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    // Entry file (AGENTS.md) appears before other bundle files.
+    expect(promptTemplate.indexOf("# AGENTS.md")).toBeLessThan(promptTemplate.indexOf("# SOUL.md"));
+    // Bundle content present.
+    expect(promptTemplate).toContain("Bundle content via filePath");
+    expect(promptTemplate).toContain("Voice content");
+    // Original promptTemplate preserved at the end.
+    expect(promptTemplate).toContain("Custom base prompt via filePath");
+    expect(promptTemplate.indexOf("Custom base prompt via filePath")).toBeGreaterThan(
+      promptTemplate.indexOf("Voice content"),
+    );
+  });
+
   it("injects bundle content as promptTemplate when no custom template was set, without stripping Hermes default", async () => {
     agentInstructionsExportFilesMock.mockResolvedValueOnce({
       files: {
