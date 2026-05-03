@@ -1004,7 +1004,7 @@ $STORAGE_LINE
 To open a shell inside the running container, connect as the \`node\` user — files under \`/paperclip\` are owned by \`node\`, so running as root will create files the app can't read/write:
 
 \`\`\`sh
-docker exec -it -u node \$(docker compose ps -q paperclip) bash
+docker exec -it -u node $(docker compose ps -q paperclip) bash
 \`\`\`
 
 Provider keys (\`OPENAI_API_KEY\`, \`ANTHROPIC_API_KEY\`, \`GEMINI_API_KEY\`) live in \`.env\`; \`./manage.sh restart\` applies changes.
