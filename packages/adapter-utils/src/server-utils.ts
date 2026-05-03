@@ -110,6 +110,8 @@ export interface PaperclipSkillEntry {
   source: string;
   required?: boolean;
   requiredReason?: string | null;
+  entryFile?: string;
+  variantOf?: string | null;
 }
 
 export interface InstalledSkillTarget {
@@ -134,6 +136,10 @@ interface PersistentSkillSnapshotOptions {
   externalConflictDetail: string;
   externalDetail: string;
   warnings?: string[];
+}
+
+interface PaperclipSkillLinkOptions {
+  linkSkill?: (source: string, target: string) => Promise<void>;
 }
 
 function normalizePathSlashes(value: string): string {
@@ -185,6 +191,51 @@ function resolveInstalledEntryTarget(
     return { targetPath: fullPath, kind: "directory" };
   }
   return { targetPath: fullPath, kind: "file" };
+}
+
+function isVariantSkillEntry(entry: Pick<PaperclipSkillEntry, "entryFile">): entry is PaperclipSkillEntry & { entryFile: string } {
+  return typeof entry.entryFile === "string" && entry.entryFile.trim().length > 0 && entry.entryFile !== "SKILL.md";
+}
+
+function expectedManagedSkillTargetPath(
+  skillsHome: string,
+  entry: Pick<PaperclipSkillEntry, "runtimeName" | "source" | "entryFile">,
+): string {
+  return isVariantSkillEntry(entry)
+    ? path.join(skillsHome, entry.runtimeName)
+    : entry.source;
+}
+
+async function fileOrDirExists(candidate: string): Promise<boolean> {
+  return fs.stat(candidate).then(() => true).catch(() => false);
+}
+
+async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
+  const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
+    fileOrDirExists(path.join(candidate, "pnpm-workspace.yaml")),
+    fileOrDirExists(path.join(candidate, "package.json")),
+    fileOrDirExists(path.join(candidate, "server")),
+    fileOrDirExists(path.join(candidate, "packages", "adapter-utils")),
+  ]);
+
+  return hasWorkspace && hasPackageJson && hasServerDir && hasAdapterUtilsDir;
+}
+
+async function isLikelyPaperclipRuntimeSkillPath(candidate: string, runtimeName: string): Promise<boolean> {
+  if (path.basename(candidate) !== runtimeName) return false;
+  const skillsRoot = path.dirname(candidate);
+  if (path.basename(skillsRoot) !== "skills") return false;
+  if (!(await fileOrDirExists(path.join(candidate, "SKILL.md")))) return false;
+
+  let cursor = path.dirname(skillsRoot);
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (await isLikelyPaperclipRepoRoot(cursor)) return true;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+
+  return false;
 }
 
 export function parseObject(value: unknown): Record<string, unknown> {
@@ -1101,6 +1152,20 @@ async function readSkillRequired(skillDir: string): Promise<boolean> {
   }
 }
 
+function parseSkillScalarFromFrontmatter(content: string, key: string): string | null {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return null;
+  const closing = normalized.indexOf("\n---\n", 4);
+  if (closing < 0) return null;
+  const frontmatter = normalized.slice(4, closing);
+  const match = frontmatter.match(new RegExp(`^\\s*${key}\\s*:\\s*("?)([^"\\n]+)\\1\\s*$`, "m"));
+  return match?.[2]?.trim() || null;
+}
+
+function parseSkillNameFromFrontmatter(content: string): string | null {
+  return parseSkillScalarFromFrontmatter(content, "name");
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -1111,9 +1176,11 @@ export async function listPaperclipSkillEntries(
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
+    const baseEntries: PaperclipSkillEntry[] = await Promise.all(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
+      const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8").catch(() => "");
+      const variantOf = parseSkillScalarFromFrontmatter(content, "variantOf");
       return {
         key: `paperclipai/paperclip/${entry.name}`,
         runtimeName: entry.name,
@@ -1122,8 +1189,36 @@ export async function listPaperclipSkillEntries(
         requiredReason: required
           ? "Bundled Paperclip skills are always available for local adapters."
           : null,
+        variantOf,
       };
     }));
+
+    const variantEntries = (
+      await Promise.all(baseEntries.map(async (baseEntry) => {
+        const files = await fs.readdir(baseEntry.source, { withFileTypes: true }).catch(() => []);
+        return Promise.all(
+          files
+            .filter((file) => file.isFile() && /^SKILL-(.+)\.md$/i.test(file.name))
+            .map(async (file) => {
+              const variantMatch = file.name.match(/^SKILL-(.+)\.md$/i)!;
+              const slug = variantMatch[1]!.toLowerCase();
+              const content = await fs.readFile(path.join(baseEntry.source, file.name), "utf8").catch(() => "");
+              const runtimeName = parseSkillNameFromFrontmatter(content) ?? `${baseEntry.runtimeName}-${slug}`;
+              return {
+                key: `paperclipai/paperclip/${runtimeName}`,
+                runtimeName,
+                source: baseEntry.source,
+                required: false,
+                requiredReason: null,
+                entryFile: file.name,
+                variantOf: baseEntry.key,
+              } satisfies PaperclipSkillEntry;
+            }),
+        );
+      }))
+    ).flat();
+
+    return [...baseEntries, ...variantEntries];
   } catch {
     return [];
   }
@@ -1167,7 +1262,7 @@ export function buildPersistentSkillSnapshot(
     let managed = false;
     let detail: string | null = null;
 
-    if (installedEntry?.targetPath === available.source) {
+    if (installedEntry?.targetPath === expectedManagedSkillTargetPath(skillsHome, available)) {
       managed = true;
       state = desired ? "installed" : "stale";
       detail = installedDetail ?? null;
@@ -1260,6 +1355,14 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
         typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
           ? entry.requiredReason.trim()
           : null,
+      entryFile:
+        typeof entry.entryFile === "string" && entry.entryFile.trim().length > 0
+          ? entry.entryFile.trim()
+          : undefined,
+      variantOf:
+        typeof entry.variantOf === "string" && entry.variantOf.trim().length > 0
+          ? entry.variantOf.trim()
+          : null,
     });
   }
   return out;
@@ -1340,7 +1443,7 @@ function canonicalizeDesiredPaperclipSkillReference(
 
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean; variantOf?: string | null }>,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
   const requiredSkills = availableEntries
@@ -1352,7 +1455,13 @@ export function resolvePaperclipDesiredSkillNames(
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
-  return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+  const variantOverrides = new Set(
+    desiredSkills
+      .map((key) => availableEntries.find((entry) => entry.key === key)?.variantOf)
+      .filter((value): value is string => typeof value === "string"),
+  );
+  const effectiveRequired = requiredSkills.filter((key) => !variantOverrides.has(key));
+  return Array.from(new Set([...effectiveRequired, ...desiredSkills]));
 }
 
 export function writePaperclipSkillSyncPreference(
@@ -1408,6 +1517,123 @@ export async function ensurePaperclipSkillSymlink(
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+async function ensureSymlinkReplacingManagedTarget(
+  source: string,
+  target: string,
+  linkSkill: (source: string, target: string) => Promise<void>,
+): Promise<"created" | "repaired" | "skipped"> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) {
+    await linkSkill(source, target);
+    return "created";
+  }
+
+  if (!existing.isSymbolicLink()) return "skipped";
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  const resolvedLinkedPath = linkedPath ? path.resolve(path.dirname(target), linkedPath) : null;
+  if (resolvedLinkedPath === source) return "skipped";
+
+  const linkedPathExists = resolvedLinkedPath
+    ? await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false)
+    : false;
+  if (
+    linkedPathExists &&
+    resolvedLinkedPath &&
+    !(await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, path.basename(target)))
+  ) {
+    return "skipped";
+  }
+
+  await fs.unlink(target);
+  await linkSkill(source, target);
+  return "repaired";
+}
+
+async function materializeVariantSkillDirectory(
+  entry: PaperclipSkillEntry & { entryFile: string },
+  target: string,
+): Promise<void> {
+  await fs.mkdir(target, { recursive: true });
+  const skillFileTarget = path.join(target, "SKILL.md");
+  await fs.rm(skillFileTarget, { force: true });
+  await fs.symlink(path.join(entry.source, entry.entryFile), skillFileTarget);
+
+  const sourceEntries = await fs.readdir(entry.source, { withFileTypes: true }).catch(() => []);
+  for (const sourceEntry of sourceEntries) {
+    if (sourceEntry.name.toLowerCase() === "skill.md") continue;
+    if (sourceEntry.name === entry.entryFile) continue;
+    const childTarget = path.join(target, sourceEntry.name);
+    const existing = await fs.lstat(childTarget).catch(() => null);
+    if (existing) continue;
+    await fs.symlink(path.join(entry.source, sourceEntry.name), childTarget);
+  }
+}
+
+export async function ensurePaperclipRuntimeSkillLinked(
+  entry: PaperclipSkillEntry,
+  target: string,
+  options: PaperclipSkillLinkOptions = {},
+): Promise<"created" | "repaired" | "skipped"> {
+  const linkSkill = options.linkSkill ?? ((source, linkTarget) => fs.symlink(source, linkTarget));
+  if (!isVariantSkillEntry(entry)) {
+    return ensureSymlinkReplacingManagedTarget(entry.source, target, linkSkill);
+  }
+
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing?.isSymbolicLink()) {
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    const resolvedLinkedPath = linkedPath ? path.resolve(path.dirname(target), linkedPath) : null;
+    if (resolvedLinkedPath === entry.source) {
+      await fs.unlink(target);
+      await materializeVariantSkillDirectory(entry, target);
+      return "repaired";
+    }
+    return "skipped";
+  }
+  if (existing && !existing.isDirectory()) return "skipped";
+
+  const existed = Boolean(existing);
+  await materializeVariantSkillDirectory(entry, target);
+  return existed ? "repaired" : "created";
+}
+
+export async function removeUnwantedPaperclipRuntimeSkills(
+  skillsHome: string,
+  allowedSkillNames: Iterable<string>,
+  availableEntries: PaperclipSkillEntry[],
+): Promise<string[]> {
+  const allowed = new Set(Array.from(allowedSkillNames));
+  const removed: string[] = [];
+
+  for (const entry of availableEntries) {
+    if (allowed.has(entry.runtimeName)) continue;
+    const target = path.join(skillsHome, entry.runtimeName);
+    const existing = await fs.lstat(target).catch(() => null);
+    if (!existing) continue;
+
+    if (existing.isSymbolicLink()) {
+      const linkedPath = await fs.readlink(target).catch(() => null);
+      const resolvedLinkedPath = linkedPath ? path.resolve(path.dirname(target), linkedPath) : null;
+      if (resolvedLinkedPath !== entry.source) continue;
+      await fs.unlink(target);
+      removed.push(entry.runtimeName);
+      continue;
+    }
+
+    if (!isVariantSkillEntry(entry) || !existing.isDirectory()) continue;
+    const skillMarkdownLink = await fs.readlink(path.join(target, "SKILL.md")).catch(() => null);
+    const resolvedSkillMarkdownLink = skillMarkdownLink
+      ? path.resolve(target, skillMarkdownLink)
+      : null;
+    if (resolvedSkillMarkdownLink !== path.join(entry.source, entry.entryFile)) continue;
+    await fs.rm(target, { recursive: true, force: true });
+    removed.push(entry.runtimeName);
+  }
+
+  return removed;
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {

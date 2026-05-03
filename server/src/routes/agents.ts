@@ -5,9 +5,11 @@ import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
+  AGENT_SKILL_PROFILES,
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  DEFAULT_AGENT_SKILL_PROFILE_SKILLS,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -15,6 +17,7 @@ import {
   isUuidLike,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  type AgentSkillProfile,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
@@ -27,6 +30,7 @@ import {
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
+  resolvePaperclipDesiredSkillNames,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
@@ -1059,6 +1063,62 @@ export function agentRoutes(
     return LEGACY_MATERIALIZED_SKILLS_SET.has(adapterType);
   }
 
+  function isAgentSkillProfile(value: unknown): value is AgentSkillProfile {
+    return typeof value === "string" && AGENT_SKILL_PROFILES.includes(value as AgentSkillProfile);
+  }
+
+  function deriveAgentSkillProfile(input: {
+    name: string;
+    role?: string | null;
+    agentSkillProfile?: unknown;
+  }): AgentSkillProfile {
+    if (isAgentSkillProfile(input.agentSkillProfile)) return input.agentSkillProfile;
+    const compactName = input.name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (compactName === "mergebot" || compactName === "mergebotagent") return "merge-bot";
+    const role = typeof input.role === "string" ? input.role : "general";
+    if (role === "ceo" || role === "cto" || role === "cfo" || role === "cmo") {
+      return "executive";
+    }
+    return "ic";
+  }
+
+  function normalizeAgentSkillProfileDefaults(value: unknown): Record<AgentSkillProfile, string[]> {
+    const defaults = { ...DEFAULT_AGENT_SKILL_PROFILE_SKILLS };
+    const record = asRecord(value);
+    if (!record) return defaults;
+    for (const profile of AGENT_SKILL_PROFILES) {
+      const raw = record[profile];
+      if (!Array.isArray(raw)) continue;
+      defaults[profile] = Array.from(new Set(
+        raw
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ));
+    }
+    return defaults;
+  }
+
+  async function getAgentSkillProfileDefaults(companyId: string): Promise<Record<AgentSkillProfile, string[]>> {
+    const row = await db
+      .select({ agentSkillProfileDefaults: companies.agentSkillProfileDefaults })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Company not found");
+    return normalizeAgentSkillProfileDefaults(row.agentSkillProfileDefaults);
+  }
+
+  async function resolveProfileDesiredSkillRequest(
+    companyId: string,
+    profile: AgentSkillProfile,
+    requestedDesiredSkills: string[] | undefined,
+  ): Promise<string[]> {
+    if (requestedDesiredSkills !== undefined) return requestedDesiredSkills;
+    const profileDefaults = await getAgentSkillProfileDefaults(companyId);
+    return profileDefaults[profile] ?? DEFAULT_AGENT_SKILL_PROFILE_SKILLS[profile];
+  }
+
   async function buildRuntimeSkillConfig(
     companyId: string,
     adapterType: string,
@@ -1094,15 +1154,117 @@ export function agentRoutes(
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
-    const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
+    const desiredSkills = resolvePaperclipDesiredSkillNames({
+      paperclipSkillSync: { desiredSkills: resolvedRequestedSkills },
+    }, runtimeSkillEntries);
 
     return {
       adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
       desiredSkills,
       runtimeSkillEntries,
+    };
+  }
+
+  async function resolveProfileExpectedDesiredSkills(
+    companyId: string,
+    adapterType: string,
+    requestedDesiredSkills: string[],
+  ) {
+    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
+      companyId,
+      requestedDesiredSkills,
+    );
+    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
+      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+    });
+    const desiredSkills = resolvePaperclipDesiredSkillNames({
+      paperclipSkillSync: { desiredSkills: resolvedRequestedSkills },
+    }, runtimeSkillEntries);
+
+    return {
+      desiredSkills,
+      runtimeSkillEntries,
+    };
+  }
+
+  function desiredSkillListsEqual(left: string[] | null | undefined, right: string[] | null | undefined) {
+    const l = [...(left ?? [])].sort();
+    const r = [...(right ?? [])].sort();
+    return l.length === r.length && l.every((value, index) => value === r[index]);
+  }
+
+  async function buildAgentSkillProfileAudit(companyId: string) {
+    const profileDefaults = await getAgentSkillProfileDefaults(companyId);
+    const companyAgents = await svc.list(companyId);
+    const items = [];
+
+    for (const agent of companyAgents) {
+      const profile = isAgentSkillProfile(agent.agentSkillProfile)
+        ? agent.agentSkillProfile
+        : deriveAgentSkillProfile(agent);
+      const profileDefaultDesiredSkills =
+        profileDefaults[profile] ?? DEFAULT_AGENT_SKILL_PROFILE_SKILLS[profile];
+      const managedByProfile = profile !== "custom" || profileDefaultDesiredSkills.length > 0;
+      const adapterConfig = agent.adapterConfig as Record<string, unknown>;
+
+      let actualDesiredSkills: string[] = [];
+      let expectedDesiredSkills: string[] = [];
+      let nextAdapterConfig = adapterConfig;
+
+      if (managedByProfile) {
+        const expected = await resolveProfileExpectedDesiredSkills(
+          companyId,
+          agent.adapterType,
+          profileDefaultDesiredSkills,
+        );
+        expectedDesiredSkills = expected.desiredSkills;
+        actualDesiredSkills = resolvePaperclipDesiredSkillNames(
+          adapterConfig,
+          expected.runtimeSkillEntries,
+        );
+        nextAdapterConfig = writePaperclipSkillSyncPreference(adapterConfig, expectedDesiredSkills);
+      } else {
+        const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
+          materializeMissing: false,
+        });
+        actualDesiredSkills = resolvePaperclipDesiredSkillNames(adapterConfig, runtimeSkillEntries);
+        expectedDesiredSkills = actualDesiredSkills;
+      }
+
+      const diverged = managedByProfile && !desiredSkillListsEqual(actualDesiredSkills, expectedDesiredSkills);
+      items.push({
+        agentId: agent.id,
+        name: agent.name,
+        role: agent.role,
+        agentSkillProfile: profile,
+        adapterType: agent.adapterType,
+        managedByProfile,
+        profileDefaultDesiredSkills,
+        actualDesiredSkills,
+        expectedDesiredSkills,
+        diverged,
+        nextAdapterConfig,
+      });
+    }
+
+    return {
+      companyId,
+      profileDefaults,
+      totalAgents: items.length,
+      divergedCount: items.filter((item) => item.diverged).length,
+      items,
+    };
+  }
+
+  function serializeAgentSkillProfileAudit(
+    audit: Awaited<ReturnType<typeof buildAgentSkillProfileAudit>>,
+  ) {
+    return {
+      companyId: audit.companyId,
+      profileDefaults: audit.profileDefaults,
+      totalAgents: audit.totalAgents,
+      divergedCount: audit.divergedCount,
+      items: audit.items.map(({ nextAdapterConfig: _nextAdapterConfig, ...item }) => item),
     };
   }
 
@@ -1122,6 +1284,7 @@ export function agentRoutes(
       companyId: agent.companyId,
       name: agent.name,
       role: agent.role,
+      agentSkillProfile: agent.agentSkillProfile,
       title: agent.title,
       status: agent.status,
       reportsTo: agent.reportsTo,
@@ -1407,6 +1570,63 @@ export function agentRoutes(
       res.json(snapshot);
     },
   );
+
+  router.get("/companies/:companyId/agent-skill-profiles/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanReadConfigurations(req, companyId);
+    const audit = await buildAgentSkillProfileAudit(companyId);
+    res.json(serializeAgentSkillProfileAudit(audit));
+  });
+
+  router.post("/companies/:companyId/agent-skill-profiles/reconcile", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanCreateAgentsForCompany(req, companyId);
+    const actor = getActorInfo(req);
+    const audit = await buildAgentSkillProfileAudit(companyId);
+    const fixed = [];
+
+    for (const item of audit.items.filter((entry) => entry.diverged)) {
+      const updated = await svc.update(item.agentId, {
+        adapterConfig: item.nextAdapterConfig,
+      }, {
+        recordRevision: {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          source: "agent-skill-profile-reconcile",
+        },
+      });
+      if (!updated) continue;
+      fixed.push({
+        agentId: item.agentId,
+        name: item.name,
+        agentSkillProfile: item.agentSkillProfile,
+        actualDesiredSkills: item.actualDesiredSkills,
+        expectedDesiredSkills: item.expectedDesiredSkills,
+      });
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent_skill_profiles.reconciled",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        divergedCount: audit.divergedCount,
+        fixedCount: fixed.length,
+        fixedAgentIds: fixed.map((item) => item.agentId),
+      },
+    });
+
+    res.json({
+      ...serializeAgentSkillProfileAudit(audit),
+      fixedCount: fixed.length,
+      fixed,
+    });
+  });
 
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -1775,6 +1995,13 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    const agentSkillProfile = deriveAgentSkillProfile(hireInput);
+    hireInput.agentSkillProfile = agentSkillProfile;
+    const profileDesiredSkills = await resolveProfileDesiredSkillRequest(
+      companyId,
+      agentSkillProfile,
+      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+    );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -1783,7 +2010,7 @@ export function agentRoutes(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+      profileDesiredSkills,
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
@@ -1847,6 +2074,7 @@ export function agentRoutes(
         payload: {
           name: normalizedHireInput.name,
           role: normalizedHireInput.role,
+          agentSkillProfile: normalizedHireInput.agentSkillProfile,
           title: normalizedHireInput.title ?? null,
           icon: normalizedHireInput.icon ?? null,
           reportsTo: normalizedHireInput.reportsTo ?? null,
@@ -1961,6 +2189,13 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    const agentSkillProfile = deriveAgentSkillProfile(createInput);
+    createInput.agentSkillProfile = agentSkillProfile;
+    const profileDesiredSkills = await resolveProfileDesiredSkillRequest(
+      companyId,
+      agentSkillProfile,
+      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+    );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -1969,7 +2204,7 @@ export function agentRoutes(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
-      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+      profileDesiredSkills,
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,

@@ -1,4 +1,4 @@
-import type { CompanyStatus, PauseReason } from "../constants.js";
+import type { AgentSkillProfile, CompanyStatus, PauseReason } from "../constants.js";
 
 export interface Company {
   id: string;
@@ -18,6 +18,7 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   brandColor: string | null;
+  agentSkillProfileDefaults?: Partial<Record<AgentSkillProfile, string[]>>;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;

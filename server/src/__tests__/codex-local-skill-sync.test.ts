@@ -13,6 +13,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 describe("codex local skill sync", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipIcKey = "paperclipai/paperclip/paperclip-ic";
   const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
   const cleanupDirs = new Set<string>();
 
@@ -124,5 +125,30 @@ describe("codex local skill sync", () => {
     expect(snapshot.desiredSkills).not.toContain("paperclip");
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
     expect(snapshot.entries.find((entry) => entry.key === "paperclip")).toBeUndefined();
+  });
+
+  it("lets the IC Paperclip variant replace the base required Paperclip skill", async () => {
+    const codexHome = await makeTempDir("paperclip-codex-ic-skill-sync-");
+    cleanupDirs.add(codexHome);
+
+    const snapshot = await listCodexSkills({
+      agentId: "agent-4",
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        env: {
+          CODEX_HOME: codexHome,
+        },
+        paperclipSkillSync: {
+          desiredSkills: [paperclipIcKey],
+        },
+      },
+    });
+
+    expect(snapshot.warnings).toEqual([]);
+    expect(snapshot.desiredSkills).toContain(paperclipIcKey);
+    expect(snapshot.desiredSkills).not.toContain(paperclipKey);
+    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("available");
+    expect(snapshot.entries.find((entry) => entry.key === paperclipIcKey)?.state).toBe("configured");
   });
 });

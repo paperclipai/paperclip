@@ -106,6 +106,8 @@ describe("codex execute", () => {
       "default",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     await fs.mkdir(workspace, { recursive: true });
@@ -1054,6 +1056,8 @@ describe("codex execute", () => {
       "worktree-1",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     const homeSkill = path.join(isolatedCodexHome, "skills", "paperclip");
@@ -1233,4 +1237,5 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
 });

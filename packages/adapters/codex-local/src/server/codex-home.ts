@@ -30,9 +30,22 @@ function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
+  agentId?: string,
 ): string {
   const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
   const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
+  if (companyId && agentId) {
+    return path.resolve(
+      paperclipHome,
+      "instances",
+      instanceId,
+      "companies",
+      companyId,
+      "agents",
+      agentId,
+      "codex-home",
+    );
+  }
   return companyId
     ? path.resolve(paperclipHome, "instances", instanceId, "companies", companyId, "codex-home")
     : path.resolve(paperclipHome, "instances", instanceId, "codex-home");
@@ -75,8 +88,9 @@ export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  agentId?: string,
 ): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  const targetHome = resolveManagedCodexHomeDir(env, companyId, agentId);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;

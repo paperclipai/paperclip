@@ -133,6 +133,7 @@ type SkillSourceMeta = {
   workspaceId?: string;
   workspaceName?: string;
   workspaceCwd?: string;
+  runtime?: Record<string, unknown>;
 };
 
 export type LocalSkillInventoryMode = "full" | "project_root";
@@ -2181,14 +2182,28 @@ export function companySkillService(db: Db) {
       if (!source) continue;
 
       const required = sourceKind === "paperclip_bundled";
+      const frontmatter = parseFrontmatterMarkdown(skill.markdown).frontmatter;
+      const skillMeta = getSkillMeta(skill);
+      const runtimeMetadata = isPlainRecord(frontmatter.runtime)
+        ? frontmatter.runtime
+        : isPlainRecord(skillMeta.runtime)
+          ? skillMeta.runtime
+          : {};
+      const configuredRequired = typeof frontmatter.required === "boolean"
+        ? frontmatter.required
+        : typeof runtimeMetadata.required === "boolean"
+          ? runtimeMetadata.required
+          : required;
+      const variantOf = asString(frontmatter.variantOf) ?? asString(runtimeMetadata.variantOf);
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source,
-        required,
-        requiredReason: required
+        required: configuredRequired,
+        requiredReason: configuredRequired
           ? "Bundled Paperclip skills are always available for local adapters."
           : null,
+        variantOf: variantOf ?? null,
       });
     }
 

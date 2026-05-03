@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  AGENT_SKILL_PROFILES,
   COMPANY_STATUSES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
@@ -12,12 +13,24 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+export const agentSkillProfileDefaultsSchema = z
+  .object(
+    Object.fromEntries(
+      AGENT_SKILL_PROFILES.map((profile) => [
+        profile,
+        z.array(z.string().trim().min(1)).optional(),
+      ]),
+    ) as Record<(typeof AGENT_SKILL_PROFILES)[number], z.ZodOptional<z.ZodArray<z.ZodString>>>,
+  )
+  .partial()
+  .strict();
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+  agentSkillProfileDefaults: agentSkillProfileDefaultsSchema.optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
@@ -35,6 +48,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    agentSkillProfileDefaults: agentSkillProfileDefaultsSchema.optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

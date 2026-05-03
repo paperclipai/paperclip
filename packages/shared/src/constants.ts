@@ -57,6 +57,16 @@ export const AGENT_ROLES = [
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
+export const AGENT_SKILL_PROFILES = ["executive", "ic", "merge-bot", "custom"] as const;
+export type AgentSkillProfile = (typeof AGENT_SKILL_PROFILES)[number];
+
+export const DEFAULT_AGENT_SKILL_PROFILE_SKILLS: Record<AgentSkillProfile, string[]> = {
+  executive: ["paperclipai/paperclip/paperclip"],
+  ic: ["paperclipai/paperclip/paperclip-ic"],
+  "merge-bot": ["paperclipai/paperclip/paperclip-ic"],
+  custom: [],
+};
+
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   ceo: "CEO",
   cto: "CTO",
