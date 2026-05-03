@@ -74,22 +74,6 @@ export function registerCompanyExtensionCommands(program: Command): void {
 
   addCommonClientOptions(
     company
-      .command("instance-issues")
-      .description("List instance-wide issues exposed via /api/companies/issues")
-      .action(async (opts: BaseClientOptions) => {
-        try {
-          const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<unknown>("/api/companies/issues");
-          printOutput(row, { json: ctx.json });
-        } catch (err) {
-          handleCommandError(err);
-        }
-      }),
-    { includeCompany: false },
-  );
-
-  addCommonClientOptions(
-    company
       .command("create")
       .description("Create a new company")
       .option("--payload <json>", "Create payload as JSON object")

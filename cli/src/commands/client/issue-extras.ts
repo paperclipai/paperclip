@@ -130,23 +130,6 @@ function getIssueCommand(program: Command): Command {
 export function registerIssueExtensionCommands(program: Command): void {
   const issue = getIssueCommand(program);
 
-  // instance-wide listing
-  addCommonClientOptions(
-    issue
-      .command("instance-list")
-      .description("List issues across the entire instance (admin)")
-      .action(async (opts: BaseClientOptions) => {
-        try {
-          const ctx = resolveCommandContext(opts);
-          const rows = (await ctx.api.get<unknown[]>("/api/issues")) ?? [];
-          printOutput(rows, { json: ctx.json });
-        } catch (err) {
-          handleCommandError(err);
-        }
-      }),
-    { includeCompany: false },
-  );
-
   addCommonClientOptions(
     issue
       .command("delete")

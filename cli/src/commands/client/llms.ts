@@ -9,7 +9,7 @@ import {
 export function registerLlmsCommands(program: Command): void {
   const llms = program
     .command("llms")
-    .description("LLM-facing reflection text endpoints (/api/llms/*)");
+    .description("LLM-facing reflection text endpoints (/llms/*)");
 
   addCommonClientOptions(
     llms
@@ -18,7 +18,7 @@ export function registerLlmsCommands(program: Command): void {
       .action(async (opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const text = await ctx.api.getText("/api/llms/agent-configuration.txt");
+          const text = await ctx.api.getText("/llms/agent-configuration.txt");
           process.stdout.write(text);
         } catch (err) {
           handleCommandError(err);
@@ -34,7 +34,7 @@ export function registerLlmsCommands(program: Command): void {
       .action(async (opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const text = await ctx.api.getText("/api/llms/agent-icons.txt");
+          const text = await ctx.api.getText("/llms/agent-icons.txt");
           process.stdout.write(text);
         } catch (err) {
           handleCommandError(err);
@@ -52,7 +52,7 @@ export function registerLlmsCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const text = await ctx.api.getText(
-            `/api/llms/agent-configuration/${encodeURIComponent(adapterType)}.txt`,
+            `/llms/agent-configuration/${encodeURIComponent(adapterType)}.txt`,
           );
           process.stdout.write(text);
         } catch (err) {
