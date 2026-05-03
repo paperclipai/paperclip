@@ -73,9 +73,18 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+function hasNonEmptyEnvValue(env: Record<string, unknown>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
+}
+
+function resolveGitDiscoveryCeiling(workspaceCwd: string): string | null {
+  const trimmed = workspaceCwd.trim();
+  if (!trimmed) return null;
+
+  const resolvedWorkspaceCwd = path.resolve(trimmed);
+  const parentDir = path.dirname(resolvedWorkspaceCwd);
+  return parentDir !== resolvedWorkspaceCwd ? parentDir : null;
 }
 
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
@@ -298,6 +307,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceBranch = asString(workspaceContext.branchName, "");
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
+  const gitDiscoveryCeiling = resolveGitDiscoveryCeiling(workspaceCwd);
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -447,6 +457,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
+  }
+  if (
+    gitDiscoveryCeiling &&
+    !hasNonEmptyEnvValue(process.env as Record<string, string>, "GIT_CEILING_DIRECTORIES") &&
+    !hasNonEmptyEnvValue(envConfig, "GIT_CEILING_DIRECTORIES")
+  ) {
+    env.GIT_CEILING_DIRECTORIES = gitDiscoveryCeiling;
   }
   const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
   if (targetPaperclipApiUrl) {
