@@ -95,8 +95,10 @@ function extractIssueTextMarkers(issue: IssueRow): OwnerAckDangerousActionMarker
   const explicitAction = normalizeActionType(dangerousActionMatch?.[1]);
   if (explicitAction) addMarker(explicitAction, compactLine(dangerousActionMatch?.[0]));
 
-  const deployImpactMatch = text.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:deploy impact|deployment impact|deploy target)\s*[:\-]\s*([^\n]+)/i);
-  if (deployImpactMatch) addMarker("deploy", compactLine(deployImpactMatch[0]));
+  const deployImpactMatch = text.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:deploy impact|deployment impact|deploy target)\s*[:\-]\s*([^\n]*)/i);
+  if (deployImpactMatch && shouldAddBooleanStyleMarker(deployImpactMatch[1])) {
+    addMarker("deploy", compactLine(deployImpactMatch[0]));
+  }
 
   const schemaMigrationMatch = text.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:schema migration|database migration|db migration)\s*[:\-]\s*([^\n]*)/i);
   if (schemaMigrationMatch && shouldAddBooleanStyleMarker(schemaMigrationMatch[1])) {

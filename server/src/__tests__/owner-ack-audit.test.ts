@@ -304,4 +304,27 @@ describeEmbeddedPostgres("ownerAckAuditService", () => {
       dangerousActions: [expect.objectContaining({ actionType: "external_capability" })],
     });
   });
+
+  it("does not flag deploy impact none, but flags deploy impact production", async () => {
+    const companyId = await seedCompany();
+    const svc = ownerAckAuditService(db);
+
+    await seedIssue(companyId, {
+      title: "No deploy impact",
+      description: "Deploy impact: none",
+    });
+    await seedIssue(companyId, {
+      title: "Production deploy impact",
+      description: "Deploy impact: production",
+    });
+
+    const report = await svc.auditCompany(companyId, new Date("2026-05-02T18:00:00.000Z"));
+    const byTitle = new Map(report.issues.map((issue) => [issue.issue.title, issue]));
+
+    expect(report.summary.totalMarkedIssues).toBe(1);
+    expect(byTitle.has("No deploy impact")).toBe(false);
+    expect(byTitle.get("Production deploy impact")).toMatchObject({
+      dangerousActions: [expect.objectContaining({ actionType: "deploy" })],
+    });
+  });
 });
