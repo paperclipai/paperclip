@@ -101,6 +101,18 @@ function boardActor(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function agentActor(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "agent",
+    agentId: agentA,
+    companyId: companyA,
+    runId: runA,
+    source: "agent_jwt",
+    keyId: undefined,
+    ...overrides,
+  };
+}
+
 function readyPlugin() {
   mockRegistry.getById.mockResolvedValue({
     id: pluginId,
@@ -541,5 +553,256 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ runId: "run-1", jobId: "job-1" });
     expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual");
+  });
+});
+
+describe.sequential("agent-auth plugin tool access", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("allows agent run auth to list plugin tools", async () => {
+    const tools = [{ name: "paperclipai.plugin-kb-local:kb_search" }];
+    const listToolsForAgent = vi.fn().mockReturnValue(tools);
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent,
+          getTool: vi.fn(),
+          executeTool: vi.fn(),
+        },
+      },
+    });
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(tools);
+    expect(listToolsForAgent).toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated callers from listing plugin tools", async () => {
+    const listToolsForAgent = vi.fn();
+    const { app } = await createApp({ type: "none" }, {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent,
+          getTool: vi.fn(),
+          executeTool: vi.fn(),
+        },
+      },
+    });
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(401);
+    expect(listToolsForAgent).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent run to execute a tool when runContext matches its identity", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: { query: "insurance risks" },
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclipai.plugin-kb-local:kb_search",
+      { query: "insurance risks" },
+      {
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+        projectId: projectA,
+      },
+    );
+  });
+
+  it("rejects an agent run when runContext.agentId belongs to a sibling agent", async () => {
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: {},
+        runContext: {
+          agentId: otherAgent,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent run when runContext.runId differs from the authenticated run", async () => {
+    const otherRun = "88888888-8888-4888-8888-888888888888";
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: otherRun,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent run when runContext.companyId differs from the authenticated company", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyB,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent token that has no agentId claim", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor({ agentId: undefined }), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(401);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("requires an agent run id when an agent calls executeTool without one", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor({ runId: undefined }), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(401);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps board-only management routes protected from agent run auth", async () => {
+    const { app } = await createApp(agentActor());
+
+    const installRes = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "paperclipai.plugin-kb-local" });
+    expect(installRes.status).toBe(403);
+
+    const listRes = await request(app).get("/api/plugins");
+    expect(listRes.status).toBe(403);
+
+    const upgradeRes = await request(app)
+      .post(`/api/plugins/${pluginId}/upgrade`)
+      .send({});
+    expect(upgradeRes.status).toBe(403);
   });
 });

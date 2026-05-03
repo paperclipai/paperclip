@@ -75,6 +75,18 @@ Write tools:
 - `paperclipApprovalDecision`
 - `paperclipAddApprovalComment`
 
+Plugin SDK tools (agent run auth):
+
+- `paperclipPluginListTools`
+- `paperclipPluginExecuteTool`
+- `paperclipPluginApiRequest`
+
+These talk to `/api/plugins/tools*` and `/api/plugins/{pluginId}/api/...` under
+the current agent run's bearer token. `paperclipPluginExecuteTool` defaults the
+`agentId`, `runId`, and `companyId` from the current run; the caller must
+supply the namespaced tool name, `projectId`, and any `parameters` the tool
+declares.
+
 Escape hatch:
 
 - `paperclipApiRequest`

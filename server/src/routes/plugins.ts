@@ -60,6 +60,7 @@ import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sd
 import {
   assertAuthenticated,
   assertBoard,
+  assertBoardOrAgentAccess,
   assertBoardOrgAccess,
   assertCompanyAccess,
   assertInstanceAdmin,
@@ -720,6 +721,13 @@ export function pluginRoutes(
    *
    * List all available plugin-contributed tools in an agent-friendly format.
    *
+   * Authentication:
+   * - Board users with company-or-org access (any active membership or
+   *   instance admin) may list tools across the instance.
+   * - Agent run auth may list tools — the result is the same global set
+   *   because plugin tools are installed instance-wide. Per-call scope
+   *   enforcement happens at execute time via `runContext` validation.
+   *
    * Query params:
    * - `pluginId` (optional): Filter to tools from a specific plugin
    *
@@ -727,7 +735,7 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgentAccess(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -761,7 +769,7 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgentAccess(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -795,6 +803,32 @@ export function pluginRoutes(
     }
 
     assertCompanyAccess(req, runContext.companyId);
+
+    // For agent callers, the supplied runContext must match the bearer
+    // token's own (companyId, agentId, runId). This prevents an agent run
+    // from impersonating a sibling agent or a different run inside the
+    // same company. The agentId/runId checks are unconditional: a token
+    // missing either claim is treated as unauthenticated for tool execute,
+    // not silently allowed to choose an arbitrary identity.
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) {
+        res.status(401).json({ error: "Agent id required to execute plugin tools" });
+        return;
+      }
+      if (req.actor.agentId !== runContext.agentId) {
+        res.status(403).json({ error: '"runContext.agentId" must match the authenticated agent' });
+        return;
+      }
+      if (!req.actor.runId) {
+        res.status(401).json({ error: "Agent run id required to execute plugin tools" });
+        return;
+      }
+      if (req.actor.runId !== runContext.runId) {
+        res.status(403).json({ error: '"runContext.runId" must match the authenticated run' });
+        return;
+      }
+    }
+
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
       res.status(403).json({ error: scopeError });

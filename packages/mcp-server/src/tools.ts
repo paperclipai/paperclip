@@ -161,6 +161,26 @@ const apiRequestSchema = z.object({
   jsonBody: z.string().optional(),
 });
 
+const pluginToolListSchema = z.object({
+  pluginId: z.string().trim().min(1).optional(),
+});
+
+const pluginToolExecuteSchema = z.object({
+  tool: z.string().trim().min(1),
+  parameters: z.unknown().optional(),
+  projectId: z.string().min(1),
+  companyId: companyIdOptional,
+  agentId: agentIdOptional,
+  runId: z.string().uuid().optional().nullable(),
+});
+
+const pluginApiRequestSchema = z.object({
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+  pluginId: z.string().trim().min(1),
+  path: z.string().min(1),
+  jsonBody: z.string().optional(),
+});
+
 const workspaceRuntimeControlTargetSchema = z.object({
   workspaceCommandId: z.string().min(1).optional().nullable(),
   runtimeServiceId: z.string().uuid().optional().nullable(),
@@ -593,12 +613,58 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         }),
     ),
     makeTool(
+      "paperclipPluginListTools",
+      "List Plugin SDK tools available to the current agent run, optionally filtered by pluginId",
+      pluginToolListSchema,
+      async ({ pluginId }) => {
+        const qs = pluginId ? `?pluginId=${encodeURIComponent(pluginId)}` : "";
+        return client.requestJson("GET", `/plugins/tools${qs}`);
+      },
+    ),
+    makeTool(
+      "paperclipPluginExecuteTool",
+      "Execute a Plugin SDK tool by its namespaced name (e.g. 'paperclipai.plugin-kb-local:kb_search'). Defaults companyId/agentId/runId from the current run.",
+      pluginToolExecuteSchema,
+      async ({ tool, parameters, projectId, companyId, agentId, runId }) => {
+        const resolvedRunId = runId?.trim() || client.defaults.runId;
+        if (!resolvedRunId) {
+          throw new Error("runId is required because PAPERCLIP_RUN_ID is not set");
+        }
+        return client.requestJson("POST", "/plugins/tools/execute", {
+          body: {
+            tool,
+            parameters: parameters ?? {},
+            runContext: {
+              agentId: client.resolveAgentId(agentId),
+              runId: resolvedRunId,
+              companyId: client.resolveCompanyId(companyId),
+              projectId,
+            },
+          },
+        });
+      },
+    ),
+    makeTool(
+      "paperclipPluginApiRequest",
+      "Make a JSON request to a Plugin SDK scoped API route (/api/plugins/{pluginId}/api/...) for unsupported operations",
+      pluginApiRequestSchema,
+      async ({ method, pluginId, path, jsonBody }) => {
+        if (!path.startsWith("/") || containsTraversal(path)) {
+          throw new Error("path must start with / and be relative to the plugin scoped API root, and must not contain '..' (including URL-encoded variants)");
+        }
+        const fullPath = `/plugins/${encodeURIComponent(pluginId)}/api${path}`;
+        return client.requestJson(method, fullPath, {
+          body: parseOptionalJson(jsonBody),
+        });
+      },
+    ),
+    makeTool(
       "paperclipApiRequest",
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,
       async ({ method, path, jsonBody }) => {
-        if (!path.startsWith("/") || path.includes("..")) {
-          throw new Error("path must start with / and be relative to /api, and must not contain '..'");
+        if (!path.startsWith("/") || containsTraversal(path)) {
+          throw new Error("path must start with / and be relative to /api, and must not contain '..' (including URL-encoded variants)");
         }
         return client.requestJson(method, path, {
           body: parseOptionalJson(jsonBody),
@@ -606,4 +672,24 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       },
     ),
   ];
+}
+
+/**
+ * Returns true if the given path contains a `..` segment in either literal or
+ * URL-encoded form. We decode (best-effort) before checking so that callers
+ * cannot smuggle traversal sequences past the literal `..` substring guard
+ * by passing `%2E%2E`, `%2e%2E`, or fully-encoded slashes (`%2F..%2F`).
+ */
+function containsTraversal(path: string): boolean {
+  if (path.includes("..")) {
+    return true;
+  }
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    // Malformed encoding — treat as suspicious so the caller cannot probe.
+    return true;
+  }
+  return decoded.includes("..");
 }
