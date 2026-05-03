@@ -1431,7 +1431,13 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               <select
                 className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none appearance-none cursor-pointer"
                 value={addType}
-                onChange={(e) => setAddType(e.target.value as CredentialType)}
+                onChange={(e) => {
+                  // Token format differs per type — never carry a token across
+                  // type changes. Otherwise the codex_oauth section would
+                  // misread a stale Claude/OpenAI key as a "captured login".
+                  setAddType(e.target.value as CredentialType);
+                  setAddToken("");
+                }}
               >
                 {CREDENTIAL_TYPE_OPTIONS.map((t) => (
                   <option key={t} value={t}>
