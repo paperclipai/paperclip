@@ -47,9 +47,12 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const envPrefix = envEntries.length > 0
         ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
         : "";
+      const exportPrefix = envEntries.length > 0
+        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
+        : "";
       const commandScript = command === "sh" || command === "bash"
         ? args[0] === "-lc" && typeof args[1] === "string"
-          ? args[1]
+          ? `${exportPrefix}${args[1]}`
           : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
         : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `${command === "bash" ? "bash" : "sh"} -lc ${
@@ -91,7 +94,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
         return {
           exitCode: typeof failure.code === "number" ? failure.code : null,
           signal: typeof failure.signal === "string" ? failure.signal : null,
-          timedOut: Boolean(failure.killed === true && stderr.toLowerCase().includes("timed out")),
+          timedOut: failure.killed === true,
           stdout,
           stderr,
           pid: null,
