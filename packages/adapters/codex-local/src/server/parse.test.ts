@@ -113,11 +113,25 @@ describe("extractCodexDeviceAuth", () => {
     });
   });
 
-  it("normalizes a code with no separator into XXXX-XXXX form", () => {
-    const stdout = "Visit https://auth.openai.com/codex/device and enter ABCD1234";
+  it("parses URL and 4-5 char user code from codex 0.128+ output", () => {
+    const stdout = [
+      "1. Open this link in your browser and sign in to your account",
+      "   \u001B[94mhttps://auth.openai.com/codex/device\u001B[0m",
+      "",
+      "2. Enter this one-time code \u001B[90m(expires in 15 minutes)\u001B[0m",
+      "   \u001B[94mFYL1-MAV09\u001B[0m",
+    ].join("\n");
     expect(extractCodexDeviceAuth(stdout)).toEqual({
       verificationUrl: "https://auth.openai.com/codex/device",
-      userCode: "ABCD-1234",
+      userCode: "FYL1-MAV09",
+    });
+  });
+
+  it("ignores version-like noise such as [v0.128.0]", () => {
+    const stdout = "Welcome to Codex [v0.128.0]\nNo URL or code here";
+    expect(extractCodexDeviceAuth(stdout)).toEqual({
+      verificationUrl: null,
+      userCode: null,
     });
   });
 });
