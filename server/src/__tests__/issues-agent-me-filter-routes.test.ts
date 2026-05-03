@@ -84,6 +84,44 @@ describe.sequential("issues route me filter normalization for agents", () => {
     }));
   });
 
+  it("returns non-empty results for CTO actor when assigneeAgentId=me", async () => {
+    const ctoAgentId = "b692417f-bf8d-4c47-8dfa-973ff496481d";
+    mockIssueService.list.mockImplementation(async (_companyId: string, query: { assigneeAgentId?: string }) => {
+      if (query.assigneeAgentId === ctoAgentId) {
+        return [
+          {
+            id: "issue-1",
+            identifier: "LPA-23",
+            title: "CTO: Validate project builds and runs correctly",
+            status: "in_progress",
+            assigneeAgentId: ctoAgentId,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const app = createApp({
+      type: "agent",
+      agentId: ctoAgentId,
+      companyId: "company-1",
+      runId: "run-cto",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .get("/api/companies/company-1/issues")
+      .query({ assigneeAgentId: "me" });
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(res.body[0]).toEqual(expect.objectContaining({
+      identifier: "LPA-23",
+      assigneeAgentId: ctoAgentId,
+    }));
+  });
+
   it("normalizes participantAgentId=me to authenticated agent id", async () => {
     const app = createApp({
       type: "agent",
