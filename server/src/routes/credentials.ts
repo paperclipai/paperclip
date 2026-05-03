@@ -341,7 +341,7 @@ export function credentialRoutes(db: Db) {
     }, CODEX_CRED_LOGIN_SESSION_TTL_MS);
 
     // Diagnostic startup guard: if codex hasn't emitted a device-auth URL+code
-    // within 30s, transition to error and surface the captured stdout/stderr
+    // within 8s, transition to error and surface the captured stdout/stderr
     // so the user (and we) can see what went wrong instead of staring at
     // "Generating a one-time code…" forever. Catches codex output-format
     // drift, network blocks to auth.openai.com, hangs on stdin, etc.
@@ -350,9 +350,11 @@ export function credentialRoutes(db: Db) {
       if (!current || current.status !== "starting") return;
       current.status = "error";
       current.errorCode = "infra";
-      current.error =
-        "ChatGPT login did not emit a device code within 30s. The codex CLI may be unreachable, blocked from auth.openai.com, or have changed its output format. See diagnostic output below.";
-    }, 30_000);
+      const captured = current.stderr.trim();
+      current.error = captured
+        ? "ChatGPT login did not emit a device code within 8s. The codex CLI may be unreachable, blocked from auth.openai.com, or have changed its output format. See diagnostic output below."
+        : "ChatGPT login did not emit a device code within 8s. The codex CLI produced NO output at all — likely the binary is missing, hanging on stdin, or being killed before it starts. Check Dokploy logs.";
+    }, 8_000);
 
     codexCredSessions.set(sessionId, session);
 
