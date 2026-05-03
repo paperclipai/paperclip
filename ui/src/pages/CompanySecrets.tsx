@@ -421,7 +421,9 @@ function EditSecretDialog({
   );
 }
 
-type DeleteUsage = { id: string; name: string; envKeys: string[] };
+type DeleteUsageAgent = { id: string; name: string; envKeys: string[] };
+type DeleteUsageSkill = { id: string; name: string; slug: string };
+type DeleteBlock = { agents: DeleteUsageAgent[]; skills: DeleteUsageSkill[] };
 
 function DeleteSecretDialog({
   secret,
@@ -432,7 +434,7 @@ function DeleteSecretDialog({
   onClose: () => void;
   onDeleted: () => void;
 }) {
-  const [blockedBy, setBlockedBy] = useState<DeleteUsage[] | null>(null);
+  const [blockedBy, setBlockedBy] = useState<DeleteBlock | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const remove = useMutation({
@@ -441,12 +443,16 @@ function DeleteSecretDialog({
     onError: (error: unknown) => {
       if (error instanceof ApiError) {
         const body = error.body as
-          | { details?: { usedByAgents?: DeleteUsage[] } }
+          | { details?: { usedByAgents?: DeleteUsageAgent[]; usedBySkills?: DeleteUsageSkill[] } }
           | null
           | undefined;
-        const usedByAgents = body?.details?.usedByAgents;
-        if (Array.isArray(usedByAgents) && usedByAgents.length > 0) {
-          setBlockedBy(usedByAgents);
+        const usedByAgents = body?.details?.usedByAgents ?? [];
+        const usedBySkills = body?.details?.usedBySkills ?? [];
+        if (
+          (Array.isArray(usedByAgents) && usedByAgents.length > 0)
+          || (Array.isArray(usedBySkills) && usedBySkills.length > 0)
+        ) {
+          setBlockedBy({ agents: usedByAgents, skills: usedBySkills });
           setErrorMessage(error.message);
           return;
         }
@@ -457,6 +463,8 @@ function DeleteSecretDialog({
     },
   });
 
+  const totalBlockers = blockedBy ? blockedBy.agents.length + blockedBy.skills.length : 0;
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -464,25 +472,33 @@ function DeleteSecretDialog({
           <DialogTitle>Delete "{secret.name}"</DialogTitle>
           <DialogDescription>
             This permanently deletes the secret and all of its versions. Agents
-            that reference it will fail until the binding is removed.
+            and skills that reference it will fail until the binding is removed.
           </DialogDescription>
         </DialogHeader>
 
-        {blockedBy && blockedBy.length > 0 ? (
+        {blockedBy && totalBlockers > 0 ? (
           <div className="space-y-2 rounded-md border border-destructive/50 bg-destructive/5 px-3 py-3 text-xs">
             <p className="font-medium text-destructive">
               Cannot delete — still referenced by:
             </p>
             <ul className="space-y-1 text-muted-foreground">
-              {blockedBy.map((agent) => (
-                <li key={agent.id}>
+              {blockedBy.agents.map((agent) => (
+                <li key={`agent:${agent.id}`}>
                   <span className="font-medium text-foreground">{agent.name}</span>{" "}
+                  <span className="text-muted-foreground/70">agent</span>{" "}
                   ({agent.envKeys.join(", ")})
+                </li>
+              ))}
+              {blockedBy.skills.map((skill) => (
+                <li key={`skill:${skill.id}`}>
+                  <span className="font-medium text-foreground">{skill.name}</span>{" "}
+                  <span className="text-muted-foreground/70">skill</span>{" "}
+                  ({skill.slug})
                 </li>
               ))}
             </ul>
             <p className="text-muted-foreground">
-              Detach this secret from those agents' environment variables first.
+              Detach this secret from those references first.
             </p>
           </div>
         ) : errorMessage ? (

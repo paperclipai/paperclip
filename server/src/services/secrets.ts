@@ -1,6 +1,6 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions } from "@paperclipai/db";
+import { companySecrets, companySecretVersions, companySkills } from "@paperclipai/db";
 import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -46,6 +46,8 @@ export function secretService(db: Db) {
   };
 
   type SecretUsageAgent = { id: string; name: string; envKeys: string[] };
+  type SecretUsageSkill = { id: string; name: string; slug: string };
+  type SecretUsages = { agents: SecretUsageAgent[]; skills: SecretUsageSkill[] };
 
   async function getById(id: string) {
     return db
@@ -55,10 +57,10 @@ export function secretService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function usages(companyId: string, secretId: string): Promise<SecretUsageAgent[]> {
+  async function usages(companyId: string, secretId: string): Promise<SecretUsages> {
     const agents = agentService(db);
     const allAgents = await agents.list(companyId);
-    const out: SecretUsageAgent[] = [];
+    const agentRefs: SecretUsageAgent[] = [];
     for (const agent of allAgents) {
       const config = asRecord(agent.adapterConfig);
       if (!config) continue;
@@ -73,10 +75,28 @@ export function secretService(db: Db) {
         }
       }
       if (matchingKeys.length > 0) {
-        out.push({ id: agent.id, name: agent.name, envKeys: matchingKeys });
+        agentRefs.push({ id: agent.id, name: agent.name, envKeys: matchingKeys });
       }
     }
-    return out;
+
+    const skillRows = await db
+      .select({
+        id: companySkills.id,
+        name: companySkills.name,
+        slug: companySkills.slug,
+      })
+      .from(companySkills)
+      .where(and(
+        eq(companySkills.companyId, companyId),
+        sql`${companySkills.metadata} ->> 'sourceAuthSecretId' = ${secretId}`,
+      ));
+    const skillRefs: SecretUsageSkill[] = skillRows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      slug: row.slug,
+    }));
+
+    return { agents: agentRefs, skills: skillRefs };
   }
 
   async function getByName(companyId: string, name: string) {
@@ -315,11 +335,13 @@ export function secretService(db: Db) {
       const secret = await getById(secretId);
       if (!secret) return null;
       const used = await usages(secret.companyId, secretId);
-      if (used.length > 0) {
-        const names = used.map((agent) => agent.name).sort((left, right) => left.localeCompare(right));
+      if (used.agents.length > 0 || used.skills.length > 0) {
+        const agentNames = used.agents.map((agent) => agent.name);
+        const skillNames = used.skills.map((skill) => skill.name);
+        const names = [...agentNames, ...skillNames].sort((left, right) => left.localeCompare(right));
         throw unprocessable(
-          `Cannot delete secret "${secret.name}" while it is still used by ${names.join(", ")}. Detach it from those agents first.`,
-          { secretId, usedByAgents: used },
+          `Cannot delete secret "${secret.name}" while it is still used by ${names.join(", ")}. Detach it from those references first.`,
+          { secretId, usedByAgents: used.agents, usedBySkills: used.skills },
         );
       }
       await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
