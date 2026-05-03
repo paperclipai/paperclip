@@ -41,6 +41,7 @@ import {
   resolveIssueWorkspaceName,
   type InboxIssueColumn,
 } from "../lib/inbox";
+import { shouldShowBoardProjectChip } from "../lib/issue-board";
 import { cn } from "../lib/utils";
 import {
   InboxIssueMetaLeading,
@@ -960,6 +961,10 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const showBoardProjectNames = useMemo(
+    () => shouldShowBoardProjectChip(filtered, projectId),
+    [filtered, projectId],
+  );
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -1353,6 +1358,8 @@ export function IssuesList({
         <KanbanBoard
           issues={filtered}
           agents={agents}
+          projects={projects?.map((project) => ({ id: project.id, name: project.name, color: project.color }))}
+          showProjectNames={showBoardProjectNames}
           liveIssueIds={liveIssueIds}
           onUpdateIssue={onUpdateIssue}
         />
