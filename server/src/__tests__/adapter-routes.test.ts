@@ -174,13 +174,13 @@ describe("adapter routes", () => {
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
 
-    // hermes_local currently supports skills + local JWT, but not the managed
-    // instructions bundle flow because the bundled adapter does not consume
-    // instructionsFilePath at runtime.
+    // hermes_local supports skills + local JWT + the managed instructions bundle
+    // flow (enabled by this PR — supportsInstructionsBundle flipped to true so
+    // Paperclip injects the bundle via instructionsRootPath at runtime).
     const hermesAdapter = res.body.find((a: any) => a.type === "hermes_local");
     expect(hermesAdapter).toBeDefined();
     expect(hermesAdapter.capabilities).toMatchObject({
-      supportsInstructionsBundle: false,
+      supportsInstructionsBundle: true,
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,

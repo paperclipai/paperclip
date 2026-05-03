@@ -1,4 +1,5 @@
 import type { AdapterModelProfileDefinition, ServerAdapterModule } from "./types.js";
+import fs from "node:fs/promises";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
@@ -110,6 +111,7 @@ import {
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
+import { agentInstructionsService } from "../services/agent-instructions.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -318,11 +320,78 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
+    // Read the instructions bundle (AGENTS.md, SOUL.md, HEARTBEAT.md, TOOLS.md, …)
+    // from instructionsRootPath and prepend it to promptTemplate, mirroring what
+    // claude_local does natively.  Without this, supportsInstructionsBundle is
+    // decorative — Paperclip never loads bundle files for hermes_local agents.
+    //
+    // Gate on explicit bundle config keys only. exportFiles() has a legacy fallback
+    // (readLegacyInstructions) that, when neither instructionsRootPath nor
+    // instructionsFilePath is set, returns config.promptTemplate as
+    // { "AGENTS.md": <promptTemplate> } (or a placeholder string when neither is set).
+    // Calling exportFiles() unconditionally would cause promptTemplate to appear twice
+    // for promptTemplate-only agents, and would inject the placeholder sentinel string
+    // for agents with no configuration at all — silently overriding Hermes' built-in
+    // default heartbeat/task prompt.
+    //
+    // Additionally, we verify the path actually resolves to readable content before
+    // calling exportFiles(). If instructionsRootPath is set but the directory doesn't
+    // exist yet (operator pre-configured path before bundle was materialized) or is
+    // empty, exportFiles() falls through to readLegacyInstructions which returns
+    // { "AGENTS.md": <promptTemplate> } — our injection would then duplicate
+    // promptTemplate in the final prompt.
+    const instructions = agentInstructionsService();
+    const filePath =
+      typeof existingConfig.instructionsFilePath === "string"
+        ? existingConfig.instructionsFilePath
+        : null;
+    const rootPath =
+      typeof existingConfig.instructionsRootPath === "string"
+        ? existingConfig.instructionsRootPath
+        : null;
+
+    let bundleAvailable = false;
+    if (filePath) {
+      try {
+        const stat = await fs.stat(filePath);
+        bundleAvailable = stat.isFile() && stat.size > 0;
+      } catch {
+        // missing or unreadable — leave bundleAvailable false
+      }
+    } else if (rootPath) {
+      try {
+        const entries = await fs.readdir(rootPath);
+        bundleAvailable = entries.length > 0;
+      } catch {
+        // missing or unreadable — leave bundleAvailable false
+      }
+    }
+
+    const exported = bundleAvailable
+      ? await instructions.exportFiles(normalizedCtx.agent as Parameters<typeof instructions.exportFiles>[0]).catch(() => null)
+      : null;
+    const bundleEntries = exported
+      ? Object.entries(exported.files).sort(([a], [b]) => {
+          // Entry file first, then alphabetical.
+          if (a === exported.entryFile) return -1;
+          if (b === exported.entryFile) return 1;
+          return a.localeCompare(b);
+        })
+      : [];
+    const bundleContent = bundleEntries
+      .map(([name, body]) => (body.trim() ? `# ${name}\n\n${body}` : null))
+      .filter(Boolean)
+      .join("\n\n");
+
     // Only inject the auth guard into promptTemplate when a custom template already exists.
     // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
     // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+      patchedConfig.promptTemplate = bundleContent
+        ? `${authGuardPrompt}\n\n${bundleContent}\n\n${promptTemplate}`
+        : `${authGuardPrompt}\n\n${promptTemplate}`;
+    } else if (bundleContent) {
+      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${bundleContent}`;
     }
 
     const patchedCtx = {
@@ -341,7 +410,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
   syncSkills: hermesSyncSkills,
   models: hermesModels,
   supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),
