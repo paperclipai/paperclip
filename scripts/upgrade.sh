@@ -1232,8 +1232,8 @@ fi
 #
 # Strategy:
 # 1. Stop the server
-# 2. Stash any local changes (e.g. local skill patches)
-# 3. Fast-forward the live repo to upstream
+# 2. Stash any local changes, including untracked files (e.g. local migration drafts)
+# 3. Advance the live repo to the target
 # 4. Re-apply stashed changes
 # 5. pnpm install on live repo (fast — packages cached from worktree build)
 # 6. Start the server and health-check
@@ -1250,7 +1250,7 @@ if [ "$phase" = "swapping" ]; then
   local_changes=$(git status --porcelain 2>/dev/null | head -1)
   if [ -n "$local_changes" ]; then
     log "Stashing local changes in live repo..."
-    git stash push -m "paperclip-upgrade-$(date +%s)" 2>>"$LOG_FILE"
+    git stash push -u -m "paperclip-upgrade-$(date +%s)" 2>>"$LOG_FILE"
     echo "stashed" > "$STATE_DIR/stash-flag"
   fi
 
@@ -1262,6 +1262,18 @@ if [ "$phase" = "swapping" ]; then
   if git merge-base --is-ancestor HEAD "$TARGET_REF"; then
     if ! git merge "$TARGET_REF" --ff-only 2>>"$LOG_FILE"; then
       log "ERROR: Fast-forward failed on live repo"
+      systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
+      [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
+      restore_heartbeats
+      full_cleanup
+      exit 1
+    fi
+  elif [ "$UPGRADE_MODE" = "integration" ]; then
+    backup_ref="refs/paperclip-upgrade/live-backups/$(date +%Y%m%d%H%M%S)"
+    git update-ref "$backup_ref" HEAD
+    log "Live repo diverged from composed integration target; saved old HEAD at $backup_ref and resetting to target"
+    if ! git reset --hard "$TARGET_REF" 2>>"$LOG_FILE"; then
+      log "ERROR: Reset to integration target failed"
       systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
       [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
       restore_heartbeats
