@@ -317,6 +317,44 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Manual intervention required");
   });
 
+  it("labels max-turn stops and continuation retries without confusing them with per-run turns", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-scheduled-continuation",
+          status: "scheduled_retry",
+          finishedAt: null,
+          livenessState: null,
+          livenessReason: null,
+          retryOfRunId: "run-max-turns",
+          scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: "max_turns_continuation",
+        }),
+        createRun({
+          runId: "run-max-turns",
+          resultJson: { stopReason: "max_turns_exhausted" },
+          createdAt: "2026-04-18T19:57:00.000Z",
+        }),
+        createRun({
+          runId: "run-continuation-exhausted",
+          status: "failed",
+          createdAt: "2026-04-18T19:56:00.000Z",
+          retryOfRunId: "run-max-turns",
+          scheduledRetryAttempt: 3,
+          scheduledRetryReason: "max_turns_continuation",
+          retryExhaustedReason: "Bounded retry exhausted after 3 scheduled attempts; no further automatic retry will be queued",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Continuation scheduled");
+    expect(container.textContent).toContain("Max-turn continuation");
+    expect(container.textContent).toContain("Next continuation");
+    expect(container.textContent).toContain("Stop max turns exhausted");
+    expect(container.textContent).toContain("Continuation exhausted");
+  });
+
   it("shows timeout, cancel, and budget stop reasons without raw logs", () => {
     renderLedger({
       runs: [
