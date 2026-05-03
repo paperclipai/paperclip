@@ -17,6 +17,7 @@ import type {
   ExpireIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  IssueThreadInteractionResult,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
   RejectIssueThreadInteraction,
@@ -1237,7 +1238,7 @@ export function issueThreadInteractionService(db: Db) {
       const now = new Date();
 
       // Result shape must match kind-specific schema used by hydrateInteraction
-      let result: Record<string, unknown>;
+      let result: IssueThreadInteractionResult;
       switch (current.kind) {
         case "request_confirmation":
           result = { version: 1, outcome: "agent_expired", ...(note ? { note } : {}) };
@@ -1269,7 +1270,7 @@ export function issueThreadInteractionService(db: Db) {
         .returning();
 
       if (!updated) {
-        return hydrateInteraction(current);
+        throw conflict("Interaction has already been resolved");
       }
 
       await touchIssue(db, issue.id);
