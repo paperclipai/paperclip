@@ -1,6 +1,6 @@
-import os from "os";
-import path from "path";
-import fs from "fs";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";

@@ -1,8 +1,8 @@
-import os from "os";
-import path from "path";
-import fs from "fs";
+import path from "node:path";
+import fs from "node:fs";
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import { codexHomeDir } from "@paperclipai/adapter-codex-local/server";
 import { readConfigFile } from "../config-file.js";
 
 const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
@@ -50,13 +50,9 @@ interface CodexCacheEntry {
   visibility?: unknown;
 }
 
-function resolveCodexHome(): string {
-  return process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
-}
-
 function readCodexModelsCache(): AdapterModel[] {
   try {
-    const file = path.join(resolveCodexHome(), "models_cache.json");
+    const file = path.join(codexHomeDir(), "models_cache.json");
     const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
     const list: CodexCacheEntry[] = Array.isArray(raw?.models) ? raw.models : [];
     return dedupeModels(
