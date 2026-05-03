@@ -918,7 +918,20 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
     typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
       ? input.executionCwd.trim()
       : null;
-  const realizedWorkspaceCwd = executionCwd ?? workspaceCwd;
+  // On a remote target we must never fall back to the local workspaceCwd —
+  // doing so leaks host paths into the remote env (the exact failure mode
+  // this helper exists to prevent). Callers are expected to resolve
+  // executionCwd via adapterExecutionTargetRemoteCwd before calling this
+  // helper, which always returns a non-empty string. Surface a warning so
+  // future callers don't silently regress to the leak.
+  if (executionCwd === null) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] shapePaperclipWorkspaceEnvForExecution called with executionCwd=null on a remote target; " +
+        "stripping workspaceCwd to avoid leaking local paths into the remote environment.",
+    );
+  }
+  const realizedWorkspaceCwd = executionCwd;
   const localWorkspaceCwd = workspaceCwd ? path.resolve(workspaceCwd) : null;
   const shapedWorkspaceHints = workspaceHints.map((hint) => {
     const nextHint = { ...hint };
