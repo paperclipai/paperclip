@@ -3923,6 +3923,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      skipWhenIdle: asBoolean(heartbeat.skipWhenIdle, false),
     };
   }
 
@@ -7777,6 +7778,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -7784,9 +7786,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
+
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // When skipWhenIdle is enabled, skip timer wakeup if agent has no actionable
+        // assigned issues — avoids wasting tokens on empty heartbeat runs.
+        if (policy.skipWhenIdle) {
+          const [{ count: assignedCount }] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.assigneeAgentId, agent.id),
+                inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+              ),
+            );
+          if (Number(assignedCount) === 0) {
+            idleSkipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -7804,7 +7825,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
