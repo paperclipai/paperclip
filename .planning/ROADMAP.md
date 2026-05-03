@@ -137,9 +137,18 @@ v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 
 </details>
 
 <details open>
-<summary>v3.3 (planned)</summary>
+<summary>v3.3 RT2 Engine Convergence (planned)</summary>
 
-**Goal:** TBD
+**Goal:** RT2/Multica/wikiLLM+Graphify 삼중 기반 로직이 앱에 정확히 반영되어 RealTycoon2 운영엔진으로 동작하는지 확인하고 개선한다.
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 78 | Multica Runtime Alignment | MULTICA-01..03 | Planned |
+| 79 | RT2 Event/Projector Alignment | RT2-01..02 | Planned |
+| 80 | Work Lifecycle Integration | RT2-03 | Planned |
+| 81 | wikiLLM/Graphify Knowledge Projection | WIKI-01..03 | Planned |
+| 82 | Paperclip Residue Cleanup | CLEANUP-01..03 | Planned |
+| 83 | v3.3 Acceptance Gate | GATE-01..02 | Planned |
 
 </details>
 
@@ -546,6 +555,12 @@ Success criteria:
 | 75. Autonomous Jarvis Direct Apply | v3.2 | 0/0 | Complete | 2026-05-01 |
 | 76. Public Store Operations | v3.2 | 0/0 | Complete | 2026-05-01 |
 | 77. v3.2 Acceptance Gate | v3.2 | 0/0 | Complete | 2026-05-01 |
+| 78. Multica Runtime Alignment | v3.3 | 0/0 | Planned | — |
+| 79. RT2 Event/Projector Alignment | v3.3 | 0/0 | Planned | — |
+| 80. Work Lifecycle Integration | v3.3 | 0/0 | Planned | — |
+| 81. wikiLLM/Graphify Knowledge Projection | v3.3 | 0/0 | Planned | — |
+| 82. Paperclip Residue Cleanup | v3.3 | 0/0 | Planned | — |
+| 83. v3.3 Acceptance Gate | v3.3 | 0/0 | Planned | — |
 
 ## Archive
 
