@@ -59,10 +59,14 @@ hard-gate on the worktree existing (their step 0); without one, they
 abort and the task stalls. Allocation is the operational
 precondition — not optional, not "best effort".
 
-Run from `$PAPERCLIP_PROJECT`:
+Run from `$PAPERCLIP_PROJECT`. Fetch `origin/main` first and branch from
+it (not local `main`) so the worktree starts at the latest merged state —
+local `main` may be hours behind, and a stale starting point produces
+predictable merge conflicts when the PR opens:
 
 ```sh
-git worktree add .paperclip/worktrees/{task-id} -b task/{task-id} main
+git fetch origin main
+git worktree add .paperclip/worktrees/{task-id} -b task/{task-id} origin/main
 ```
 
 **Verify allocation succeeded** before patching the task:
