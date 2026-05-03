@@ -71,6 +71,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  resolveHeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -1967,6 +1968,20 @@ function isSameTaskScope(left: string | null, right: string | null) {
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
+}
+
+const EXTERNAL_ORPHAN_REAP_GRACE_MS = 60_000;
+
+function resolveExternalOrphanReapThresholdMs(input: {
+  adapterType: string;
+  adapterConfig: Record<string, unknown> | null | undefined;
+  staleThresholdMs: number;
+}) {
+  const timeoutPolicy = resolveHeartbeatRunTimeoutPolicy(input.adapterType, input.adapterConfig);
+  const timeoutMs =
+    timeoutPolicy.effectiveTimeoutMs ??
+    (timeoutPolicy.effectiveTimeoutSec != null ? timeoutPolicy.effectiveTimeoutSec * 1000 : 0);
+  return Math.max(input.staleThresholdMs, timeoutMs + EXTERNAL_ORPHAN_REAP_GRACE_MS);
 }
 
 function isHeartbeatRunTerminalStatus(
@@ -5805,14 +5820,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
 
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      const effectiveStaleThresholdMs = tracksLocalChild
+        ? staleThresholdMs
+        : resolveExternalOrphanReapThresholdMs({
+          adapterType,
+          adapterConfig: parseObject(adapterConfig),
+          staleThresholdMs,
+        });
+      if (effectiveStaleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        if (now.getTime() - refTime < effectiveStaleThresholdMs) continue;
       }
 
-      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {

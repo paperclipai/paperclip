@@ -284,6 +284,7 @@ Recovery rule:
 
 - Paperclip queues one automatic continuation wake
 - if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and posts a visible comment
+- for external adapters such as `openclaw_gateway`, orphan reaping waits for the adapter's effective timeout window, including `waitTimeoutMs`, plus grace before treating the live path as disappeared
 
 This is an active-work continuity recovery.
 

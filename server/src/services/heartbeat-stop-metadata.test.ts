@@ -42,6 +42,20 @@ describe("heartbeat stop metadata", () => {
     });
   });
 
+  it("uses openclaw gateway wait timeout as the effective run timeout", () => {
+    expect(
+      resolveHeartbeatRunTimeoutPolicy("openclaw_gateway", {
+        timeoutSec: 120,
+        waitTimeoutMs: 600_000,
+      }),
+    ).toEqual({
+      effectiveTimeoutSec: 600,
+      effectiveTimeoutMs: 600_000,
+      timeoutConfigured: true,
+      timeoutSource: "config",
+    });
+  });
+
   it("distinguishes budget cancellation from manual cancellation", () => {
     expect(
       buildHeartbeatRunStopMetadata({

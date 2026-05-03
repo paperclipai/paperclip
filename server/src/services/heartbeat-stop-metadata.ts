@@ -47,6 +47,13 @@ export function normalizeMaxTurnStopReason(value: unknown): Extract<HeartbeatRun
     : null;
 }
 
+function readPositiveIntegerMs(value: unknown): number | null {
+  const parsed = readFiniteNumber(value);
+  if (parsed == null) return null;
+  const floored = Math.floor(parsed);
+  return floored > 0 ? floored : null;
+}
+
 export function resolveHeartbeatRunTimeoutPolicy(
   adapterType: string,
   adapterConfig: Record<string, unknown> | null | undefined,
@@ -69,6 +76,18 @@ export function resolveHeartbeatRunTimeoutPolicy(
   const defaultTimeoutSec = defaultTimeoutSecForAdapter(adapterType);
   const rawTimeoutSec = hasTimeoutSec ? readFiniteNumber(config.timeoutSec) : defaultTimeoutSec;
   const timeoutSec = Math.max(0, Math.floor(rawTimeoutSec ?? defaultTimeoutSec));
+  const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
+
+  if (adapterType === "openclaw_gateway") {
+    const waitTimeoutMs = readPositiveIntegerMs(config.waitTimeoutMs);
+    const effectiveTimeoutMs = Math.max(timeoutMs, waitTimeoutMs ?? 0);
+    return {
+      effectiveTimeoutSec: effectiveTimeoutMs > 0 ? effectiveTimeoutMs / 1000 : 0,
+      effectiveTimeoutMs,
+      timeoutConfigured: effectiveTimeoutMs > 0,
+      timeoutSource: hasTimeoutSec || waitTimeoutMs != null ? "config" : "default",
+    };
+  }
 
   return {
     effectiveTimeoutSec: timeoutSec,
