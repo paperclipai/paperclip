@@ -80,9 +80,9 @@ describe("CompanySettingsNav", () => {
         items: [
           { value: "general", label: "General" },
           { value: "environments", label: "Environments" },
+          { value: "secrets", label: "Secrets" },
           { value: "access", label: "Access" },
           { value: "invites", label: "Invites" },
-          { value: "secrets", label: "Secrets" },
         ],
       }),
     );
