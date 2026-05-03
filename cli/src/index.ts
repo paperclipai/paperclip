@@ -27,6 +27,9 @@ import { registerProjectCommands } from "./commands/client/project.js";
 import { registerGoalCommands } from "./commands/client/goal.js";
 import { registerSecretCommands } from "./commands/client/secret.js";
 import { registerEnvironmentCommands } from "./commands/client/environment.js";
+import { registerCostCommands } from "./commands/client/cost.js";
+import { registerFinanceCommands } from "./commands/client/finance.js";
+import { registerBudgetCommands } from "./commands/client/budget.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
 
@@ -158,6 +161,9 @@ registerProjectCommands(program);
 registerGoalCommands(program);
 registerSecretCommands(program);
 registerEnvironmentCommands(program);
+registerCostCommands(program);
+registerFinanceCommands(program);
+registerBudgetCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 
