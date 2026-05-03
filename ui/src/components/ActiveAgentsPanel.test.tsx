@@ -14,6 +14,10 @@ const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
     <a href={to} {...props}>
@@ -30,8 +34,16 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
+vi.mock("../api/agents", () => ({
+  agentsApi: mockAgentsApi,
+}));
+
 vi.mock("./Identity", () => ({
   Identity: ({ name }: { name: string }) => <span>{name}</span>,
+}));
+
+vi.mock("./AgentIconPicker", () => ({
+  AgentIcon: () => <span data-testid="agent-icon" />,
 }));
 
 vi.mock("./RunChatSurface", () => ({
@@ -71,6 +83,56 @@ function createRun(index: number) {
   };
 }
 
+function createRunForAgent(overrides: {
+  id: string;
+  agentId: string;
+  agentName: string;
+  status?: string;
+  createdAt?: string;
+  finishedAt?: string | null;
+}) {
+  return {
+    id: overrides.id,
+    status: overrides.status ?? "running",
+    invocationSource: "assignment",
+    triggerDetail: null,
+    startedAt: "2026-04-24T12:00:00.000Z",
+    finishedAt: overrides.finishedAt ?? null,
+    createdAt: overrides.createdAt ?? "2026-04-24T12:00:00.000Z",
+    agentId: overrides.agentId,
+    agentName: overrides.agentName,
+    adapterType: "codex_local",
+    issueId: null,
+  };
+}
+
+function createAgent(overrides: { id: string; name: string; role?: string; status?: string }) {
+  return {
+    id: overrides.id,
+    companyId: "company-1",
+    name: overrides.name,
+    urlKey: overrides.name.toLowerCase(),
+    role: overrides.role ?? "general",
+    title: null,
+    icon: null,
+    status: overrides.status ?? "idle",
+    reportsTo: null,
+    capabilities: null,
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    pauseReason: null,
+    pausedAt: null,
+    permissions: {},
+    lastHeartbeatAt: null,
+    metadata: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
 describe("ActiveAgentsPanel", () => {
   let container: HTMLDivElement;
 
@@ -79,6 +141,7 @@ describe("ActiveAgentsPanel", () => {
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
     mockIssuesApi.list.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -144,6 +207,53 @@ describe("ActiveAgentsPanel", () => {
       limit: 50,
     });
     expect(container.textContent).not.toContain("more active/recent");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders one card per agent in agents mode, not one per run (regression: #4457)", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      createAgent({ id: "agent-ceo", name: "CEO", role: "ceo" }),
+      createAgent({ id: "agent-cto", name: "CTO", role: "cto" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      createRunForAgent({
+        id: "run-ceo-1",
+        agentId: "agent-ceo",
+        agentName: "CEO",
+        status: "running",
+        createdAt: "2026-04-24T12:00:01.000Z",
+      }),
+      createRunForAgent({
+        id: "run-ceo-2",
+        agentId: "agent-ceo",
+        agentName: "CEO",
+        status: "completed",
+        createdAt: "2026-04-24T12:00:00.000Z",
+        finishedAt: "2026-04-24T12:01:00.000Z",
+      }),
+    ]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" displayMode="agents" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const ceoMatches = container.textContent?.match(/CEO/g) ?? [];
+    expect(ceoMatches.length).toBe(1);
+    expect(container.textContent).toContain("CTO");
+    expect(container.textContent).toContain("Idle");
 
     await act(async () => {
       root.unmount();
