@@ -35,6 +35,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -144,6 +145,15 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceWorktreePath,
+    workspaceHints,
+    executionTargetIsRemote,
+    executionCwd: effectiveExecutionCwd,
+  });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
@@ -199,18 +209,18 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
   applyPaperclipWorkspaceEnv(env, {
-    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceStrategy,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
     workspaceBranch,
-    workspaceWorktreePath,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
     agentHome,
   });
-  if (workspaceHints.length > 0) {
-    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  if (shapedWorkspaceEnv.workspaceHints.length > 0) {
+    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
   }
   if (runtimeServiceIntents.length > 0) {
     env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);

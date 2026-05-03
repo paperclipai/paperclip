@@ -34,6 +34,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
@@ -154,6 +155,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceHints,
+    executionTargetIsRemote,
+    executionCwd: effectiveExecutionCwd,
+  });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
@@ -202,14 +210,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   applyPaperclipWorkspaceEnv(env, {
-    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
     agentHome,
   });
-  if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  if (shapedWorkspaceEnv.workspaceHints.length > 0) {
+    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
+  }
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }

@@ -12,6 +12,7 @@ import {
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
 
@@ -548,6 +549,70 @@ describe("applyPaperclipWorkspaceEnv", () => {
     );
 
     expect(env).toEqual({});
+  });
+});
+
+describe("shapePaperclipWorkspaceEnvForExecution", () => {
+  it("rewrites workspace env paths for remote execution", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/tmp/workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-2",
+          cwd: "/tmp/other-workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-3",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/remote/workspace",
+      workspaceWorktreePath: null,
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/remote/workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-2",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-3",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+      ],
+    });
+  });
+
+  it("leaves local execution workspace paths unchanged", () => {
+    const workspaceHints = [{ workspaceId: "workspace-1", cwd: "/tmp/workspace" }];
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints,
+      executionTargetIsRemote: false,
+      executionCwd: "/remote/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints,
+    });
   });
 });
 
