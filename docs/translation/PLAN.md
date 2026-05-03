@@ -2,7 +2,7 @@
 
 This document defines the ongoing strategy for keeping `yong076/paperclip-ko` in lockstep with upstream `paperclipai/paperclip` while maintaining a complete Korean localization.
 
-> **Status**: Phase 0 (foundations) — README + Attribution + this plan are in place. Phase 1+ (i18n infrastructure, automation, bulk translation) is queued.
+> **Status**: Phase 3 content pass in progress — README, runtime UI fallback translations, Korean docs hub, board-operator guides, skills, and plugin overview docs are in place. The remaining work is deeper reference docs, CLI/server-facing strings, and upstream-ready i18n extraction.
 
 ---
 
@@ -81,6 +81,18 @@ Once Phase 1 patterns are in place, extract all hardcoded strings from:
 
 ### Phase 3 — Documentation Translation
 - `README.ko.md` ✅ (Phase 0)
+- `docs/ko/README.md` ✅
+- `docs/ko/start/*.md` ✅
+- `docs/ko/guides/board-operator/*.md` ✅
+- `docs/ko/guides/agent-developer/*.md` ✅
+- `docs/ko/adapters/{overview,creating-an-adapter,http}.md` ✅
+- `docs/ko/cli/overview.md` ✅
+- `docs/ko/deploy/overview.md` ✅
+- `docs/ko/api/overview.md` ✅
+- `skills/paperclip/SKILL.ko.md` ✅
+- `skills/paperclip-create-agent/SKILL.ko.md` ✅
+- `packages/plugins/create-paperclip-plugin/README.ko.md` ✅
+- `packages/plugins/sdk/README.ko.md` ✅ (operator overview; API reference remains in upstream English for now)
 - `doc/DEVELOPING.md` → `doc/DEVELOPING.ko.md`
 - `docs/**/*.md` → `docs/**/*.ko.md`
 - `ROADMAP.md`, `CONTRIBUTING.md`, `SECURITY.md` → `.ko.md` siblings

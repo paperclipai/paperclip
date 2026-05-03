@@ -14,7 +14,8 @@
 
 <p align="center">
   <a href="#quickstart-빠른-시작"><strong>빠른 시작</strong></a> &middot;
-  <a href="https://paperclip.ing/docs"><strong>Docs</strong></a> &middot;
+  <a href="./docs/ko/README.md"><strong>한국어 문서</strong></a> &middot;
+  <a href="https://paperclip.ing/docs"><strong>Upstream Docs</strong></a> &middot;
   <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
   <a href="https://discord.gg/m4HZY7xNG3"><strong>Discord</strong></a> &middot;
   <a href="https://x.com/papercliping"><strong>Twitter</strong></a>
@@ -86,6 +87,19 @@ Paperclip은 AI 에이전트 팀을 조직처럼 운영하는 Node.js 서버 + R
 - ✅ **비용을 모니터링**하고 예산을 강제하고 싶은 분
 - ✅ 에이전트 관리가 **태스크 매니저 쓰는 느낌**이면 좋겠다는 분
 - ✅ 자율 사업체를 **모바일에서 관리**하고 싶은 분
+
+<br/>
+
+## 한국어 문서
+
+- [한국어 문서 허브](./docs/ko/README.md)
+- [Paperclip이란?](./docs/ko/start/what-is-paperclip.md)
+- [빠른 시작](./docs/ko/start/quickstart.md)
+- [핵심 개념](./docs/ko/start/core-concepts.md)
+- [아키텍처](./docs/ko/start/architecture.md)
+- [보드 운영자 가이드](./docs/ko/guides/board-operator/creating-a-company.md)
+- [Paperclip 스킬](./skills/paperclip/SKILL.ko.md)
+- [에이전트 생성 스킬](./skills/paperclip-create-agent/SKILL.ko.md)
 
 <br/>
 
