@@ -354,4 +354,111 @@ describe("expireInteraction", () => {
       ),
     ).rejects.toThrow("Interaction has already been resolved");
   });
+
+  it("expires ask_user_questions with cancellation-shaped result that hydrates cleanly", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-expire-auq",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Pick scope",
+      summary: null,
+      createdByAgentId: "agent-creator",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Pick one",
+            selectionMode: "single",
+            options: [
+              { id: "a", label: "A" },
+              { id: "b", label: "B" },
+            ],
+          },
+        ],
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-05-01T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+    };
+
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+
+    const result = await svc.expireInteraction(
+      { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" },
+      "interaction-expire-auq",
+      { note: "Board replied in comment" },
+      { agentId: "agent-creator" },
+    );
+
+    expect(result.status).toBe("expired");
+    expect(result.kind).toBe("ask_user_questions");
+    expect(result.result).toEqual({
+      version: 1,
+      answers: [],
+      cancelled: true,
+      cancellationReason: "Board replied in comment",
+      summaryMarkdown: null,
+    });
+  });
+
+  it("expires suggest_tasks with rejection-shaped result that hydrates cleanly", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-expire-st",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Suggested tasks",
+      summary: null,
+      createdByAgentId: "agent-creator",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "t-1", title: "Task one" }],
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-05-01T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+    };
+
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+
+    const result = await svc.expireInteraction(
+      { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" },
+      "interaction-expire-st",
+      { note: "Plan changed" },
+      { agentId: "agent-creator" },
+    );
+
+    expect(result.status).toBe("expired");
+    expect(result.kind).toBe("suggest_tasks");
+    expect(result.result).toEqual({
+      version: 1,
+      rejectionReason: "Plan changed",
+    });
+  });
 });

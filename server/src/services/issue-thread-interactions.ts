@@ -1235,15 +1235,28 @@ export function issueThreadInteractionService(db: Db) {
 
       const note = data.note?.trim() || null;
       const now = new Date();
+
+      // Result shape must match kind-specific schema used by hydrateInteraction
+      let result: Record<string, unknown>;
+      switch (current.kind) {
+        case "request_confirmation":
+          result = { version: 1, outcome: "agent_expired", ...(note ? { note } : {}) };
+          break;
+        case "ask_user_questions":
+          result = { version: 1, answers: [], cancelled: true, cancellationReason: note, summaryMarkdown: null };
+          break;
+        case "suggest_tasks":
+          result = { version: 1, rejectionReason: note };
+          break;
+        default:
+          throw unprocessable(`Cannot expire interaction of kind: ${current.kind}`);
+      }
+
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
           status: "expired",
-          result: {
-            version: 1,
-            outcome: "agent_expired",
-            ...(note ? { note } : {}),
-          },
+          result,
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: now,
