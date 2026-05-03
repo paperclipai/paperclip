@@ -553,6 +553,7 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  ProviderRateLimitBlock,
 } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,

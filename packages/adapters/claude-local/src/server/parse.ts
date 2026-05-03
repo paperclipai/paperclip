@@ -10,7 +10,11 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
-  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception)/i;
+
+// Hard limits: the provider window is exhausted — retrying is pointless until it resets.
+export const CLAUDE_HARD_LIMIT_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
@@ -367,6 +371,37 @@ export function extractClaudeRetryNotBefore(
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
 }
 
+export function extractClaudeHardLimitBlock(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): { limitKind: string; modelFamily: string | null; resetsAt: string | null; message: string } | null {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!CLAUDE_HARD_LIMIT_RE.test(haystack)) return null;
+
+  let limitKind = "generic";
+  let modelFamily: string | null = null;
+  if (/5[-\s]?hour/i.test(haystack)) {
+    limitKind = "five_hour";
+  } else if (/seven[-_\s]day[-_\s]opus|opus.*weekly/i.test(haystack)) {
+    limitKind = "seven_day_opus";
+    modelFamily = "claude-opus";
+  } else if (/seven[-_\s]day[-_\s]sonnet|sonnet.*weekly/i.test(haystack)) {
+    limitKind = "seven_day_sonnet";
+    modelFamily = "claude-sonnet";
+  } else if (/weekly|seven[-_\s]day/i.test(haystack)) {
+    limitKind = "seven_day";
+  } else if (/extra\s+usage/i.test(haystack)) {
+    limitKind = "extra_usage";
+  }
+
+  const resetsAt = extractClaudeRetryNotBefore(input)?.toISOString() ?? null;
+  const raw = input.errorMessage ?? input.stderr ?? input.stdout ?? "";
+  const message = raw.slice(0, 1000);
+  return { limitKind, modelFamily, resetsAt, message };
+}
+
 export function isClaudeTransientUpstreamError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -387,5 +422,6 @@ export function isClaudeTransientUpstreamError(input: {
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
+  if (CLAUDE_HARD_LIMIT_RE.test(haystack)) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
 }

@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractClaudeHardLimitBlock,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
-  it("classifies the 'out of extra usage' subscription window failure as transient", () => {
+  it("does NOT classify hard-limit 'out of extra usage' as transient (it is provider_rate_limit)", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isClaudeTransientUpstreamError({
         parsed: {
@@ -18,7 +19,7 @@ describe("isClaudeTransientUpstreamError", () => {
           result: "You're out of extra usage. Resets at 4pm (America/Chicago).",
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
@@ -50,17 +51,17 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies the subscription 5-hour / weekly limit wording", () => {
+  it("does NOT classify 5-hour / weekly limit wording as transient (it is provider_rate_limit)", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "5-hour limit reached.",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("does not classify login/auth failures as transient", () => {
@@ -93,6 +94,41 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
     ).toBe(false);
+  });
+});
+
+describe("extractClaudeHardLimitBlock", () => {
+  it("returns null for transient errors", () => {
+    expect(extractClaudeHardLimitBlock({ stderr: "HTTP 429: Too Many Requests" })).toBeNull();
+    expect(extractClaudeHardLimitBlock({ parsed: { is_error: true, errors: [{ type: "overloaded_error" }] } })).toBeNull();
+  });
+
+  it("classifies 5-hour limit as five_hour with no modelFamily", () => {
+    const block = extractClaudeHardLimitBlock({ errorMessage: "5-hour limit reached." });
+    expect(block?.limitKind).toBe("five_hour");
+    expect(block?.modelFamily).toBeNull();
+  });
+
+  it("classifies weekly limit as seven_day with no modelFamily", () => {
+    const block = extractClaudeHardLimitBlock({
+      errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
+    });
+    expect(block?.limitKind).toBe("seven_day");
+    expect(block?.modelFamily).toBeNull();
+  });
+
+  it("classifies opus weekly limit as seven_day_opus with claude-opus modelFamily", () => {
+    const block = extractClaudeHardLimitBlock({ errorMessage: "Opus weekly limit reached." });
+    expect(block?.limitKind).toBe("seven_day_opus");
+    expect(block?.modelFamily).toBe("claude-opus");
+  });
+
+  it("classifies extra_usage hits and includes resetsAt when present", () => {
+    const block = extractClaudeHardLimitBlock({
+      errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
+    });
+    expect(block?.limitKind).toBe("extra_usage");
+    expect(block?.resetsAt).not.toBeNull();
   });
 });
 

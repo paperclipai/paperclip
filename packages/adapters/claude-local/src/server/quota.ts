@@ -223,6 +223,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   if (body.five_hour != null) {
     windows.push({
       label: "Current session",
+      windowId: "five_hour",
       usedPercent: toPercent(body.five_hour.utilization),
       resetsAt: body.five_hour.resets_at ?? null,
       valueLabel: null,
@@ -232,6 +233,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   if (body.seven_day != null) {
     windows.push({
       label: "Current week (all models)",
+      windowId: "seven_day",
       usedPercent: toPercent(body.seven_day.utilization),
       resetsAt: body.seven_day.resets_at ?? null,
       valueLabel: null,
@@ -241,6 +243,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   if (body.seven_day_sonnet != null) {
     windows.push({
       label: "Current week (Sonnet only)",
+      windowId: "seven_day_sonnet",
       usedPercent: toPercent(body.seven_day_sonnet.utilization),
       resetsAt: body.seven_day_sonnet.resets_at ?? null,
       valueLabel: null,
@@ -250,6 +253,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   if (body.seven_day_opus != null) {
     windows.push({
       label: "Current week (Opus only)",
+      windowId: "seven_day_opus",
       usedPercent: toPercent(body.seven_day_opus.utilization),
       resetsAt: body.seven_day_opus.resets_at ?? null,
       valueLabel: null,
@@ -259,6 +263,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   if (body.extra_usage != null) {
     windows.push({
       label: "Extra usage",
+      windowId: "extra_usage",
       usedPercent: body.extra_usage.is_enabled === false ? null : toPercent(body.extra_usage.utilization),
       resetsAt: null,
       valueLabel:
