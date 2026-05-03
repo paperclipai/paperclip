@@ -898,10 +898,20 @@ export function issueRoutes(
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const assigneeAgentFilterRaw = req.query.assigneeAgentId as string | undefined;
+    const participantAgentFilterRaw = req.query.participantAgentId as string | undefined;
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
+    const assigneeAgentId =
+      assigneeAgentFilterRaw === "me" && req.actor.type === "agent"
+        ? req.actor.agentId
+        : assigneeAgentFilterRaw;
+    const participantAgentId =
+      participantAgentFilterRaw === "me" && req.actor.type === "agent"
+        ? req.actor.agentId
+        : participantAgentFilterRaw;
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -932,6 +942,14 @@ export function issueRoutes(
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
       return;
     }
+    if (assigneeAgentFilterRaw === "me" && (!assigneeAgentId || req.actor.type !== "agent")) {
+      res.status(403).json({ error: "assigneeAgentId=me requires agent authentication" });
+      return;
+    }
+    if (participantAgentFilterRaw === "me" && (!participantAgentId || req.actor.type !== "agent")) {
+      res.status(403).json({ error: "participantAgentId=me requires agent authentication" });
+      return;
+    }
     if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "touchedByUserId=me requires board authentication" });
       return;
@@ -956,8 +974,8 @@ export function issueRoutes(
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId,
+      participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
