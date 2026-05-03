@@ -188,18 +188,23 @@ async function readSavedSessionCwd(input: {
     }
   }
 
-  const sessionHeader = await runAdapterExecutionTargetShellCommand(
-    input.runId,
-    input.executionTarget,
-    `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n 1 ${shellQuote(input.sessionPath)}; fi`,
-    {
-      cwd: input.cwd,
-      env: input.env,
-      timeoutSec: input.timeoutSec > 0 ? Math.min(input.timeoutSec, 15) : 15,
-      graceSec: input.graceSec,
-    },
-  );
-  return readSessionHeaderCwd(sessionHeader.stdout);
+  try {
+    const sessionHeader = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.executionTarget,
+      `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n 1 ${shellQuote(input.sessionPath)}; fi`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec > 0 ? Math.min(input.timeoutSec, 15) : 15,
+        graceSec: input.graceSec,
+      },
+    );
+    if (sessionHeader.timedOut || (sessionHeader.exitCode ?? 0) !== 0) return null;
+    return readSessionHeaderCwd(sessionHeader.stdout);
+  } catch {
+    return null;
+  }
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
