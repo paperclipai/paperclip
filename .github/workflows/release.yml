@@ -273,5 +273,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
     needs: publish_stable
     uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
     with:
       tag: ${{ needs.publish_stable.outputs.tag }}
