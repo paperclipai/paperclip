@@ -72,6 +72,8 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
+const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+
 async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
   executionTarget: NonNullable<AdapterExecutionContext["executionTarget"]>;
@@ -79,9 +81,13 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   model: string;
   cwd: string;
   env: Record<string, string>;
+  timeoutSec: number;
   graceSec: number;
 }) {
   const model = requireOpenCodeModelId(input.model);
+  const probeTimeoutSec = input.timeoutSec > 0
+    ? Math.min(input.timeoutSec, REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC)
+    : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
   const probe = await runAdapterExecutionTargetProcess(
     input.runId,
     input.executionTarget,
@@ -90,14 +96,14 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
     {
       cwd: input.cwd,
       env: input.env,
-      timeoutSec: 20,
+      timeoutSec: probeTimeoutSec,
       graceSec: input.graceSec,
       onLog: async () => {},
     },
   );
 
   if (probe.timedOut) {
-    throw new Error("`opencode models` timed out on the remote execution target after 20s.");
+    throw new Error(`\`opencode models\` timed out on the remote execution target after ${probeTimeoutSec}s.`);
   }
 
   if ((probe.exitCode ?? 1) !== 0) {
@@ -320,7 +326,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (fromExtraArgs.length > 0) return fromExtraArgs;
       return asStringArray(config.args);
     })();
-    const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let localSkillsDir: string | null = null;
     let remoteRuntimeRootDir: string | null = null;
@@ -384,6 +389,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         model,
         cwd,
         env: preparedRuntimeConfig.env,
+        timeoutSec,
         graceSec,
       });
     }
