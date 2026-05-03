@@ -6,6 +6,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -22,6 +23,14 @@ function resolveOpenCodeCommand(input: unknown): string {
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
+
+export function requireOpenCodeModelId(input: unknown): string {
+  const model = asString(input, "").trim();
+  if (!isValidOpenCodeModelId(model)) {
+    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
+  }
+  return model;
+}
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
@@ -172,10 +181,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   cwd?: unknown;
   env?: unknown;
 }): Promise<AdapterModel[]> {
-  const model = asString(input.model, "").trim();
-  if (!model) {
-    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
-  }
+  const model = requireOpenCodeModelId(input.model);
 
   const models = await discoverOpenCodeModelsCached({
     command: input.command,
