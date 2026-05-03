@@ -76,7 +76,7 @@ The CLI has two tiers (see `doc/DEVELOPING.md` for full option tables):
 
 ```bash
 # 1. Create a worktree for a feature
-npx paperclipai worktree:make my-feature --start-point origin/main
+npx paperclipai worktree:make my-feature --start-point origin/master
 
 # 2. Move into the worktree (path printed by worktree:make) and source the environment
 cd <worktree-path>
