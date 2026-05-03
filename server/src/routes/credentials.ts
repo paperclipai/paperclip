@@ -340,6 +340,20 @@ export function credentialRoutes(db: Db) {
       void wipeCodexCredSession(sessionId);
     }, CODEX_CRED_LOGIN_SESSION_TTL_MS);
 
+    // Diagnostic startup guard: if codex hasn't emitted a device-auth URL+code
+    // within 30s, transition to error and surface the captured stdout/stderr
+    // so the user (and we) can see what went wrong instead of staring at
+    // "Generating a one-time code…" forever. Catches codex output-format
+    // drift, network blocks to auth.openai.com, hangs on stdin, etc.
+    setTimeout(() => {
+      const current = codexCredSessions.get(sessionId);
+      if (!current || current.status !== "starting") return;
+      current.status = "error";
+      current.errorCode = "infra";
+      current.error =
+        "ChatGPT login did not emit a device code within 30s. The codex CLI may be unreachable, blocked from auth.openai.com, or have changed its output format. See diagnostic output below.";
+    }, 30_000);
+
     codexCredSessions.set(sessionId, session);
 
     void (async () => {
@@ -352,8 +366,11 @@ export function credentialRoutes(db: Db) {
           config: {},
           codexHomeOverride: codexHome,
           onLog: async (stream, chunk) => {
-            if (stream !== "stderr") return;
-            const next = session.stderr + chunk;
+            // Capture BOTH streams. When the codex CLI changes its output
+            // format (or emits the device-auth URL/code on stderr), we still
+            // want it surfaced to the UI on the diagnostic timeout below.
+            const tag = stream === "stdout" ? "" : "[stderr] ";
+            const next = session.stderr + tag + chunk;
             session.stderr = next.length > 16384 ? next.slice(-16384) : next;
           },
           onDeviceAuth: ({ verificationUrl, userCode }) => {
