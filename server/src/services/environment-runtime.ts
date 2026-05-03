@@ -14,7 +14,7 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady, findReachablePaperclipApiUrlOverSsh } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
 import {
   parseEnvironmentDriverConfig,
@@ -227,27 +227,6 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       }
 
       const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
-      const candidateUrls = (() => {
-        const raw = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-        if (!raw) return [];
-        try {
-          const parsed = JSON.parse(raw);
-          return Array.isArray(parsed)
-            ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-            : [];
-        } catch {
-          return [];
-        }
-      })();
-      const paperclipApiUrl = await findReachablePaperclipApiUrlOverSsh({
-        config: parsed.config,
-        candidates: candidateUrls,
-      });
-      if (!paperclipApiUrl) {
-        throw new Error(
-          `SSH environment ${parsed.config.username}@${parsed.config.host} could not reach any Paperclip API candidates.`,
-        );
-      }
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -265,7 +244,6 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
-          paperclipApiUrl,
         },
       });
     },
@@ -726,6 +704,7 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "pluginId",
   "pluginKey",
   "providerMetadata",
+  "shellCommand",
   "sandboxProviderPlugin",
 ]);
 
