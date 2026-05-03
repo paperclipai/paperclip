@@ -28,6 +28,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { buildOriginMatcher } from "./mobile-paperclip-origins.js";
 import {
   feedbackService,
   heartbeatService,
@@ -617,6 +618,8 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    mobilePaperclipPublicHostnames: config.mobilePaperclipPublicHostnames,
+    mobilePaperclipAllowedOrigins: config.mobilePaperclipAllowedOrigins,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -654,6 +657,10 @@ export async function startServer(): Promise<StartedServer> {
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
+    mobilePaperclipPublicHostnames: new Set(
+      config.mobilePaperclipPublicHostnames.map((value) => value.trim().toLowerCase()).filter(Boolean),
+    ),
+    mobilePaperclipOriginMatcher: buildOriginMatcher(config.mobilePaperclipAllowedOrigins),
   });
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)

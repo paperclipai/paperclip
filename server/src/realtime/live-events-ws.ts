@@ -9,6 +9,24 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { verifyMobilePaperclipJwt } from "../mobile-paperclip-jwt.js";
+import type { OriginMatcher } from "../mobile-paperclip-origins.js";
+
+const LOOPBACK_HOSTNAMES_WS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function extractRequestHostname(req: IncomingMessage): string | null {
+  const forwardedHost = (req.headers["x-forwarded-host"] as string | undefined)
+    ?.split(",")[0]
+    ?.trim();
+  const hostHeader = (req.headers["host"] as string | undefined)?.trim();
+  const raw = forwardedHost || hostHeader;
+  if (!raw) return null;
+  try {
+    return new URL(`http://${raw}`).hostname.trim().toLowerCase();
+  } catch {
+    return raw.trim().toLowerCase();
+  }
+}
 
 interface WsSocket {
   readyState: number;
@@ -100,11 +118,32 @@ async function authorizeUpgrade(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    mobilePaperclipPublicHostnames: Set<string>;
   },
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
+
+  // Mobile-paperclip JWT path on the public tunnel hostname: validate before falling back
+  // to the local-trusted shortcut, since otherwise local_trusted mode would auto-grant
+  // board access to any request that arrives without a token.
+  const requestHostname = extractRequestHostname(req);
+  const isMobilePaperclipPublic =
+    requestHostname !== null &&
+    !LOOPBACK_HOSTNAMES_WS.has(requestHostname) &&
+    opts.mobilePaperclipPublicHostnames.has(requestHostname);
+
+  if (isMobilePaperclipPublic) {
+    if (!token) return null;
+    const mobileClaims = verifyMobilePaperclipJwt(token);
+    if (!mobileClaims) return null;
+    return {
+      companyId,
+      actorType: "board",
+      actorId: `mobile-paperclip:${mobileClaims.sub}`,
+    };
+  }
 
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
@@ -175,18 +214,28 @@ async function authorizeUpgrade(
   };
 }
 
+export interface LiveEventsWebSocketOptions {
+  deploymentMode: DeploymentMode;
+  resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+  mobilePaperclipPublicHostnames?: Set<string>;
+  mobilePaperclipOriginMatcher?: OriginMatcher;
+  // Server-initiated WS keepalive ping interval. Default 30s, well inside Cloudflare
+  // Tunnel's 100s idle drop on free/pro tier.
+  keepaliveIntervalMs?: number;
+}
+
 export function setupLiveEventsWebSocketServer(
   server: HttpServer,
   db: Db,
-  opts: {
-    deploymentMode: DeploymentMode;
-    resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
-  },
+  opts: LiveEventsWebSocketOptions,
 ) {
   const wss = new WebSocketServer({ noServer: true });
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
+  const publicHostnames = opts.mobilePaperclipPublicHostnames ?? new Set<string>();
+  const originMatcher = opts.mobilePaperclipOriginMatcher ?? null;
 
+  const keepaliveIntervalMs = Math.max(5_000, opts.keepaliveIntervalMs ?? 30_000);
   const pingInterval = setInterval(() => {
     for (const socket of wss.clients) {
       if (!aliveByClient.get(socket)) {
@@ -196,7 +245,7 @@ export function setupLiveEventsWebSocketServer(
       aliveByClient.set(socket, false);
       socket.ping();
     }
-  }, 30000);
+  }, keepaliveIntervalMs);
 
   wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
@@ -246,9 +295,26 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
+    // On the mobile-paperclip public hostname, require an Origin in the configured
+    // allowlist. Loopback / tailnet upgrades keep their existing behavior so we don't
+    // disturb the local browser UI WS path.
+    const requestHostname = extractRequestHostname(req);
+    const isMobilePaperclipPublic =
+      requestHostname !== null &&
+      !LOOPBACK_HOSTNAMES_WS.has(requestHostname) &&
+      publicHostnames.has(requestHostname);
+    if (isMobilePaperclipPublic && originMatcher) {
+      const originHeader = (req.headers.origin as string | undefined)?.trim();
+      if (!originHeader || !originMatcher.match(originHeader)) {
+        rejectUpgrade(socket, "403 Forbidden", "origin not allowed");
+        return;
+      }
+    }
+
     void authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
+      mobilePaperclipPublicHostnames: publicHostnames,
     })
       .then((context) => {
         if (!context) {
