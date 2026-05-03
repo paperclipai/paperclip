@@ -203,6 +203,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.assigneeAgentId).toBe(seeded.managerId);
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
+    expect(reviews[0]?.description).toMatch(/^Expected output: technical_audit/);
+    expect(reviews[0]?.description).toContain("## Owner Action");
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
@@ -251,7 +253,47 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(tooSoonRefresh.existing).toBe(1);
     expect(cappedRefresh.updated).toBe(0);
     expect(cappedRefresh.existing).toBe(1);
+    const [refreshedReview] = await listProductivityReviews(seeded.companyId);
+    expect(refreshedReview?.description).toContain(
+      `Generated at: ${new Date(firstRefreshAt.getTime() + 2 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS).toISOString()}`,
+    );
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+  });
+
+  it("cancels an open productivity review when the source issue resolves", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const resolvedAt = new Date("2026-04-28T12:10:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.status).toBe("todo");
+
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: resolvedAt, updatedAt: resolvedAt })
+      .where(eq(issues.id, seeded.issueId));
+
+    const result = await service.reconcileProductivityReviews({
+      now: resolvedAt,
+      companyId: seeded.companyId,
+    });
+    const [resolvedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(result.resolved).toBe(1);
+    expect(resolvedReview?.status).toBe("cancelled");
+    expect(resolvedReview?.cancelledAt?.toISOString()).toBe(resolvedAt.toISOString());
+    expect(resolvedReview?.description).toContain("Disposition: cancelled diagnostic review.");
+    expect(resolvedReview?.description).toContain("Source issue");
+    expect(await listRefreshComments(review!.id)).toHaveLength(0);
   });
 
   it("caps productivity review creation per source issue in the rolling creation window", async () => {
