@@ -14,7 +14,11 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady, findReachablePaperclipApiUrlOverSsh } from "@paperclipai/adapter-utils/ssh";
+import {
+  ensureSshWorkspaceReady,
+  findReachablePaperclipApiUrlOverSsh,
+  type PaperclipApiProbeAttempt,
+} from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
 import {
   parseEnvironmentDriverConfig,
@@ -214,6 +218,46 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   };
 }
 
+function summarizeProbeAttempt(attempt: PaperclipApiProbeAttempt): string {
+  const parts: string[] = [
+    `candidate=${attempt.candidate}`,
+    `attempt=${attempt.attempt}`,
+    `status=${attempt.httpStatus ?? "none"}`,
+    `exit=${attempt.exitCode ?? "none"}`,
+    `class=${attempt.classification}`,
+    `durationMs=${attempt.durationMs}`,
+  ];
+  if (attempt.error) parts.push(`error="${attempt.error.replace(/"/g, "'")}"`);
+  return parts.join(" ");
+}
+
+function dedupeProbedCandidates(attempts: PaperclipApiProbeAttempt[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const attempt of attempts) {
+    if (seen.has(attempt.candidate)) continue;
+    seen.add(attempt.candidate);
+    ordered.push(attempt.candidate);
+  }
+  return ordered;
+}
+
+function createUnreachablePaperclipApiError(input: {
+  config: { username: string; host: string };
+  attempts: PaperclipApiProbeAttempt[];
+  candidatesProbed: string[];
+}): Error & { probeAttempts: PaperclipApiProbeAttempt[] } {
+  const lines = input.attempts.map((attempt) => `  - ${summarizeProbeAttempt(attempt)}`);
+  const message =
+    `SSH environment ${input.config.username}@${input.config.host} could not reach any Paperclip API candidates ` +
+    `(tried ${input.candidatesProbed.length}: ${input.candidatesProbed.join(", ") || "<none>"}).\n` +
+    `Probe attempts:\n${lines.join("\n")}`;
+  // The orchestrator wraps this in EnvironmentRunError("lease_acquire_failed",
+  // ...) preserving the structured detail via `cause`. Attaching attempts as
+  // a field lets tests assert on it directly without parsing the message.
+  return Object.assign(new Error(message), { probeAttempts: input.attempts });
+}
+
 function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   const environmentsSvc = environmentService(db);
 
@@ -239,14 +283,42 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           return [];
         }
       })();
-      const paperclipApiUrl = await findReachablePaperclipApiUrlOverSsh({
+
+      // Cache last-known-good probe URL by inspecting the most recent prior
+      // lease for this environment. listLeases returns most-recent-first.
+      // If the cached URL is stale (5xx now), the probe burns one attempt on
+      // it then falls through to the candidate list — strictly better than
+      // the cold-start cost of probing every candidate every time.
+      const preferredCandidate = await (async () => {
+        try {
+          const recent = await environmentsSvc.listLeases(input.environment.id);
+          for (const lease of recent) {
+            const url = (lease.metadata as Record<string, unknown> | null | undefined)?.paperclipApiUrl;
+            if (typeof url === "string" && url.trim().length > 0) {
+              return url.trim();
+            }
+          }
+        } catch {
+          // Cache lookup must never block lease acquisition.
+        }
+        return null;
+      })();
+
+      const probeResult = await findReachablePaperclipApiUrlOverSsh({
         config: parsed.config,
         candidates: candidateUrls,
+        preferredCandidate,
       });
+      // Per-attempt failures are logged at info inside the probe (BLO-1490
+      // spec); the all-fail thrown error below carries the full attempts
+      // trail for the orchestrator's structured error log.
+      const paperclipApiUrl = probeResult.url;
       if (!paperclipApiUrl) {
-        throw new Error(
-          `SSH environment ${parsed.config.username}@${parsed.config.host} could not reach any Paperclip API candidates.`,
-        );
+        throw createUnreachablePaperclipApiError({
+          config: parsed.config,
+          attempts: probeResult.attempts,
+          candidatesProbed: dedupeProbedCandidates(probeResult.attempts),
+        });
       }
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
