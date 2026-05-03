@@ -89,6 +89,14 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
+function resolveWakeIssueStatus(context: Record<string, unknown>): string {
+  const wake = parseObject(context.paperclipWake);
+  const issue = parseObject(wake.issue);
+  const fromWake = asString(issue.status, "").trim();
+  if (fromWake) return fromWake;
+  return asString(context.issueStatus, "").trim();
+}
+
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
     pathExists(path.join(candidate, "pnpm-workspace.yaml")),
@@ -280,6 +288,25 @@ export async function ensureCodexSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  await onLog("stdout", "[paperclip][init] wake received\n");
+  const wakeIssueStatus = resolveWakeIssueStatus(context).toLowerCase();
+  await onLog("stdout", `[paperclip][init] issue status check: ${wakeIssueStatus || "unknown"}\n`);
+  if (wakeIssueStatus === "blocked") {
+    await onLog("stdout", "[paperclip][init] blocked issue detected; skipping adapter initialization\n");
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Skipped run because the wake issue is blocked.",
+      resultJson: {
+        stdout: "",
+        stderr: "",
+      },
+      clearSession: false,
+    };
+  }
+  await onLog("stdout", "[paperclip][init] adapter init start\n");
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -487,7 +514,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const configuredTimeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = configuredTimeoutSec > 0 ? Math.min(configuredTimeoutSec, 110) : 110;
+  if (configuredTimeoutSec !== timeoutSec) {
+    await onLog("stdout", `[paperclip][init] adjusted timeoutSec from ${configuredTimeoutSec} to ${timeoutSec}\n`);
+  }
   const graceSec = asNumber(config.graceSec, 20);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
@@ -634,6 +665,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    await onLog("stdout", "[paperclip][init] work start\n");
     const execArgs = buildCodexExecArgs(
       forceSaferInvocation ? { ...config, fastMode: false } : config,
       { resumeSessionId },
