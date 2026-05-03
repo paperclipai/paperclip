@@ -81,6 +81,7 @@ import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  resolveDefaultExecutionPolicy,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -1812,7 +1813,16 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
-    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    let executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    if (!executionPolicy && req.body.assigneeAgentId) {
+      const company = await companiesSvc.getById(companyId);
+      executionPolicy = await resolveDefaultExecutionPolicy(
+        db,
+        companyId,
+        req.body.assigneeAgentId as string,
+        company?.defaultExecutionPolicies ?? null,
+      );
+    }
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -1879,7 +1889,16 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
-    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    let executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    if (!executionPolicy && req.body.assigneeAgentId) {
+      const company = await companiesSvc.getById(parent.companyId);
+      executionPolicy = await resolveDefaultExecutionPolicy(
+        db,
+        parent.companyId,
+        req.body.assigneeAgentId as string,
+        company?.defaultExecutionPolicies ?? null,
+      );
+    }
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...req.body,
       executionPolicy,
@@ -2046,6 +2065,22 @@ export function issueRoutes(
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+    const assigneeChangedToNew =
+      req.body.executionPolicy === undefined &&
+      !previousExecutionPolicy &&
+      normalizedAssigneeAgentId != null;
+    if (assigneeChangedToNew) {
+      const company = await companiesSvc.getById(existing.companyId);
+      const resolved = await resolveDefaultExecutionPolicy(
+        db,
+        existing.companyId,
+        normalizedAssigneeAgentId,
+        company?.defaultExecutionPolicies ?? null,
+      );
+      if (resolved) {
+        updateFields.executionPolicy = resolved;
+      }
+    }
     const nextExecutionPolicy =
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)

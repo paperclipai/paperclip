@@ -109,6 +109,25 @@ export const issueExecutionPolicySchema = z.object({
   stages: z.array(issueExecutionStageSchema).default([]),
 });
 
+const COMPANY_EXECUTION_POLICY_PARTICIPANT_RESOLVERS = ["peer_same_role", "manager"] as const;
+
+export const companyDefaultExecutionPolicyStageSchema = z.object({
+  type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
+  name: z.string().trim().min(1).max(100),
+  participantResolver: z.enum(COMPANY_EXECUTION_POLICY_PARTICIPANT_RESOLVERS),
+}).strict();
+
+export const companyDefaultExecutionPolicyTemplateSchema = z.object({
+  mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional(),
+  commentRequired: z.boolean().optional(),
+  stages: z.array(companyDefaultExecutionPolicyStageSchema).min(1).max(10),
+}).strict();
+
+export const companyDefaultExecutionPoliciesSchema = z.record(
+  z.string().min(1).max(50),
+  companyDefaultExecutionPolicyTemplateSchema,
+);
+
 export const issueReviewRequestSchema = z.object({
   instructions: z.string().trim().min(1).max(20000),
 }).strict();

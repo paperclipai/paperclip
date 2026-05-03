@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { IssueExecutionDecision, IssueExecutionPolicy, IssueExecutionStage, IssueExecutionStagePrincipal, IssueExecutionState } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import { eq, ne, and } from "drizzle-orm";
+import type { IssueExecutionDecision, IssueExecutionPolicy, IssueExecutionStage, IssueExecutionStagePrincipal, IssueExecutionState, CompanyDefaultExecutionPolicies } from "@paperclipai/shared";
+import { issueExecutionPolicySchema, issueExecutionStateSchema, companyDefaultExecutionPoliciesSchema } from "@paperclipai/shared";
+import type { Db } from "@paperclipai/db";
+import { agents } from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {
@@ -291,6 +294,70 @@ function canAutoSkipPendingStage(input: {
   }
   return input.stage.participants.length > 0 &&
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
+}
+
+export function parseCompanyDefaultExecutionPolicies(input: unknown): CompanyDefaultExecutionPolicies | null {
+  if (input == null) return null;
+  const parsed = companyDefaultExecutionPoliciesSchema.safeParse(input);
+  return parsed.success ? parsed.data : null;
+}
+
+export async function resolveDefaultExecutionPolicy(
+  db: Db,
+  companyId: string,
+  assigneeAgentId: string,
+  policiesConfig: Record<string, unknown> | null | undefined,
+): Promise<IssueExecutionPolicy | null> {
+  const policies = parseCompanyDefaultExecutionPolicies(policiesConfig);
+  if (!policies) return null;
+
+  const assignee = await db
+    .select({ id: agents.id, role: agents.role, reportsTo: agents.reportsTo })
+    .from(agents)
+    .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!assignee) return null;
+
+  const template = policies[assignee.role];
+  if (!template || template.stages.length === 0) return null;
+
+  const peerAgents = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        eq(agents.role, assignee.role),
+        ne(agents.id, assigneeAgentId),
+        ne(agents.status, "terminated"),
+      ),
+    )
+    .orderBy(agents.createdAt);
+  const peerId = peerAgents[0]?.id ?? assignee.reportsTo ?? null;
+
+  const stages: IssueExecutionStage[] = [];
+  for (const stageTpl of template.stages) {
+    let participantAgentId: string | null = null;
+    if (stageTpl.participantResolver === "peer_same_role") {
+      participantAgentId = peerId;
+    } else {
+      participantAgentId = assignee.reportsTo ?? null;
+    }
+    if (!participantAgentId) continue;
+    stages.push({
+      id: randomUUID(),
+      type: stageTpl.type,
+      approvalsNeeded: 1,
+      participants: [{ id: randomUUID(), type: "agent", agentId: participantAgentId, userId: null }],
+    });
+  }
+
+  if (stages.length === 0) return null;
+  return {
+    mode: template.mode ?? "normal",
+    commentRequired: template.commentRequired ?? true,
+    stages,
+  };
 }
 
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {

@@ -207,6 +207,22 @@ export interface IssueExecutionPolicy {
   stages: IssueExecutionStage[];
 }
 
+export type CompanyExecutionPolicyParticipantResolver = "peer_same_role" | "manager";
+
+export interface CompanyDefaultExecutionPolicyStage {
+  type: IssueExecutionStageType;
+  name: string;
+  participantResolver: CompanyExecutionPolicyParticipantResolver;
+}
+
+export interface CompanyDefaultExecutionPolicyTemplate {
+  mode?: IssueExecutionPolicyMode;
+  commentRequired?: boolean;
+  stages: CompanyDefaultExecutionPolicyStage[];
+}
+
+export type CompanyDefaultExecutionPolicies = Record<string, CompanyDefaultExecutionPolicyTemplate>;
+
 export interface IssueReviewRequest {
   instructions: string;
 }
