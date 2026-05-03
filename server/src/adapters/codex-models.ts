@@ -104,9 +104,8 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
   const forceRefresh = options?.forceRefresh === true;
   const fallback = dedupeModels(codexFallbackModels);
 
-  // Codex's file cache is the source of truth for ChatGPT-authenticated installs.
-  // forceRefresh only bypasses the in-memory OpenAI API cache below; this path
-  // intentionally re-reads models_cache.json on every call instead.
+  // forceRefresh is a no-op here — reading the file is cheap, and the only
+  // memoization (cached) fingerprints the API-key path below.
   const fromCache = readCodexModelsCache();
   if (fromCache.length > 0) {
     return mergedWithFallback(fromCache);
