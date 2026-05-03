@@ -1,5 +1,10 @@
 import type {
+  IssueExecutionMonitorClearReason,
+  IssueExecutionMonitorKind,
+  IssueExecutionMonitorRecoveryPolicy,
+  IssueExecutionMonitorStateStatus,
   IssueExecutionDecisionOutcome,
+  IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
@@ -201,10 +206,40 @@ export interface IssueExecutionStage {
   participants: IssueExecutionStageParticipant[];
 }
 
+export interface IssueExecutionMonitorPolicy {
+  nextCheckAt: string;
+  notes: string | null;
+  scheduledBy: IssueMonitorScheduledBy;
+  kind?: IssueExecutionMonitorKind | null;
+  serviceName?: string | null;
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
+  monitor?: IssueExecutionMonitorPolicy | null;
+}
+
+export interface IssueExecutionMonitorState {
+  status: IssueExecutionMonitorStateStatus;
+  nextCheckAt: string | null;
+  lastTriggeredAt: string | null;
+  attemptCount: number;
+  notes: string | null;
+  scheduledBy: IssueMonitorScheduledBy | null;
+  kind?: IssueExecutionMonitorKind | null;
+  serviceName?: string | null;
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+  clearedAt: string | null;
+  clearReason: IssueExecutionMonitorClearReason | null;
 }
 
 export interface IssueReviewRequest {
@@ -222,6 +257,7 @@ export interface IssueExecutionState {
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
+  monitor?: IssueExecutionMonitorState | null;
 }
 
 export interface IssueExecutionDecision {
@@ -270,6 +306,11 @@ export interface Issue {
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
+  monitorNextCheckAt?: Date | null;
+  monitorLastTriggeredAt?: Date | null;
+  monitorAttemptCount?: number;
+  monitorNotes?: string | null;
+  monitorScheduledBy?: IssueMonitorScheduledBy | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
