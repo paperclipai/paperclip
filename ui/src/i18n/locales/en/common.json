@@ -1,0 +1,30 @@
+{
+  "actions": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "create": "Create",
+    "edit": "Edit",
+    "close": "Close",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
+    "retry": "Retry"
+  },
+  "status": {
+    "loading": "Loading…",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "error": "Something went wrong",
+    "empty": "Nothing here yet"
+  },
+  "nav": {
+    "home": "Home",
+    "settings": "Settings",
+    "agents": "Agents",
+    "issues": "Issues",
+    "projects": "Projects",
+    "routines": "Routines"
+  }
+}

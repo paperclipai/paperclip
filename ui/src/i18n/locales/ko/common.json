@@ -1,0 +1,30 @@
+{
+  "actions": {
+    "save": "저장",
+    "cancel": "취소",
+    "delete": "삭제",
+    "create": "생성",
+    "edit": "편집",
+    "close": "닫기",
+    "confirm": "확인",
+    "back": "뒤로",
+    "next": "다음",
+    "submit": "제출",
+    "retry": "다시 시도"
+  },
+  "status": {
+    "loading": "불러오는 중…",
+    "saving": "저장 중…",
+    "saved": "저장됨",
+    "error": "문제가 생겼어요",
+    "empty": "아직 비어있어요"
+  },
+  "nav": {
+    "home": "홈",
+    "settings": "설정",
+    "agents": "에이전트",
+    "issues": "이슈",
+    "projects": "프로젝트",
+    "routines": "루틴"
+  }
+}
