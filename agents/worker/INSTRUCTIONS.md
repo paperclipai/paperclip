@@ -101,6 +101,27 @@ that the work didn't materialize.
 `task/{task-id}`; if somehow that's no longer true (you `git checkout`-d
 elsewhere mid-run), comment on the task and exit without committing.
 
+## Exit gate: tree must be clean OR work must be committed
+
+Before you stop, run `git status --porcelain`. The result must be empty.
+A non-empty tree at exit means you edited files but didn't commit them —
+the next stage's Reviewer will hard-gate on that and the task stalls
+(observed concretely on AA-735, where a dirty `lighting.rs` blocked the
+Reviewer subtask until the board manually committed).
+
+Two valid end-states only:
+
+- **You produced work** → all of it is committed. `git status --porcelain` empty, `git log main..HEAD` non-empty.
+- **You produced nothing** → no edits at all. `git status --porcelain` empty, `git log main..HEAD` empty.
+
+If you hit a crash, ambiguity, or "I'm not sure these changes are
+right" mid-task, do NOT exit with a dirty tree. Either:
+1. Commit what you have with `Stage: worker (incomplete)` in the trailer and a comment on the task explaining the partial state, OR
+2. `git restore .` to discard the edits and exit clean (only if you're sure the work should not land).
+
+The dirty-tree-at-exit state is operationally invalid — it is not a way
+to signal "needs human review."
+
 ## Art Tasks
 
 ```sh
