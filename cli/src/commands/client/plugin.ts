@@ -386,6 +386,41 @@ export function registerPluginCommands(program: Command): void {
   );
 
   // -------------------------------------------------------------------------
+  // plugin reinstall <plugin-key-or-id>
+  // -------------------------------------------------------------------------
+  addCommonClientOptions(
+    plugin
+      .command("reinstall <pluginKey>")
+      .description(
+        "Re-read a local-path plugin from disk: re-copies dist/ into the managed install directory and reloads the worker. Use this after `pnpm build` to pick up code changes WITHOUT losing config or plugin-scoped state. Only works for plugins originally installed with --local; for npm packages use `upgrade`.",
+      )
+      .action(async (pluginKey: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.post<PluginRecord>(
+            `/api/plugins/${encodeURIComponent(pluginKey)}/reinstall`,
+          );
+
+          if (ctx.json) {
+            printOutput(result, { json: true });
+            return;
+          }
+
+          console.log(
+            pc.green(
+              `✓ Reinstalled ${pc.bold(pluginKey)} v${result?.version ?? "?"} — status: ${result?.status ?? "unknown"}`,
+            ),
+          );
+          if (result?.lastError) {
+            console.log(pc.red(`  Warning: ${result.lastError}`));
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  // -------------------------------------------------------------------------
   // plugin disable <plugin-key-or-id>
   // -------------------------------------------------------------------------
   addCommonClientOptions(
