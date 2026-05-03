@@ -11,7 +11,7 @@ import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, PauseCircle, PlayCircle } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -210,6 +210,30 @@ export function CompanySettings() {
         queryKey: queryKeys.companies.stats
       });
     }
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: () => companiesApi.pause(selectedCompanyId!),
+    onSuccess: async () => {
+      pushToast({ tone: "success", title: "Company paused", body: "All agents have been paused." });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+    },
+    onError: (err) => {
+      pushToast({ tone: "error", title: "Failed to pause company", body: err instanceof Error ? err.message : "Unknown error" });
+    },
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => companiesApi.resume(selectedCompanyId!),
+    onSuccess: async () => {
+      pushToast({ tone: "success", title: "Company resumed", body: "Agents are back online." });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+    },
+    onError: (err) => {
+      pushToast({ tone: "error", title: "Failed to resume company", body: err instanceof Error ? err.message : "Unknown error" });
+    },
   });
 
   useEffect(() => {
@@ -542,6 +566,76 @@ export function CompanySettings() {
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
           Danger Zone
         </div>
+        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+          {selectedCompany.status === "paused" ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                This company is paused. All agents are stopped and no new work will be started.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={resumeMutation.isPending}
+                  onClick={() => {
+                    if (!selectedCompanyId) return;
+                    const confirmed = window.confirm(
+                      `Resume company "${selectedCompany.name}"? All agents will be reactivated and resume their work.`
+                    );
+                    if (!confirmed) return;
+                    resumeMutation.mutate();
+                  }}
+                >
+                  <PlayCircle className="mr-1.5 h-4 w-4" />
+                  {resumeMutation.isPending ? "Resuming..." : "Resume company"}
+                </Button>
+                {resumeMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {resumeMutation.error instanceof Error
+                      ? resumeMutation.error.message
+                      : "Failed to resume company"}
+                  </span>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Pause this company to immediately stop all agents. No work will be
+                started until you resume. Nothing is lost — agents pick up where they left off.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    pauseMutation.isPending ||
+                    selectedCompany.status === "archived"
+                  }
+                  onClick={() => {
+                    if (!selectedCompanyId) return;
+                    const confirmed = window.confirm(
+                      `Pause company "${selectedCompany.name}"? All agents will be stopped immediately.`
+                    );
+                    if (!confirmed) return;
+                    pauseMutation.mutate();
+                  }}
+                >
+                  <PauseCircle className="mr-1.5 h-4 w-4" />
+                  {pauseMutation.isPending ? "Pausing..." : "Pause company"}
+                </Button>
+                {pauseMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {pauseMutation.error instanceof Error
+                      ? pauseMutation.error.message
+                      : "Failed to pause company"}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Archive this company to hide it from the sidebar. This persists in

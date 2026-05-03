@@ -21,6 +21,7 @@ import {
   companyPortabilityService,
   companyService,
   feedbackService,
+  heartbeatService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -34,6 +35,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const heartbeat = heartbeatService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -375,6 +377,50 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       details: req.body,
     });
     res.json(company);
+  });
+
+  router.post("/:companyId/pause", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.pause(companyId, "manual", {
+      cancelActiveForAgent: heartbeat.cancelActiveForAgent,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.paused",
+      entityType: "company",
+      entityId: companyId,
+      details: { pausedAgentCount: result.pausedAgentIds.length },
+    });
+    res.json(result);
+  });
+
+  router.post("/:companyId/resume", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.resume(companyId);
+    if (!result) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.resumed",
+      entityType: "company",
+      entityId: companyId,
+      details: { resumedAgentCount: result.resumedAgentIds.length },
+    });
+    res.json(result);
   });
 
   router.post("/:companyId/archive", async (req, res) => {

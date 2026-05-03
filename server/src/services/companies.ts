@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -41,6 +41,8 @@ export function companyService(db: Db) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -243,6 +245,94 @@ export function companyService(db: Db) {
         }], tx);
 
         return enrichCompany(hydrated);
+      }),
+
+    pause: (
+      id: string,
+      reason: string = "manual",
+      options: { cancelActiveForAgent?: (agentId: string) => Promise<unknown> } = {},
+    ) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ status: companies.status })
+          .from(companies)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        if (existing.status === "archived") throw unprocessable("Cannot pause an archived company");
+        if (existing.status === "paused") throw unprocessable("Company is already paused");
+
+        const companyAgents = await tx
+          .select({ id: agents.id, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.companyId, id), notInArray(agents.status, ["terminated", "pending_approval", "paused"])));
+
+        if (options.cancelActiveForAgent) {
+          for (const agent of companyAgents) {
+            await options.cancelActiveForAgent(agent.id);
+          }
+        }
+
+        const updated = await tx
+          .update(companies)
+          .set({ status: "paused", pauseReason: reason, pausedAt: new Date(), updatedAt: new Date() })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const companyAgentIds = companyAgents.map((agent) => agent.id);
+        if (companyAgentIds.length > 0) {
+          await tx
+            .update(agents)
+            .set({ status: "paused", pauseReason: "company_paused", pausedAt: new Date(), updatedAt: new Date() })
+            .where(inArray(agents.id, companyAgentIds));
+        }
+
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return { ...enrichCompany(hydrated), pausedAgentIds: companyAgentIds };
+      }),
+
+    resume: (id: string) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ status: companies.status })
+          .from(companies)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        if (existing.status !== "paused") throw unprocessable("Company is not paused");
+
+        const updated = await tx
+          .update(companies)
+          .set({ status: "active", pauseReason: null, pausedAt: null, updatedAt: new Date() })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const pausedAgents = await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.companyId, id), eq(agents.pauseReason, "company_paused")));
+        const pausedAgentIds = pausedAgents.map((agent) => agent.id);
+        if (pausedAgentIds.length > 0) {
+          await tx
+            .update(agents)
+            .set({ status: "idle", pauseReason: null, pausedAt: null, updatedAt: new Date() })
+            .where(inArray(agents.id, pausedAgentIds));
+        }
+
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return { ...enrichCompany(hydrated), resumedAgentIds: pausedAgentIds };
       }),
 
     archive: (id: string) =>

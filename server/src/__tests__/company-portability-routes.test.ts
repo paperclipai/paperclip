@@ -74,6 +74,9 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  heartbeatService: () => ({
+    cancelActiveForAgent: vi.fn(),
+  }),
   logActivity: mockLogActivity,
 }));
 
@@ -85,6 +88,9 @@ function registerCompanyRouteMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    heartbeatService: () => ({
+      cancelActiveForAgent: vi.fn(),
+    }),
     logActivity: mockLogActivity,
   }));
 }
