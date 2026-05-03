@@ -31,6 +31,7 @@ import { registerCostCommands } from "./commands/client/cost.js";
 import { registerFinanceCommands } from "./commands/client/finance.js";
 import { registerBudgetCommands } from "./commands/client/budget.js";
 import { registerRunCommands } from "./commands/client/run.js";
+import { registerRoutineClientCommands } from "./commands/client/routine.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
 
@@ -166,6 +167,7 @@ registerCostCommands(program);
 registerFinanceCommands(program);
 registerBudgetCommands(program);
 registerRunCommands(program);
+registerRoutineClientCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 
