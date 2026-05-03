@@ -24,6 +24,7 @@ export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
+export { workspaceLocks } from "./workspace_locks.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";

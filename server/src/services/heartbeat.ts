@@ -34,6 +34,7 @@ import {
   issueWorkProducts,
   projects,
   projectWorkspaces,
+  workspaceLocks,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -120,6 +121,11 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import {
+  acquireWorkspaceLock,
+  normalizeWorkspaceCwd,
+  releaseWorkspaceLock,
+} from "./workspace-lock.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import { redactEventPayload } from "../redaction.js";
 import {
@@ -157,6 +163,14 @@ const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+// Workspace mutex (RUN-21): TTL chosen as max plausible heartbeat run + grace.
+// Stale-sweep reclaims locks past this window so a crashed holder cannot block
+// siblings forever. Lock release on the run's `finally` is the primary path;
+// this is the safety net.
+const WORKSPACE_LOCK_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const WORKSPACE_LOCK_STALE_GRACE_MS = 60 * 1000;
+const DEFERRED_WORKSPACE_LOCK_STATUS = "deferred_workspace_lock";
+const WORKSPACE_LOCK_RELEASED_REASON = "workspace_lock_released";
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -2200,6 +2214,94 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.warn(
         { err: releaseError.error, leaseId: releaseError.leaseId, runId: input.runId },
         "failed to release environment lease for heartbeat run",
+      );
+    }
+  }
+
+  /**
+   * Release the workspace mutex held by `runId`, then wake the oldest deferred waiter
+   * for that cwd. Mirrors the "deferred_issue_execution" promotion pattern: each release
+   * promotes one waiter, and waiters re-defer if the freshly-promoted run loses the next
+   * acquire race. Idempotent — safe to call when no lock is held.
+   */
+  async function releaseWorkspaceLockAndPromoteWaiter(runId: string) {
+    let released: { cwdPath: string; companyId: string } | null = null;
+    try {
+      released = await releaseWorkspaceLock(db, runId);
+    } catch (err) {
+      logger.warn({ err, runId }, "failed to release workspace lock");
+      return;
+    }
+    if (!released) return;
+
+    const cwdPath = released.cwdPath;
+    let waiter: typeof agentWakeupRequests.$inferSelect | null = null;
+    try {
+      waiter = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, released.companyId),
+            eq(agentWakeupRequests.status, DEFERRED_WORKSPACE_LOCK_STATUS),
+            sql`${agentWakeupRequests.payload} ->> 'cwdPath' = ${cwdPath}`,
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+    } catch (err) {
+      logger.warn({ err, runId, cwdPath }, "failed to query workspace lock waiters");
+      return;
+    }
+    if (!waiter) return;
+
+    try {
+      const waiterPayload = parseObject(waiter.payload);
+      const seedContext = parseObject(waiterPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+      const promotedContext: Record<string, unknown> = {
+        ...seedContext,
+        wakeReason: WORKSPACE_LOCK_RELEASED_REASON,
+        workspaceLockReleased: {
+          cwdPath,
+          releasedByRunId: runId,
+        },
+      };
+      const issueId = readNonEmptyString(promotedContext.issueId);
+      await enqueueWakeup(waiter.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: WORKSPACE_LOCK_RELEASED_REASON,
+        payload: {
+          issueId: issueId ?? null,
+          cwdPath,
+          deferredWakeRequestId: waiter.id,
+          releasedByRunId: runId,
+        },
+        contextSnapshot: promotedContext,
+      });
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "promoted",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, waiter.id));
+      logger.info(
+        {
+          event: "paperclip.workspace_lock.released",
+          cwdPath,
+          releasedByRunId: runId,
+          promotedWaiterAgentId: waiter.agentId,
+          promotedWaiterIssueId: issueId ?? null,
+        },
+        "promoted workspace lock waiter",
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId, cwdPath, waiterId: waiter.id },
+        "failed to promote workspace lock waiter; will retry on next release",
       );
     }
   }
@@ -5021,6 +5123,99 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       previousSessionParams,
       { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
     );
+
+    // RUN-21: Per-cwd workspace mutex. Two heartbeats whose `cwd` resolves to the same
+    // physical directory must not run concurrently — see RUN-15 for the original
+    // silent-data-loss near-miss. We acquire the lock here, before any expensive
+    // workspace realization (git worktrees, runtime services) and adapter spawn.
+    // The lock is released on every termination path in the run's `finally` block.
+    const workspaceLockCwd = normalizeWorkspaceCwd(resolvedWorkspace.cwd);
+    const workspaceLockExpiresAt = new Date(
+      Date.now() + WORKSPACE_LOCK_DEFAULT_TTL_MS + WORKSPACE_LOCK_STALE_GRACE_MS,
+    );
+    const acquireResult = await acquireWorkspaceLock(db, {
+      companyId: agent.companyId,
+      cwdPath: workspaceLockCwd,
+      runId: run.id,
+      agentId: agent.id,
+      issueId,
+      expiresAt: workspaceLockExpiresAt,
+    });
+    if (!acquireResult.acquired) {
+      const holder = acquireResult.holder;
+      const deferralPayload: Record<string, unknown> = {
+        ...(parseObject(context).issueId ? { issueId } : {}),
+        cwdPath: workspaceLockCwd,
+        holderRunId: holder.runId,
+        holderAgentId: holder.agentId,
+        holderIssueId: holder.issueId,
+        holderExpiresAt: holder.expiresAt.toISOString(),
+        [DEFERRED_WAKE_CONTEXT_KEY]: context,
+      };
+      try {
+        await db.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "workspace_busy_deferred",
+          payload: deferralPayload,
+          status: DEFERRED_WORKSPACE_LOCK_STATUS,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, runId: run.id, cwdPath: workspaceLockCwd },
+          "failed to record workspace lock deferral",
+        );
+      }
+      const deferralMessage =
+        `Workspace ${workspaceLockCwd} is held by run ${holder.runId}` +
+        (holder.issueId ? ` (issue ${holder.issueId})` : "") +
+        `; deferring this run until the lock releases.`;
+      logger.info(
+        {
+          event: "paperclip.workspace_lock.deferred",
+          runId: run.id,
+          agentId: agent.id,
+          issueId: issueId ?? null,
+          cwdPath: workspaceLockCwd,
+          holderRunId: holder.runId,
+          holderAgentId: holder.agentId,
+          holderIssueId: holder.issueId,
+        },
+        "deferred heartbeat run for workspace lock contention",
+      );
+      await setRunStatus(run.id, "failed", {
+        error: deferralMessage,
+        errorCode: "workspace_busy",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: deferralMessage,
+      });
+      // Clear executionRunId we stamped on the issue at claim-time. We deliberately
+      // do NOT call releaseIssueExecutionAndPromote here because the deferred
+      // workspace-lock wake IS the continuation path; firing recovery on top would
+      // create a recovery wake that re-defers, doubling the queue depth per release.
+      if (issueId) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.id, issueId), eq(issues.executionRunId, run.id)));
+      }
+      await finalizeAgentStatus(agent.id, "failed");
+      // The outer try's `finally` block handles environment lease, runtime
+      // service, active-run-set, and queue-resume cleanup, plus the no-op
+      // workspace lock release (we never acquired). Just exit cleanly.
+      return;
+    }
+
     const issueRef = issueContext
       ? {
           id: issueContext.id,
@@ -6156,6 +6351,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             failureReason: latestRun?.error ?? undefined,
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          // RUN-21: release the per-cwd workspace mutex (if held) and promote
+          // the oldest deferred waiter for that cwd. Idempotent — safe even
+          // when this run never acquired a lock (e.g. setup failed before acquire).
+          await releaseWorkspaceLockAndPromoteWaiter(run.id).catch((err) => {
+            logger.warn({ err, runId: run.id }, "failed to release workspace lock and promote waiter");
+          });
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
