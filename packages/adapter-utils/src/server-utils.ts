@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
@@ -1728,6 +1729,11 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        // StringDecoder buffers incomplete multi-byte UTF-8 sequences across
+        // stream chunks, preventing replacement-character (U+FFFD) corruption
+        // when a chunk boundary falls inside a multi-byte character.
+        const stdoutDecoder = new StringDecoder("utf8");
+        const stderrDecoder = new StringDecoder("utf8");
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -1783,36 +1789,44 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
+        child.stdout?.on("data", (chunk: Buffer) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
-          stdout = appendWithCap(stdout, text);
-          maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          const text = stdoutDecoder.write(chunk);
+          if (text) {
+            stdout = appendWithCap(stdout, text);
+            maybeArmTerminalResultCleanup();
+            logChain = logChain
+              .then(() => opts.onLog("stdout", text))
+              .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
+              .finally(() => {
+                maybeArmTerminalResultCleanup();
+                resumeReadable(readable);
+              });
+          } else {
+            resumeReadable(readable);
+          }
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
+        child.stderr?.on("data", (chunk: Buffer) => {
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
-          stderr = appendWithCap(stderr, text);
-          maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          const text = stderrDecoder.write(chunk);
+          if (text) {
+            stderr = appendWithCap(stderr, text);
+            maybeArmTerminalResultCleanup();
+            logChain = logChain
+              .then(() => opts.onLog("stderr", text))
+              .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
+              .finally(() => {
+                maybeArmTerminalResultCleanup();
+                resumeReadable(readable);
+              });
+          } else {
+            resumeReadable(readable);
+          }
         });
 
         const stdin = child.stdin;
@@ -1846,6 +1860,21 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          // Flush any remaining bytes buffered by the StringDecoders
+          const stdoutTail = stdoutDecoder.end();
+          const stderrTail = stderrDecoder.end();
+          if (stdoutTail) {
+            stdout = appendWithCap(stdout, stdoutTail);
+            logChain = logChain
+              .then(() => opts.onLog("stdout", stdoutTail))
+              .catch((err) => onLogError(err, runId, "failed to append stdout log tail"));
+          }
+          if (stderrTail) {
+            stderr = appendWithCap(stderr, stderrTail);
+            logChain = logChain
+              .then(() => opts.onLog("stderr", stderrTail))
+              .catch((err) => onLogError(err, runId, "failed to append stderr log tail"));
+          }
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
