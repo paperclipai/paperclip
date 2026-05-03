@@ -64,5 +64,8 @@
     "overrides": {
       "rollup": ">=4.59.0"
     }
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.12"
   }
 }
