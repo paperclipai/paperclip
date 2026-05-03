@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeSeatRotationAccessError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -119,5 +120,65 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("isClaudeSeatRotationAccessError", () => {
+  it("classifies the seat-rotator 403 body as a seat-rotation access error", () => {
+    expect(
+      isClaudeSeatRotationAccessError({
+        errorMessage: "API Error: 403 Your organization does not have access to Claude.",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeSeatRotationAccessError({
+        parsed: {
+          is_error: true,
+          result:
+            "Anthropic API Error: HTTP 403 — Your organization does not have access to Claude.",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("matches the shorter 'organization does not have access' phrasing in stderr", () => {
+    expect(
+      isClaudeSeatRotationAccessError({
+        stderr: "Error from API: organization does not have access\n",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify generic transient-upstream messages as seat-rotation errors", () => {
+    expect(
+      isClaudeSeatRotationAccessError({
+        errorMessage: "Server overloaded (529). Try again later.",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeSeatRotationAccessError({
+        errorMessage: "rate_limit_error: 429 Too Many Requests",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not classify login-required errors as seat-rotation access errors", () => {
+    expect(
+      isClaudeSeatRotationAccessError({
+        errorMessage: "Please run `claude login` to authenticate.",
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores deterministic max-turns / unknown-session results", () => {
+    expect(
+      isClaudeSeatRotationAccessError({
+        parsed: {
+          is_error: true,
+          subtype: "error_max_turns",
+          result: "Reached max turns",
+        },
+      }),
+    ).toBe(false);
   });
 });

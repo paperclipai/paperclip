@@ -46,6 +46,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeSeatRotationAccessError,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -53,6 +54,7 @@ import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { retryDuringSeatRotation } from "./seat-rotation.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -831,8 +833,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  type ClaudeAttempt = Awaited<ReturnType<typeof runAttempt>>;
+
+  const isSeatRotationAccessAttempt = (attempt: ClaudeAttempt): boolean => {
+    if (attempt.proc.timedOut) return false;
+    if ((attempt.proc.exitCode ?? 0) === 0) return false;
+    return isClaudeSeatRotationAccessError({
+      parsed: attempt.parsed,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    });
+  };
+
+  const runWithSeatRotationRetry = (resumeSessionId: string | null) =>
+    runAttempt(resumeSessionId).then((initial) =>
+      retryDuringSeatRotation(initial, isSeatRotationAccessAttempt, () => runAttempt(resumeSessionId), {
+        onLog: (message) => onLog("stdout", `${message}\n`),
+      }),
+    );
+
   try {
-    const initial = await runAttempt(sessionId ?? null);
+    const initial = await runWithSeatRotationRetry(sessionId ?? null);
     if (
       sessionId &&
       !initial.proc.timedOut &&
@@ -844,7 +865,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
-      const retry = await runAttempt(null);
+      const retry = await runWithSeatRotationRetry(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
