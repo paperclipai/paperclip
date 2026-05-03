@@ -23,6 +23,8 @@ permissions:
 env:
   TEMPLATE_FILE: infrastructure/paperclip-ingest-lambda/template.yaml
   TEST_FILE: infrastructure/paperclip-ingest-lambda/tests/handler.test.mjs
+  AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
 
 jobs:
   verify:
