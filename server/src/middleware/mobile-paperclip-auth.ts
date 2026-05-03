@@ -66,7 +66,7 @@ export function mobilePaperclipAuthGuard(opts: MobilePaperclipAuthGuardOptions):
       userId: `mobile-paperclip:${claims.sub}`,
       userName: "Mobile Paperclip",
       userEmail: claims.email ?? null,
-      isInstanceAdmin: true,
+      isInstanceAdmin: claims.pcRole === "instance_admin",
       source: "mobile_paperclip_jwt",
     };
 

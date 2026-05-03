@@ -18,15 +18,17 @@ function signJwt(opts: {
   iss?: string;
   aud?: string;
   exp?: number;
+  pcRole?: string;
 }) {
   const header = { alg: "HS256", typ: "JWT" };
-  const claims = {
+  const claims: Record<string, unknown> = {
     sub: opts.sub ?? "rchen",
     iat: Math.floor(Date.now() / 1000),
     exp: opts.exp ?? Math.floor(Date.now() / 1000) + 300,
     iss: opts.iss ?? "mobile-paperclip",
     aud: opts.aud ?? "paperclip-server",
   };
+  if (opts.pcRole !== undefined) claims.pcRole = opts.pcRole;
   const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(claims))}`;
   const signature = createHmac("sha256", opts.secret).update(signingInput).digest("base64url");
   return `${signingInput}.${signature}`;
@@ -183,9 +185,63 @@ describe("mobilePaperclipAuthGuard", () => {
       type: "board",
       userId: "mobile-paperclip:rchen",
       source: "mobile_paperclip_jwt",
-      isInstanceAdmin: true,
+      isInstanceAdmin: false,
     });
     expect(req.mobilePaperclipClaims?.sub).toBe("rchen");
+  });
+
+  it("does not grant instance-admin rights when pcRole is missing or non-admin", () => {
+    const guard = mobilePaperclipAuthGuard({
+      enabled: true,
+      publicHostnames: new Set(["paperclip-rchen.api.example.com"]),
+    });
+    for (const pcRole of [undefined, "viewer", "instance_user", "INSTANCE_ADMIN"]) {
+      const token = signJwt({ secret: "test-mobile-secret", sub: "rchen", pcRole });
+      const req = makeReq({
+        host: "paperclip-rchen.api.example.com",
+        authorization: `Bearer ${token}`,
+      });
+      const res = makeRes();
+      let calledNext = false;
+      guard(req, res, (() => {
+        calledNext = true;
+      }) as NextFunction);
+      expect(calledNext).toBe(true);
+      expect(req.actor).toMatchObject({
+        type: "board",
+        isInstanceAdmin: false,
+        source: "mobile_paperclip_jwt",
+      });
+    }
+  });
+
+  it("grants instance-admin rights only when pcRole is exactly 'instance_admin'", () => {
+    const token = signJwt({
+      secret: "test-mobile-secret",
+      sub: "rchen",
+      pcRole: "instance_admin",
+    });
+    const guard = mobilePaperclipAuthGuard({
+      enabled: true,
+      publicHostnames: new Set(["paperclip-rchen.api.example.com"]),
+    });
+    const req = makeReq({
+      host: "paperclip-rchen.api.example.com",
+      authorization: `Bearer ${token}`,
+    });
+    const res = makeRes();
+    let calledNext = false;
+    guard(req, res, (() => {
+      calledNext = true;
+    }) as NextFunction);
+    expect(calledNext).toBe(true);
+    expect(req.actor).toMatchObject({
+      type: "board",
+      userId: "mobile-paperclip:rchen",
+      isInstanceAdmin: true,
+      source: "mobile_paperclip_jwt",
+    });
+    expect(req.mobilePaperclipClaims?.pcRole).toBe("instance_admin");
   });
 
   it("respects x-forwarded-host over host", () => {

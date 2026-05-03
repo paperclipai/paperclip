@@ -55,6 +55,25 @@ describe("buildOriginMatcher", () => {
     expect(matcher.match("http://localhost:5173")).toBe("http://localhost:5173");
     expect(matcher.match("http://localhost:5174")).toBeNull();
   });
+
+  it("rejects non-default ports for patterns with no explicit port", () => {
+    const matcher = buildOriginMatcher(["https://mobilepaperclip.vercel.app"]);
+    expect(matcher.match("https://mobilepaperclip.vercel.app:8080")).toBeNull();
+    expect(matcher.match("https://mobilepaperclip.vercel.app:443")).toBe(
+      "https://mobilepaperclip.vercel.app",
+    );
+    expect(matcher.match("https://mobilepaperclip.vercel.app")).toBe(
+      "https://mobilepaperclip.vercel.app",
+    );
+  });
+
+  it("rejects non-default ports for wildcard patterns with no explicit port", () => {
+    const matcher = buildOriginMatcher(["https://*.vercel.app"]);
+    expect(matcher.match("https://feature.vercel.app:8080")).toBeNull();
+    expect(matcher.match("https://feature.vercel.app")).toBe(
+      "https://feature.vercel.app",
+    );
+  });
 });
 
 describe("parseOriginAllowlistEnv", () => {

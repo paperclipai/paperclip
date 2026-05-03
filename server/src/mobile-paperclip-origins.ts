@@ -65,7 +65,7 @@ export function buildOriginMatcher(patterns: string[]): OriginMatcher {
       }
       for (const { compiled: pattern } of compiled) {
         if (pattern.protocol !== parsed.protocol) continue;
-        if (pattern.port && pattern.port !== parsed.port) continue;
+        if (pattern.port !== parsed.port) continue;
         if (!pattern.hostnameRegex.test(parsed.hostname)) continue;
         return normalized;
       }
