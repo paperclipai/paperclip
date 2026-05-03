@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetToRemoteSpec,
+  adapterExecutionTargetUsesPaperclipBridge,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
@@ -104,7 +105,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd: "/workspace",
-      paperclipTransport: "bridge",
     });
   });
 
@@ -139,6 +139,33 @@ describe("sandbox adapter execution targets", () => {
       cwd: "/workspace",
       timeoutMs: 7000,
     }));
+  });
+
+  it("treats SSH targets as bridge-only", () => {
+    const target = {
+      kind: "remote" as const,
+      transport: "ssh" as const,
+      remoteCwd: "/workspace",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/workspace",
+        remoteCwd: "/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+
+    expect(adapterExecutionTargetUsesPaperclipBridge(target)).toBe(true);
+    expect(adapterExecutionTargetSessionIdentity(target)).toEqual({
+      transport: "ssh",
+      host: "ssh.example.test",
+      port: 22,
+      username: "paperclip",
+      remoteCwd: "/workspace",
+    });
   });
 
   it("uses the provider-declared shell for sandbox helper commands", async () => {
@@ -210,7 +237,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd,
-      paperclipTransport: "bridge",
       runner: createLocalSandboxRunner(),
       timeoutMs: 30_000,
     };
@@ -288,7 +314,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd,
-      paperclipTransport: "bridge",
       runner: createLocalSandboxRunner(),
       timeoutMs: 30_000,
     };

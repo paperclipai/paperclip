@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
-  adapterExecutionTargetPaperclipApiUrl,
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
@@ -240,9 +239,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentHome,
   });
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
-  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
-  if (targetPaperclipApiUrl) env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
-
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }

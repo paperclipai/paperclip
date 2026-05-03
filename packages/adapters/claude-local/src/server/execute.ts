@@ -5,7 +5,6 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclip
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
-  adapterExecutionTargetPaperclipApiUrl,
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
@@ -222,11 +221,6 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
-  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
-  if (targetPaperclipApiUrl) {
-    env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
-  }
-
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
