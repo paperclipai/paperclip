@@ -43,7 +43,7 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
 }
 
 export function goalService(db: Db) {
-  return {
+  const svc = {
     list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),
 
     getById: (id: string) =>
@@ -70,11 +70,17 @@ export function goalService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
-    remove: (id: string) =>
-      db
+    remove: async (id: string) => {
+      const children = await db.select().from(goals).where(eq(goals.parentId, id));
+      for (const child of children) {
+        await svc.remove(child.id);
+      }
+      return db
         .delete(goals)
         .where(eq(goals.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
   };
+  return svc;
 }
