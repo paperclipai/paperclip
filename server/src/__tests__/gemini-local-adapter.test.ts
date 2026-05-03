@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { isGeminiUnknownSessionError, parseGeminiJsonl } from "@paperclipai/adapter-gemini-local/server";
+import {
+  isGeminiTurnLimitResult,
+  isGeminiUnknownSessionError,
+  parseGeminiJsonl,
+} from "@paperclipai/adapter-gemini-local/server";
 import { parseGeminiStdoutLine } from "@paperclipai/adapter-gemini-local/ui";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 
@@ -76,6 +80,27 @@ describe("gemini_local stale session detection", () => {
   it("treats missing session messages as an unknown session error", () => {
     expect(isGeminiUnknownSessionError("", "unknown session id abc")).toBe(true);
     expect(isGeminiUnknownSessionError("", "checkpoint latest not found")).toBe(true);
+  });
+});
+
+describe("gemini_local turn-limit detection", () => {
+  it("detects structured turn-limit signals and exit code 53", () => {
+    expect(isGeminiTurnLimitResult({ status: "turn_limit" })).toBe(true);
+    expect(isGeminiTurnLimitResult({ stopReason: "max_turns_exhausted" })).toBe(true);
+    expect(isGeminiTurnLimitResult(null, 53)).toBe(true);
+  });
+
+  it("checks every structured stop field for turn-limit exhaustion", () => {
+    expect(
+      isGeminiTurnLimitResult({
+        status: "success",
+        stopReason: "turn_limit_exhausted",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not detect turn-limit exhaustion from unstructured error text", () => {
+    expect(isGeminiTurnLimitResult({ error: "max_turns reached" })).toBe(false);
   });
 });
 
