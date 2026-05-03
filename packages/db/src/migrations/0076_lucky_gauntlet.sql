@@ -1,0 +1,1 @@
+ALTER TABLE "issue_comments" ADD COLUMN "system" boolean DEFAULT false NOT NULL;

@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -163,6 +163,11 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
+// Same-issue rapid-wake cooldown backstop: suppress issue_commented wakes when an agent
+// has woken on the same issue >= MAX_WAKES times in WINDOW_SECONDS with no different-actor
+// comment in between. Configurable via env vars.
+const SAME_ISSUE_COOLDOWN_WINDOW_SECONDS = Number(process.env.PAPERCLIP_SAME_ISSUE_COOLDOWN_WINDOW ?? "300");
+const SAME_ISSUE_COOLDOWN_MAX_WAKES = Number(process.env.PAPERCLIP_SAME_ISSUE_COOLDOWN_MAX_WAKES ?? "3");
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -7827,6 +7832,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  // Returns true when the same-issue rapid-wake cooldown should suppress a new
+  // issue_commented wake: at least SAME_ISSUE_COOLDOWN_MAX_WAKES prior wakes in the
+  // rolling window AND no different-actor comment since the burst started.
+  async function checkSameIssueCooldown(
+    agentId: string,
+    issueId: string,
+    companyId: string,
+  ): Promise<boolean> {
+    const windowStart = new Date(Date.now() - SAME_ISSUE_COOLDOWN_WINDOW_SECONDS * 1000);
+    const maxWakes = SAME_ISSUE_COOLDOWN_MAX_WAKES;
+
+    const recentWakes = await db
+      .select({ requestedAt: agentWakeupRequests.requestedAt })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "issue_commented"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          gt(agentWakeupRequests.requestedAt, windowStart),
+          notInArray(agentWakeupRequests.status, ["skipped", "cancelled"]),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(maxWakes - 1);
+
+    if (recentWakes.length < maxWakes - 1) return false;
+
+    // Burst threshold reached — check if a different actor commented since the
+    // burst started. Such a comment resets the burst and allows the wake through.
+    const burstStart = recentWakes[0]!.requestedAt;
+    const breakingComment = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, issueId),
+          gt(issueComments.createdAt, burstStart),
+          or(
+            and(
+              isNotNull(issueComments.authorAgentId),
+              sql`${issueComments.authorAgentId} != ${agentId}::uuid`,
+            ),
+            isNotNull(issueComments.authorUserId),
+          ),
+        ),
+      )
+      .limit(1);
+
+    return breakingComment.length === 0;
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -7925,6 +7983,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Same-issue rapid-wake cooldown backstop: suppresses looping issue_commented
+    // wakes when no human or different-agent comment has broken the burst.
+    if (issueId && reason === "issue_commented") {
+      const suppressed = await checkSameIssueCooldown(agentId, issueId, agent.companyId);
+      if (suppressed) {
+        await writeSkippedRequest("same_issue_rapid_wake_cooldown");
+        logger.warn(
+          { agentId, issueId, windowSec: SAME_ISSUE_COOLDOWN_WINDOW_SECONDS, maxWakes: SAME_ISSUE_COOLDOWN_MAX_WAKES },
+          "same-issue rapid-wake cooldown: suppressing issue_commented wake",
+        );
+        return null;
+      }
     }
 
     if (issueId) {
