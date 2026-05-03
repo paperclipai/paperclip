@@ -17,7 +17,16 @@ interface OAuthProfile {
 function extractCurrentProfile(agent: Agent): string | null {
   const env = (agent.adapterConfig as Record<string, unknown>)?.env as Record<string, unknown> | undefined;
   const val = env?.USERPROFILE;
-  return typeof val === "string" && val.length > 0 ? val : null;
+  if (typeof val === "string" && val.length > 0) return val;
+  // Server normalizes env vars to {type:"plain",value:"..."} before persistence;
+  // unwrap so the switcher can display the active profile name correctly.
+  if (val && typeof val === "object") {
+    const wrapped = val as Record<string, unknown>;
+    if (wrapped.type === "plain" && typeof wrapped.value === "string" && (wrapped.value as string).length > 0) {
+      return wrapped.value as string;
+    }
+  }
+  return null;
 }
 
 function shortName(profile: OAuthProfile): string {
