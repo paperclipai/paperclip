@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -2372,21 +2372,27 @@ export function companySkillService(db: Db) {
       const incomingOwner = asString(incomingMeta.owner);
       const incomingRepo = asString(incomingMeta.repo);
       const incomingKind = asString(incomingMeta.sourceKind);
+      // Bundled skills are sourced from the server image and re-upserted by
+      // ensureBundledSkills only. Never let a non-bundled import overwrite a
+      // bundled row, regardless of which org/repo it claims to be from.
       if (
         existing
         && existingMeta.sourceKind === "paperclip_bundled"
-        && incomingKind === "github"
-        && incomingOwner === "paperclipai"
-        && incomingRepo === "paperclip"
+        && incomingKind !== "paperclip_bundled"
       ) {
         out.push(existing);
         continue;
       }
 
+      // Preserve sourceAuthSecretId across re-imports of the same skill. Skip
+      // bundled rows: they should never carry a PAT reference, and preserving
+      // one across a bundled re-upsert would re-attach stale data.
       const metadata = {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
-        ...(existing?.metadata && typeof (existing.metadata as Record<string, unknown>).sourceAuthSecretId === "string"
+        ...(existing?.metadata
+          && existingMeta.sourceKind !== "paperclip_bundled"
+          && typeof (existing.metadata as Record<string, unknown>).sourceAuthSecretId === "string"
           ? { sourceAuthSecretId: (existing.metadata as Record<string, unknown>).sourceAuthSecretId }
           : {}),
       };
@@ -2464,6 +2470,8 @@ export function companySkillService(db: Db) {
 
     if (authToken && imported.length > 0) {
       for (const skill of imported) {
+        const skillMeta = skill.metadata as Record<string, unknown> | null;
+        if (skillMeta?.sourceKind === "paperclip_bundled") continue;
         const secretName = `skill-pat:${skill.id}`;
         let secretId: string;
         const existing = await secretsSvc.getByName(companyId, secretName);
@@ -2530,10 +2538,24 @@ export function companySkillService(db: Db) {
     const meta = skill.metadata as Record<string, unknown> | null;
     const secretId = typeof meta?.sourceAuthSecretId === "string" ? meta.sourceAuthSecretId : null;
     if (secretId) {
-      try {
-        await secretsSvc.remove(secretId);
-      } catch {
-        // Best-effort: don't fail the skill deletion if secret cleanup fails
+      // Skip cleanup if another skill in the same company still references this
+      // secret. The deleted row is already gone from the table, so any result
+      // here is a sibling skill we shouldn't orphan.
+      const otherSkillRefs = await db
+        .select({ id: companySkills.id })
+        .from(companySkills)
+        .where(and(
+          eq(companySkills.companyId, companyId),
+          sql`${companySkills.metadata} ->> 'sourceAuthSecretId' = ${secretId}`,
+        ))
+        .limit(1);
+      if (otherSkillRefs.length === 0) {
+        try {
+          await secretsSvc.remove(secretId);
+        } catch {
+          // Best-effort: don't fail the skill deletion if secret cleanup fails
+          // (typically blocked by an agent env binding still referencing it).
+        }
       }
     }
 
@@ -2549,6 +2571,9 @@ export function companySkillService(db: Db) {
     if (!skill) return null;
 
     const meta = (skill.metadata ?? {}) as Record<string, unknown>;
+    if (meta.sourceKind === "paperclip_bundled") {
+      throw unprocessable("Cannot configure auth for bundled paperclip skills");
+    }
     const existingSecretId = typeof meta.sourceAuthSecretId === "string" ? meta.sourceAuthSecretId : null;
 
     if (authToken) {
