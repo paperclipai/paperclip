@@ -133,9 +133,10 @@ async function runShell(
   cwd: string,
   script: string,
   timeoutMs: number,
+  shellCommand = "sh",
 ): Promise<RunProcessResult> {
   return await runner.execute({
-    command: "sh",
+    command: shellCommand,
     args: ["-lc", script],
     cwd,
     timeoutMs,
@@ -266,10 +267,12 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
   timeoutMs?: number | null;
+  shellCommand?: string;
 }): SandboxCallbackBridgeQueueClient {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
+  const shellCommand = input.shellCommand?.trim() || "sh";
   const runChecked = async (action: string, script: string) =>
-    requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs));
+    requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs, shellCommand));
 
   return {
     makeDir: async (remotePath) => {
@@ -525,10 +528,12 @@ export async function startSandboxCallbackBridgeServer(input: {
   responseTimeoutMs?: number | null;
   timeoutMs?: number | null;
   nodeCommand?: string;
+  shellCommand?: string;
   maxQueueDepth?: number | null;
   maxBodyBytes?: number | null;
 }): Promise<StartedSandboxCallbackBridgeServer> {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
+  const shellCommand = input.shellCommand?.trim() || "sh";
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
   if (input.bridgeAsset) {
@@ -553,7 +558,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
   const startResult = await input.runner.execute({
-    command: "sh",
+    command: shellCommand,
     args: [
       "-lc",
       [
@@ -594,6 +599,7 @@ export async function startSandboxCallbackBridgeServer(input: {
       "exit 1",
     ].join("\n"),
     timeoutMs,
+    shellCommand,
   );
   requireSuccessfulResult("wait for sandbox callback bridge readiness", readyResult);
 
@@ -626,7 +632,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     directories,
     stop: async () => {
       const stopResult = await input.runner.execute({
-        command: "sh",
+        command: shellCommand,
         args: [
           "-lc",
           [

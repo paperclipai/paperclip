@@ -726,6 +726,7 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "pluginId",
   "pluginKey",
   "providerMetadata",
+  "shellCommand",
   "sandboxProviderPlugin",
 ]);
 

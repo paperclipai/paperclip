@@ -62,11 +62,16 @@ export async function resolveEnvironmentExecutionTarget(input: {
       typeof input.leaseMetadata?.paperclipApiUrl === "string" && input.leaseMetadata.paperclipApiUrl.trim().length > 0
         ? input.leaseMetadata.paperclipApiUrl.trim()
         : null;
+    const shellCommand =
+      input.leaseMetadata?.shellCommand === "bash" || input.leaseMetadata?.shellCommand === "sh"
+        ? input.leaseMetadata.shellCommand
+        : null;
 
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
+      shellCommand,
       remoteCwd,
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
