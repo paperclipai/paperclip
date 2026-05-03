@@ -190,6 +190,18 @@ export function isGeminiUnknownSessionError(stdout: string, stderr: string): boo
   );
 }
 
+export function isGeminiTransientNetworkError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  return /ENOTFOUND\s+oauth2\.googleapis\.com|ENOTFOUND\s+sts\.googleapis\.com|EAI_AGAIN|_GaxiosError.*ENOTFOUND|_UserRefreshClient.*ENOTFOUND/i.test(
+    haystack,
+  );
+}
+
 function extractGeminiErrorMessages(parsed: Record<string, unknown>): string[] {
   const messages: string[] = [];
   const errorMsg = asString(parsed.error, "").trim();
