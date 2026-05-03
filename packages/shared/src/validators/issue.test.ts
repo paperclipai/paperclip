@@ -177,4 +177,22 @@ describe("issue validators", () => {
 
     expect(parsed.success).toBe(false);
   });
+
+  it("defaults newly created issue status to 'todo' when omitted", () => {
+    const parsed = createIssueSchema.parse({ title: "New issue" });
+
+    expect(parsed.status).toBe("todo");
+  });
+
+  it("preserves explicit status='backlog' on issue creation", () => {
+    const parsed = createIssueSchema.parse({ title: "Plan later", status: "backlog" });
+
+    expect(parsed.status).toBe("backlog");
+  });
+
+  it("preserves explicit status='todo' on issue creation", () => {
+    const parsed = createIssueSchema.parse({ title: "Pick up now", status: "todo" });
+
+    expect(parsed.status).toBe("todo");
+  });
 });

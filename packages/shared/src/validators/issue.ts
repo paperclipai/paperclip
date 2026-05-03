@@ -177,7 +177,7 @@ export const createIssueSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  status: z.enum(ISSUE_STATUSES).optional().default("todo"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
