@@ -14,6 +14,7 @@ import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   CancelIssueThreadInteraction,
+  ExpireIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
@@ -28,6 +29,7 @@ import {
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
+  expireIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
@@ -1200,6 +1202,61 @@ export function issueThreadInteractionService(db: Db) {
 
       if (!updated) {
         throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+      return hydrateInteraction(updated);
+    },
+
+    expireInteraction: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: ExpireIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      const data = expireIssueThreadInteractionSchema.parse(input);
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Interaction not found");
+      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+
+      if (current.status === "expired") {
+        return hydrateInteraction(current);
+      }
+      if (current.status !== "pending") {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const note = data.note?.trim() || null;
+      const now = new Date();
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "expired",
+          result: {
+            version: 1,
+            outcome: "agent_expired",
+            ...(note ? { note } : {}),
+          },
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        return hydrateInteraction(current);
       }
 
       await touchIssue(db, issue.id);

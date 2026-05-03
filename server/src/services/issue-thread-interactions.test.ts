@@ -213,3 +213,145 @@ describe("issueThreadInteractionService", () => {
     expect(state.issueTouches).toHaveLength(1);
   });
 });
+
+describe("expireInteraction", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it("creator agent can expire a pending interaction", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-expire-1",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Approve plan",
+      summary: null,
+      createdByAgentId: "agent-creator",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        prompt: "Approve the implementation plan",
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-05-01T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+    };
+
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+
+    const result = await svc.expireInteraction(
+      { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" },
+      "interaction-expire-1",
+      { note: "Board answered via comment" },
+      { agentId: "agent-creator" },
+    );
+
+    expect(result.status).toBe("expired");
+    expect(result.result).toEqual({
+      version: 1,
+      outcome: "agent_expired",
+      note: "Board answered via comment",
+    });
+    expect(state.interactionUpdates).toHaveLength(1);
+    expect(state.issueTouches).toHaveLength(1);
+  });
+
+  it("double-expire is idempotent — returns existing expired interaction", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-expire-2",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Approve plan",
+      summary: null,
+      createdByAgentId: "agent-creator",
+      createdByUserId: null,
+      resolvedByAgentId: "agent-creator",
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        prompt: "Already expired",
+      },
+      result: { version: 1, outcome: "agent_expired" },
+      resolvedAt: new Date("2026-05-02T10:00:00.000Z"),
+      createdAt: new Date("2026-05-01T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-02T10:00:00.000Z"),
+    };
+
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+
+    const result = await svc.expireInteraction(
+      { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" },
+      "interaction-expire-2",
+      {},
+      { agentId: "agent-creator" },
+    );
+
+    expect(result.status).toBe("expired");
+    expect(state.interactionUpdates).toHaveLength(0);
+    expect(state.issueTouches).toHaveLength(0);
+  });
+
+  it("throws conflict when interaction is already accepted", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-expire-3",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Approve plan",
+      summary: null,
+      createdByAgentId: "agent-creator",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: "board-user",
+      payload: {
+        version: 1,
+        prompt: "Already accepted",
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedAt: new Date("2026-05-02T10:00:00.000Z"),
+      createdAt: new Date("2026-05-01T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-02T10:00:00.000Z"),
+    };
+
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+
+    await expect(
+      svc.expireInteraction(
+        { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" },
+        "interaction-expire-3",
+        {},
+        { agentId: "agent-creator" },
+      ),
+    ).rejects.toThrow("Interaction has already been resolved");
+  });
+});
