@@ -5607,11 +5607,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: "run started",
       });
 
-      handle = await runLogStore.begin({
+      const runLogOpened = await runLogStore.begin({
         companyId: run.companyId,
         agentId: run.agentId,
         runId,
+        issueId: issueId ?? null,
+        wakeReason: readNonEmptyString(context.wakeReason) ?? null,
       });
+      handle = runLogOpened.handle;
+      persistedLogBytes += runLogOpened.initialBytes;
 
       await db
         .update(heartbeatRuns)

@@ -67,7 +67,8 @@ function parsePersistedLogContent(
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+      const raw = JSON.parse(trimmed) as { kind?: unknown; ts?: unknown; stream?: unknown; chunk?: unknown };
+      if (raw.kind === "run_bound") continue;
       const stream = raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
       const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
       const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
