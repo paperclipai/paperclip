@@ -25,7 +25,7 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function instanceSettingsRoutes(db: Db, opts?: InstanceSettingsRoutesOptions) {
+export function instanceSettingsRoutes(db: Db, options: InstanceSettingsRoutesOptions = {}) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const heartbeat = heartbeatService(db);
@@ -73,7 +73,7 @@ export function instanceSettingsRoutes(db: Db, opts?: InstanceSettingsRoutesOpti
     assertBoardOrgAccess(req);
     const [experimental, pluginCgroupActive] = await Promise.all([
       svc.getExperimental(),
-      opts?.cgroupManager ? opts.cgroupManager.isSupported() : Promise.resolve(false),
+      options.cgroupManager ? options.cgroupManager.isSupported() : Promise.resolve(false),
     ]);
     res.json({ ...experimental, pluginCgroupActive });
   });
