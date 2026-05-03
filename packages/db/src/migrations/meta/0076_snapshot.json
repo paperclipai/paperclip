@@ -1,6 +1,6 @@
 {
-  "id": "fdc9cd8b-5423-4d64-b255-9bc1497fdd6a",
-  "prevId": "12b3d91e-98ee-4a48-aecb-891f5bde6eda",
+  "id": "34905093-0a99-46a3-b0ac-6f309768752e",
+  "prevId": "fdc9cd8b-5423-4d64-b255-9bc1497fdd6a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2966,6 +2966,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 10485760
+        },
+        "require_output_contracts": {
+          "name": "require_output_contracts",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "require_board_approval_for_new_agents": {
           "name": "require_board_approval_for_new_agents",
@@ -14254,6 +14261,13 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "require_output_contracts": {
+          "name": "require_output_contracts",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "pause_reason": {
           "name": "pause_reason",
