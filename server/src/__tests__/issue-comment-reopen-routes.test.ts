@@ -375,6 +375,36 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("keeps run-linked board PATCH comments on closed issues inert", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "77777777-7777-4777-8777-777777777777",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "mirrored closure note" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.not.objectContaining({
+        status: "todo",
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("resolves assignee shortnames before updating an issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -478,6 +508,31 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("keeps run-linked board POST comments on closed issues inert", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "77777777-7777-4777-8777-777777777777",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "mirrored closure note" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {

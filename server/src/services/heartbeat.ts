@@ -4166,6 +4166,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_found"
           | "issue_assignee_changed"
           | "issue_terminal_status"
+          | "issue_terminal_run_linked_comment"
           | "issue_review_participant_changed";
         details: Record<string, unknown>;
       };
@@ -4214,12 +4215,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
+      const wakeComment = wakeCommentId
+        ? await db
+            .select({ createdByRunId: issueComments.createdByRunId })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.id, wakeCommentId),
+                eq(issueComments.issueId, issueId),
+                eq(issueComments.companyId, run.companyId),
+              ),
+            )
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const wakeCommentIsRunLinked =
+        typeof wakeComment?.createdByRunId === "string" && wakeComment.createdByRunId.length > 0;
+
       if (!resumeIntent && !wakeCommentId) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
           reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
           details: { issueId, currentStatus: issue.status },
+        };
+      }
+      if (wakeCommentIsRunLinked && !resumeIntent) {
+        return {
+          stale: true,
+          errorCode: "issue_terminal_run_linked_comment",
+          reason: `Cancelled because issue reached terminal status (${issue.status}) and the wake comment was linked to an agent run`,
+          details: { issueId, currentStatus: issue.status, wakeCommentId },
         };
       }
     }
@@ -6313,11 +6338,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        const deferredRunLinkedCommentRows = deferredCommentIds.length > 0
+          ? await tx
+              .select({ id: issueComments.id })
+              .from(issueComments)
+              .where(
+                and(
+                  eq(issueComments.companyId, issue.companyId),
+                  eq(issueComments.issueId, issue.id),
+                  inArray(issueComments.id, deferredCommentIds),
+                  sql`${issueComments.createdByRunId} is not null`,
+                ),
+              )
+          : [];
+        const hasRunLinkedDeferredComment = deferredRunLinkedCommentRows.length > 0;
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
+          !hasRunLinkedDeferredComment &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"

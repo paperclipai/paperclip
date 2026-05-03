@@ -192,10 +192,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorRunId: string | null | undefined;
 }) {
   // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Agent-authored or run-linked mirrored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+  if (typeof input.actorRunId === "string" && input.actorRunId.length > 0) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -1975,6 +1977,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorRunId: actor.runId,
         }));
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
@@ -3431,6 +3434,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        actorRunId: actor.runId,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
