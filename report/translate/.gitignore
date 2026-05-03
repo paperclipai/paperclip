@@ -1,0 +1,3 @@
+# Generated reports — regenerate with `node scripts/translate/extract-strings.mjs`
+extract-report.json
+extract-report.md

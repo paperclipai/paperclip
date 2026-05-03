@@ -51,6 +51,20 @@ This is the most consequential phase. The choices here decide whether the transl
 - Default `lng` from `Accept-Language` header (board user) or company setting
 
 ### Phase 2 — Bulk String Extraction
+
+**Tooling shipped (Phase 2.0)**:
+```bash
+node scripts/translate/extract-strings.mjs
+# → report/translate/extract-report.{json,md}
+```
+
+The current scanner is heuristic (regex-based, not full AST). It catches:
+- JSX text nodes (`>Hello world<`)
+- String props (`title=`, `placeholder=`, `aria-label=`, `alt=`, `tooltip=`, `label=`)
+- Toast/notify-style call args
+
+First scan of `ui/src/`: **~1,500 candidates across ~170 files, ~1,100 unique strings**. False positives expected — review before extracting.
+
 Once Phase 1 patterns are in place, extract all hardcoded strings from:
 - All `*.tsx` UI components
 - CLI prompts (`cli/`)
