@@ -22,6 +22,8 @@ Options:
   --admin-email <email>         First admin email
   --admin-name <name>           First admin display name
   --admin-password <pass>       First admin password (random when omitted)
+  --bind-mounts                 Use bind-mounted folders for data instead of docker named volumes
+  --data-dir <path>             Folder for bind-mounted data (default: data). Implies --bind-mounts.
   --no-auto-admin               Generate bootstrap invite only
   --no-start                    Generate files but do not start
   --no-open                     Do not open browser
@@ -85,6 +87,25 @@ MENU
     3|private) printf 'private' ;;
     4|public) printf 'public' ;;
     *) die "unknown profile choice: $choice" ;;
+  esac
+}
+
+choose_storage() {
+  if [ ! -t 0 ]; then
+    printf 'volumes'
+    return
+  fi
+  cat >&2 <<'MENU'
+Select data storage:
+  1) docker volumes  - managed named volumes (default)
+  2) bind mounts     - host folder ./data (postgres + paperclip subfolders)
+MENU
+  local choice
+  read -r -p "Storage [1]: " choice </dev/tty
+  case "${choice:-1}" in
+    1|volumes|named) printf 'volumes' ;;
+    2|bind|bind-mounts|folders) printf 'bind' ;;
+    *) die "unknown storage choice: $choice" ;;
   esac
 }
 
@@ -203,6 +224,8 @@ AUTO_ADMIN="true"
 START_CONTAINERS="true"
 NO_OPEN="0"
 FORCE="false"
+USE_BIND_MOUNTS="false"
+DATA_DIR=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -244,6 +267,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --admin-password)
       ADMIN_PASSWORD="${2:-}"
+      shift 2
+      ;;
+    --bind-mounts)
+      USE_BIND_MOUNTS="true"
+      shift
+      ;;
+    --data-dir)
+      DATA_DIR="${2:-}"
+      USE_BIND_MOUNTS="true"
       shift 2
       ;;
     --no-auto-admin)
@@ -354,6 +386,40 @@ if [ "$FORCE" != "true" ]; then
   done
 fi
 
+if [ "$USE_BIND_MOUNTS" != "true" ] && [ -z "$DATA_DIR" ] && [ -t 0 ]; then
+  if [ "$(choose_storage)" = "bind" ]; then
+    USE_BIND_MOUNTS="true"
+  fi
+fi
+
+PG_VOLUME_MOUNT="postgres-data:/var/lib/postgresql/data"
+PAPERCLIP_VOLUME_MOUNT="paperclip-data:/paperclip"
+TOP_LEVEL_VOLUMES_BLOCK="volumes:
+  postgres-data:
+  paperclip-data:"
+PAPERCLIP_USER_ENV=""
+DATA_DIR_ABS=""
+DATA_DIR_REL=""
+
+if [ "$USE_BIND_MOUNTS" = "true" ]; then
+  if [ -z "$DATA_DIR" ]; then
+    DATA_DIR="data"
+  fi
+  case "$DATA_DIR" in
+    /*) DATA_DIR_ABS="$DATA_DIR"; DATA_DIR_REL="$DATA_DIR" ;;
+    ./*) DATA_DIR_ABS="$DEPLOY_DIR/${DATA_DIR#./}"; DATA_DIR_REL="$DATA_DIR" ;;
+    *) DATA_DIR_ABS="$DEPLOY_DIR/$DATA_DIR"; DATA_DIR_REL="./$DATA_DIR" ;;
+  esac
+  PG_VOLUME_MOUNT="$DATA_DIR_REL/postgres:/var/lib/postgresql/data"
+  PAPERCLIP_VOLUME_MOUNT="$DATA_DIR_REL/paperclip:/paperclip"
+  TOP_LEVEL_VOLUMES_BLOCK=""
+  HOST_UID="$(id -u)"
+  HOST_GID="$(id -g)"
+  PAPERCLIP_USER_ENV="
+      USER_UID: \"$HOST_UID\"
+      USER_GID: \"$HOST_GID\""
+fi
+
 if [ -t 0 ]; then
   printf >&2 '\nReview deployment plan:\n'
   printf >&2 '  Profile      : %s\n' "$PROFILE"
@@ -361,6 +427,11 @@ if [ -t 0 ]; then
   printf >&2 '  Host port    : %s:%s -> container %s\n' "$BIND_HOST" "$HOST_PORT" "$PAPERCLIP_PORT"
   printf >&2 '  Output dir   : %s\n' "$DEPLOY_DIR"
   printf >&2 '  Image        : %s\n' "$IMAGE"
+  if [ "$USE_BIND_MOUNTS" = "true" ]; then
+    printf >&2 '  Data dir     : %s (bind mounts, uid %s)\n' "$DATA_DIR_ABS" "$HOST_UID"
+  else
+    printf >&2 '  Data dir     : docker named volumes\n'
+  fi
   if [ "$DEPLOYMENT_MODE" = "authenticated" ] && [ "$AUTO_ADMIN" = "true" ]; then
     printf >&2 '  Admin email  : %s\n' "$ADMIN_EMAIL"
   fi
@@ -376,6 +447,10 @@ fi
 rm -f "$DEPLOY_DIR/docker-compose.yml" "$DEPLOY_DIR/.env" "$DEPLOY_DIR/manage.sh" "$DEPLOY_DIR/admin-credentials.txt"
 rm -rf "$DEPLOY_DIR/scripts"
 mkdir -p "$DEPLOY_DIR/scripts"
+
+if [ "$USE_BIND_MOUNTS" = "true" ]; then
+  mkdir -p "$DATA_DIR_ABS/postgres" "$DATA_DIR_ABS/paperclip"
+fi
 
 POSTGRES_PASSWORD="$(random_hex 24)"
 BETTER_AUTH_SECRET="$(random_hex 32)"
@@ -409,6 +484,7 @@ AUTOMATED_AUTO_ADMIN=$AUTO_ADMIN
 AUTOMATED_ADMIN_EMAIL="$ADMIN_EMAIL"
 AUTOMATED_ADMIN_PASSWORD="$ADMIN_PASSWORD"
 AUTOMATED_ADMIN_NAME="$ADMIN_NAME"
+PAPERCLIP_DATA_DIR=$DATA_DIR_REL
 ENV
 chmod 600 "$DEPLOY_DIR/.env"
 
@@ -429,7 +505,7 @@ services:
       timeout: 5s
       retries: 30
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - $PG_VOLUME_MOUNT
 
   paperclip:
     image: $IMAGE
@@ -442,9 +518,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgres://paperclip:\${POSTGRES_PASSWORD}@db:5432/paperclip
+      DATABASE_URL: postgres://paperclip:\${POSTGRES_PASSWORD}@db:5432/paperclip$PAPERCLIP_USER_ENV
     volumes:
-      - paperclip-data:/paperclip
+      - $PAPERCLIP_VOLUME_MOUNT
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$PAPERCLIP_PORT/api/health >/dev/null || exit 1"]
       interval: 10s
@@ -469,9 +545,7 @@ services:
       - ./scripts:/paperclip-automated:ro
       - ./:/paperclip-output
 
-volumes:
-  postgres-data:
-  paperclip-data:
+$TOP_LEVEL_VOLUMES_BLOCK
 COMPOSE
 
 cat > "$DEPLOY_DIR/scripts/bootstrap-admin.mjs" <<'BOOTSTRAP'
@@ -792,6 +866,23 @@ log() {
   printf '[paperclip] %s\n' "$*"
 }
 
+remove_data_dir() {
+  local target="$1"
+  [ -n "$target" ] || return 0
+  local abs
+  case "$target" in
+    /*) abs="$target" ;;
+    ./*) abs="$(pwd)/${target#./}" ;;
+    *) abs="$(pwd)/$target" ;;
+  esac
+  [ -d "$abs" ] || return 0
+  log "Removing bind-mounted data at $target"
+  rm -rf "$abs/postgres" "$abs/paperclip" 2>/dev/null \
+    || docker run --rm -v "$abs:/data" alpine sh -c 'rm -rf /data/postgres /data/paperclip' >/dev/null 2>&1 \
+    || true
+  rmdir "$abs" 2>/dev/null || true
+}
+
 disable_sign_up_after_admin() {
   [ -f admin-credentials.txt ] || return 0
   grep -q '^PAPERCLIP_AUTH_DISABLE_SIGN_UP=false$' .env || return 0
@@ -876,6 +967,7 @@ case "$cmd" in
     fi
     compose down -v
     rm -f admin-credentials.txt
+    remove_data_dir "$(read_env_value .env PAPERCLIP_DATA_DIR)"
     ;;
   help|-h|--help)
     usage
@@ -888,11 +980,18 @@ esac
 MANAGE
 chmod +x "$DEPLOY_DIR/manage.sh"
 
+if [ "$USE_BIND_MOUNTS" = "true" ]; then
+  STORAGE_LINE="- Data: bind-mounted at \`$DATA_DIR_REL\` (postgres + paperclip subfolders)"
+else
+  STORAGE_LINE="- Data: docker named volumes (\`postgres-data\`, \`paperclip-data\`)"
+fi
+
 cat > "$DEPLOY_DIR/README.md" <<README
 # Paperclip — \`$PROFILE\`
 
 - URL: <$PUBLIC_URL>
 - Project: \`$PROJECT_NAME\`
+$STORAGE_LINE
 
 \`\`\`sh
 ./manage.sh start         # start db + paperclip
