@@ -1,9 +1,14 @@
 import { z } from "zod";
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
+  ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
+  ISSUE_EXECUTION_MONITOR_KINDS,
+  ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES,
+  ISSUE_EXECUTION_MONITOR_STATE_STATUSES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
@@ -103,10 +108,40 @@ export const issueExecutionStageSchema = z.object({
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
 });
 
+export const issueExecutionMonitorPolicySchema = z.object({
+  nextCheckAt: z.string().datetime(),
+  notes: z.string().max(500).optional().nullable().default(null),
+  scheduledBy: z.enum(ISSUE_MONITOR_SCHEDULED_BY).optional().default("assignee"),
+  kind: z.enum(ISSUE_EXECUTION_MONITOR_KINDS).optional().nullable().default(null),
+  serviceName: z.string().trim().min(1).max(120).optional().nullable().default(null),
+  externalRef: z.string().trim().min(1).max(500).optional().nullable().default(null),
+  timeoutAt: z.string().datetime().optional().nullable().default(null),
+  maxAttempts: z.number().int().positive().max(100).optional().nullable().default(null),
+  recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
+});
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
+  monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
+});
+
+export const issueExecutionMonitorStateSchema = z.object({
+  status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),
+  nextCheckAt: z.string().datetime().nullable(),
+  lastTriggeredAt: z.string().datetime().nullable(),
+  attemptCount: z.number().int().nonnegative().default(0),
+  notes: z.string().max(500).nullable(),
+  scheduledBy: z.enum(ISSUE_MONITOR_SCHEDULED_BY).nullable(),
+  kind: z.enum(ISSUE_EXECUTION_MONITOR_KINDS).nullable().optional().default(null),
+  serviceName: z.string().trim().min(1).max(120).nullable().optional().default(null),
+  externalRef: z.string().trim().min(1).max(500).nullable().optional().default(null),
+  timeoutAt: z.string().datetime().nullable().optional().default(null),
+  maxAttempts: z.number().int().positive().max(100).nullable().optional().default(null),
+  recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).nullable().optional().default(null),
+  clearedAt: z.string().datetime().nullable(),
+  clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
 });
 
 export const issueReviewRequestSchema = z.object({
@@ -124,6 +159,7 @@ export const issueExecutionStateSchema = z.object({
   completedStageIds: z.array(z.string().uuid()).default([]),
   lastDecisionId: z.string().uuid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
+  monitor: issueExecutionMonitorStateSchema.optional().nullable(),
 });
 
 const issueRequestDepthInputSchema = z

@@ -526,6 +526,13 @@
       "when": 1777384535070,
       "tag": "0074_striped_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1777572332006,
+      "tag": "0075_cultured_sebastian_shaw",
+      "breakpoints": true
     }
   ]
 }
