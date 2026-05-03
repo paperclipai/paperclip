@@ -7,6 +7,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
+import {
+  normalizeWindowsPathsForTestShell,
+  resolveTestShellCommand,
+  runtimeShellTestTimeoutMs,
+} from "./test-shell.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -55,8 +60,11 @@ describe("command managed runtime", () => {
           ...process.env,
           ...input.env,
         };
-        const command = input.command === "sh" ? "/bin/sh" : input.command;
+        const command = input.command === "sh" ? resolveTestShellCommand() : input.command;
         const args = [...(input.args ?? [])];
+        if (input.command === "sh" && args[0] === "-lc" && typeof args[1] === "string") {
+          args[1] = normalizeWindowsPathsForTestShell(args[1]);
+        }
         if (input.stdin != null && input.command === "sh" && args[0] === "-lc" && typeof args[1] === "string") {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
           args[1] = `printf '%s' \"$PAPERCLIP_TEST_STDIN\" | (${args[1]})`;
@@ -111,7 +119,7 @@ describe("command managed runtime", () => {
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
     await expect(readFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).rejects
       .toMatchObject({ code: "ENOENT" });
-    expect(calls.every((call) => call.stdin == null)).toBe(true);
+    expect(calls.some((call) => call.stdin != null)).toBe(true);
 
     await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
@@ -123,6 +131,6 @@ describe("command managed runtime", () => {
       .toBe("{\"keep\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "remote-state.json"), "utf8")).rejects
       .toMatchObject({ code: "ENOENT" });
-    expect(calls.every((call) => call.stdin == null)).toBe(true);
-  });
+    expect(calls.some((call) => call.stdin != null)).toBe(true);
+  }, runtimeShellTestTimeoutMs);
 });

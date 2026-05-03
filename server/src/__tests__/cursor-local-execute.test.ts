@@ -5,6 +5,8 @@ import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-cursor-local/server";
 
+const SANDBOX_REMOTE_TEST_TIMEOUT_MS = process.platform === "win32" ? 60_000 : 10_000;
+
 async function writeFakeCursorCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -74,6 +76,42 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
+function withWindowsSandboxShellPath(env: Record<string, string>): Record<string, string> {
+  if (process.platform !== "win32") return env;
+  const candidates = [
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Git", "usr", "bin") : null,
+    process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Git", "usr", "bin") : null,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin") : null,
+    "C:\\Program Files\\Git\\usr\\bin",
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return {
+    ...env,
+    PATH: [...candidates, env.PATH, env.Path, process.env.PATH, process.env.Path].filter(Boolean).join(path.delimiter),
+  };
+}
+
+function fromWindowsSandboxShellPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  const drivePath = value.match(/^\/([A-Za-z])\/(.+)$/);
+  if (drivePath) {
+    return `${drivePath[1].toUpperCase()}:\\${drivePath[2].replace(/\//g, "\\")}`;
+  }
+  if (value === "/tmp") return os.tmpdir();
+  if (value.startsWith("/tmp/")) {
+    return path.join(os.tmpdir(), value.slice("/tmp/".length).replace(/\//g, path.sep));
+  }
+  return value;
+}
+
+function toWindowsSandboxShellPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  const normalized = path.resolve(value).replace(/\\/g, "/");
+  const tempRoot = path.resolve(os.tmpdir()).replace(/\\/g, "/");
+  if (normalized === tempRoot) return "/tmp";
+  if (normalized.startsWith(`${tempRoot}/`)) return `/tmp/${normalized.slice(tempRoot.length + 1)}`;
+  return normalized.replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
 function createLocalSandboxRunner() {
   let counter = 0;
   return {
@@ -88,9 +126,9 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return await runChildProcess(`cursor-sandbox-execute-${counter}`, input.command, input.args ?? [], {
-        cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
+      return await runChildProcess(`cursor-sandbox-execute-${counter}`, fromWindowsSandboxShellPath(input.command), input.args ?? [], {
+        cwd: fromWindowsSandboxShellPath(input.cwd ?? process.cwd()),
+        env: withWindowsSandboxShellPath(input.env ?? {}),
         stdin: input.stdin,
         timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
         graceSec: 5,
@@ -363,6 +401,9 @@ describe("cursor execute", () => {
         config: {
           command: "agent",
           cwd: workspace,
+          env: {
+            HOME: toWindowsSandboxShellPath(homeDir),
+          },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
         context: {},
@@ -378,14 +419,14 @@ describe("cursor execute", () => {
         path: string;
       };
       expect(capture.command).toBe(cursorAgentPath);
-      expect(capture.path.split(":")[0]).toBe(path.join(homeDir, ".local", "bin"));
+      expect(capture.path).toContain(toWindowsSandboxShellPath(path.join(homeDir, ".local", "bin")));
       expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, SANDBOX_REMOTE_TEST_TIMEOUT_MS);
 
   it("keeps explicit command overrides for remote sandbox execution", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-sandbox-explicit-"));
@@ -429,6 +470,9 @@ describe("cursor execute", () => {
         config: {
           command: customCommandPath,
           cwd: workspace,
+          env: {
+            HOME: toWindowsSandboxShellPath(homeDir),
+          },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
         context: {},
@@ -444,5 +488,5 @@ describe("cursor execute", () => {
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, SANDBOX_REMOTE_TEST_TIMEOUT_MS);
 });

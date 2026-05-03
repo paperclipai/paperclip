@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-gemini-local/server";
 
+function fakeGeminiCommandPath(root: string): string {
+  return path.join(root, "gemini");
+}
+
 async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -48,7 +52,7 @@ describe("gemini execute", () => {
   it("passes prompt via --prompt and injects paperclip env vars", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "gemini");
+    const commandPath = fakeGeminiCommandPath(root);
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);
@@ -130,7 +134,7 @@ describe("gemini execute", () => {
   it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "gemini");
+    const commandPath = fakeGeminiCommandPath(root);
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);
@@ -172,7 +176,7 @@ describe("gemini execute", () => {
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-wake-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "gemini");
+    const commandPath = fakeGeminiCommandPath(root);
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);

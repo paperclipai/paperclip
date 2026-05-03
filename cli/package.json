@@ -31,8 +31,8 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "node --input-type=module -e \"import esbuild from 'esbuild'; import config from './esbuild.config.mjs'; await esbuild.build(config);\" && chmod +x dist/index.js",
-    "clean": "rm -rf dist",
+    "build": "node --input-type=module -e \"import esbuild from 'esbuild'; import config from './esbuild.config.mjs'; await esbuild.build(config);\" && node ../scripts/chmod-executable.mjs dist/index.js",
+    "clean": "node ../scripts/remove-path.mjs dist",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

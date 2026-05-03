@@ -20,6 +20,11 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+async function expectPosixModeIfSupported(candidate: string, mode: number): Promise<void> {
+  if (process.platform === "win32") return;
+  expect((await fs.stat(candidate)).mode & 0o777).toBe(mode);
+}
+
 async function onlyChildDir(parent: string): Promise<string> {
   const entries = await fs.readdir(parent);
   expect(entries).toHaveLength(1);
@@ -247,8 +252,8 @@ describe("acpx_local runtime skill isolation", () => {
     const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".env"))!);
     const wrapper = await fs.readFile(wrapperPath, "utf8");
     const env = await fs.readFile(envPath, "utf8");
-    expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
+    await expectPosixModeIfSupported(envPath, 0o600);
+    await expectPosixModeIfSupported(wrapperPath, 0o700);
     expect(wrapper).toContain("node ./fake-acp.js");
     expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
     expect(wrapper).not.toContain("new-key");

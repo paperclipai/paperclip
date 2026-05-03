@@ -420,6 +420,32 @@ async function migrationContentAlreadyApplied(
   return true;
 }
 
+async function loadAppliedMigrationsFromCreatedAt(
+  sql: ReturnType<typeof postgres>,
+  qualifiedTable: string,
+  availableMigrations: string[],
+  rowCount: number,
+): Promise<string[]> {
+  const journalEntries = await listJournalMigrationEntries();
+  if (journalEntries.length === 0) return [];
+
+  const createdAtRows = await sql.unsafe<{ created_at: string | number | null }[]>(
+    `SELECT created_at FROM ${qualifiedTable} ORDER BY created_at DESC NULLS LAST`,
+  );
+  const lastCreatedAt = createdAtRows
+    .map((row) => Number(row.created_at ?? Number.NaN))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .sort((left, right) => right - left)[0];
+
+  if (lastCreatedAt === undefined) return [];
+
+  return journalEntries
+    .filter((entry) => availableMigrations.includes(entry.fileName))
+    .filter((entry) => entry.folderMillis <= lastCreatedAt)
+    .map((entry) => entry.fileName)
+    .slice(0, rowCount);
+}
+
 async function loadAppliedMigrations(
   sql: ReturnType<typeof postgres>,
   migrationTableSchema: string,
@@ -445,26 +471,35 @@ async function loadAppliedMigrations(
       // Best-effort: when all hashes resolve, this is authoritative.
       if (appliedFromHashes.length === rows.length) return appliedFromHashes;
 
-      // Partial hash resolution can happen when files have changed; return what we can trust.
+      // Partial hash resolution can happen when migration files changed after
+      // a database was already migrated. In that case, the created_at timeline
+      // is a better approximation of historical progress than replaying every
+      // unresolved migration from the beginning.
+      if (columnNames.has("created_at")) {
+        const appliedFromCreatedAt = await loadAppliedMigrationsFromCreatedAt(
+          sql,
+          qualifiedTable,
+          availableMigrations,
+          rows.length,
+        );
+        if (appliedFromCreatedAt.length > 0) {
+          const applied = new Set([...appliedFromCreatedAt, ...appliedFromHashes]);
+          return availableMigrations.filter((name) => applied.has(name));
+        }
+      }
+
       return appliedFromHashes;
     }
 
     // Fallback only when hashes are unavailable/unresolved.
     if (columnNames.has("created_at")) {
-      const journalEntries = await listJournalMigrationEntries();
-      if (journalEntries.length > 0) {
-        const lastDbRows = await sql.unsafe<{ created_at: string | number | null }[]>(
-          `SELECT created_at FROM ${qualifiedTable} ORDER BY created_at DESC LIMIT 1`,
-        );
-        const lastCreatedAt = Number(lastDbRows[0]?.created_at ?? -1);
-        if (Number.isFinite(lastCreatedAt) && lastCreatedAt >= 0) {
-          return journalEntries
-            .filter((entry) => availableMigrations.includes(entry.fileName))
-            .filter((entry) => entry.folderMillis <= lastCreatedAt)
-            .map((entry) => entry.fileName)
-            .slice(0, rows.length);
-        }
-      }
+      const appliedFromCreatedAt = await loadAppliedMigrationsFromCreatedAt(
+        sql,
+        qualifiedTable,
+        availableMigrations,
+        rows.length,
+      );
+      if (appliedFromCreatedAt.length > 0) return appliedFromCreatedAt;
     }
   }
 

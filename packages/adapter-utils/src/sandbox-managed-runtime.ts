@@ -59,6 +59,13 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function toPosixShellPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  return value
+    .replace(/\\/g, "/")
+    .replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
   const parsed = asObject(value);
   const transport = asString(parsed.transport).trim();
@@ -250,7 +257,7 @@ export async function prepareSandboxManagedRuntime(input: {
   preserveAbsentOnRestore?: string[];
   assets?: SandboxManagedRuntimeAsset[];
 }): Promise<PreparedSandboxManagedRuntime> {
-  const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  const workspaceRemoteDir = toPosixShellPath(input.workspaceRemoteDir ?? input.spec.remoteCwd);
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
@@ -305,7 +312,7 @@ export async function prepareSandboxManagedRuntime(input: {
   );
 
   return {
-    spec: input.spec,
+    spec: { ...input.spec, remoteCwd: toPosixShellPath(input.spec.remoteCwd) },
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
     runtimeRootDir,

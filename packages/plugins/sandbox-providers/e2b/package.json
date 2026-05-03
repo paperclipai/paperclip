@@ -43,12 +43,12 @@
   "scripts": {
     "postinstall": "node ../../../../scripts/link-plugin-dev-sdk.mjs",
     "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
-    "build": "rm -rf dist && tsc",
-    "clean": "rm -rf dist",
+    "build": "node ../../../../scripts/remove-path.mjs dist && tsc",
+    "clean": "node ../../../../scripts/remove-path.mjs dist",
     "typecheck": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../../../../scripts/generate-plugin-package-json.mjs",
-    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
+    "prepack": "node ../../../../scripts/copy-path.mjs package.json package.dev.json && node ../../../../scripts/generate-plugin-package-json.mjs",
+    "postpack": "node ../../../../scripts/copy-path.mjs package.dev.json package.json && node ../../../../scripts/remove-path.mjs package.dev.json"
   },
   "dependencies": {
     "e2b": "^2.19.0"

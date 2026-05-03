@@ -42,11 +42,28 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
+async function linkOrCopySharedFile(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EPERM" && code !== "EACCES" && code !== "ENOTSUP") throw error;
+  }
+
+  try {
+    await fs.link(source, target);
+    return;
+  } catch {
+    await fs.copyFile(source, target);
+  }
+}
+
 async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await linkOrCopySharedFile(source, target);
     return;
   }
 
@@ -61,7 +78,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === source) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await linkOrCopySharedFile(source, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

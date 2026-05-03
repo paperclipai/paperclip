@@ -1,7 +1,12 @@
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
+import {
+  formatDatabaseBackupResult,
+  resolveMigrationConnection,
+  runDatabaseBackup,
+  type MigrationConnection,
+} from "@paperclipai/db";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
@@ -18,20 +23,22 @@ type DbBackupOptions = {
   json?: boolean;
 };
 
-function resolveConnectionString(configPath?: string): { value: string; source: string } {
+async function resolveBackupConnection(configPath?: string): Promise<MigrationConnection> {
   const envUrl = process.env.DATABASE_URL?.trim();
-  if (envUrl) return { value: envUrl, source: "DATABASE_URL" };
+  if (envUrl) {
+    return { connectionString: envUrl, source: "DATABASE_URL", stop: async () => {} };
+  }
 
   const config = readConfig(configPath);
   if (config?.database.mode === "postgres" && config.database.connectionString?.trim()) {
-    return { value: config.database.connectionString.trim(), source: "config.database.connectionString" };
+    return {
+      connectionString: config.database.connectionString.trim(),
+      source: "config.database.connectionString",
+      stop: async () => {},
+    };
   }
 
-  const port = config?.database.embeddedPostgresPort ?? 54329;
-  return {
-    value: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
-    source: `embedded-postgres@${port}`,
-  };
+  return resolveMigrationConnection();
 }
 
 function normalizeRetentionDays(value: number | undefined, fallback: number): number {
@@ -52,7 +59,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
 
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(opts.config);
-  const connection = resolveConnectionString(opts.config);
+  const connection = await resolveBackupConnection(opts.config);
   const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
@@ -71,7 +78,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   spinner.start("Creating database backup...");
   try {
     const result = await runDatabaseBackup({
-      connectionString: connection.value,
+      connectionString: connection.connectionString,
       backupDir,
       retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix,
@@ -98,5 +105,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   } catch (err) {
     spinner.stop(pc.red("Backup failed."));
     throw err;
+  } finally {
+    await connection.stop();
   }
 }

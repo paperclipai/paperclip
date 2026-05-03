@@ -14,6 +14,7 @@ import {
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const MIGRATION_REPLAY_TEST_TIMEOUT_MS = 60_000;
 
 async function createTempDatabase(): Promise<string> {
   const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
@@ -27,6 +28,20 @@ async function migrationHash(migrationFile: string): Promise<string> {
     "utf8",
   );
   return createHash("sha256").update(content).digest("hex");
+}
+
+async function migrationJournalTimestamp(migrationFile: string): Promise<number> {
+  const raw = await fs.promises.readFile(
+    new URL("./migrations/meta/_journal.json", import.meta.url),
+    "utf8",
+  );
+  const parsed = JSON.parse(raw) as { entries?: Array<{ tag?: string; when?: number }> };
+  const tag = migrationFile.replace(/\.sql$/, "");
+  const entry = parsed.entries?.find((candidate) => candidate.tag === tag);
+  if (typeof entry?.when !== "number") {
+    throw new Error(`Missing migration journal timestamp for ${migrationFile}`);
+  }
+  return entry.when;
 }
 
 afterEach(async () => {
@@ -43,6 +58,45 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it(
+    "uses migration timestamps when legacy hashes only partially resolve",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const cutoff = await migrationJournalTimestamp("0056_spooky_ultragirl.sql");
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          UPDATE "drizzle"."__drizzle_migrations"
+          SET hash = 'legacy-' || id::text
+          WHERE created_at <= ${cutoff}
+            AND id <> 1
+        `);
+        await sql.unsafe(`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE created_at > ${cutoff}
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        reason: "pending-migrations",
+      });
+      if (pendingState.status !== "needsMigrations") {
+        throw new Error("Expected pending migrations");
+      }
+      expect(pendingState.appliedMigrations).toContain("0001_fast_northstar.sql");
+      expect(pendingState.pendingMigrations).not.toContain("0001_fast_northstar.sql");
+      expect(pendingState.pendingMigrations[0]).toBe("0057_tidy_join_requests.sql");
+    },
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
+  );
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
@@ -93,7 +147,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -137,7 +191,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const finalState = await inspectMigrations(connectionString);
       expect(finalState.status).toBe("upToDate");
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -167,7 +221,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await sql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -239,7 +293,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -333,7 +387,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -399,7 +453,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -465,7 +519,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -539,6 +593,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    MIGRATION_REPLAY_TEST_TIMEOUT_MS,
   );
 });

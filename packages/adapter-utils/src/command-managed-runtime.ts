@@ -39,8 +39,6 @@ function mergeRuntimeExcludes(entries: string[] | undefined): string[] {
   return [...new Set([".paperclip-runtime", ...(entries ?? [])])];
 }
 
-const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
-
 function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   if (Buffer.isBuffer(bytes)) return bytes;
   if (bytes instanceof ArrayBuffer) return Buffer.from(bytes);
@@ -78,18 +76,7 @@ export function createCommandManagedRuntimeClient(input: {
     writeFile: async (remotePath, bytes) => {
       const body = toBuffer(bytes).toString("base64");
       const remoteDir = path.posix.dirname(remotePath);
-      const remoteTempPath = `${remotePath}.paperclip-upload.b64`;
-
-      await runShell(
-        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
-      );
-      for (let offset = 0; offset < body.length; offset += REMOTE_WRITE_BASE64_CHUNK_SIZE) {
-        const chunk = body.slice(offset, offset + REMOTE_WRITE_BASE64_CHUNK_SIZE);
-        await runShell(`printf '%s' ${shellQuote(chunk)} >> ${shellQuote(remoteTempPath)}`);
-      }
-      await runShell(
-        `base64 -d < ${shellQuote(remoteTempPath)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(remoteTempPath)}`,
-      );
+      await runShell(`mkdir -p ${shellQuote(remoteDir)} && base64 -d > ${shellQuote(remotePath)}`, { stdin: body });
     },
     readFile: async (remotePath) => {
       const result = await runShell(`base64 < ${shellQuote(remotePath)}`);

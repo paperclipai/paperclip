@@ -40,6 +40,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  materializePaperclipSkillCopy,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -111,7 +112,8 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 }
 
 function cursorSkillsHome(): string {
-  return path.join(os.homedir(), ".cursor", "skills");
+  const home = process.env.HOME?.trim() || os.homedir();
+  return path.join(home, ".cursor", "skills");
 }
 
 async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<string> {
@@ -122,7 +124,16 @@ async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<st
   const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+    const targetSkillDir = path.join(target, entry.runtimeName);
+    try {
+      await fs.symlink(entry.source, targetSkillDir);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "ENOTSUP") {
+        throw err;
+      }
+      await materializePaperclipSkillCopy(entry.source, targetSkillDir);
+    }
   }
   return target;
 }
@@ -170,7 +181,8 @@ export async function ensureCursorSkillsInjected(
       `[paperclip] Removed maintainer-only Cursor skill "${skillName}" from ${skillsHome}\n`,
     );
   }
-  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
+  const linkSkill = options.linkSkill ?? ((source: string, target: string) =>
+    fs.symlink(source, target, process.platform === "win32" ? "junction" : "dir"));
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {

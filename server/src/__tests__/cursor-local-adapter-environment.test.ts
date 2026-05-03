@@ -54,6 +54,42 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
+function withWindowsSandboxShellPath(env: Record<string, string>): Record<string, string> {
+  if (process.platform !== "win32") return env;
+  const candidates = [
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Git", "usr", "bin") : null,
+    process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Git", "usr", "bin") : null,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin") : null,
+    "C:\\Program Files\\Git\\usr\\bin",
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return {
+    ...env,
+    PATH: [...candidates, env.PATH, env.Path, process.env.PATH, process.env.Path].filter(Boolean).join(path.delimiter),
+  };
+}
+
+function fromWindowsSandboxShellPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  const drivePath = value.match(/^\/([A-Za-z])\/(.+)$/);
+  if (drivePath) {
+    return `${drivePath[1].toUpperCase()}:\\${drivePath[2].replace(/\//g, "\\")}`;
+  }
+  if (value === "/tmp") return os.tmpdir();
+  if (value.startsWith("/tmp/")) {
+    return path.join(os.tmpdir(), value.slice("/tmp/".length).replace(/\//g, path.sep));
+  }
+  return value;
+}
+
+function toWindowsSandboxShellPath(value: string): string {
+  if (process.platform !== "win32") return value;
+  const normalized = path.resolve(value).replace(/\\/g, "/");
+  const tempRoot = path.resolve(os.tmpdir()).replace(/\\/g, "/");
+  if (normalized === tempRoot) return "/tmp";
+  if (normalized.startsWith(`${tempRoot}/`)) return `/tmp/${normalized.slice(tempRoot.length + 1)}`;
+  return normalized.replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
 function createLocalSandboxRunner() {
   let counter = 0;
   return {
@@ -68,9 +104,9 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      return await runChildProcess(`cursor-sandbox-env-${counter}`, input.command, input.args ?? [], {
-        cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
+      return await runChildProcess(`cursor-sandbox-env-${counter}`, fromWindowsSandboxShellPath(input.command), input.args ?? [], {
+        cwd: fromWindowsSandboxShellPath(input.cwd ?? process.cwd()),
+        env: withWindowsSandboxShellPath(input.env ?? {}),
         stdin: input.stdin,
         timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
         graceSec: 5,
@@ -186,10 +222,11 @@ describe("cursor environment diagnostics", () => {
       `paperclip-cursor-sandbox-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const homeDir = path.join(root, "home");
-    const remoteCwd = path.join(root, "workspace");
+    const remoteCwdLocal = path.join(root, "workspace");
+    const remoteCwd = toWindowsSandboxShellPath(remoteCwdLocal);
     const argsCapturePath = path.join(root, "args.json");
     const cursorAgentPath = path.join(homeDir, ".local", "bin", "cursor-agent");
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(remoteCwdLocal, { recursive: true });
     await writeFakeCursorAgentCommand(cursorAgentPath);
 
     const previousHome = process.env.HOME;
@@ -210,20 +247,21 @@ describe("cursor environment diagnostics", () => {
           command: "agent",
           cwd: remoteCwd,
           env: {
+            HOME: toWindowsSandboxShellPath(homeDir),
             CURSOR_API_KEY: "test-key",
             PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
           },
         },
       });
 
-      expect(result.status).toBe("pass");
+      expect(result.status, JSON.stringify(result.checks)).toBe("pass");
       const capture = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as {
         command: string;
         argv: string[];
         path: string;
       };
       expect(capture.command).toBe(cursorAgentPath);
-      expect(capture.path.split(":")[0]).toBe(path.join(homeDir, ".local", "bin"));
+      expect(capture.path).toContain(toWindowsSandboxShellPath(path.join(homeDir, ".local", "bin")));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

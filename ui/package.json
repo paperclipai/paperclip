@@ -20,9 +20,9 @@
     "build-storybook": "storybook build -c storybook/.storybook -o storybook-static",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "clean": "rm -rf dist storybook-static tsconfig.tsbuildinfo",
-    "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
-    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
+    "clean": "node ../scripts/remove-path.mjs dist && node ../scripts/remove-path.mjs storybook-static && node ../scripts/remove-path.mjs tsconfig.tsbuildinfo",
+    "prepack": "node ../scripts/copy-path.mjs package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
+    "postpack": "node ../scripts/copy-path.mjs package.dev.json package.json && node ../scripts/remove-path.mjs package.dev.json"
   },
   "publishConfig": {
     "access": "public"

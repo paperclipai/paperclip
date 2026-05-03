@@ -273,7 +273,7 @@ describe("createZipArchive", () => {
         "agents/ceo/AGENTS.md": "# CEO\n",
       },
     });
-  });
+  }, 15000);
 
   it("ignores directory entries from standard zip archives", async () => {
     const archive = createZipArchiveWithDirectoryEntries("paperclip-demo");

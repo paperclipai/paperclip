@@ -46,7 +46,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist",
+    "clean": "node ../../../scripts/remove-path.mjs dist",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

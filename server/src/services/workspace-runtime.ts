@@ -30,10 +30,39 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
+function resolveWindowsShellFallback(shellName = "sh"): string {
+  const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const executableName = shellName.endsWith(".exe") ? shellName : `${shellName}.exe`;
+  const candidates = [
+    path.join(programFiles, "Git", "usr", "bin", executableName),
+    path.join(programFiles, "Git", "bin", executableName),
+    path.join(programFilesX86, "Git", "usr", "bin", executableName),
+    path.join(programFilesX86, "Git", "bin", executableName),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? shellName;
+}
+
+function isWindowsNativeShell(shell: string): boolean {
+  const basenames = new Set(
+    [path.basename(shell), path.win32.basename(shell)].map((name) => name.toLowerCase()),
+  );
+  return (
+    basenames.has("powershell.exe") ||
+    basenames.has("powershell") ||
+    basenames.has("pwsh.exe") ||
+    basenames.has("pwsh") ||
+    basenames.has("cmd.exe") ||
+    basenames.has("cmd")
+  );
+}
+
 export function resolveShell(): string {
-  const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
+  const fallback = process.platform === "win32" ? resolveWindowsShellFallback("sh") : "/bin/sh";
   const shell = process.env.SHELL?.trim();
   if (!shell) return fallback;
+  if (process.platform === "win32" && isWindowsNativeShell(shell)) return fallback;
   if (path.isAbsolute(shell) && !existsSync(shell)) return fallback;
   return shell;
 }
@@ -266,7 +295,7 @@ export async function ensureServerWorkspaceLinksCurrent(
     const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
     await fs.mkdir(path.dirname(linkPath), { recursive: true });
     await fs.rm(linkPath, { recursive: true, force: true });
-    await fs.symlink(mismatch.expectedPath, linkPath);
+    await fs.symlink(mismatch.expectedPath, linkPath, process.platform === "win32" ? "junction" : "dir");
   }
 
   const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
@@ -480,7 +509,7 @@ async function executeProcess(input: {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: input.env ?? process.env,
+      env: withWindowsPosixShellPath(input.env ?? process.env),
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
@@ -714,10 +743,40 @@ function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function toPosixShellPath(value: string) {
+  if (process.platform !== "win32") return value;
+  const normalized = path.resolve(value).replace(/\\/g, "/");
+  const driveMatch = normalized.match(/^([A-Za-z]):\/(.*)$/);
+  if (!driveMatch) return normalized;
+  return `/${driveMatch[1]!.toLowerCase()}/${driveMatch[2]!}`;
+}
+
+function shellCommandArgs(command: string) {
+  return process.platform === "win32" ? ["-c", command] : ["-lc", command];
+}
+
+function withWindowsPosixShellPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (process.platform !== "win32") return env;
+  const shell = resolveShell();
+  if (!path.isAbsolute(shell)) return env;
+
+  const shellDir = path.dirname(shell);
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const pathValue = env[pathKey] ?? "";
+  const entries = pathValue.split(path.delimiter).filter(Boolean);
+  if (entries.some((entry) => path.resolve(entry).toLowerCase() === path.resolve(shellDir).toLowerCase())) {
+    return env;
+  }
+
+  return {
+    ...env,
+    [pathKey]: [shellDir, ...entries].join(path.delimiter),
+  };
+}
+
 function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
   const patterns = [
-    /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
-    /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+    /^(?:(?<shell>bash|sh|zsh)\s+)?(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
   ];
 
   for (const pattern of patterns) {
@@ -728,9 +787,15 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
     const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
     if (!existsSync(repoManagedPath)) continue;
 
-    const prefix = match.groups.prefix ?? "";
+    const shellName = match.groups.shell;
+    const prefix =
+      process.platform === "win32" && shellName
+        ? `${quoteShellArg(toPosixShellPath(resolveWindowsShellFallback(shellName)))} `
+        : shellName
+          ? `${shellName} `
+          : "";
     const suffix = match.groups.suffix ?? "";
-    return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
+    return `${prefix}${quoteShellArg(toPosixShellPath(repoManagedPath))}${suffix}`;
   }
 
   return command;
@@ -746,7 +811,7 @@ async function runWorkspaceCommand(input: {
   const shell = resolveShell();
   const proc = await executeProcess({
     command: shell,
-    args: ["-c", input.resolvedCommand ?? input.command],
+    args: shellCommandArgs(input.resolvedCommand ?? input.command),
     cwd: input.cwd,
     env: input.env,
   });
@@ -852,7 +917,7 @@ async function recordWorkspaceCommandOperation(
       const shell = resolveShell();
       const result = await executeProcess({
         command: shell,
-        args: ["-c", input.resolvedCommand ?? input.command],
+        args: shellCommandArgs(input.resolvedCommand ?? input.command),
         cwd: input.cwd,
         env: input.env,
       });
@@ -927,6 +992,7 @@ async function provisionExecutionWorktree(input: {
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
   });
+  await ensureServerWorkspaceLinksCurrent(input.worktreePath);
 }
 
 function buildExecutionWorkspaceCleanupEnv(input: {
@@ -1632,7 +1698,7 @@ function resolveWorkspaceCommandExecution(input: {
     name,
     command,
     cwd,
-    env,
+    env: withWindowsPosixShellPath(env),
   };
 }
 
@@ -2036,7 +2102,7 @@ async function startLocalRuntimeService(input: {
   });
 
   const shell = resolveShell();
-  const child = spawn(shell, ["-lc", command], {
+  const child = spawn(shell, shellCommandArgs(command), {
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",
