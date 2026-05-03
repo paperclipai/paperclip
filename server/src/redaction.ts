@@ -101,3 +101,32 @@ export function redactSensitiveText(input: string): string {
     REDACTED_EVENT_VALUE,
   );
 }
+
+/** Query keys whose values must never appear in logs (WS upgrade URLs, etc.). */
+const SENSITIVE_URL_QUERY_KEY_RE =
+  /^(token|access_token|refresh_token|id_token|code|client_secret|authorization|api_key|apikey|secret|password|auth|bearer|key|session|jwt)$/i;
+
+/**
+ * Returns pathname + query string safe for logs (sensitive query values redacted).
+ * Use for raw `IncomingMessage.url` on HTTP/WS upgrade paths.
+ */
+export function redactHttpUrlForLogs(rawUrl: string, baseFallback = "http://localhost"): string {
+  try {
+    const u = new URL(rawUrl, baseFallback);
+    if (!u.search) {
+      return u.pathname;
+    }
+    const next = new URLSearchParams();
+    for (const [key, value] of u.searchParams.entries()) {
+      if (SENSITIVE_URL_QUERY_KEY_RE.test(key)) {
+        next.append(key, REDACTED_EVENT_VALUE);
+      } else {
+        next.append(key, redactSensitiveText(value));
+      }
+    }
+    const qs = next.toString();
+    return qs ? `${u.pathname}?${qs}` : u.pathname;
+  } catch {
+    return "[invalid-url]";
+  }
+}
