@@ -2,6 +2,8 @@ export type {
   AdapterAgent,
   AdapterRuntime,
   UsageSummary,
+  AdapterAuthProbeStatus,
+  AdapterAuthProbeResult,
   AdapterBillingType,
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
@@ -72,3 +74,5 @@ export type {
   SandboxCallbackBridgeWorkerHandle,
   StartedSandboxCallbackBridgeServer,
 } from "./sandbox-callback-bridge.js";
+
+export { isAdapterUnhealthy } from "./server-utils.js";

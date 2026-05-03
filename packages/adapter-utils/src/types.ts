@@ -328,10 +328,32 @@ export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }
 
+export type AdapterAuthProbeStatus =
+  | "ok"
+  | "unauthenticated"
+  | "rate_limited"
+  | "transient_error"
+  | "no_credentials";
+
+export interface AdapterAuthProbeResult {
+  status: AdapterAuthProbeStatus;
+  /** Which credential surface was probed. */
+  source: string;
+  /** HTTP status from the upstream call when applicable. */
+  httpStatus?: number | null;
+  /** Upstream request id when surfaced; helpful for support / log correlation. */
+  requestId?: string | null;
+  /** Short human-readable detail for logs. Never includes the credential itself. */
+  detail?: string | null;
+  /** ISO timestamp the probe completed. */
+  probedAt: string;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  probeAuth?: () => Promise<AdapterAuthProbeResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;

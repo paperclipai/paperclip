@@ -28,3 +28,5 @@ export type {
   AdapterRuntime,
 } from "@paperclipai/adapter-utils";
 export { runningProcesses } from "./utils.js";
+
+export { isAdapterUnhealthy } from "@paperclipai/adapter-utils";

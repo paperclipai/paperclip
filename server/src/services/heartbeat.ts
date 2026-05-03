@@ -43,7 +43,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, isAdapterUnhealthy, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -2203,6 +2203,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+    const adapterProbeCache = new Map<string, { result: any, at: number }>();
+
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -6029,78 +6031,125 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
-    return withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
-      if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-        return [];
-      }
-      const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
+    async function startNextQueuedRunForAgent(agentId: string) {
+      return withAgentStartLock(agentId, async () => {
+        const agent = await getAgent(agentId);
+        if (!agent) return [];
+        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+          return [];
+        }
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (availableSlots <= 0) return [];
 
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        if (queuedRuns.length === 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
-      const queuedIssueIds = [...new Set(
-        queuedRuns
-          .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
-          .filter((issueId): issueId is string => Boolean(issueId)),
-      )];
-      const issueRows = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          priority: issues.priority,
-        })
-        .from(issues)
-        .where(
-          queuedIssueIds.length > 0
-            ? and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds))
-            : sql`false`,
-        );
-      const issueById = new Map(issueRows.map((row) => [row.id, row]));
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
-        const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
-        const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
-        const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
-        const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
-        const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
-
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun);
-        if (claimed) claimedRuns.push(claimed);
-      }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
-          logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
+        const queuedIssueIds = [...new Set(
+          queuedRuns
+            .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+            .filter((issueId): issueId is string => Boolean(issueId)),
+        )];
+        const issueRows = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+          })
+          .from(issues)
+          .where(
+            queuedIssueIds.length > 0
+              ? and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds))
+              : sql`false`,
+          );
+        const issueById = new Map(issueRows.map((row) => [row.id, row]));
+        const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+          const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
+          const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
+          const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
+          const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
+          const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
+          const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
+          const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
+          const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
+          const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
+          const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
+          const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+          if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
+          return left.createdAt.getTime() - right.createdAt.getTime();
         });
-      }
-      return claimedRuns;
-    });
-  }
+
+        const claimedRuns = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimedRuns.length >= availableSlots) break;
+
+          const adapter = getServerAdapter(agent.adapterType);
+          if (adapter.probeAuth) {
+            const cacheKey = agent.adapterType;
+            const cached = adapterProbeCache.get(cacheKey);
+            const now = Date.now();
+            let probeResult;
+            if (cached && now - cached.at < 60_000) {
+              probeResult = cached.result;
+            } else {
+              probeResult = await adapter.probeAuth();
+              adapterProbeCache.set(cacheKey, { result: probeResult, at: now });
+            }
+
+            if (isAdapterUnhealthy(probeResult)) {
+              logger.warn(
+                {
+                  companyId: agent.companyId,
+                  agentId: agent.id,
+                  adapterType: agent.adapterType,
+                  probeStatus: probeResult.status,
+                  requestId: probeResult.requestId,
+                  detail: probeResult.detail,
+                  triggerDetail: queuedRun.triggerDetail,
+                },
+                "adapter auth probe failed; refusing to claim runs for this agent",
+              );
+              await logActivity(db, {
+                companyId: agent.companyId,
+                actorType: "system",
+                actorId: "heartbeat",
+                action: "adapter.auth_probe_failed",
+                entityType: "agent",
+                entityId: agent.id,
+                agentId: agent.id,
+                details: {
+                  adapterType: agent.adapterType,
+                  probeStatus: probeResult.status,
+                  requestId: probeResult.requestId,
+                  detail: probeResult.detail,
+                  triggerDetail: queuedRun.triggerDetail,
+                },
+              });
+              break;
+            }
+          }
+
+          const claimed = await claimQueuedRun(queuedRun);
+          if (claimed) claimedRuns.push(claimed);
+        }
+        if (claimedRuns.length === 0) return [];
+
+        for (const claimedRun of claimedRuns) {
+          void executeRun(claimedRun.id).catch((err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+          });
+        }
+        return claimedRuns;
+      });
+    }
 
   async function executeRun(runId: string) {
     let run = await getRun(runId);
