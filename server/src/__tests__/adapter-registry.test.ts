@@ -9,6 +9,16 @@ const hermesExecuteMock = vi.hoisted(() =>
   })),
 );
 
+// Default: no bundle configured — exportFiles returns empty so no bundle content is injected.
+// Individual tests override this via vi.mocked(...).mockResolvedValueOnce().
+const agentInstructionsExportFilesMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    files: {} as Record<string, string>,
+    entryFile: "AGENTS.md",
+    warnings: [] as string[],
+  })),
+);
+
 vi.mock("hermes-paperclip-adapter/server", () => ({
   execute: hermesExecuteMock,
   testEnvironment: async () => ({
@@ -21,6 +31,12 @@ vi.mock("hermes-paperclip-adapter/server", () => ({
   listSkills: async () => [],
   syncSkills: async () => ({ entries: [] }),
   detectModel: async () => null,
+}));
+
+vi.mock("../services/agent-instructions.js", () => ({
+  agentInstructionsService: () => ({
+    exportFiles: agentInstructionsExportFilesMock,
+  }),
 }));
 
 import {
@@ -67,6 +83,7 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
     hermesExecuteMock.mockClear();
+    agentInstructionsExportFilesMock.mockClear();
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -450,6 +467,127 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("prepends instructions bundle content to promptTemplate when bundle files are present", async () => {
+    agentInstructionsExportFilesMock.mockResolvedValueOnce({
+      files: {
+        "AGENTS.md": "You are a helpful agent.",
+        "SOUL.md": "Be empathetic.",
+      },
+      entryFile: "AGENTS.md",
+      warnings: [],
+    });
+
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-456",
+        companyId: "company-123",
+        name: "Hermes Bundle Agent",
+        role: "general",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          instructionsRootPath: "/srv/agents/agent-456/instructions",
+          promptTemplate: "Custom base prompt",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const { promptTemplate } = patchedCtx.agent.adapterConfig;
+    // Auth guard present.
+    expect(promptTemplate).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    // Entry file (AGENTS.md) appears before other bundle files.
+    expect(promptTemplate.indexOf("# AGENTS.md")).toBeLessThan(promptTemplate.indexOf("# SOUL.md"));
+    // Bundle content present.
+    expect(promptTemplate).toContain("You are a helpful agent.");
+    expect(promptTemplate).toContain("Be empathetic.");
+    // Original promptTemplate preserved at the end.
+    expect(promptTemplate).toContain("Custom base prompt");
+    expect(promptTemplate.indexOf("Custom base prompt")).toBeGreaterThan(promptTemplate.indexOf("Be empathetic."));
+  });
+
+  it("injects bundle content as promptTemplate when no custom template was set, without stripping Hermes default", async () => {
+    agentInstructionsExportFilesMock.mockResolvedValueOnce({
+      files: {
+        "AGENTS.md": "Agent role instructions.",
+      },
+      entryFile: "AGENTS.md",
+      warnings: [],
+    });
+
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-789",
+      agent: {
+        id: "agent-789",
+        companyId: "company-123",
+        name: "Hermes Bundle Agent No Template",
+        role: "general",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          instructionsRootPath: "/srv/agents/agent-789/instructions",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const { promptTemplate } = patchedCtx.agent.adapterConfig;
+    expect(promptTemplate).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    expect(promptTemplate).toContain("Agent role instructions.");
+  });
+
+  it("does not inject bundle content when no instructionsRootPath is set and no bundle files exist", async () => {
+    // Default mock returns empty files — no bundle content.
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-no-bundle",
+        companyId: "company-123",
+        name: "Hermes No Bundle Agent",
+        role: "general",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          promptTemplate: "Only template, no bundle",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const { promptTemplate } = patchedCtx.agent.adapterConfig;
+    expect(promptTemplate).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    expect(promptTemplate).toContain("Only template, no bundle");
+    // No bundle section headers injected.
+    expect(promptTemplate).not.toContain("# AGENTS.md");
   });
 });
 
