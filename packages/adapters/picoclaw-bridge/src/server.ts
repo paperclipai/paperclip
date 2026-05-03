@@ -13,6 +13,10 @@ const PICOCLAW_TIMEOUT_MS = Number(process.env.PICOCLAW_TIMEOUT_MS ?? "300000");
 const app = express();
 app.use(express.json());
 
+app.get("/", (_req, res) => {
+  res.json({ service: "picoclaw-bridge", status: "ok", endpoint: "POST /invoke" });
+});
+
 app.post("/invoke", async (req, res) => {
   if (BRIDGE_API_KEY && req.headers["x-api-key"] !== BRIDGE_API_KEY) {
     res.status(401).json({ error: "Unauthorized" });
@@ -26,13 +30,14 @@ app.post("/invoke", async (req, res) => {
   }
 
   const prompt = buildPrompt(context);
+  const session = `paperclip-${runId}`;
 
   res.status(202).json({ status: "accepted" });
 
   let stdout = "";
   let stderr = "";
   try {
-    const result = await execFileAsync("picoclaw", ["agent", "-m", prompt], {
+    const result = await execFileAsync("picoclaw", ["agent", "--session", session, "-m", prompt], {
       timeout: PICOCLAW_TIMEOUT_MS,
       env: { ...process.env },
     });
