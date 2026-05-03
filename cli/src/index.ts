@@ -34,6 +34,7 @@ import { registerRunCommands } from "./commands/client/run.js";
 import { registerRoutineClientCommands } from "./commands/client/routine.js";
 import { registerExecutionWorkspaceCommands } from "./commands/client/execution-workspace.js";
 import { registerAdapterCommands } from "./commands/client/adapter.js";
+import { registerCompanySkillCommands } from "./commands/client/company-skill.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
 
@@ -172,6 +173,7 @@ registerRunCommands(program);
 registerRoutineClientCommands(program);
 registerExecutionWorkspaceCommands(program);
 registerAdapterCommands(program);
+registerCompanySkillCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 
