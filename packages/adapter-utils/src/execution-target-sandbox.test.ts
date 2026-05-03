@@ -39,7 +39,8 @@ describe("sandbox adapter execution targets", () => {
         onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
       }) => {
         counter += 1;
-        return runChildProcess(`sandbox-run-${counter}`, input.command, input.args ?? [], {
+        const command = input.command === "bash" ? "/bin/bash" : input.command;
+        return runChildProcess(`sandbox-run-${counter}`, command, input.args ?? [], {
           cwd: input.cwd ?? process.cwd(),
           env: input.env ?? {},
           stdin: input.stdin,
@@ -134,6 +135,41 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "sh",
+      args: ["-lc", 'printf %s "$HOME"'],
+      cwd: "/workspace",
+      timeoutMs: 7000,
+    }));
+  });
+
+  it("uses the provider-declared shell for sandbox helper commands", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "/home/sandbox",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "custom-provider",
+      shellCommand: "bash",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetShellCommand("run-2b", target, 'printf %s "$HOME"', {
+      cwd: "/local/workspace",
+      env: {},
+      timeoutSec: 7,
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "bash",
       args: ["-lc", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,

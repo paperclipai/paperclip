@@ -6,6 +6,7 @@ import {
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
 } from "./sandbox-managed-runtime.js";
+import { preferredShellForSandbox } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 export interface CommandManagedRuntimeRunner {
@@ -23,6 +24,7 @@ export interface CommandManagedRuntimeRunner {
 
 export interface CommandManagedRuntimeSpec {
   providerKey?: string | null;
+  shellCommand?: "bash" | "sh" | null;
   leaseId?: string | null;
   remoteCwd: string;
   timeoutMs?: number | null;
@@ -58,10 +60,12 @@ export function createCommandManagedRuntimeClient(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
   timeoutMs: number;
+  shellCommand?: "bash" | "sh" | null;
 }): SandboxManagedRuntimeClient {
+  const shellCommand = preferredShellForSandbox(input.shellCommand);
   const runShell = async (script: string, opts: { stdin?: string; timeoutMs?: number } = {}) => {
     const result = await input.runner.execute({
-      command: "sh",
+      command: shellCommand,
       args: ["-lc", script],
       cwd: input.remoteCwd,
       stdin: opts.stdin,
@@ -112,7 +116,7 @@ export function createCommandManagedRuntimeClient(input: {
     },
     remove: async (remotePath) => {
       const result = await input.runner.execute({
-        command: "sh",
+        command: shellCommand,
         args: ["-lc", `rm -rf ${shellQuote(remotePath)}`],
         cwd: input.remoteCwd,
         timeoutMs: input.timeoutMs,
@@ -121,7 +125,7 @@ export function createCommandManagedRuntimeClient(input: {
     },
     run: async (command, options) => {
       const result = await input.runner.execute({
-        command: "sh",
+        command: shellCommand,
         args: ["-lc", command],
         cwd: input.remoteCwd,
         timeoutMs: options.timeoutMs,
@@ -157,11 +161,13 @@ export async function prepareCommandManagedRuntime(input: {
     runner: input.runner,
     remoteCwd: workspaceRemoteDir,
     timeoutMs,
+    shellCommand: input.spec.shellCommand,
   });
+  const shellCommand = preferredShellForSandbox(input.spec.shellCommand);
 
   if (input.installCommand?.trim()) {
     const result = await input.runner.execute({
-      command: "sh",
+      command: shellCommand,
       args: ["-lc", input.installCommand.trim()],
       cwd: workspaceRemoteDir,
       timeoutMs,
