@@ -189,6 +189,7 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
 }
 
 export function isClaudeImageProcessingError(parsed: Record<string, unknown>): boolean {
+  if (!parsed.is_error) return false;
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
     .map((msg) => msg.trim())
