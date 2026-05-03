@@ -118,9 +118,6 @@ export function didAutomaticRecoveryExhaust(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
-  if (expectedRetryReason === "issue_continuation_needed" && latestRun.status === "succeeded") {
-    return false;
-  }
   // A succeeded recovery run is also considered exhausted: call sites verify there is no
   // active execution path before reaching this check, so a run that exited successfully
   // without re-establishing one left the issue stranded and should trigger escalation.
@@ -194,10 +191,6 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
         latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
       ),
   );
-}
-
-function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun) {
-  return latestRun?.status === "succeeded";
 }
 
 function isProductiveContinuationRun(latestRun: LatestIssueRun) {
@@ -1713,12 +1706,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      if (isSuccessfulInProgressContinuationRun(latestRun)) {
-        if (isProductiveContinuationRun(latestRun)) {
-          result.productiveContinuationObserved += 1;
-        } else {
-          result.successfulContinuationObserved += 1;
-        }
+      if (isProductiveContinuationRun(latestRun)) {
+        result.productiveContinuationObserved += 1;
         result.skipped += 1;
         continue;
       }
