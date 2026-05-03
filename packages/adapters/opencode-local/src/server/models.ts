@@ -6,6 +6,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -25,8 +26,7 @@ const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SES
 
 export function requireOpenCodeModelId(input: unknown): string {
   const model = asString(input, "").trim();
-  const slashIndex = model.indexOf("/");
-  if (!model || slashIndex <= 0 || slashIndex === model.length - 1) {
+  if (!isValidOpenCodeModelId(model)) {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
   }
   return model;
