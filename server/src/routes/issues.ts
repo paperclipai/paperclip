@@ -11,6 +11,7 @@ import {
   createIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
+  extractUserMentionIds,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -46,6 +47,7 @@ import {
   logActivity,
   projectService,
   routineService,
+  webPushService,
   workProductService,
   type VisibilityPrincipal,
 } from "../services/index.js";
@@ -286,6 +288,31 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
+function notifyMentionedUsers(input: {
+  webPush: ReturnType<typeof webPushService>;
+  body: string;
+  excludeUserId: string | null;
+  title: string;
+  url: string;
+  tag: string;
+}) {
+  const userIds = extractUserMentionIds(input.body);
+  if (userIds.length === 0) return Promise.resolve();
+  const targets = userIds.filter((id) => id !== input.excludeUserId);
+  return Promise.all(
+    targets.map((userId) =>
+      input.webPush
+        .sendToUser(userId, {
+          title: input.title,
+          body: input.body.slice(0, 140),
+          url: input.url,
+          tag: input.tag,
+        })
+        .catch((err) => logger.warn({ err, userId }, "mention push failed")),
+    ),
+  );
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -305,6 +332,7 @@ export function issueRoutes(
   const access = accessService(db);
   const visibility = issueVisibilityService(db);
   const heartbeat = heartbeatService(db);
+  const webPush = webPushService(db);
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
@@ -1468,6 +1496,24 @@ export function issueRoutes(
         .catch((err) =>
           logger.warn({ err, issueId: issue.id }, "failed to resolve description mentions to collaborators"),
         );
+      void notifyMentionedUsers({
+        webPush,
+        body: issue.description,
+        excludeUserId: actor.actorType === "user" ? actor.actorId : null,
+        title: `You were mentioned: ${issue.title}`,
+        url: `/issues/${issue.id}`,
+        tag: `issue-mention-${issue.id}`,
+      });
+    }
+    if (issue.assigneeUserId && issue.assigneeUserId !== (actor.actorType === "user" ? actor.actorId : null)) {
+      void webPush
+        .sendToUser(issue.assigneeUserId, {
+          title: `Assigned to you: ${issue.title}`,
+          body: issue.identifier ? `New issue ${issue.identifier} is assigned to you.` : "New issue assigned to you.",
+          url: `/issues/${issue.id}`,
+          tag: `issue-assigned-${issue.id}`,
+        })
+        .catch((err) => logger.warn({ err, issueId: issue.id }, "assignment push failed"));
     }
 
     await logActivity(db, {
@@ -1735,6 +1781,16 @@ export function issueRoutes(
         addedByUserId: actor.actorType === "user" ? actor.actorId : null,
         addedByAgentId: actor.agentId,
       });
+      if (issue.assigneeUserId !== (actor.actorType === "user" ? actor.actorId : null)) {
+        void webPush
+          .sendToUser(issue.assigneeUserId, {
+            title: `Assigned to you: ${issue.title}`,
+            body: issue.identifier ? `${issue.identifier} is now assigned to you.` : "Issue assigned to you.",
+            url: `/issues/${issue.id}`,
+            tag: `issue-assigned-${issue.id}`,
+          })
+          .catch((err) => logger.warn({ err, issueId: issue.id }, "assignment push failed"));
+      }
     }
     if (issue.assigneeAgentId && issue.assigneeAgentId !== existing.assigneeAgentId) {
       await visibility.ensureCollaborator({
@@ -1920,6 +1976,14 @@ export function issueRoutes(
         },
       });
 
+      void notifyMentionedUsers({
+        webPush,
+        body: comment.body,
+        excludeUserId: actor.actorType === "user" ? actor.actorId : null,
+        title: `Mentioned in: ${issue.title}`,
+        url: `/issues/${issue.id}`,
+        tag: `issue-comment-${issue.id}`,
+      });
     }
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
@@ -2768,6 +2832,15 @@ export function issueRoutes(
       .catch((err) =>
         logger.warn({ err, issueId: currentIssue.id }, "failed to resolve comment mentions to collaborators"),
       );
+
+    void notifyMentionedUsers({
+      webPush,
+      body: comment.body,
+      excludeUserId: actor.actorType === "user" ? actor.actorId : null,
+      title: `Mentioned in: ${currentIssue.title}`,
+      url: `/issues/${currentIssue.id}`,
+      tag: `issue-comment-${currentIssue.id}`,
+    });
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>

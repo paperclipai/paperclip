@@ -72,3 +72,4 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { telegramThreadMappings } from "./telegram_thread_mappings.js";
+export { webPushSubscriptions } from "./web_push_subscriptions.js";

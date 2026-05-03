@@ -19,3 +19,4 @@ export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { organizationRoutes } from "./organizations.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
+export { notificationRoutes } from "./notifications.js";

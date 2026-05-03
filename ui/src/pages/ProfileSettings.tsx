@@ -1,9 +1,20 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
+import {
+  Bell,
+  BellOff,
+  Camera,
+  LoaderCircle,
+  Save,
+  Send,
+  Smartphone,
+  Trash2,
+  UserRoundPen,
+} from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
+import { notificationsApi, type PushSubscriptionRow } from "@/api/notifications";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -11,6 +22,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -268,8 +280,353 @@ export function ProfileSettings() {
           </div>
         </form>
 
+        <NotificationsSection />
+
         <TwoFactorSection />
       </section>
+    </div>
+  );
+}
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const buffer = new ArrayBuffer(rawData.length);
+  const outputArray = new Uint8Array(buffer);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function arrayBufferToBase64Url(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return window
+    .btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function detectIosNonStandalone(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const isIos = /iPad|iPhone|iPod/.test(ua);
+  if (!isIos) return false;
+  const standalone = window.matchMedia?.("(display-mode: standalone)").matches
+    || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  return !standalone;
+}
+
+function describeDevice(row: PushSubscriptionRow): string {
+  const ua = row.userAgent ?? "";
+  if (!ua) return "Unknown device";
+  if (/iPhone/i.test(ua)) return "iPhone";
+  if (/iPad/i.test(ua)) return "iPad";
+  if (/Android/i.test(ua)) return "Android";
+  if (/Macintosh|Mac OS X/i.test(ua)) return "Mac";
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/Linux/i.test(ua)) return "Linux";
+  return ua.slice(0, 40);
+}
+
+function NotificationsSection() {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [pushSupported, setPushSupported] = useState<boolean>(false);
+  const [permission, setPermission] = useState<NotificationPermission | "default">("default");
+  const [currentEndpoint, setCurrentEndpoint] = useState<string | null>(null);
+  const [busy, setBusy] = useState<boolean>(false);
+
+  const iosNonStandalone = useMemo(() => detectIosNonStandalone(), []);
+
+  useEffect(() => {
+    const supported =
+      typeof window !== "undefined"
+      && "serviceWorker" in navigator
+      && "PushManager" in window
+      && "Notification" in window;
+    setPushSupported(supported);
+    if (supported) {
+      setPermission(Notification.permission);
+    }
+
+    let cancelled = false;
+    if (supported) {
+      navigator.serviceWorker.ready
+        .then((reg) => reg.pushManager.getSubscription())
+        .then((sub) => {
+          if (cancelled) return;
+          setCurrentEndpoint(sub?.endpoint ?? null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setCurrentEndpoint(null);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const subscriptionsQuery = useQuery({
+    queryKey: queryKeys.notifications.subscriptions,
+    queryFn: () => notificationsApi.list(),
+    enabled: pushSupported,
+  });
+
+  const vapidQuery = useQuery({
+    queryKey: queryKeys.notifications.vapidPublicKey,
+    queryFn: () => notificationsApi.vapidPublicKey(),
+    enabled: pushSupported,
+    staleTime: Infinity,
+  });
+
+  async function enablePush() {
+    setError(null);
+    setInfo(null);
+    if (!pushSupported) {
+      setError("Push notifications are not supported in this browser.");
+      return;
+    }
+    if (!vapidQuery.data?.publicKey) {
+      setError("Server is missing VAPID public key — ask an admin to configure WEB_PUSH_VAPID_PUBLIC.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const perm = await Notification.requestPermission();
+      setPermission(perm);
+      if (perm !== "granted") {
+        setError("Notification permission denied. Re-enable in your browser settings to subscribe.");
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        await existing.unsubscribe().catch(() => {});
+      }
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidQuery.data.publicKey),
+      });
+      const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+      const endpoint = json.endpoint ?? sub.endpoint;
+      const p256dh = json.keys?.p256dh;
+      const auth = json.keys?.auth;
+      if (!endpoint || !p256dh || !auth) {
+        const rawP256 = sub.getKey("p256dh");
+        const rawAuth = sub.getKey("auth");
+        if (!rawP256 || !rawAuth) {
+          throw new Error("Browser did not return push keys.");
+        }
+        await notificationsApi.subscribe({
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: arrayBufferToBase64Url(rawP256),
+            auth: arrayBufferToBase64Url(rawAuth),
+          },
+        });
+      } else {
+        await notificationsApi.subscribe({ endpoint, keys: { p256dh, auth } });
+      }
+      setCurrentEndpoint(sub.endpoint);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.subscriptions });
+      setInfo("Notifications enabled on this device.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to enable notifications.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disableThisDevice() {
+    setError(null);
+    setInfo(null);
+    setBusy(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        const endpoint = sub.endpoint;
+        await sub.unsubscribe().catch(() => {});
+        await notificationsApi.unsubscribe(endpoint).catch(() => {});
+      }
+      setCurrentEndpoint(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.subscriptions });
+      setInfo("Notifications disabled on this device.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disable notifications.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const revokeMutation = useMutation({
+    mutationFn: async (endpoint: string) => {
+      await notificationsApi.unsubscribe(endpoint);
+      if (endpoint === currentEndpoint && pushSupported) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await sub.unsubscribe().catch(() => {});
+        }
+        setCurrentEndpoint(null);
+      }
+    },
+    onSuccess: async () => {
+      setError(null);
+      setInfo("Device removed.");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.subscriptions });
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Failed to remove device.");
+    },
+  });
+
+  const testMutation = useMutation({
+    mutationFn: () => notificationsApi.test(),
+    onSuccess: (result) => {
+      setError(null);
+      setInfo(
+        result.sent > 0
+          ? `Test sent to ${result.sent} device${result.sent === 1 ? "" : "s"}.`
+          : "No subscribed devices to send to.",
+      );
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Failed to send test notification.");
+    },
+  });
+
+  const enabledOnThisDevice = !!currentEndpoint && permission === "granted";
+  const subscriptions = subscriptionsQuery.data ?? [];
+
+  return (
+    <div className="mt-8 border-t pt-6 space-y-4">
+      <div>
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <Bell className="h-4 w-4 text-muted-foreground" />
+          Notifications
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Get push alerts on your phone or desktop for assignments, @mentions, and deadline starts.
+        </p>
+      </div>
+
+      {iosNonStandalone ? (
+        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-950/40 dark:text-amber-100">
+          <div className="flex items-start gap-2">
+            <Smartphone className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">Add to Home Screen first</p>
+              <p>
+                On iPhone or iPad, push notifications only work after you install Paperclip as a PWA.
+                Open this site in Safari, tap the Share icon, then choose <span className="font-medium">Add to Home Screen</span>.
+                Once launched from the home screen, return here to enable notifications.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {!pushSupported ? (
+        <p className="text-sm text-muted-foreground">
+          This browser doesn't support web push notifications.
+        </p>
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Notifications on this device</p>
+              <p className="text-xs text-muted-foreground">
+                {permission === "denied"
+                  ? "Permission was denied. Re-enable in your browser site settings to subscribe."
+                  : enabledOnThisDevice
+                    ? "You'll receive notifications here even when the tab is closed."
+                    : "Enable to receive push notifications on this browser/device."}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={enabledOnThisDevice}
+              disabled={busy || permission === "denied"}
+              onCheckedChange={(checked) => {
+                if (checked) {
+                  void enablePush();
+                } else {
+                  void disableThisDevice();
+                }
+              }}
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => testMutation.mutate()}
+              disabled={testMutation.isPending || subscriptions.length === 0}
+            >
+              {testMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
+              Send test notification
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Devices subscribed to your account
+            </p>
+            {subscriptionsQuery.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading devices...</p>
+            ) : subscriptions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No devices yet. Enable notifications above on each browser or phone you want alerts on.</p>
+            ) : (
+              <ul className="divide-y rounded-md border">
+                {subscriptions.map((row) => {
+                  const isThisDevice = row.endpoint === currentEndpoint;
+                  return (
+                    <li key={row.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">
+                          {describeDevice(row)}
+                          {isThisDevice ? (
+                            <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-primary">
+                              This device
+                            </span>
+                          ) : null}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          Added {new Date(row.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => revokeMutation.mutate(row.endpoint)}
+                        disabled={revokeMutation.isPending}
+                      >
+                        <BellOff className="size-4" />
+                        Remove
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+
+      {info ? <p className="text-sm text-emerald-700 dark:text-emerald-300">{info}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
     </div>
   );
 }

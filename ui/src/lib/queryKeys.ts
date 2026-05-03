@@ -113,6 +113,10 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  notifications: {
+    subscriptions: ["notifications", "subscriptions"] as const,
+    vapidPublicKey: ["notifications", "vapid-public-key"] as const,
+  },
   sidebarPreferences: {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>

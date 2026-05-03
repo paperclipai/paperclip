@@ -6,6 +6,7 @@ import {
   queueIssueAssignmentWakeup,
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
+import { webPushService } from "./web-push.js";
 
 export interface WardenIssueSnapshot {
   status: string;
@@ -34,6 +35,7 @@ export interface DeadlineWardenDeps {
 }
 
 export function deadlineWardenService(db: Db, deps: DeadlineWardenDeps) {
+  const push = webPushService(db);
   return {
     tick: async (now: Date = new Date()) => {
       const candidates = await db
@@ -44,6 +46,9 @@ export function deadlineWardenService(db: Db, deps: DeadlineWardenDeps) {
           dueDate: issues.dueDate,
           workLeadDays: issues.workLeadDays,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          title: issues.title,
+          identifier: issues.identifier,
         })
         .from(issues)
         .where(
@@ -77,6 +82,16 @@ export function deadlineWardenService(db: Db, deps: DeadlineWardenDeps) {
             contextSource: "deadline_warden",
             requestedByActorType: "system",
           });
+        }
+        if (row.assigneeUserId) {
+          void push
+            .sendToUser(row.assigneeUserId, {
+              title: `Work starts now: ${row.title}`,
+              body: row.identifier ? `${row.identifier} is due soon — moved to To-Do.` : "Issue moved to To-Do.",
+              url: `/issues/${row.id}`,
+              tag: `issue-warden-${row.id}`,
+            })
+            .catch((err) => logger.warn({ err, issueId: row.id }, "deadline warden push failed"));
         }
         logger.info(
           { issueId: row.id, companyId: row.companyId, workLeadDays: row.workLeadDays },
