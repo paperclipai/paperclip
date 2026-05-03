@@ -1144,4 +1144,60 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("advances next_run_at and stamps last_fired_at after a scheduled tick", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        cronExpression: "0 19 * * *",
+        timezone: "Asia/Kolkata",
+      },
+      {},
+    );
+
+    const dueAt = new Date("2026-04-29T13:30:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: dueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const tickAt = new Date("2026-04-29T13:30:30.000Z");
+    const result = await svc.tickScheduledTriggers(tickAt);
+    expect(result.triggered).toBe(1);
+
+    const after = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+    expect(after?.lastFiredAt).toBeInstanceOf(Date);
+    expect(after?.lastFiredAt!.getTime()).toBeGreaterThanOrEqual(tickAt.getTime() - 5_000);
+    expect(after?.nextRunAt).toBeInstanceOf(Date);
+    expect(after?.nextRunAt!.getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(after?.lastResult).toMatch(/Created execution issue|Coalesced/);
+  });
+
+  it("rejects legacy 'cron' kind via the routine_triggers_kind_check constraint", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        cronExpression: "0 19 * * *",
+        timezone: "Asia/Kolkata",
+      },
+      {},
+    );
+
+    // The CHECK constraint added in migration 0075 prevents the
+    // GRA-59 corruption (kind = 'cron') from being persisted again.
+    await expect(
+      db
+        .update(routineTriggers)
+        .set({ kind: "cron" })
+        .where(eq(routineTriggers.id, trigger.id)),
+    ).rejects.toThrow(/routine_triggers_kind_check/);
+  });
 });
