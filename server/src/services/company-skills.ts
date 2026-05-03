@@ -511,6 +511,22 @@ function parseYamlBlock(
       index = nested.nextIndex;
       continue;
     }
+    if (remainder === ">" || remainder === "|") {
+      // YAML 1.2 block scalar: folded (>) or literal (|).
+      // Consume all immediately following lines that are indented deeper than
+      // the current key's level. prepareYamlLines trims content and drops blank
+      // lines, so we join the surviving content lines:
+      //   folded (>): join with a space (paragraph-style)
+      //   literal (|): join with a newline (preserves line structure)
+      const joiner = remainder === ">" ? " " : "\n";
+      const contentLines: string[] = [];
+      while (index < lines.length && lines[index]!.indent > indentLevel) {
+        contentLines.push(lines[index]!.content);
+        index += 1;
+      }
+      record[key] = contentLines.join(joiner);
+      continue;
+    }
     record[key] = parseYamlScalar(remainder);
   }
   return { value: record, nextIndex: index };
