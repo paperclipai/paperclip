@@ -15,14 +15,14 @@ void i18n
   .use(initReactI18next)
   .init({
     resources,
-    fallbackLng: "en",
+    fallbackLng: "ko",
     supportedLngs: ["en", "ko"],
     defaultNS: "common",
     interpolation: {
       escapeValue: false,
     },
     detection: {
-      order: ["querystring", "localStorage", "navigator", "htmlTag"],
+      order: ["querystring"],
       lookupQuerystring: "lng",
       lookupLocalStorage: "paperclip-language",
       caches: ["localStorage"],

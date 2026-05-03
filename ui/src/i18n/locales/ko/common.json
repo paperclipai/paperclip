@@ -32,6 +32,39 @@
       "title": "첫 회사 만들기",
       "description": "회사를 하나 만들면서 시작해요.",
       "cta": "새 회사"
+    },
+    "route": {
+      "addAgentTitle": "{{companyName}}에 에이전트 추가하기",
+      "createAnotherTitle": "회사 하나 더 만들기",
+      "createFirstTitle": "첫 회사 만들기",
+      "addAgentDescription": "온보딩을 다시 실행해서 이 회사에 에이전트와 첫 작업을 추가해요.",
+      "createAnotherDescription": "온보딩을 다시 실행해서 새 회사와 첫 에이전트를 만들어요.",
+      "createFirstDescription": "회사와 첫 에이전트를 만들면서 시작해요.",
+      "addAgentCta": "에이전트 추가",
+      "startCta": "온보딩 시작"
+    },
+    "wizard": {
+      "tabs": {
+        "company": "회사",
+        "agent": "에이전트",
+        "task": "작업",
+        "launch": "실행"
+      },
+      "company": {
+        "title": "회사 이름 정하기",
+        "description": "에이전트들이 일하게 될 조직이에요.",
+        "nameLabel": "회사 이름",
+        "namePlaceholder": "예: 페이퍼클립 코리아",
+        "goalLabel": "미션 / 목표 (선택)",
+        "goalPlaceholder": "이 회사가 달성하려는 목표를 적어주세요."
+      },
+      "defaults": {
+        "taskTitle": "첫 엔지니어를 채용하고 채용 계획 만들기"
+      },
+      "actions": {
+        "creating": "만드는 중...",
+        "createAndOpenIssue": "이슈 만들고 열기"
+      }
     }
   }
 }

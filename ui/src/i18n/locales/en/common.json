@@ -32,6 +32,39 @@
       "title": "Create your first company",
       "description": "Get started by creating a company.",
       "cta": "New Company"
+    },
+    "route": {
+      "addAgentTitle": "Add another agent to {{companyName}}",
+      "createAnotherTitle": "Create another company",
+      "createFirstTitle": "Create your first company",
+      "addAgentDescription": "Run onboarding again to add an agent and a starter task for this company.",
+      "createAnotherDescription": "Run onboarding again to create another company and seed its first agent.",
+      "createFirstDescription": "Get started by creating a company and your first agent.",
+      "addAgentCta": "Add Agent",
+      "startCta": "Start Onboarding"
+    },
+    "wizard": {
+      "tabs": {
+        "company": "Company",
+        "agent": "Agent",
+        "task": "Task",
+        "launch": "Launch"
+      },
+      "company": {
+        "title": "Name your company",
+        "description": "This is the organization your agents will work for.",
+        "nameLabel": "Company name",
+        "namePlaceholder": "Acme Corp",
+        "goalLabel": "Mission / goal (optional)",
+        "goalPlaceholder": "What is this company trying to achieve?"
+      },
+      "defaults": {
+        "taskTitle": "Hire your first engineer and create a hiring plan"
+      },
+      "actions": {
+        "creating": "Creating...",
+        "createAndOpenIssue": "Create & Open Issue"
+      }
     }
   }
 }
