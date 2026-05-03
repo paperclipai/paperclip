@@ -531,7 +531,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const clearSessionForTurnLimit = isGeminiTurnLimitResult(attempt.parsed.resultEvent, attempt.proc.exitCode);
+    const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+    const structuredFailure = attempt.parsed.resultEvent
+      ? describeGeminiFailure(attempt.parsed.resultEvent)
+      : null;
+    const fallbackErrorMessage =
+      parsedError ||
+      structuredFailure ||
+      stderrLine ||
+      `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
+    const failed = (attempt.proc.exitCode ?? 0) !== 0;
+    const clearSessionForTurnLimit = isGeminiTurnLimitResult(
+      attempt.parsed.resultEvent,
+      attempt.proc.exitCode,
+    );
 
     // On retry, don't fall back to old session ID — the old session was stale
     const canFallbackToRuntimeSession = !isRetry;
@@ -551,23 +565,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : {}),
       } as Record<string, unknown>)
       : null;
-    const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-    const structuredFailure = attempt.parsed.resultEvent
-      ? describeGeminiFailure(attempt.parsed.resultEvent)
-      : null;
-    const fallbackErrorMessage =
-      parsedError ||
-      structuredFailure ||
-      stderrLine ||
-      `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
+    const resultJson: Record<string, unknown> = {
+      ...(attempt.parsed.resultEvent ?? {
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+      }),
+      ...(failed && clearSessionForTurnLimit ? { stopReason: "max_turns_exhausted" } : {}),
+    };
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorMessage: failed ? fallbackErrorMessage : null,
+      errorCode: failed && authMeta.requiresAuth
+        ? "gemini_auth_required"
+        : failed && clearSessionForTurnLimit
+        ? "max_turns_exhausted"
+        : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -577,10 +592,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
-      resultJson: attempt.parsed.resultEvent ?? {
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
-      },
+      resultJson,
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
       clearSession: clearSessionForTurnLimit || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
