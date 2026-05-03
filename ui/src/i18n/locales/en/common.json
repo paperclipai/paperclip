@@ -26,5 +26,12 @@
     "issues": "Issues",
     "projects": "Projects",
     "routines": "Routines"
+  },
+  "onboarding": {
+    "noCompany": {
+      "title": "Create your first company",
+      "description": "Get started by creating a company.",
+      "cta": "New Company"
+    }
   }
 }

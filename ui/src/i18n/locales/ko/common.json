@@ -26,5 +26,12 @@
     "issues": "이슈",
     "projects": "프로젝트",
     "routines": "루틴"
+  },
+  "onboarding": {
+    "noCompany": {
+      "title": "첫 회사 만들기",
+      "description": "회사를 하나 만들면서 시작해요.",
+      "cta": "새 회사"
+    }
   }
 }
