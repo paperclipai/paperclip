@@ -26,6 +26,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import { preferredShellForSandbox } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
@@ -47,6 +48,7 @@ export interface AdapterSandboxExecutionTarget {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
   remoteCwd: string;
@@ -214,6 +216,10 @@ function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandMan
   );
 }
 
+function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | "sh" {
+  return preferredShellForSandbox(target.shellCommand);
+}
+
 export async function ensureAdapterExecutionTargetCommandResolvable(
   command: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -341,8 +347,9 @@ export async function runAdapterExecutionTargetShellCommand(
       }
     }
 
+    const shellCommand = preferredSandboxShell(target);
     return await requireSandboxRunner(target).execute({
-      command: "sh",
+      command: shellCommand,
       args: ["-lc", command],
       cwd: target.remoteCwd,
       env: options.env,
@@ -612,6 +619,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     runner: requireSandboxRunner(target),
     spec: {
       providerKey: target.providerKey,
+      shellCommand: target.shellCommand,
       leaseId: target.leaseId,
       remoteCwd: target.remoteCwd,
       timeoutMs: target.timeoutMs,
@@ -745,6 +753,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       runner: requireSandboxRunner(target),
       remoteCwd: target.remoteCwd,
       timeoutMs: target.timeoutMs,
+      shellCommand: preferredSandboxShell(target),
     });
     worker = await startSandboxCallbackBridgeWorker({
       client,
@@ -781,6 +790,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       bridgeAsset,
       timeoutMs: target.timeoutMs,
       maxBodyBytes,
+      shellCommand: preferredSandboxShell(target),
     });
   } catch (error) {
     await Promise.allSettled([

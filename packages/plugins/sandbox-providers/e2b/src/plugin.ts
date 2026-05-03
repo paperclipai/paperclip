@@ -127,6 +127,7 @@ function leaseMetadata(input: {
 }) {
   return {
     provider: "e2b",
+    shellCommand: "bash",
     template: input.config.template,
     timeoutMs: input.config.timeoutMs,
     reuseLease: input.config.reuseLease,
