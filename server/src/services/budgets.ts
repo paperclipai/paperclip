@@ -23,12 +23,13 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { providerRateLimitService } from "./provider-rate-limits.js";
 
 type ScopeRecord = {
   companyId: string;
   name: string;
   paused: boolean;
-  pauseReason: "manual" | "budget" | "system" | null;
+  pauseReason: "manual" | "budget" | "system" | "provider_rate_limit" | null;
 };
 
 type PolicyRow = typeof budgetPolicies.$inferSelect;
@@ -724,6 +725,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pauseReason: agents.pauseReason,
           companyId: agents.companyId,
           name: agents.name,
+          adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -811,6 +814,26 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         }
       }
 
+      // Provider rate-limit gate (orthogonal to budget checks).
+      {
+        const providerRateLimits = providerRateLimitService(db);
+        const model = (agent.adapterConfig as Record<string, unknown> | null)?.model as string | null ?? null;
+        const block = await providerRateLimits.getActiveBlockForAgent(companyId, agent.adapterType, model);
+        if (block) {
+          const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind);
+          if (stillBlocked) {
+            return {
+              scopeType: "provider" as const,
+              scopeId: block.id,
+              scopeName: agent.adapterType,
+              reason: `Provider rate limit (${block.limitKind})${block.resetsAt ? ` — resets at ${block.resetsAt.toISOString()}` : ""}`,
+            };
+          }
+          await providerRateLimits.resolveBlock(block.id, "system");
+          await providerRateLimits.releaseAndResumeForBlock(block);
+        }
+      }
+
       const candidateProjectId = context?.projectId ?? null;
       if (!candidateProjectId) return null;
 
@@ -858,6 +881,40 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         scopeId: project.id,
         scopeName: project.name,
         reason: "Project is paused because its budget hard-stop was reached.",
+      };
+    },
+
+    getProviderRateLimitBlock: async (
+      companyId: string,
+      agentId: string,
+    ) => {
+      const agent = await db
+        .select({
+          adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
+          companyId: agents.companyId,
+        })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      if (!agent || agent.companyId !== companyId) return null;
+
+      const providerRateLimits = providerRateLimitService(db);
+      const model = (agent.adapterConfig as Record<string, unknown> | null)?.model as string | null ?? null;
+      const block = await providerRateLimits.getActiveBlockForAgent(companyId, agent.adapterType, model);
+      if (!block) return null;
+
+      const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind);
+      if (!stillBlocked) {
+        await providerRateLimits.resolveBlock(block.id, "system");
+        await providerRateLimits.releaseAndResumeForBlock(block);
+        return null;
+      }
+      return {
+        scopeType: "provider" as const,
+        scopeId: block.id,
+        scopeName: agent.adapterType,
+        reason: `Provider rate limit (${block.limitKind})${block.resetsAt ? ` — resets at ${block.resetsAt.toISOString()}` : ""}`,
       };
     },
 
