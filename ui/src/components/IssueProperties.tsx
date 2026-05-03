@@ -462,7 +462,6 @@ export function IssueProperties({
   const selectedIssueLabels = useMemo(() => {
     const selectedIds = issue.labelIds ?? [];
     if (selectedIds.length === 0) return issue.labels ?? [];
-
     const labelById = new Map<string, IssueLabel>();
     for (const label of labels ?? []) labelById.set(label.id, label);
     for (const label of issue.labels ?? []) labelById.set(label.id, label);
@@ -497,6 +496,31 @@ export function IssueProperties({
       <span className="text-sm text-muted-foreground">No labels</span>
     </>
   );
+  const isPendingForCurrentUser = (() => {
+    const state = issue.executionState;
+    if (!state || state.status !== "pending") return false;
+    const participant = state.currentParticipant;
+    if (!participant || participant.type !== "user") return false;
+    return !!currentUserId && participant.userId === currentUserId;
+  })();
+
+  const handleStageDecision = (outcome: "approve" | "reject") => {
+    const promptLabel = outcome === "approve"
+      ? "Approve this stage — add a note (required):"
+      : "Request changes — add a note (required):";
+    const note = window.prompt(promptLabel, "");
+    if (note === null) return;
+    const trimmed = note.trim();
+    if (!trimmed) {
+      window.alert("A note is required to advance this stage.");
+      return;
+    }
+    onUpdate({
+      status: outcome === "approve" ? "done" : "in_progress",
+      comment: trimmed,
+    });
+  };
+
   const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
     <button
       type="button"
@@ -1245,6 +1269,27 @@ export function IssueProperties({
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
             <span className="text-sm">{currentExecutionLabel}</span>
+          </PropertyRow>
+        )}
+
+        {isPendingForCurrentUser && (
+          <PropertyRow label="">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-border bg-accent/30 px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-accent/60"
+                onClick={() => handleStageDecision("approve")}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={() => handleStageDecision("reject")}
+              >
+                Request changes
+              </button>
+            </div>
           </PropertyRow>
         )}
 
