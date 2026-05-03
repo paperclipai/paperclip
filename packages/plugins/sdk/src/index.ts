@@ -246,6 +246,23 @@ export type {
   PluginDatabaseClient,
 } from "./types.js";
 
+// Plugin hook contract types (Phase 1a — MYO-50.1). Re-exported here so plugin
+// authors only depend on @paperclipai/plugin-sdk for hook authoring.
+export type {
+  PluginHookIssueContext,
+  WakePayloadTransformerContext,
+  SkillResolverTransformerContext,
+  WakePayload,
+  WakePayloadTransformer,
+  SkillResolverResult,
+  SkillResolverTransformer,
+  WhenPredicate,
+  PluginHookManifestEntry,
+  PluginHooksDeclaration,
+  PluginHookKind,
+  PluginHookHandlerMap,
+} from "./hooks.js";
+
 // Manifest and constant types re-exported from @paperclipai/shared
 // Plugin authors import manifest types from here so they have a single
 // dependency (@paperclipai/plugin-sdk) for all plugin authoring needs.
