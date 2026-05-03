@@ -40,6 +40,8 @@ import { registerUserCommands } from "./commands/client/user.js";
 import { registerIssueExtensionCommands } from "./commands/client/issue-extras.js";
 import { registerIssueTreeControlCommands } from "./commands/client/issue-tree-control.js";
 import { registerAgentExtensionCommands } from "./commands/client/agent-extras.js";
+import { registerCompanyExtensionCommands } from "./commands/client/company-extras.js";
+import { registerPluginExtensionCommands } from "./commands/client/plugin-extras.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
 
@@ -184,6 +186,8 @@ registerUserCommands(program);
 registerIssueExtensionCommands(program);
 registerIssueTreeControlCommands(program);
 registerAgentExtensionCommands(program);
+registerCompanyExtensionCommands(program);
+registerPluginExtensionCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 
