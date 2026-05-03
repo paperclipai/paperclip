@@ -26,6 +26,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
+    requireOutputContracts: overrides.requireOutputContracts ?? false,
   };
 }
 
