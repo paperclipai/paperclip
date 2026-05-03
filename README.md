@@ -28,7 +28,7 @@
 
 <br/>
 
-> **Korean fork note:** npm's `paperclipai` package runs the upstream English build. To use this Korean fork, clone or fork `yong076/paperclip-ko` and run it from source with `pnpm paperclipai run --data-dir ~/.paperclip-ko`, then open `http://127.0.0.1:3100/?lng=ko`. Full Korean instructions: [README.ko.md](./README.ko.md#한국어판-실행-source-install).
+> **Korean fork note:** npm's `paperclipai` package remains the upstream English build. This fork does not plan to publish a separate npm package; it is a source-install Korean translation fork, with the intent to propose the i18n work upstream later. To use it, clone or fork `yong076/paperclip-ko`, run `pnpm paperclipai run --data-dir ~/.paperclip-ko`, then open `http://127.0.0.1:3100/?lng=ko`. Full Korean instructions: [README.ko.md](./README.ko.md#한국어판-실행-source-install).
 
 <br/>
 

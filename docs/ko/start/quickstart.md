@@ -5,7 +5,7 @@ summary: 몇 분 안에 Paperclip 실행하기
 
 # 빠른 시작
 
-로컬에서 Paperclip을 실행합니다. 한국어 번역 포크는 아직 npm에 별도 배포하지 않으므로, 한국어 UI를 보려면 `paperclip-ko` 레포를 clone해서 실행하는 경로를 사용하세요.
+로컬에서 Paperclip을 실행합니다. 한국어 번역 포크는 npm에 별도 배포할 계획이 없습니다. 한국어 UI를 보려면 `paperclip-ko` 레포를 clone/fork해서 source install 방식으로 실행하세요.
 
 ## 한국어판 권장 실행
 
@@ -58,6 +58,8 @@ npx paperclipai onboard --yes
 ```
 
 하지만 이 명령은 npm에 올라간 upstream `paperclipai` package를 실행합니다. 한국어 번역 포크의 UI와 문서를 보려면 `npx`가 아니라 clone한 레포 안에서 `pnpm paperclipai ...`를 실행해야 합니다.
+
+이 포크는 npm package를 새로 배포하기보다, 번역과 i18n 방향을 검증한 뒤 upstream `paperclipai/paperclip`에 PR을 보내는 것을 목표로 합니다.
 
 이미 Paperclip을 설치했다면 `onboard`를 다시 실행해도 기존 config와 data path는 유지됩니다. 설정을 바꾸고 싶으면 `paperclipai configure`를 사용하세요.
 

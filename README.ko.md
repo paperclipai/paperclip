@@ -161,9 +161,13 @@ git pull --ff-only
 pnpm install
 ```
 
-### npm 배포에 대해
+### npm 배포와 upstream PR
 
-지금은 한국어판을 npm에 따로 배포하지 않습니다. `paperclipai`라는 npm package name은 upstream이 사용 중이고, CLI만 다른 이름으로 올리면 내부 dependency가 upstream 영문판과 섞일 수 있습니다. 공개 배포가 필요해지면 별도 package name 또는 Docker image로 분리하는 것이 안전합니다.
+이 포크는 한국어판을 npm에 따로 배포할 계획이 없습니다. `paperclipai` npm package는 upstream 공식 배포로 남겨둡니다.
+
+이 레포의 목적은 한국어 번역과 i18n 적용 방향을 source fork에서 검증하는 것입니다. 충분히 안정화되면 npm package를 새로 만들기보다, upstream `paperclipai/paperclip`에 i18n 인프라와 한국어 locale을 제안하는 PR을 보낼 예정입니다.
+
+따라서 한국어판을 사용하려면 이 레포를 clone/fork해서 source install 방식으로 실행하세요.
 
 <br/>
 
