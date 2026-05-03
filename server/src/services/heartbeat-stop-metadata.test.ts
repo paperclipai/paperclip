@@ -87,6 +87,17 @@ describe("heartbeat stop metadata", () => {
     expect(merged.stopReason).toBe("max_turns_exhausted");
   });
 
+  it("prioritizes succeeded outcome over inconsistent max-turn error metadata", () => {
+    expect(
+      buildHeartbeatRunStopMetadata({
+        adapterType: "claude_local",
+        adapterConfig: {},
+        outcome: "succeeded",
+        errorCode: "max_turns_exhausted",
+      }).stopReason,
+    ).toBe("completed");
+  });
+
   it("preserves existing result fields when merging stop metadata", () => {
     const result = mergeHeartbeatRunStopMetadata(
       { summary: "done" },

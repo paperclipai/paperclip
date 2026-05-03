@@ -67,6 +67,7 @@ import {
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
+  normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -218,12 +219,6 @@ function readHeartbeatRunErrorFamily(
     return "transient_upstream";
   }
   return null;
-}
-
-function normalizeMaxTurnStopReason(value: unknown) {
-  return value === "max_turns_exhausted" || value === "turn_limit_exhausted"
-    ? "max_turns_exhausted"
-    : null;
 }
 
 function isMaxTurnExhaustionRun(

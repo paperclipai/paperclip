@@ -21,6 +21,15 @@ describe("claude_local max-turn detection", () => {
     ).toBe(true);
   });
 
+  it("checks every structured stop field for max-turn exhaustion", () => {
+    expect(
+      isClaudeMaxTurnsResult({
+        stop_reason: "end_turn",
+        stopReason: "max_turns_exhausted",
+      }),
+    ).toBe(true);
+  });
+
   it("returns false for non-max-turn results", () => {
     expect(
       isClaudeMaxTurnsResult({

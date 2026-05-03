@@ -170,16 +170,18 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   const subtype = asString(parsed.subtype, "").trim().toLowerCase();
   if (subtype === "error_max_turns") return true;
 
-  const structuredStopReason =
-    asString(parsed.stop_reason, "").trim().toLowerCase() ||
-    asString(parsed.stopReason, "").trim().toLowerCase() ||
-    asString(parsed.error_code, "").trim().toLowerCase() ||
-    asString(parsed.errorCode, "").trim().toLowerCase();
-  return (
-    structuredStopReason === "max_turns" ||
-    structuredStopReason === "max_turns_exhausted" ||
-    structuredStopReason === "turn_limit" ||
-    structuredStopReason === "turn_limit_exhausted"
+  const structuredStopReasons = [
+    parsed.stop_reason,
+    parsed.stopReason,
+    parsed.error_code,
+    parsed.errorCode,
+  ].map((value) => asString(value, "").trim().toLowerCase());
+
+  return structuredStopReasons.some((reason) =>
+    reason === "max_turns" ||
+    reason === "max_turns_exhausted" ||
+    reason === "turn_limit" ||
+    reason === "turn_limit_exhausted",
   );
 }
 

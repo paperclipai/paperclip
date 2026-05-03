@@ -90,6 +90,15 @@ describe("gemini_local turn-limit detection", () => {
     expect(isGeminiTurnLimitResult(null, 53)).toBe(true);
   });
 
+  it("checks every structured stop field for turn-limit exhaustion", () => {
+    expect(
+      isGeminiTurnLimitResult({
+        status: "success",
+        stopReason: "turn_limit_exhausted",
+      }),
+    ).toBe(true);
+  });
+
   it("does not detect turn-limit exhaustion from unstructured error text", () => {
     expect(isGeminiTurnLimitResult({ error: "max_turns reached" })).toBe(false);
   });

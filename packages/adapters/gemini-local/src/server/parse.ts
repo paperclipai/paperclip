@@ -273,16 +273,18 @@ export function isGeminiTurnLimitResult(
   if (exitCode === 53) return true;
   if (!parsed) return false;
 
-  const structuredStopReason =
-    asString(parsed.status, "").trim().toLowerCase() ||
-    asString(parsed.stopReason, "").trim().toLowerCase() ||
-    asString(parsed.stop_reason, "").trim().toLowerCase() ||
-    asString(parsed.errorCode, "").trim().toLowerCase() ||
-    asString(parsed.error_code, "").trim().toLowerCase();
-  return (
-    structuredStopReason === "turn_limit" ||
-    structuredStopReason === "max_turns" ||
-    structuredStopReason === "max_turns_exhausted" ||
-    structuredStopReason === "turn_limit_exhausted"
+  const structuredStopReasons = [
+    parsed.status,
+    parsed.stopReason,
+    parsed.stop_reason,
+    parsed.errorCode,
+    parsed.error_code,
+  ].map((value) => asString(value, "").trim().toLowerCase());
+
+  return structuredStopReasons.some((reason) =>
+    reason === "turn_limit" ||
+    reason === "max_turns" ||
+    reason === "max_turns_exhausted" ||
+    reason === "turn_limit_exhausted",
   );
 }

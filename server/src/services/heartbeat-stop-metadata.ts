@@ -41,7 +41,7 @@ function defaultTimeoutSecForAdapter(adapterType: string) {
   return adapterType === "openclaw_gateway" ? 120 : 0;
 }
 
-function normalizeMaxTurnStopReason(value: unknown): Extract<HeartbeatRunStopReason, "max_turns_exhausted"> | null {
+export function normalizeMaxTurnStopReason(value: unknown): Extract<HeartbeatRunStopReason, "max_turns_exhausted"> | null {
   return value === "max_turns_exhausted" || value === "turn_limit_exhausted"
     ? "max_turns_exhausted"
     : null;
@@ -82,9 +82,9 @@ export function inferHeartbeatRunStopReason(input: {
   errorCode?: string | null;
   errorMessage?: string | null;
 }): HeartbeatRunStopReason {
+  if (input.outcome === "succeeded") return "completed";
   const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
   if (maxTurnStopReason) return maxTurnStopReason;
-  if (input.outcome === "succeeded") return "completed";
   if (input.outcome === "timed_out") return "timeout";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
   if (input.outcome === "cancelled") {
