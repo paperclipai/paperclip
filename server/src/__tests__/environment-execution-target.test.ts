@@ -97,4 +97,40 @@ describe("resolveEnvironmentExecutionTarget", () => {
       paperclipTransport: "direct",
     });
   });
+
+  it("passes through a provider-declared sandbox shell command from lease metadata", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "claude_local",
+      environment: {
+        id: "env-1",
+        driver: "sandbox",
+        config: {
+          provider: "fake-plugin",
+        },
+      },
+      leaseId: "lease-1",
+      leaseMetadata: {
+        shellCommand: "bash",
+      },
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "sandbox",
+      shellCommand: "bash",
+    });
+  });
 });
