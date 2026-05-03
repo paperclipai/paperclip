@@ -1380,7 +1380,7 @@ export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+    fs.symlink(linkSource, linkTarget, process.platform === "win32" ? "junction" : undefined),
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -1693,6 +1693,20 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Ensure child processes (and their descendants) use UTF-8 so non-ASCII
+    // characters (accented letters, CJK, emoji, etc.) are not corrupted.
+    // On Windows the default codepage (e.g. Windows-1252) causes every
+    // accented character to become U+FFFD when text passes through shells
+    // (cmd.exe, Git Bash) and tools (curl, git) spawned by the agent.
+    // LANG/LC_ALL propagate to all subprocesses in the tree, covering both
+    // the agent CLI itself and any shell commands it runs via tool calls.
+    rawMerged.LANG ??= "en_US.UTF-8";
+    rawMerged.LC_ALL ??= "en_US.UTF-8";
+    if (process.platform === "win32") {
+      rawMerged.PYTHONIOENCODING ??= "utf-8";
+      rawMerged.PYTHONUTF8 ??= "1";
+    }
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
@@ -1783,15 +1797,19 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
+        // Set encoding so Node's StringDecoder handles multi-byte UTF-8
+        // characters that may be split across data chunks (e.g. ç, ã, é).
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+
+        child.stdout?.on("data", (chunk: string) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
-          stdout = appendWithCap(stdout, text);
+          stdout = appendWithCap(stdout, chunk);
           maybeArmTerminalResultCleanup();
           logChain = logChain
-            .then(() => opts.onLog("stdout", text))
+            .then(() => opts.onLog("stdout", chunk))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
@@ -1799,15 +1817,14 @@ export async function runChildProcess(
             });
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
+        child.stderr?.on("data", (chunk: string) => {
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
-          stderr = appendWithCap(stderr, text);
+          stderr = appendWithCap(stderr, chunk);
           maybeArmTerminalResultCleanup();
           logChain = logChain
-            .then(() => opts.onLog("stderr", text))
+            .then(() => opts.onLog("stderr", chunk))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();

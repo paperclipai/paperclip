@@ -77,8 +77,33 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
       stream.on("end", () => resolve());
     });
 
-    const content = Buffer.concat(chunks).toString("utf8");
-    const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
+    const buf = Buffer.concat(chunks);
+
+    // Trim trailing bytes that form an incomplete UTF-8 multi-byte character
+    // so they are included in the next read instead of becoming U+FFFD.
+    let trimEnd = buf.length;
+    if (trimEnd > 0) {
+      let trailingContinuation = 0;
+      while (trailingContinuation < 4 && trailingContinuation < trimEnd) {
+        const byte = buf[trimEnd - 1 - trailingContinuation]!;
+        if ((byte & 0xc0) !== 0x80) break;
+        trailingContinuation++;
+      }
+      if (trailingContinuation > 0 && trailingContinuation < trimEnd) {
+        const leadByte = buf[trimEnd - 1 - trailingContinuation]!;
+        let expectedContinuation = 0;
+        if ((leadByte & 0xe0) === 0xc0) expectedContinuation = 1;
+        else if ((leadByte & 0xf0) === 0xe0) expectedContinuation = 2;
+        else if ((leadByte & 0xf8) === 0xf0) expectedContinuation = 3;
+        if (trailingContinuation < expectedContinuation) {
+          trimEnd -= trailingContinuation + 1;
+        }
+      }
+    }
+
+    const content = buf.subarray(0, trimEnd).toString("utf8");
+    const bytesConsumed = start + trimEnd;
+    const nextOffset = bytesConsumed < stat.size ? bytesConsumed : undefined;
     return { content, nextOffset };
   }
 

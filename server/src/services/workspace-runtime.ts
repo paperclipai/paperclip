@@ -266,7 +266,7 @@ export async function ensureServerWorkspaceLinksCurrent(
     const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
     await fs.mkdir(path.dirname(linkPath), { recursive: true });
     await fs.rm(linkPath, { recursive: true, force: true });
-    await fs.symlink(mismatch.expectedPath, linkPath);
+    await fs.symlink(mismatch.expectedPath, linkPath, process.platform === "win32" ? "junction" : undefined);
   }
 
   const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
@@ -287,6 +287,16 @@ export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   delete env.DATABASE_URL;
   delete env.npm_config_tailscale_auth;
   delete env.npm_config_authenticated_private;
+
+  // Ensure child processes use UTF-8 so non-ASCII characters are not
+  // corrupted by the default Windows codepage (e.g. cp850).
+  env.LANG ??= "en_US.UTF-8";
+  env.LC_ALL ??= "en_US.UTF-8";
+  if (process.platform === "win32") {
+    env.PYTHONIOENCODING ??= "utf-8";
+    env.PYTHONUTF8 ??= "1";
+  }
+
   return env;
 }
 
@@ -484,11 +494,15 @@ async function executeProcess(input: {
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
-    child.stdout?.on("data", (chunk) => {
-      stdout.append(String(chunk));
+    // Use StringDecoder via setEncoding so multi-byte UTF-8 characters
+    // split across data chunks (e.g. ç, ã, é) are not corrupted.
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout.append(chunk);
     });
-    child.stderr?.on("data", (chunk) => {
-      stderr.append(String(chunk));
+    child.stderr?.on("data", (chunk: string) => {
+      stderr.append(chunk);
     });
     child.on("error", reject);
     child.on("close", (code) => resolve({ stdout, stderr, code }));
@@ -2049,15 +2063,17 @@ async function startLocalRuntimeService(input: {
   });
   let stderrExcerpt = "";
   let stdoutExcerpt = "";
-  child.stdout?.on("data", async (chunk) => {
-    const text = String(chunk);
-    stdoutExcerpt = (stdoutExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stdout", `[service:${serviceName}] ${text}`);
+  // Use StringDecoder via setEncoding so multi-byte UTF-8 characters
+  // split across data chunks (e.g. ç, ã, é) are not corrupted.
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", async (chunk: string) => {
+    stdoutExcerpt = (stdoutExcerpt + chunk).slice(-4096);
+    if (input.onLog) await input.onLog("stdout", `[service:${serviceName}] ${chunk}`);
   });
-  child.stderr?.on("data", async (chunk) => {
-    const text = String(chunk);
-    stderrExcerpt = (stderrExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${text}`);
+  child.stderr?.on("data", async (chunk: string) => {
+    stderrExcerpt = (stderrExcerpt + chunk).slice(-4096);
+    if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${chunk}`);
   });
 
   try {

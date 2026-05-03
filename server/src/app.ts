@@ -8,6 +8,7 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { latin1BodyRepair } from "./middleware/latin1-body-repair.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -144,6 +145,10 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  // Repair JSON bodies sent with Latin-1/CP-1252 encoding instead of UTF-8.
+  // Git-Bash's mingw64 curl on Windows silently transcodes UTF-8 args to the
+  // active OEM code page, corrupting accented characters (Portuguese, etc.).
+  app.use(latin1BodyRepair());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -345,7 +350,7 @@ export async function createApp(
         }
         res
           .status(200)
-          .set("Content-Type", "text/html")
+          .set("Content-Type", "text/html; charset=utf-8")
           .set("Cache-Control", "no-cache")
           .end(indexHtml);
       });
@@ -389,7 +394,7 @@ export async function createApp(
       }
       try {
         const html = await renderViteHtml.render(req.originalUrl);
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
+        res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(html);
       } catch (err) {
         next(err);
       }
