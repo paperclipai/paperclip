@@ -13,6 +13,10 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+function unauthenticatedActor(): Request["actor"] {
+  return { type: "none", source: "none" };
+}
+
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
@@ -31,11 +35,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             isInstanceAdmin: true,
             source: "local_implicit",
           }
-        : { type: "none", source: "none" };
+        : unauthenticatedActor();
 
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
+    const explicitAuthHeader = typeof authHeader === "string" && authHeader.trim().length > 0;
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         let session: BetterAuthSessionResult | null = null;
@@ -85,6 +90,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      if (explicitAuthHeader) {
+        req.actor = unauthenticatedActor();
+        next();
+        return;
+      }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
@@ -92,6 +102,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
+      req.actor = unauthenticatedActor();
       next();
       return;
     }
@@ -116,6 +127,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         next();
         return;
       }
+      req.actor = unauthenticatedActor();
+      next();
+      return;
     }
 
     const tokenHash = hashToken(token);
@@ -128,6 +142,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        req.actor = unauthenticatedActor();
         next();
         return;
       }
@@ -139,11 +154,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+        req.actor = unauthenticatedActor();
         next();
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+        req.actor = unauthenticatedActor();
         next();
         return;
       }
@@ -172,6 +189,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+      req.actor = unauthenticatedActor();
       next();
       return;
     }
