@@ -74,6 +74,7 @@ type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
 > | null;
+type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
 type WatchdogDecisionActor =
   | { type: "board"; userId?: string | null; runId?: string | null }
@@ -188,7 +189,7 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   );
 }
 
-function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun) {
+function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun): latestRun is SuccessfulLatestIssueRun {
   return latestRun?.status === "succeeded";
 }
 
@@ -198,6 +199,13 @@ function isProductiveContinuationRun(latestRun: LatestIssueRun) {
       latestRun.livenessState === "completed" ||
       latestRun.livenessState === "blocked" ||
       latestRun.livenessState === "needs_followup");
+}
+
+function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIssueRun) {
+  const latestContext = parseObject(latestRun.contextSnapshot);
+  return readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed" &&
+    readNonEmptyString(latestContext.source) === "issue.productive_terminal_continuation_recovery" &&
+    isProductiveContinuationRun(latestRun);
 }
 
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
@@ -1706,12 +1714,51 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
-        if (isProductiveContinuationRun(latestRun)) {
-          result.productiveContinuationObserved += 1;
-        } else {
+        const successfulRun = latestRun;
+
+        if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;
+          result.skipped += 1;
+          continue;
         }
-        result.skipped += 1;
+
+        if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+              "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (await isInvocationBudgetBlocked(issue, agentId)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const queued = await enqueueStrandedIssueRecovery({
+          issueId: issue.id,
+          agentId,
+          reason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.productive_terminal_continuation_recovery",
+          retryOfRunId: successfulRun.id,
+        });
+        if (queued) {
+          result.continuationRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
@@ -1789,7 +1836,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           assigneeUserId: issues.assigneeUserId,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issues)
         .where(
@@ -1919,6 +1969,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues,
+      now: new Date(),
     });
   }
 
@@ -2250,10 +2301,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const blockerIds = await existingBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = [...new Set([...blockerIds, input.escalationIssueId])];
+    const isAlreadyBlockedByEscalation = blockerIds.includes(input.escalationIssueId);
+    const isAlreadyBlocked = input.issue.status === "blocked";
+    if (isAlreadyBlockedByEscalation && isAlreadyBlocked) {
+      return input.issue;
+    }
+
     const update: Partial<typeof issues.$inferInsert> & { blockedByIssueIds: string[] } = {
       blockedByIssueIds: nextBlockerIds,
     };
-    if (input.issue.status !== "blocked") {
+    if (!isAlreadyBlocked) {
       update.status = "blocked";
     }
 

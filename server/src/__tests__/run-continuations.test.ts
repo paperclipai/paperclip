@@ -106,6 +106,24 @@ describe("run liveness continuations", () => {
     expect(decision.nextAttempt).toBe(2);
   });
 
+  it("leaves advanced terminal runs to stranded issue recovery instead of bounded liveness continuation", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "advanced",
+      livenessReason: "Run produced concrete action evidence: created an issue comment",
+      nextAction: "Resume the implementation from the remaining acceptance criteria.",
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "liveness state is not actionable for continuation",
+    });
+  });
+
   it("does not enqueue a third continuation and returns an exhaustion comment", () => {
     const decision = decideRunLivenessContinuation({
       run: run({ continuationAttempt: 2 }),

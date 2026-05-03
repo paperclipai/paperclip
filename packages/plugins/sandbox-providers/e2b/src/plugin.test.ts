@@ -131,6 +131,26 @@ describe("E2B sandbox provider plugin", () => {
     });
   });
 
+  it("defaults a missing template to base", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "e2b",
+      config: {
+        timeoutMs: "450000.9",
+        reuseLease: true,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      normalizedConfig: {
+        template: "base",
+        apiKey: null,
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    });
+  });
+
   it("rejects empty template strings instead of silently normalizing them", async () => {
     await expect(plugin.definition.onEnvironmentValidateConfig?.({
       driverKey: "e2b",

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -55,7 +54,6 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
   let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
   const fixtureRoots: string[] = [];
-  const servers: Server[] = [];
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-runtime-contract");
@@ -64,9 +62,6 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
   });
 
   afterEach(async () => {
-    for (const server of servers.splice(0)) {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
     while (fixtureRoots.length > 0) {
       const root = fixtureRoots.pop();
       if (!root) continue;
@@ -172,27 +167,6 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
     };
   }
 
-  async function startHealthServer() {
-    const server = createServer((req, res) => {
-      if (req.url === "/api/health") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ status: "ok" }));
-        return;
-      }
-      res.writeHead(404).end();
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
-    });
-    servers.push(server);
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected health server to listen on a TCP port.");
-    }
-    return `http://127.0.0.1:${address.port}`;
-  }
-
   async function runContract(testCase: RuntimeContractCase) {
     const cleanup = await testCase.setup?.();
     try {
@@ -288,9 +262,6 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
     fixtureRoots.push(fixtureRoot);
     const fixture = await startSshEnvLabFixture({ statePath: path.join(fixtureRoot, "state.json") });
     const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
-    const runtimeApiUrl = await startHealthServer();
-    const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([runtimeApiUrl]);
 
     await runContract({
       name: "ssh",
@@ -304,15 +275,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
           username: sshConfig.username,
           remoteWorkspacePath: sshConfig.remoteWorkspacePath,
           remoteCwd: sshConfig.remoteWorkspacePath,
-          paperclipApiUrl: runtimeApiUrl,
         });
-      },
-      setup: async () => async () => {
-        if (previousCandidates === undefined) {
-          delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-        } else {
-          process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousCandidates;
-        }
       },
     });
   });

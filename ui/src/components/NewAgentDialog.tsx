@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { listUIAdapters } from "../adapters";
+import { isVisualAdapterChoice } from "../adapters/metadata";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 
@@ -57,7 +58,11 @@ export function NewAgentDialog() {
   // This automatically includes external/plugin adapters.
   const adapterGrid = useMemo(() => {
     const registered = listUIAdapters()
-      .filter((a) => isAgentAdapterType(a.type) && !disabledTypes.has(a.type));
+      .filter((a) =>
+        isAgentAdapterType(a.type) &&
+        !disabledTypes.has(a.type) &&
+        isVisualAdapterChoice(a.type)
+      );
 
     // Sort: recommended first, then alphabetical
     return registered
