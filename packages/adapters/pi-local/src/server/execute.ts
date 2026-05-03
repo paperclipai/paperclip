@@ -17,6 +17,7 @@ import {
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -41,6 +42,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 
@@ -141,6 +143,68 @@ function buildSessionPath(agentId: string, timestamp: string): string {
 function buildRemoteSessionPath(runtimeRootDir: string, agentId: string, timestamp: string): string {
   const safeTimestamp = timestamp.replace(/[:.]/g, "-");
   return path.posix.join(runtimeRootDir, "sessions", `${safeTimestamp}-${agentId}.jsonl`);
+}
+
+function normalizeExecutionCwd(candidate: string, remote: boolean): string {
+  return remote ? path.posix.normalize(candidate) : path.resolve(candidate);
+}
+
+function executionCwdsMatch(saved: string, current: string, remote: boolean): boolean {
+  return normalizeExecutionCwd(saved, remote) === normalizeExecutionCwd(current, remote);
+}
+
+function readSessionHeaderCwd(raw: string): string | null {
+  const headerLine = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!headerLine) return null;
+  try {
+    const parsed = JSON.parse(headerLine) as Record<string, unknown>;
+    if (parsed.type !== "session") return null;
+    const cwd = typeof parsed.cwd === "string" ? parsed.cwd.trim() : "";
+    return cwd.length > 0 ? cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readSavedSessionCwd(input: {
+  runId: string;
+  sessionPath: string;
+  executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<string | null> {
+  if (!input.sessionPath.trim()) return null;
+
+  if (!adapterExecutionTargetIsRemote(input.executionTarget)) {
+    try {
+      return readSessionHeaderCwd(await fs.readFile(input.sessionPath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const sessionHeader = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.executionTarget,
+      `if [ -f ${shellQuote(input.sessionPath)} ]; then head -n 1 ${shellQuote(input.sessionPath)}; fi`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec > 0 ? Math.min(input.timeoutSec, 15) : 15,
+        graceSec: input.graceSec,
+      },
+    );
+    if (sessionHeader.timedOut || (sessionHeader.exitCode ?? 0) !== 0) return null;
+    return readSessionHeaderCwd(sessionHeader.stdout);
+  } catch {
+    return null;
+  }
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -373,10 +437,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
+  const sessionParamsCwdMatches =
+    runtimeSessionCwd.length === 0 ||
+    executionCwdsMatch(runtimeSessionCwd, effectiveExecutionCwd, executionTargetIsRemote);
+  const savedSessionCwd =
+    runtimeSessionId.length > 0
+      ? await readSavedSessionCwd({
+          runId,
+          sessionPath: runtimeSessionId,
+          executionTarget,
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+        })
+      : null;
+  const sessionHeaderCwdMatches =
+    runtimeSessionId.length === 0 ||
+    (savedSessionCwd !== null &&
+      executionCwdsMatch(savedSessionCwd, effectiveExecutionCwd, executionTargetIsRemote));
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
+    sessionTargetMatches &&
+    sessionParamsCwdMatches &&
+    sessionHeaderCwdMatches;
   const sessionPath = canResumeSession
     ? runtimeSessionId
     : executionTargetIsRemote && remoteRuntimeRootDir
@@ -384,11 +469,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : buildSessionPath(agent.id, new Date().toISOString());
 
   if (runtimeSessionId && !canResumeSession) {
+    const staleSessionCwdNote =
+      savedSessionCwd !== null && !sessionHeaderCwdMatches
+        ? ` Pi stored cwd "${savedSessionCwd}" in the session header, so Paperclip will start a fresh session for "${effectiveExecutionCwd}".`
+        : "";
     await onLog(
       "stdout",
       executionTargetIsRemote
-        ? `[paperclip] Pi session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`
-        : `[paperclip] Pi session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
+        ? `[paperclip] Pi session "${runtimeSessionId}" does not match the current remote execution state and will not be resumed in "${effectiveExecutionCwd}".${staleSessionCwdNote} Starting a fresh remote session.\n`
+        : `[paperclip] Pi session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".${staleSessionCwdNote}\n`,
     );
   }
 
