@@ -16,7 +16,12 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  deriveDefaultAgentSkillProfile,
+  isUuidLike,
+  normalizeAgentUrlKey,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -215,17 +220,6 @@ export function deduplicateAgentName(
     }
   }
   return `${candidateName} ${Date.now()}`;
-}
-
-function deriveDefaultAgentSkillProfile(name: string, role: string): string {
-  const compactName = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
-  if (compactName === "mergebot" || compactName === "mergebotagent") {
-    return "merge-bot";
-  }
-  if (role === "ceo" || role === "cto" || role === "cfo" || role === "cmo") {
-    return "executive";
-  }
-  return "ic";
 }
 
 export function agentService(db: Db) {

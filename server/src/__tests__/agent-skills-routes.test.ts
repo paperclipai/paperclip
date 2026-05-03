@@ -633,6 +633,7 @@ describe.sequential("agent skill routes", () => {
       ]),
     );
     expect(audit.body.items[0]).not.toHaveProperty("nextAdapterConfig");
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledTimes(1);
 
     const reconcile = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agent-skill-profiles/reconcile"));

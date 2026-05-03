@@ -67,6 +67,23 @@ export const DEFAULT_AGENT_SKILL_PROFILE_SKILLS: Record<AgentSkillProfile, strin
   custom: [],
 };
 
+const MERGE_BOT_AGENT_SHORTNAMES = new Set(["mergebot", "mergebotagent"]);
+const EXECUTIVE_AGENT_ROLES = new Set(["ceo", "cto", "cfo", "cmo"]);
+
+export function deriveDefaultAgentSkillProfile(
+  name: string,
+  role: string | null | undefined,
+): AgentSkillProfile {
+  const compactName = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (MERGE_BOT_AGENT_SHORTNAMES.has(compactName)) {
+    return "merge-bot";
+  }
+  if (EXECUTIVE_AGENT_ROLES.has(role ?? "general")) {
+    return "executive";
+  }
+  return "ic";
+}
+
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   ceo: "CEO",
   cto: "CTO",

@@ -1158,7 +1158,8 @@ function parseSkillScalarFromFrontmatter(content: string, key: string): string |
   const closing = normalized.indexOf("\n---\n", 4);
   if (closing < 0) return null;
   const frontmatter = normalized.slice(4, closing);
-  const match = frontmatter.match(new RegExp(`^\\s*${key}\\s*:\\s*("?)([^"\\n]+)\\1\\s*$`, "m"));
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = frontmatter.match(new RegExp(`^\\s*${escapedKey}\\s*:\\s*("?)([^"\\n]+)\\1\\s*$`, "m"));
   return match?.[2]?.trim() || null;
 }
 

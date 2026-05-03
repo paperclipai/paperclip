@@ -13,6 +13,7 @@ import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
+  deriveDefaultAgentSkillProfile,
   deriveAgentUrlKey,
   isUuidLike,
   resetAgentSessionSchema,
@@ -1073,13 +1074,7 @@ export function agentRoutes(
     agentSkillProfile?: unknown;
   }): AgentSkillProfile {
     if (isAgentSkillProfile(input.agentSkillProfile)) return input.agentSkillProfile;
-    const compactName = input.name.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    if (compactName === "mergebot" || compactName === "mergebotagent") return "merge-bot";
-    const role = typeof input.role === "string" ? input.role : "general";
-    if (role === "ceo" || role === "cto" || role === "cfo" || role === "cmo") {
-      return "executive";
-    }
-    return "ic";
+    return deriveDefaultAgentSkillProfile(input.name, input.role);
   }
 
   function normalizeAgentSkillProfileDefaults(value: unknown): Record<AgentSkillProfile, string[]> {
@@ -1165,18 +1160,25 @@ export function agentRoutes(
     };
   }
 
+  type RuntimeSkillEntries = Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>>;
+
   async function resolveProfileExpectedDesiredSkills(
     companyId: string,
     adapterType: string,
     requestedDesiredSkills: string[],
+    options: {
+      resolvedRequestedSkills?: string[];
+      runtimeSkillEntries?: RuntimeSkillEntries;
+    } = {},
   ) {
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedDesiredSkills,
+    const resolvedRequestedSkills = options.resolvedRequestedSkills ?? (
+      await companySkills.resolveRequestedSkillKeys(companyId, requestedDesiredSkills)
     );
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
-    });
+    const runtimeSkillEntries = options.runtimeSkillEntries ?? (
+      await companySkills.listRuntimeSkillEntries(companyId, {
+        materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      })
+    );
     const desiredSkills = resolvePaperclipDesiredSkillNames({
       paperclipSkillSync: { desiredSkills: resolvedRequestedSkills },
     }, runtimeSkillEntries);
@@ -1196,7 +1198,27 @@ export function agentRoutes(
   async function buildAgentSkillProfileAudit(companyId: string) {
     const profileDefaults = await getAgentSkillProfileDefaults(companyId);
     const companyAgents = await svc.list(companyId);
+    const runtimeSkillEntriesCache = new Map<string, Promise<RuntimeSkillEntries>>();
+    const resolvedRequestedSkillCache = new Map<string, Promise<string[]>>();
     const items = [];
+
+    function getRuntimeSkillEntries(adapterType: string, materializeMissing: boolean) {
+      const cacheKey = `${adapterType}:${materializeMissing ? "materialize" : "ephemeral"}`;
+      const cached = runtimeSkillEntriesCache.get(cacheKey);
+      if (cached) return cached;
+      const runtimeSkillEntries = companySkills.listRuntimeSkillEntries(companyId, { materializeMissing });
+      runtimeSkillEntriesCache.set(cacheKey, runtimeSkillEntries);
+      return runtimeSkillEntries;
+    }
+
+    function getResolvedRequestedSkillKeys(requestedDesiredSkills: string[]) {
+      const cacheKey = JSON.stringify(requestedDesiredSkills);
+      const cached = resolvedRequestedSkillCache.get(cacheKey);
+      if (cached) return cached;
+      const resolved = companySkills.resolveRequestedSkillKeys(companyId, requestedDesiredSkills);
+      resolvedRequestedSkillCache.set(cacheKey, resolved);
+      return resolved;
+    }
 
     for (const agent of companyAgents) {
       const profile = isAgentSkillProfile(agent.agentSkillProfile)
@@ -1212,10 +1234,16 @@ export function agentRoutes(
       let nextAdapterConfig = adapterConfig;
 
       if (managedByProfile) {
+        const materializeMissing = shouldMaterializeRuntimeSkillsForAdapter(agent.adapterType);
+        const [resolvedRequestedSkills, runtimeSkillEntries] = await Promise.all([
+          getResolvedRequestedSkillKeys(profileDefaultDesiredSkills),
+          getRuntimeSkillEntries(agent.adapterType, materializeMissing),
+        ]);
         const expected = await resolveProfileExpectedDesiredSkills(
           companyId,
           agent.adapterType,
           profileDefaultDesiredSkills,
+          { resolvedRequestedSkills, runtimeSkillEntries },
         );
         expectedDesiredSkills = expected.desiredSkills;
         actualDesiredSkills = resolvePaperclipDesiredSkillNames(
@@ -1224,9 +1252,7 @@ export function agentRoutes(
         );
         nextAdapterConfig = writePaperclipSkillSyncPreference(adapterConfig, expectedDesiredSkills);
       } else {
-        const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-          materializeMissing: false,
-        });
+        const runtimeSkillEntries = await getRuntimeSkillEntries(agent.adapterType, false);
         actualDesiredSkills = resolvePaperclipDesiredSkillNames(adapterConfig, runtimeSkillEntries);
         expectedDesiredSkills = actualDesiredSkills;
       }
