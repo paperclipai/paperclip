@@ -453,6 +453,36 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["done", "done"],
+    ["cancelled", "cancelled"],
+  ])("allows peer agent to post a pure informational comment on a %s issue assigned to another agent", async (label, status) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Completion summary for parent issue." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Completion summary for parent issue.",
+      expect.objectContaining({ agentId: peerAgentId }),
+    );
+  });
+
+  it("rejects peer agent comment with reopen=true on a done issue assigned to another agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Reopening", reopen: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

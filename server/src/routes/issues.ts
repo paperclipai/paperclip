@@ -3353,7 +3353,14 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // Pure informational comments on terminal issues (done/cancelled) are safe: agent comments
+    // never trigger implicit reopens, so there is no state-mutation risk. Relaxing the guard
+    // here prevents a 403 on a completion summary posted to a board-restricted parent issue
+    // from cascading into a run failure and agent error state (see DRA-337).
+    const requestsStateMutation = req.body.reopen === true || req.body.resume === true || req.body.interrupt === true;
+    if (requestsStateMutation || !isClosedIssueStatus(issue.status)) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
