@@ -67,6 +67,7 @@ export interface Project {
   targetDate: string | null;
   color: string | null;
   env: AgentEnvConfig | null;
+  requireOutputContracts: boolean;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

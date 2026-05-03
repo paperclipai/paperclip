@@ -4,6 +4,7 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_EXPECTED_OUTPUT_VALUES,
   ISSUE_PRIORITIES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
@@ -13,6 +14,37 @@ import {
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+
+export const ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT = ISSUE_EXPECTED_OUTPUT_VALUES.join(", ");
+
+export function parseIssueExpectedOutputContract(description: string | null | undefined) {
+  const match = String(description ?? "").match(/(?:^|\r?\n)\s*Expected output\s*:\s*([^\r\n]*)/i);
+  if (!match) return { expectedOutput: null, rawValue: null, supported: true } as const;
+
+  const rawValue = (match[1] ?? "").trim().replace(/^`+|`+$/g, "").trim();
+  const expectedOutput = ISSUE_EXPECTED_OUTPUT_VALUES.find((value) => value === rawValue) ?? null;
+  return {
+    expectedOutput,
+    rawValue,
+    supported: expectedOutput !== null,
+  } as const;
+}
+
+function validateExpectedOutputDescription(description: string | null | undefined, ctx: z.RefinementCtx) {
+  if (description === undefined || description === null) return;
+  const parsed = parseIssueExpectedOutputContract(description);
+  if (!parsed.rawValue || parsed.supported) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      `Unsupported Expected output: ${parsed.rawValue}. Supported values: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
+  });
+}
+
+const issueDescriptionSchema = multilineTextSchema
+  .optional()
+  .nullable()
+  .superRefine(validateExpectedOutputDescription);
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -140,7 +172,7 @@ export const createIssueSchema = z.object({
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
-  description: multilineTextSchema.optional().nullable(),
+  description: issueDescriptionSchema,
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),

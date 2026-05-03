@@ -4,6 +4,7 @@ import type {
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueExpectedOutput,
   IssueOriginKind,
   IssuePriority,
   ModelProfileKey,
@@ -249,6 +250,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  expectedOutput?: IssueExpectedOutput | null;
   status: IssueStatus;
   priority: IssuePriority;
   assigneeAgentId: string | null;

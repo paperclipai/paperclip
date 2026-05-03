@@ -63,6 +63,10 @@ export const agentRuntimeConfigSchema = z.object({
   }).strict().optional(),
 }).catchall(z.unknown());
 
+export const agentMetadataSchema = z.object({
+  requiresOutputContract: z.boolean().optional(),
+}).catchall(z.unknown());
+
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -78,7 +82,7 @@ export const createAgentSchema = z.object({
   defaultEnvironmentId: z.string().uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: agentMetadataSchema.optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
