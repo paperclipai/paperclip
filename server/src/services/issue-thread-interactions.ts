@@ -36,7 +36,7 @@ import {
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { issueService } from "./issues.js";
+import { issueService, listUnresolvedBlockerIssueIdsForIssue } from "./issues.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -542,6 +542,47 @@ export function issueThreadInteractionService(db: Db) {
             assigneeUserId: returnedIssue.assigneeUserId ?? null,
             status: returnedIssue.status,
           };
+        }
+      } else if (
+        // CYC-6101 Layer 1: when a request_confirmation card is accepted on a
+        // `blocked` issue that has an active assignee and no unresolved
+        // engineering blockers (blocker relations whose status != 'done'), the
+        // accept itself is the unblock signal. Transition the issue to
+        // `in_progress` atomically inside the same transaction as the
+        // interaction `status='accepted'` UPDATE, so the wake_assignee
+        // continuation fires against an already-correct status and the board
+        // surfacer drops the stale "still blocked" entry on the next refresh.
+        //
+        // Idempotent by construction: if the issue is already in_progress (or
+        // done/cancelled/etc), this branch is a no-op `touchIssue`.
+        // Engineering-blocker case: we leave the issue in `blocked` so the
+        // board still sees the dependency edge — only the card is resolved.
+        issueContext.status === "blocked"
+        && (issueContext.assigneeAgentId !== null || issueContext.assigneeUserId !== null)
+      ) {
+        const unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIdsForIssue(
+          tx,
+          issueContext.companyId,
+          args.issue.id,
+        );
+        if (unresolvedBlockerIssueIds.length === 0) {
+          const transitioned = await issueService(db).update(args.issue.id, {
+            status: "in_progress",
+            actorAgentId: args.actor.agentId ?? null,
+            actorUserId: args.actor.userId ?? null,
+          }, tx);
+          if (transitioned) {
+            continuationIssue = {
+              id: transitioned.id,
+              assigneeAgentId: transitioned.assigneeAgentId ?? null,
+              assigneeUserId: transitioned.assigneeUserId ?? null,
+              status: transitioned.status,
+            };
+          } else {
+            await touchIssue(tx, args.issue.id);
+          }
+        } else {
+          await touchIssue(tx, args.issue.id);
         }
       } else {
         await touchIssue(tx, args.issue.id);
