@@ -13,6 +13,7 @@
 </p>
 
 <p align="center">
+  <a href="#한국어판-실행-source-install"><strong>한국어판 실행</strong></a> &middot;
   <a href="#quickstart-빠른-시작"><strong>빠른 시작</strong></a> &middot;
   <a href="./docs/ko/README.md"><strong>한국어 문서</strong></a> &middot;
   <a href="https://paperclip.ing/docs"><strong>Upstream Docs</strong></a> &middot;
@@ -87,6 +88,82 @@ Paperclip은 AI 에이전트 팀을 조직처럼 운영하는 Node.js 서버 + R
 - ✅ **비용을 모니터링**하고 예산을 강제하고 싶은 분
 - ✅ 에이전트 관리가 **태스크 매니저 쓰는 느낌**이면 좋겠다는 분
 - ✅ 자율 사업체를 **모바일에서 관리**하고 싶은 분
+
+<br/>
+
+## 한국어판 실행 (source install)
+
+이 레포는 `paperclipai/paperclip`의 한국어 번역 포크입니다. 현재 npm의 `paperclipai` 패키지는 upstream 영문판이므로, 한국어 UI와 문서를 보려면 이 레포를 clone해서 source install 방식으로 실행하세요.
+
+> `npx paperclipai ...`는 npm에 올라간 upstream 영문판을 실행합니다. 한국어판을 쓰려면 아래처럼 `pnpm paperclipai ...`를 이 레포 안에서 실행해야 합니다.
+
+### 1. 포크하거나 clone하기
+
+본인 계정에서 수정/배포까지 할 거면 먼저 GitHub에서 이 레포를 fork하세요.
+
+```sh
+git clone https://github.com/<your-id>/paperclip-ko.git
+cd paperclip-ko
+git remote add ko-upstream https://github.com/yong076/paperclip-ko.git
+git remote add paperclip-upstream https://github.com/paperclipai/paperclip.git
+```
+
+그냥 한국어판을 로컬에서 써보기만 한다면 바로 clone해도 됩니다.
+
+```sh
+git clone https://github.com/yong076/paperclip-ko.git
+cd paperclip-ko
+```
+
+### 2. 설치
+
+```sh
+pnpm install
+```
+
+필요 조건은 Node.js 20+와 pnpm 9.15+입니다.
+
+### 3. 한국어판 실행
+
+기존 upstream Paperclip과 데이터를 섞지 않으려면 별도 data dir를 쓰는 것을 권장합니다.
+
+```sh
+DO_NOT_TRACK=1 PAPERCLIP_TELEMETRY_DISABLED=1 \
+  pnpm paperclipai run --data-dir ~/.paperclip-ko
+```
+
+브라우저에서 여세요.
+
+```text
+http://127.0.0.1:3100/?lng=ko
+```
+
+이미 `3100` 포트를 쓰는 Paperclip이 떠 있다면 먼저 종료하세요.
+
+```sh
+lsof -ti:3100 | xargs kill
+```
+
+### 4. 업데이트
+
+본인 fork를 쓰는 경우:
+
+```sh
+git fetch ko-upstream
+git merge --ff-only ko-upstream/master
+pnpm install
+```
+
+직접 clone한 경우:
+
+```sh
+git pull --ff-only
+pnpm install
+```
+
+### npm 배포에 대해
+
+지금은 한국어판을 npm에 따로 배포하지 않습니다. `paperclipai`라는 npm package name은 upstream이 사용 중이고, CLI만 다른 이름으로 올리면 내부 dependency가 upstream 영문판과 섞일 수 있습니다. 공개 배포가 필요해지면 별도 package name 또는 Docker image로 분리하는 것이 안전합니다.
 
 <br/>
 
