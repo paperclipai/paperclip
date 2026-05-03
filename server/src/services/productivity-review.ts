@@ -88,6 +88,10 @@ type EnqueueWakeup = (
     contextSnapshot?: Record<string, unknown>;
   },
 ) => Promise<unknown | null>;
+type CancelRun = (runId: string, reason?: string) => Promise<unknown | null>;
+
+const PRODUCTIVITY_REVIEW_RESOLVED_CANCEL_REASON =
+  "Cancelled because productivity review source issue is no longer actionable";
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
@@ -133,6 +137,14 @@ function readPositiveInteger(value: number, fallback: number) {
 function coerceDate(value: Date | string | null | undefined) {
   if (!value) return null;
   return value instanceof Date ? value : new Date(value);
+}
+
+function maxDate(...values: Array<Date | string | null | undefined>) {
+  const dates = values
+    .map(coerceDate)
+    .filter((value): value is Date => Boolean(value));
+  if (dates.length === 0) return null;
+  return dates.reduce((latest, value) => value.getTime() > latest.getTime() ? value : latest, dates[0]!);
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
@@ -206,7 +218,7 @@ function isActionableSourceIssue(issue: IssueRow | null | undefined) {
   );
 }
 
-export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
+export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup; cancelRun?: CancelRun }) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
 
@@ -672,9 +684,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
-      const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
+      const lastRefreshOrCreationAt = maxDate(refreshState.latestCreatedAt, existing.updatedAt, existing.createdAt) ?? existing.createdAt;
       if (
-        refreshState.count >= opts.thresholds.maxRefreshComments ||
         evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
       ) {
         return { kind: "existing" as const, reviewIssueId: existing.id };
@@ -683,7 +694,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         .update(issues)
         .set({ description: buildReviewMarkdown(evidence, opts.prefix), updatedAt: evidence.generatedAt })
         .where(eq(issues.id, existing.id));
-      await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+      const refreshCommentAdded = refreshState.count < opts.thresholds.maxRefreshComments;
+      if (refreshCommentAdded) {
+        await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+      }
       await logActivity(db, {
         companyId: evidence.sourceIssue.companyId,
         actorType: "system",
@@ -699,6 +713,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
+          refreshCommentAdded,
+          refreshCommentCount: refreshState.count + (refreshCommentAdded ? 1 : 0),
         },
       });
       return { kind: "updated" as const, reviewIssueId: existing.id };
@@ -825,6 +841,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       if (!prefix) {
         prefix = await getCompanyIssuePrefix(review.companyId);
         prefixCache.set(review.companyId, prefix);
+      }
+      if (review.executionRunId && deps?.cancelRun) {
+        try {
+          await deps.cancelRun(review.executionRunId, PRODUCTIVITY_REVIEW_RESOLVED_CANCEL_REASON);
+        } catch (err) {
+          logger.warn(
+            { err, reviewIssueId: review.id, runId: review.executionRunId },
+            "failed to cancel productivity review run for resolved source issue",
+          );
+        }
       }
       await db
         .update(issues)
