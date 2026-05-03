@@ -184,4 +184,20 @@ export function registerInstanceCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+
+  addCommonClientOptions(
+    instance
+      .command("health")
+      .description("Server health check (db reachability, dev server, bootstrap)")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const row = await ctx.api.get<unknown>("/api/health/");
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
 }
