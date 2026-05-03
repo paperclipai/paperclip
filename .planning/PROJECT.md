@@ -12,22 +12,21 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability, v3.0 Native Distribution Readiness, v3.1 DevPlan Core Convergence
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability, v3.0 Native Distribution Readiness, v3.1 DevPlan Core Convergence, v3.2 Future Scope
 
-**최근 완료 마일스톤:** v3.1 DevPlan Core Convergence (2026-05-01). DevPlan alignment 64% → 100% (+36pp). 24/24 requirements. 7/7 phases. Acceptance gate passed.
+**최근 완료 마일스톤:** v3.2 Future Scope (2026-05-01). Phase 72-77 complete. DevPlan alignment 100%. Acceptance gate passed.
 
-**현재 진행:** v3.1 DevPlan Core Convergence는 Phase 65-71 완료로 2026-05-01 shipped. DevPlan alignment 100% 달성. 이제 v3.2로 이동한다.
+**현재 진행:** v3.2 Future Scope shipped (2026-05-01). 이제 v3.3 마일스톤을 시작합니다.
 
-## Current Milestone: v3.2 Future Scope
+## Current Milestone: v3.3 RT2 Engine Convergence
 
-**Goal:** RealTycoon2를 trusted internal company evidence ecosystem에서 public/open marketplace, cross-company federation, billing/payroll settlement, public store operations 영역으로 확장한다.
+**Goal:** RT2/Multica/wikiLLM+Graphify 삼중 기반 로직이 앱에 정확히 반영되어 RealTycoon2 운영엔진으로 동작하는지 확인하고 개선한다. 혹시나 아직 Paperclip 방식으로 동작하는 부분이 있으면 전면 개편한다.
 
 **Target features:**
-- Public/open marketplace launch — trusted company evidence ecosystem을 public marketplace로 확장
-- Autonomous Jarvis direct apply — approval-first 원칙을 유지하면서 direct apply 루프 탐색
-- Cross-company federation full apply — trusted single-company ecosystem 밖으로 확장
-- Billing, payroll, payment settlement — Phase 70에서 defer된 실제 결제/급여 처리
-- Native credentials and public store operations — signing, APNs, public store launch
+- RT2 execution engine과 Multica runtime 정합성 검증
+- wikiLLM/Graphify knowledge projection 정합성 검증
+- RT2-native operation 확인 및 Paperclip residue 제거
+- RealTycoon2 operating engine으로서의 완전한 안착
 
 ## Current State After v3.0
 
@@ -290,7 +289,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 alignment truth와 identity cleanup을 완료했고 Phase 66에서 Daily cockpit, Phase 67에서 Multica runtime, Phase 68에서 wikiLLM living memory, Phase 69에서 Graphify v3 sidecar를 완료했다. Phase 70에서 Economy/Marketplace/P&L/CareerMate loop를 닫은 뒤 Phase 71에서 64% baseline 대비 score delta와 남은 debt를 감사한다.
+v3.3 마일스톤을 시작합니다. 목표는 아직 정의되지 않았습니다.
 
 ## Evolution
 
@@ -310,4 +309,4 @@ v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 al
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-05-01 after v3.1 shipped, v3.2 started*
+*마지막 업데이트: 2026-05-04 after v3.2 shipped, v3.3 started*

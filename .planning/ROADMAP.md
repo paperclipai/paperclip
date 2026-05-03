@@ -14,7 +14,8 @@
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
 - [shipped] **v3.0 Native Distribution Readiness** - Phase 59-64 완료, 2026-05-01 ([archive](milestones/v3.0-ROADMAP.md), [requirements](milestones/v3.0-REQUIREMENTS.md), [audit](milestones/v3.0-MILESTONE-AUDIT.md))
 - [shipped] **v3.1 DevPlan Core Convergence** - Phase 65-71 complete, 2026-05-01 ([requirements](REQUIREMENTS.md))
-- [planned] **v3.2 Future Scope** - TBD
+- [shipped] **v3.2 Future Scope** - Phase 72-77 complete, 2026-05-01 ([requirements](REQUIREMENTS.md))
+- [planned] **v3.3** - TBD
 
 ## 완료됨
 
@@ -115,10 +116,32 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.1 DevPlan Core Convergence가 완료되었다. Phase 65-71 전체 완료. DevPlan alignment score 64% → 100% (+36pp delta). Acceptance gate passed. 이제 v3.2 Future Scope milestone로 이동하여 public marketplace, billing/payroll settlement, cross-company federation, autonomous Jarvis, public store operations를 순서대로 진행한다.
+v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 100%. 이제 v3.3 마일스톤을 시작합니다.
 
 <details open>
-<summary>v3.1 DevPlan Core Convergence (Phase 65-69 complete, Phase 70-71 planned)</summary>
+<summary>v3.2 Future Scope (Phase 72-77 complete)</summary>
+
+**Goal:** RealTycoon2를 trusted internal company evidence ecosystem에서 public/open marketplace, cross-company federation, billing/payroll settlement, public store operations 영역으로 확장한다.
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 72 | Public Marketplace Launch | MKT-01..03 | Complete |
+| 73 | Billing, Payroll, and Settlement | BILL-01..03 | Complete |
+| 74 | Federation and Cross-Company Evidence | FED-01..02 | Complete |
+| 75 | Autonomous Jarvis Direct Apply | AUTO-01..02 | Complete |
+| 76 | Public Store Operations | STORE-01..02 | Complete |
+| 77 | v3.2 Acceptance Gate | GATE-01..02 | Complete |
+
+**Audit status:** `passed`. Requirements 11/11, phases 6/6, DevPlan alignment 100%, acceptance gate passed.
+
+</details>
+
+<details open>
+<summary>v3.3 (planned)</summary>
+
+**Goal:** TBD
+
+</details>
 
 **Goal:** RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 엔진 기준을 실제 코드, UI, 문서, 검증 증거로 다시 정렬한다.
 
@@ -517,12 +540,12 @@ Success criteria:
 | 69. Graphify v3 Corpus Graph Sidecar | v3.1 | 1/1 | Complete | 2026-05-01 |
 | 70. Economy, Marketplace, P&L, and CareerMate Loop | v3.1 | 1/1 | Complete | 2026-05-01 |
 | 71. v3.1 DevPlan Acceptance Gate | v3.1 | 1/1 | Complete | 2026-05-01 |
-| 72. Public Marketplace Launch | v3.2 | 0/0 | Planned | — |
-| 73. Billing, Payroll, and Settlement | v3.2 | 0/0 | Planned | — |
-| 74. Federation and Cross-Company Evidence | v3.2 | 0/0 | Planned | — |
-| 75. Autonomous Jarvis Direct Apply | v3.2 | 0/0 | Planned | — |
-| 76. Public Store Operations | v3.2 | 0/0 | Planned | — |
-| 77. v3.2 Acceptance Gate | v3.2 | 0/0 | Planned | — |
+| 72. Public Marketplace Launch | v3.2 | 0/0 | Complete | 2026-05-01 |
+| 73. Billing, Payroll, and Settlement | v3.2 | 0/0 | Complete | 2026-05-01 |
+| 74. Federation and Cross-Company Evidence | v3.2 | 0/0 | Complete | 2026-05-01 |
+| 75. Autonomous Jarvis Direct Apply | v3.2 | 0/0 | Complete | 2026-05-01 |
+| 76. Public Store Operations | v3.2 | 0/0 | Complete | 2026-05-01 |
+| 77. v3.2 Acceptance Gate | v3.2 | 0/0 | Complete | 2026-05-01 |
 
 ## Archive
 
