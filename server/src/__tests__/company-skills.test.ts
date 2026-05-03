@@ -211,6 +211,8 @@ describe("project workspace skill discovery", () => {
       { inventoryMode: "full" },
     );
 
+    // asString() trims the raw parsed value; the trailing "\n" added by
+    // clip chomping is normalised away at the API boundary.
     expect(imported.description).toBe(
       "Queries Google Analytics 4 for a given date range and returns a structured report.",
     );
@@ -241,6 +243,8 @@ describe("project workspace skill discovery", () => {
       { inventoryMode: "full" },
     );
 
+    // asString() trims the raw parsed value; the trailing "\n" added by
+    // clip chomping is normalised away at the API boundary.
     expect(imported.description).toBe(
       "Step 1: gather data.\nStep 2: analyse results.",
     );
@@ -270,6 +274,41 @@ describe("project workspace skill discovery", () => {
     );
 
     expect(imported.description).toBe("This is a plain description.");
+  });
+
+  it("accepts chomping indicator (|-) and treats it as default clip (follow-up: proper strip semantics)", async () => {
+    // |- is the YAML 1.2 'strip' chomping variant of literal (|). We accept it
+    // via startsWith("|") but currently treat it as default 'clip', so a single
+    // trailing newline is still appended. Proper strip semantics (no trailing
+    // newline) are deferred to a follow-up.
+    const workspace = await makeTempDir("paperclip-chomping-indicator-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Chomping Skill",
+        "description: |-",
+        "  Hello",
+        "  World",
+        "---",
+        "",
+        "# Chomping Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    // parseYamlBlock emits "Hello\nWorld\n" (clip chomping per §8.1.1.2);
+    // asString() trims at the API boundary, so the final description is without
+    // the trailing newline.
+    expect(imported.description).toBe("Hello\nWorld");
   });
 });
 
