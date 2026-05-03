@@ -59,7 +59,7 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function parseModelsOutput(stdout: string): AdapterModel[] {
+export function parseOpenCodeModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
   for (const raw of stdout.split(/\r?\n/)) {
     const line = raw.trim();
@@ -153,7 +153,7 @@ export async function discoverOpenCodeModels(input: {
     throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
   }
 
-  return sortModels(parseModelsOutput(result.stdout));
+  return sortModels(parseOpenCodeModelsOutput(result.stdout));
 }
 
 export async function discoverOpenCodeModelsCached(input: {
