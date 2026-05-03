@@ -323,8 +323,22 @@ const hermesLocalAdapter: ServerAdapterModule = {
     // from instructionsRootPath and prepend it to promptTemplate, mirroring what
     // claude_local does natively.  Without this, supportsInstructionsBundle is
     // decorative — Paperclip never loads bundle files for hermes_local agents.
+    //
+    // Gate on explicit bundle config keys only. exportFiles() has a legacy fallback
+    // (readLegacyInstructions) that, when neither instructionsRootPath nor
+    // instructionsFilePath is set, returns config.promptTemplate as
+    // { "AGENTS.md": <promptTemplate> } (or a placeholder string when neither is set).
+    // Calling exportFiles() unconditionally would cause promptTemplate to appear twice
+    // for promptTemplate-only agents, and would inject the placeholder sentinel string
+    // for agents with no configuration at all — silently overriding Hermes' built-in
+    // default heartbeat/task prompt.
     const instructions = agentInstructionsService();
-    const exported = await instructions.exportFiles(normalizedCtx.agent as Parameters<typeof instructions.exportFiles>[0]).catch(() => null);
+    const hasBundle =
+      typeof existingConfig.instructionsRootPath === "string" ||
+      typeof existingConfig.instructionsFilePath === "string";
+    const exported = hasBundle
+      ? await instructions.exportFiles(normalizedCtx.agent as Parameters<typeof instructions.exportFiles>[0]).catch(() => null)
+      : null;
     const bundleEntries = exported
       ? Object.entries(exported.files).sort(([a], [b]) => {
           // Entry file first, then alphabetical.

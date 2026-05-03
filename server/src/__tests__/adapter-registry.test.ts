@@ -9,11 +9,16 @@ const hermesExecuteMock = vi.hoisted(() =>
   })),
 );
 
-// Default: no bundle configured — exportFiles returns empty so no bundle content is injected.
-// Individual tests override this via vi.mocked(...).mockResolvedValueOnce().
+// Default: no bundle configured. The real exportFiles() legacy fallback never returns
+// { files: {} } — when neither instructionsRootPath nor instructionsFilePath is set it
+// returns config.promptTemplate as { "AGENTS.md": <promptTemplate> } (or a placeholder
+// sentinel string). With the gate in registry.ts, exportFiles() is NOT called for agents
+// without explicit bundle config keys, so this default is only reached by tests that set
+// instructionsRootPath/instructionsFilePath and don't override via mockResolvedValueOnce.
+// Individual tests that exercise the bundle path override via mockResolvedValueOnce().
 const agentInstructionsExportFilesMock = vi.hoisted(() =>
   vi.fn(async () => ({
-    files: {} as Record<string, string>,
+    files: { "AGENTS.md": "Default mock bundle content." } as Record<string, string>,
     entryFile: "AGENTS.md",
     warnings: [] as string[],
   })),
@@ -557,8 +562,12 @@ describe("server adapter registry", () => {
     expect(promptTemplate).toContain("Agent role instructions.");
   });
 
-  it("does not inject bundle content when no instructionsRootPath is set and no bundle files exist", async () => {
-    // Default mock returns empty files — no bundle content.
+  it("does not inject bundle content when no instructionsRootPath or instructionsFilePath is set", async () => {
+    // No instructionsRootPath / instructionsFilePath in adapterConfig — the gate in
+    // registry.ts skips exportFiles() entirely. The real legacy fallback would have
+    // returned promptTemplate as { "AGENTS.md": <promptTemplate> }, which without the
+    // gate would cause promptTemplate to appear twice in the final prompt.
+    // exportFiles() must NOT be called for this agent.
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -582,10 +591,18 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
+    // exportFiles() must not have been called — the gate prevents the legacy-fallback
+    // duplication and placeholder-injection bugs.
+    expect(agentInstructionsExportFilesMock).not.toHaveBeenCalled();
+
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
     const { promptTemplate } = patchedCtx.agent.adapterConfig;
+    // Auth guard present.
     expect(promptTemplate).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    // Original promptTemplate preserved, not duplicated.
     expect(promptTemplate).toContain("Only template, no bundle");
+    const occurrences = (promptTemplate.match(/Only template, no bundle/g) ?? []).length;
+    expect(occurrences).toBe(1);
     // No bundle section headers injected.
     expect(promptTemplate).not.toContain("# AGENTS.md");
   });
