@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { lifecyclePhaseForStatus } from "../test-utils/heartbeat";
 import { RunActivityChart, SuccessRateChart } from "./ActivityCharts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -34,13 +35,15 @@ function render(ui: ReactNode) {
 }
 
 function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
+  const status = overrides.status ?? "succeeded";
+
   return {
     id: "run-1",
     companyId: "company-1",
     agentId: "agent-1",
     invocationSource: "on_demand",
     triggerDetail: "manual",
-    status: "succeeded",
+    status,
     startedAt: new Date("2026-04-20T11:58:00.000Z"),
     finishedAt: new Date("2026-04-20T11:59:00.000Z"),
     error: null,
@@ -81,6 +84,7 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
     createdAt: new Date("2026-04-20T11:58:00.000Z"),
     updatedAt: new Date("2026-04-20T11:59:00.000Z"),
     ...overrides,
+    lifecyclePhase: overrides.lifecyclePhase ?? lifecyclePhaseForStatus(status),
   };
 }
 

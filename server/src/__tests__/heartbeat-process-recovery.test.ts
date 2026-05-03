@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { and, eq, or, inArray } from "drizzle-orm";
+import { and, eq, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -831,6 +831,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       invocationSource: "assignment",
       triggerDetail: "system",
       status: "queued",
+      lifecyclePhase: "queued",
       wakeupRequestId,
       contextSnapshot: {
         issueId,
@@ -2357,5 +2358,153 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  // --- lifecycle_phase tests (PER-2760) ---
+
+  describe("lifecycle_phase: reaper behavior", () => {
+    it("fresh initializing run (<=60s old) is not reaped as orphaned", async () => {
+      const { runId } = await seedRunFixture({ runStatus: "running", includeIssue: false });
+      // Stamp the run as initializing with a fresh updatedAt so the reaper skips it
+      await db
+        .update(heartbeatRuns)
+        .set({ lifecyclePhase: "initializing", updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reapOrphanedRuns();
+
+      expect(result.reaped).toBe(0);
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.lifecyclePhase).toBe("initializing");
+    });
+
+    it("stale initializing run (>60s old) is failed with errorCode='start_timeout' and lifecyclePhase='failed'", async () => {
+      const { runId } = await seedRunFixture({ runStatus: "running", includeIssue: false });
+      // Stamp the run as initializing with a 90s-old updatedAt so the reaper treats it as stale
+      await db
+        .update(heartbeatRuns)
+        .set({ lifecyclePhase: "initializing", updatedAt: new Date(Date.now() - 90_000) })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reapOrphanedRuns();
+
+      expect(result.reaped).toBe(1);
+      expect(result.runIds).toEqual([runId]);
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("failed");
+      expect(run?.errorCode).toBe("start_timeout");
+      expect(run?.lifecyclePhase).toBe("failed");
+    });
+
+    it("normal running orphan is still reaped as process_lost regardless of lifecycle_phase='running'", async () => {
+      // lifecycle_phase='running' is the default for existing rows; reaper behavior must be unchanged
+      const { runId } = await seedRunFixture({ processPid: 999_999_999, includeIssue: false });
+      // Confirm default lifecycle_phase is 'running'
+      const before = await db
+        .select({ lifecyclePhase: heartbeatRuns.lifecyclePhase })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(before?.lifecyclePhase).toBe("running");
+
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reapOrphanedRuns();
+
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("failed");
+      expect(run?.errorCode).toBe("process_lost");
+      expect(run?.lifecyclePhase).toBe("failed");
+    });
+  });
+
+  describe("lifecycle_phase: terminal status sync", () => {
+    it("process_lost failure syncs lifecyclePhase to 'failed'", async () => {
+      const { runId } = await seedRunFixture({ processPid: 999_999_999, includeIssue: false });
+
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reapOrphanedRuns();
+
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("failed");
+      expect(run?.lifecyclePhase).toBe("failed");
+    });
+
+    it("cancelled run syncs lifecyclePhase to 'failed'", async () => {
+      const { runId } = await seedRunFixture({ runStatus: "running", includeIssue: false });
+      await db
+        .update(heartbeatRuns)
+        .set({ lifecyclePhase: "running" })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const heartbeat = heartbeatService(db);
+      await heartbeat.cancelRun(runId);
+
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("cancelled");
+      expect(run?.lifecyclePhase).toBe("failed");
+    });
+  });
+
+  describe("lifecycle_phase: claim boundary", () => {
+    it("claim transitions queued run to status='running' with lifecyclePhase not 'queued', completing as lifecyclePhase='succeeded'", async () => {
+      // Gate the mock adapter so we can observe the claimed-but-not-yet-complete state
+      let resolveAdapter!: (v: void) => void;
+      const gate = new Promise<void>((resolve) => {
+        resolveAdapter = resolve;
+      });
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await gate;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "ok",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+
+      const { runId } = await seedQueuedIssueRunFixture();
+      const heartbeat = heartbeatService(db);
+
+      // resumeQueuedRuns awaits claimQueuedRun (inside startNextQueuedRunForAgent)
+      // so by the time it returns the DB row has status='running'.
+      await heartbeat.resumeQueuedRuns();
+
+      const claimedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(claimedRun?.status).toBe("running");
+      // After claim, lifecyclePhase is 'initializing'; after logStore.begin it transitions to 'running'.
+      // Either value is valid here depending on async progress, but must not be 'queued'.
+      expect(claimedRun?.lifecyclePhase).not.toBe("queued");
+
+      // Unblock the adapter and wait for the run to complete
+      resolveAdapter();
+      const finalRun = await waitForRunToSettle(heartbeat, runId, 5_000);
+      expect(finalRun?.status).toBe("succeeded");
+      expect(finalRun?.lifecyclePhase).toBe("succeeded");
+    });
+  });
+
+  describe("lifecycle_phase: public status invariant", () => {
+    it("no heartbeat_run row ever has status='starting'", async () => {
+      // Seed a normal run to ensure the table is non-empty
+      await seedRunFixture({ runStatus: "running", includeIssue: false });
+
+      const startingRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.status} = 'starting'`);
+
+      expect(startingRuns).toHaveLength(0);
+    });
   });
 });

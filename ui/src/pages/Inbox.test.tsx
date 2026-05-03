@@ -128,6 +128,7 @@ describe("FailedRunInboxRow", () => {
       invocationSource: "assignment",
       triggerDetail: null,
       status: "failed",
+      lifecyclePhase: "failed",
       error: "boom",
       wakeupRequestId: null,
       exitCode: null,

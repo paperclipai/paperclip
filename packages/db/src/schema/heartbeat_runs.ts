@@ -1,4 +1,5 @@
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean, check } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -54,6 +55,7 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    lifecyclePhase: text("lifecycle_phase").notNull().default("running"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -77,6 +79,10 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.status,
       table.processStartedAt,
+    ),
+    lifecyclePhaseCheck: check(
+      "heartbeat_runs_lifecycle_phase_check",
+      sql`${table.lifecyclePhase} in ('queued', 'initializing', 'running', 'succeeded', 'failed')`,
     ),
   }),
 );

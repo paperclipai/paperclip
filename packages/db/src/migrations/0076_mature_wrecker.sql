@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ADD CONSTRAINT "heartbeat_runs_lifecycle_phase_check" CHECK ("heartbeat_runs"."lifecycle_phase" in ('queued', 'initializing', 'running', 'succeeded', 'failed')) NOT VALID;

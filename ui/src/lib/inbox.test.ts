@@ -51,6 +51,7 @@ import {
   shouldShowInboxSection,
   type InboxWorkItem,
 } from "./inbox";
+import { lifecyclePhaseForStatus } from "../test-utils/heartbeat";
 
 const storage = new Map<string, string>();
 
@@ -134,6 +135,7 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     invocationSource: "assignment",
     triggerDetail: null,
     status,
+    lifecyclePhase: lifecyclePhaseForStatus(status),
     error: null,
     wakeupRequestId: null,
     exitCode: null,

@@ -52,6 +52,7 @@ export interface HeartbeatRun {
   continuationAttempt: number;
   lastUsefulActionAt: Date | null;
   nextAction: string | null;
+  lifecyclePhase: "queued" | "initializing" | "running" | "succeeded" | "failed";
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
