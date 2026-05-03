@@ -2826,7 +2826,7 @@ export function issueService(db: Db) {
           values,
           buildInitialIssueMonitorFields({
             policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
-            status: values.status ?? "backlog",
+            status: values.status ?? "todo",
             assigneeAgentId: values.assigneeAgentId ?? null,
             assigneeUserId: values.assigneeUserId ?? null,
           }),
