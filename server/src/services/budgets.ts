@@ -78,7 +78,7 @@ function normalizeScopeName(scopeType: BudgetScopeType, name: string) {
   return name.trim().length > 0 ? name : scopeType;
 }
 
-async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
+async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord | null> {
   if (scopeType === "company") {
     const row = await db
       .select({
@@ -111,7 +111,7 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
       .from(agents)
       .where(eq(agents.id, scopeId))
       .then((rows) => rows[0] ?? null);
-    if (!row) throw notFound("Agent not found");
+    if (!row) return null;
     return {
       companyId: row.companyId,
       name: row.name,
@@ -130,7 +130,7 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
     .from(projects)
     .where(eq(projects.id, scopeId))
     .then((rows) => rows[0] ?? null);
-  if (!row) throw notFound("Project not found");
+  if (!row) return null;
   return {
     companyId: row.companyId,
     name: row.name,
@@ -313,8 +313,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .orderBy(desc(budgetPolicies.updatedAt));
   }
 
-  async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
+  async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary | null> {
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    if (!scope) return null;
     const observedAmount = await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
@@ -367,6 +368,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     if (existing) return existing;
 
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    if (!scope) return null;
     const payload = buildApprovalPayload({
       policy,
       scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
@@ -473,7 +475,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           policyId: row.policyId,
           scopeType: row.scopeType as BudgetScopeType,
           scopeId: row.scopeId,
-          scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope.name),
+          scopeName: scope ? normalizeScopeName(row.scopeType as BudgetScopeType, scope.name) : "(deleted)",
           metric: row.metric as BudgetMetric,
           windowKind: row.windowKind as BudgetWindowKind,
           windowStart: row.windowStart,
@@ -509,6 +511,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       actorUserId: string | null,
     ): Promise<BudgetPolicySummary> => {
       const scope = await resolveScopeRecord(db, input.scopeType, input.scopeId);
+      if (!scope) throw notFound(`${input.scopeType.charAt(0).toUpperCase() + input.scopeType.slice(1)} not found`);
       if (scope.companyId !== companyId) {
         throw unprocessable("Budget scope does not belong to company");
       }
@@ -622,12 +625,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         },
       });
 
-      return buildPolicySummary(row);
+      // Scope was validated above so the summary will always be non-null here.
+      return (await buildPolicySummary(row))!;
     },
 
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
-      const policies = await Promise.all(rows.map((row) => buildPolicySummary(row)));
+      const policyResults = await Promise.all(rows.map((row) => buildPolicySummary(row)));
+      const policies = policyResults.filter((p): p is BudgetPolicySummary => p !== null);
       const activeIncidentRows = await db
         .select()
         .from(budgetIncidents)
