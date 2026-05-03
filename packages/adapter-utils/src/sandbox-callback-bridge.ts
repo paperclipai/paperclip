@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { preferredShellForSandbox } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
@@ -133,7 +134,7 @@ async function runShell(
   cwd: string,
   script: string,
   timeoutMs: number,
-  shellCommand = "sh",
+  shellCommand: "bash" | "sh" = "sh",
 ): Promise<RunProcessResult> {
   return await runner.execute({
     command: shellCommand,
@@ -267,10 +268,10 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
   timeoutMs?: number | null;
-  shellCommand?: string;
+  shellCommand?: "bash" | "sh" | null;
 }): SandboxCallbackBridgeQueueClient {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
-  const shellCommand = input.shellCommand?.trim() || "sh";
+  const shellCommand = preferredShellForSandbox(input.shellCommand);
   const runChecked = async (action: string, script: string) =>
     requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs, shellCommand));
 
@@ -291,6 +292,7 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
           "fi",
         ].join("\n"),
         timeoutMs,
+        shellCommand,
       );
       requireSuccessfulResult(`list ${remotePath}`, result);
       return result.stdout
@@ -528,12 +530,12 @@ export async function startSandboxCallbackBridgeServer(input: {
   responseTimeoutMs?: number | null;
   timeoutMs?: number | null;
   nodeCommand?: string;
-  shellCommand?: string;
+  shellCommand?: "bash" | "sh" | null;
   maxQueueDepth?: number | null;
   maxBodyBytes?: number | null;
 }): Promise<StartedSandboxCallbackBridgeServer> {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
-  const shellCommand = input.shellCommand?.trim() || "sh";
+  const shellCommand = preferredShellForSandbox(input.shellCommand);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
   if (input.bridgeAsset) {
@@ -541,6 +543,7 @@ export async function startSandboxCallbackBridgeServer(input: {
       runner: input.runner,
       remoteCwd: input.remoteCwd,
       timeoutMs,
+      shellCommand,
     });
     await assetClient.makeDir(input.assetRemoteDir);
     const entrypointSource = await fs.readFile(input.bridgeAsset.entrypoint, "utf8");
