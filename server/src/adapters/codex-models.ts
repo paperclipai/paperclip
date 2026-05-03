@@ -108,13 +108,11 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
   const forceRefresh = options?.forceRefresh === true;
   const fallback = dedupeModels(codexFallbackModels);
 
-  // Source 1: codex's own ChatGPT-auth-populated cache (no key needed)
   const fromCache = readCodexModelsCache();
   if (fromCache.length > 0) {
     return mergedWithFallback(fromCache);
   }
 
-  // Source 2 (existing): API-key path
   const apiKey = resolveOpenAiApiKey();
   if (!apiKey) return fallback;
 
