@@ -127,6 +127,15 @@ describe("isClaudeImageProcessingError", () => {
     ).toBe(true);
   });
 
+  it("returns false when is_error is false even if message text matches", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: false,
+        result: "Task complete: could not process image due to format, but handled gracefully.",
+      }),
+    ).toBe(false);
+  });
+
   it("returns false for unrelated errors", () => {
     expect(
       isClaudeImageProcessingError({
