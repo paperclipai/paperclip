@@ -347,6 +347,7 @@ export {
 export {
   jsonSchemaSchema,
   pluginJobDeclarationSchema,
+  pluginWebhookHostPrefilterDeclarationSchema,
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
   pluginEnvironmentDriverDeclarationSchema,
@@ -366,6 +367,7 @@ export {
   setPluginStateSchema,
   listPluginStateSchema,
   type PluginJobDeclarationInput,
+  type PluginWebhookHostPrefilterDeclarationInput,
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,

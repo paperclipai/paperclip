@@ -9,6 +9,8 @@ packages:
   # Keep this smoke fixture installable as a local plugin example without
   # forcing PRs to commit pnpm-lock.yaml for a new workspace importer.
   - "!packages/plugins/examples/plugin-orchestration-smoke-example"
+  # Keegoid-local D4 plugin, installed into Paperclip from an absolute path.
+  - "!packages/plugins/examples/plugin-github-pr-ingress"
   - server
   - ui
   - cli

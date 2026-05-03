@@ -79,6 +79,17 @@ export const pluginJobDeclarationSchema = z.object({
 
 export type PluginJobDeclarationInput = z.infer<typeof pluginJobDeclarationSchema>;
 
+export const pluginWebhookHostPrefilterDeclarationSchema = z.object({
+  kind: z.literal("github-hmac-sha256"),
+  secretRefConfigKey: z.string().min(1),
+  signatureHeader: z.string().min(1).optional(),
+  maxBodyBytes: z.number().int().positive().max(10_000_000).optional(),
+});
+
+export type PluginWebhookHostPrefilterDeclarationInput = z.infer<
+  typeof pluginWebhookHostPrefilterDeclarationSchema
+>;
+
 /**
  * Validates a {@link PluginWebhookDeclaration} — a webhook endpoint declared
  * in the plugin manifest. Requires `endpointKey` and `displayName`.
@@ -89,6 +100,7 @@ export const pluginWebhookDeclarationSchema = z.object({
   endpointKey: z.string().min(1),
   displayName: z.string().min(1),
   description: z.string().optional(),
+  hostPrefilter: pluginWebhookHostPrefilterDeclarationSchema.optional(),
 });
 
 export type PluginWebhookDeclarationInput = z.infer<typeof pluginWebhookDeclarationSchema>;

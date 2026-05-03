@@ -904,6 +904,32 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function defaultUserBinDirs(env: NodeJS.ProcessEnv): string[] {
+  if (process.platform === "win32") return [];
+
+  const envHome = typeof env.HOME === "string" ? env.HOME.trim() : "";
+  if (!envHome) return [];
+
+  return [
+    path.join(envHome, ".local", "bin"),
+    path.join(envHome, "bin"),
+  ];
+}
+
+function appendMissingPathDirs(pathValue: string, dirs: string[]) {
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const existing = pathValue.split(delimiter).filter(Boolean);
+  const seen = new Set(existing);
+
+  for (const dir of dirs) {
+    if (seen.has(dir)) continue;
+    existing.push(dir);
+    seen.add(dir);
+  }
+
+  return existing.join(delimiter);
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -1025,9 +1051,16 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  if (typeof env.Path === "string" && env.Path.length > 0 && process.platform === "win32") return env;
+
+  const pathValue =
+    typeof env.PATH === "string" && env.PATH.length > 0
+      ? env.PATH
+      : defaultPathForPlatform();
+  const withUserBins = appendMissingPathDirs(pathValue, defaultUserBinDirs(env));
+
+  if (env.PATH === withUserBins) return env;
+  return { ...env, PATH: withUserBins };
 }
 
 export async function ensureAbsoluteDirectory(

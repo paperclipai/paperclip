@@ -68,6 +68,25 @@ export interface PluginWebhookDeclaration {
   displayName: string;
   /** Optional description of what this webhook handles. */
   description?: string;
+  /**
+   * Optional host-side prefilter that rejects invalid public webhook traffic
+   * before Paperclip records a delivery row or dispatches to the plugin worker.
+   *
+   * This is defense in depth only. Plugins must still verify signatures inside
+   * `onWebhook` before acting on a delivery.
+   */
+  hostPrefilter?: PluginWebhookHostPrefilterDeclaration;
+}
+
+export interface PluginWebhookHostPrefilterDeclaration {
+  /** GitHub-style `X-Hub-Signature-256: sha256=...` HMAC verification. */
+  kind: "github-hmac-sha256";
+  /** Dot-path in plugin instance config that contains the Paperclip secret ref. */
+  secretRefConfigKey: string;
+  /** Header containing the HMAC signature. Defaults to `x-hub-signature-256`. */
+  signatureHeader?: string;
+  /** Max UTF-8 request body bytes accepted before worker dispatch. Defaults to 1 MiB. */
+  maxBodyBytes?: number;
 }
 
 /**

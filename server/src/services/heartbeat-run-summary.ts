@@ -92,6 +92,66 @@ export function summarizeHeartbeatRunResultJson(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+function normalizeUsageNumberField(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return undefined;
+}
+
+function normalizeUsageStringField(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const truncated = truncateSummaryText(value);
+  if (truncated === null) return undefined;
+  const trimmed = truncated.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readFirstUsageField(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+  normalize: (value: unknown) => number | string | undefined,
+) {
+  for (const key of keys) {
+    if (key in record && record[key] !== null && record[key] !== undefined) {
+      const value = normalize(record[key]);
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
+}
+
+export function summarizeHeartbeatRunUsageJson(
+  usageJson: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!usageJson || typeof usageJson !== "object" || Array.isArray(usageJson)) {
+    return null;
+  }
+
+  const summary: Record<string, unknown> = {};
+  const fields = [
+    ["inputTokens", ["inputTokens", "input_tokens"], normalizeUsageNumberField],
+    ["outputTokens", ["outputTokens", "output_tokens"], normalizeUsageNumberField],
+    ["cachedInputTokens", ["cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens"], normalizeUsageNumberField],
+    ["billingType", ["billingType", "billing_type"], normalizeUsageStringField],
+    ["costUsd", ["costUsd", "cost_usd", "total_cost_usd"], normalizeUsageNumberField],
+    ["provider", ["provider"], normalizeUsageStringField],
+    ["model", ["model"], normalizeUsageStringField],
+    ["biller", ["biller"], normalizeUsageStringField],
+  ] as const;
+
+  for (const [outputKey, aliases, normalize] of fields) {
+    const value = readFirstUsageField(usageJson, aliases, normalize);
+    if (value !== undefined) {
+      summary[outputKey] = value;
+    }
+  }
+
+  if (typeof summary.inputTokens === "number" && typeof summary.outputTokens === "number") {
+    summary.totalTokens = summary.inputTokens + summary.outputTokens;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {

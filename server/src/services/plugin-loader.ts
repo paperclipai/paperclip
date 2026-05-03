@@ -1352,12 +1352,7 @@ export function pluginLoader(
       if (escalated.length > 0) {
         log.warn(
           { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+          "plugin-loader: upgrade introduces new capabilities; pluginLifecycleManager.upgrade will move the plugin to upgrade_pending before activation",
         );
       }
 

@@ -8,6 +8,7 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   materializePaperclipSkillCopy,
   renderPaperclipWakePrompt,
   runningProcesses,
@@ -57,6 +58,53 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
     );
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  it.skipIf(process.platform === "win32")("adds common user bin directories to existing PATH", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-path-home-"));
+    try {
+      const env = ensurePathInEnv({
+        HOME: home,
+        PATH: ["/usr/bin", "/bin"].join(path.delimiter),
+      });
+
+      expect(env.PATH?.split(path.delimiter)).toEqual([
+        "/usr/bin",
+        "/bin",
+        path.join(home, ".local", "bin"),
+        path.join(home, "bin"),
+      ]);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("uses the platform fallback PATH before user bin directories", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-path-home-"));
+    try {
+      const env = ensurePathInEnv({ HOME: home });
+
+      expect(env.PATH).toContain("/usr/bin");
+      expect(env.PATH?.split(path.delimiter).slice(-2)).toEqual([
+        path.join(home, ".local", "bin"),
+        path.join(home, "bin"),
+      ]);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("does not inherit host user bin directories when HOME is omitted", () => {
+    const env = ensurePathInEnv({
+      PATH: ["/usr/bin", "/bin"].join(path.delimiter),
+    });
+
+    expect(env.PATH?.split(path.delimiter)).toEqual([
+      "/usr/bin",
+      "/bin",
+    ]);
   });
 });
 

@@ -157,6 +157,10 @@ When adding endpoints:
 
 ## 10. Pull Request Requirements
 
+Agent-authored branch, commit, push, PR, review, and post-merge cleanup work
+routes through `~/keegoid/bin/agent-pr-flow`; see
+`~/keegoid/playbooks/agent_pr_flow.md`.
+
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
 - **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)

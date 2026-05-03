@@ -20,7 +20,7 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -46,6 +46,7 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { createPluginSecretsHandler, type PluginSecretsService } from "../services/plugin-secrets-handler.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
@@ -66,6 +67,7 @@ import {
   getActorInfo,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import { readConfigValueAtPath } from "../services/json-schema-secret-refs.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -130,6 +132,7 @@ const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+const WEBHOOK_HOST_PREFILTER_DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
   "cache-control",
   "etag",
@@ -225,6 +228,29 @@ async function resolvePlugin(
 
   return registry.getByKey(pluginId);
 }
+
+function firstRequestHeader(headers: Request["headers"], name: string): string | null {
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== wanted) continue;
+    if (Array.isArray(value)) return value[0] ?? null;
+    return typeof value === "string" ? value : null;
+  }
+  return null;
+}
+
+function verifyGithubWebhookHmacSha256(rawBody: string, signatureHeader: string, secret: string): boolean {
+  if (!signatureHeader.startsWith("sha256=") || secret.length === 0) return false;
+  const expected = `sha256=${createHmac("sha256", secret).update(rawBody, "utf8").digest("hex")}`;
+  const actual = signatureHeader.trim();
+  const actualBytes = Buffer.from(actual, "utf8");
+  const expectedBytes = Buffer.from(expected, "utf8");
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+type WebhookHostPrefilterDecision =
+  | { ok: true }
+  | { ok: false; status: number; error: string };
 
 /**
  * Optional dependencies for plugin job scheduling routes.
@@ -372,6 +398,65 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const pluginSecretsHandlers = new Map<string, PluginSecretsService>();
+
+  function secretsForPlugin(pluginId: string): PluginSecretsService {
+    const existing = pluginSecretsHandlers.get(pluginId);
+    if (existing) return existing;
+    const created = createPluginSecretsHandler({ db, pluginId });
+    pluginSecretsHandlers.set(pluginId, created);
+    return created;
+  }
+
+  async function applyWebhookHostPrefilter(input: {
+    pluginId: string;
+    webhookDecl: NonNullable<PaperclipPluginManifestV1["webhooks"]>[number];
+    headers: Request["headers"];
+    rawBody: string;
+  }): Promise<WebhookHostPrefilterDecision> {
+    const prefilter = input.webhookDecl.hostPrefilter;
+    if (!prefilter) return { ok: true };
+
+    if (prefilter.kind !== "github-hmac-sha256") {
+      return { ok: false, status: 500, error: "Unsupported webhook host prefilter" };
+    }
+
+    const maxBodyBytes =
+      prefilter.maxBodyBytes ?? WEBHOOK_HOST_PREFILTER_DEFAULT_MAX_BODY_BYTES;
+    if (Buffer.byteLength(input.rawBody, "utf8") > maxBodyBytes) {
+      return { ok: false, status: 413, error: "Webhook payload rejected by host prefilter" };
+    }
+
+    const signature = firstRequestHeader(
+      input.headers,
+      prefilter.signatureHeader ?? "x-hub-signature-256",
+    );
+    if (!signature?.startsWith("sha256=")) {
+      return { ok: false, status: 401, error: "Webhook rejected by host prefilter" };
+    }
+
+    const config = await registry.getConfig(input.pluginId);
+    const secretRef = readConfigValueAtPath(
+      config?.configJson ?? {},
+      prefilter.secretRefConfigKey,
+    );
+    if (typeof secretRef !== "string" || secretRef.trim().length === 0) {
+      return { ok: false, status: 503, error: "Webhook host prefilter is not configured" };
+    }
+
+    let secret: string;
+    try {
+      secret = await secretsForPlugin(input.pluginId).resolve({ secretRef: secretRef.trim() });
+    } catch {
+      return { ok: false, status: 503, error: "Webhook host prefilter is unavailable" };
+    }
+
+    if (!verifyGithubWebhookHmacSha256(input.rawBody, signature, secret)) {
+      return { ok: false, status: 401, error: "Webhook rejected by host prefilter" };
+    }
+
+    return { ok: true };
+  }
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -2315,7 +2400,18 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
-    // Step 6: Record the delivery in the database
+    const prefilterDecision = await applyWebhookHostPrefilter({
+      pluginId: plugin.id,
+      webhookDecl,
+      headers: req.headers,
+      rawBody,
+    });
+    if (!prefilterDecision.ok) {
+      res.status(prefilterDecision.status).json({ error: prefilterDecision.error });
+      return;
+    }
+
+    // Step 6: Record the accepted delivery in the database
     const startedAt = new Date();
     const [delivery] = await db
       .insert(pluginWebhookDeliveries)

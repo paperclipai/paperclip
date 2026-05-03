@@ -15,9 +15,8 @@ function hasPathSeparator(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
 
-function prependPosixPathEntry(pathValue: string, entry: string): string {
-  const parts = pathValue.split(":").filter(Boolean);
-  if (parts.includes(entry)) return pathValue;
+function moveOrPrependPosixPathEntry(pathValue: string, entry: string): string {
+  const parts = pathValue.split(":").filter((part) => part.length > 0 && part !== entry);
   const cleaned = parts.join(":");
   return cleaned.length > 0 ? `${entry}:${cleaned}` : entry;
 }
@@ -137,7 +136,9 @@ export async function prepareCursorSandboxCommand(input: {
   const remoteLocalBinDir = path.posix.join(remoteSystemHomeDir, ".local", "bin");
   const runtimeEnv = ensurePathInEnv(input.env);
   const currentPath = runtimeEnv.PATH ?? runtimeEnv.Path ?? "";
-  const nextPath = prependPosixPathEntry(currentPath, remoteLocalBinDir);
+  // Cursor sandboxes can already expose ~/.local/bin late in PATH. Move it to
+  // the front so the sandbox-local cursor-agent wins over system binaries.
+  const nextPath = moveOrPrependPosixPathEntry(currentPath, remoteLocalBinDir);
   const env = nextPath === currentPath ? input.env : { ...input.env, PATH: nextPath };
 
   if (!runtimeInfo.preferredCommandPath) {

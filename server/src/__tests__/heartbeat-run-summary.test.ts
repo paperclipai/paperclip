@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   summarizeHeartbeatRunResultJson,
+  summarizeHeartbeatRunUsageJson,
   buildHeartbeatRunIssueComment,
   mergeHeartbeatRunResultJson,
 } from "../services/heartbeat-run-summary.js";
@@ -41,6 +42,81 @@ describe("summarizeHeartbeatRunResultJson", () => {
     expect(summarizeHeartbeatRunResultJson(null)).toBeNull();
     expect(summarizeHeartbeatRunResultJson(["nope"] as unknown as Record<string, unknown>)).toBeNull();
     expect(summarizeHeartbeatRunResultJson({ nested: { only: "ignored" } })).toBeNull();
+  });
+});
+
+describe("summarizeHeartbeatRunUsageJson", () => {
+  it("keeps compact usage fields and drops unrelated payloads", () => {
+    const summary = summarizeHeartbeatRunUsageJson({
+      input_tokens: 10,
+      outputTokens: 20,
+      cache_read_input_tokens: 30,
+      billing_type: "metered",
+      total_cost_usd: 0.12,
+      provider: "anthropic",
+      model: "claude",
+      biller: "metered",
+      rawPayload: "x".repeat(10_000),
+    });
+
+    expect(summary).toEqual({
+      inputTokens: 10,
+      outputTokens: 20,
+      totalTokens: 30,
+      cachedInputTokens: 30,
+      billingType: "metered",
+      costUsd: 0.12,
+      provider: "anthropic",
+      model: "claude",
+      biller: "metered",
+    });
+  });
+
+  it("returns null for non-object and irrelevant payloads", () => {
+    expect(summarizeHeartbeatRunUsageJson(null)).toBeNull();
+    expect(summarizeHeartbeatRunUsageJson(["nope"] as unknown as Record<string, unknown>)).toBeNull();
+    expect(summarizeHeartbeatRunUsageJson({ raw: { only: "ignored" } })).toBeNull();
+  });
+
+  it("drops non-numeric token and cost fields", () => {
+    expect(summarizeHeartbeatRunUsageJson({
+      inputTokens: true,
+      input_tokens: 10,
+      outputTokens: "20",
+      output_tokens: 30,
+      costUsd: false,
+      total_cost_usd: 0.42,
+      provider: "anthropic",
+    })).toEqual({
+      inputTokens: 10,
+      outputTokens: 30,
+      totalTokens: 40,
+      costUsd: 0.42,
+      provider: "anthropic",
+    });
+  });
+
+  it("computes total tokens from input and output tokens only", () => {
+    expect(summarizeHeartbeatRunUsageJson({
+      inputTokens: 2,
+      outputTokens: 5,
+      cachedInputTokens: 99,
+    })).toEqual({
+      inputTokens: 2,
+      outputTokens: 5,
+      totalTokens: 7,
+      cachedInputTokens: 99,
+    });
+  });
+
+  it("drops blank usage string fields", () => {
+    expect(summarizeHeartbeatRunUsageJson({
+      provider: "  ",
+      model: "\n",
+      biller: "test-biller",
+    })).toEqual({
+      biller: "test-biller",
+    });
   });
 });
 

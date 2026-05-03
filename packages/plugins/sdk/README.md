@@ -132,6 +132,10 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 
 **Filter (optional):** Pass a second argument to `on()`: `{ projectId?, companyId?, agentId? }` so the host only delivers matching events.
 
+Run lifecycle event payloads include `runId`, `agentId`, `status`, `previousStatus`, invocation metadata, timestamps, error fields for failures/cancellations, and compact `usage`/`result` summaries when available. Timed-out runs are delivered as `agent.run.failed` with `status: "timed_out"` and `errorCode: "timeout"`. `agent.run.finished` is success-only; subscribe to `agent.run.finished`, `agent.run.failed`, and `agent.run.cancelled` to observe all terminal outcomes.
+
+Cancelled runs may receive final adapter usage/result artifacts after the cancellation event if cancellation wins a race with adapter completion. Consumers that need those final artifacts should re-fetch the run after observing `agent.run.cancelled`.
+
 **Company context:** Events still carry `companyId` for company-scoped data, but plugin installation and activation are instance-wide in the current runtime.
 
 ## Scheduled (recurring) jobs

@@ -487,7 +487,30 @@ export function issueRoutes(
   }
 
   function parseBooleanQuery(value: unknown) {
-    return value === true || value === "true" || value === "1";
+    const queryValue = readQueryString(value);
+    return value === true || queryValue === "true" || queryValue === "1";
+  }
+
+  function readQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const parsed: string | undefined = readQueryString(entry);
+        if (parsed) return parsed;
+      }
+    }
+    return undefined;
+  }
+
+  function readQueryStringList(value: unknown) {
+    const values = (Array.isArray(value) ? value : [value])
+      .flatMap((entry) => typeof entry === "string" ? entry.split(",") : [])
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    return values.length > 0 ? values.join(",") : undefined;
   }
 
   async function assertIssueEnvironmentSelection(
@@ -947,10 +970,10 @@ export function issueRoutes(
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
-    const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
-    const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
-    const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
+    const assigneeUserFilterRaw = readQueryString(req.query.assigneeUserId);
+    const touchedByUserFilterRaw = readQueryString(req.query.touchedByUserId);
+    const inboxArchivedByUserFilterRaw = readQueryString(req.query.inboxArchivedByUserId);
+    const unreadForUserFilterRaw = readQueryString(req.query.unreadForUserId);
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -967,12 +990,12 @@ export function issueRoutes(
       unreadForUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
         : unreadForUserFilterRaw;
-    const rawLimit = req.query.limit as string | undefined;
+    const rawLimit = readQueryString(req.query.limit);
     const parsedLimit = rawLimit !== undefined && /^\d+$/.test(rawLimit)
       ? Number.parseInt(rawLimit, 10)
       : null;
     const limit = parsedLimit === null ? ISSUE_LIST_DEFAULT_LIMIT : clampIssueListLimit(parsedLimit);
-    const rawOffset = req.query.offset as string | undefined;
+    const rawOffset = readQueryString(req.query.offset);
     const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
       ? Number.parseInt(rawOffset, 10)
       : null;
@@ -1004,27 +1027,25 @@ export function issueRoutes(
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
-      status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      status: readQueryStringList(req.query.status),
+      assigneeAgentId: readQueryString(req.query.assigneeAgentId),
+      participantAgentId: readQueryString(req.query.participantAgentId),
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      labelId: req.query.labelId as string | undefined,
-      originKind: req.query.originKind as string | undefined,
-      originId: req.query.originId as string | undefined,
-      includeRoutineExecutions:
-        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
-      excludeRoutineExecutions:
-        req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
-      includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
-      q: req.query.q as string | undefined,
+      projectId: readQueryString(req.query.projectId),
+      workspaceId: readQueryString(req.query.workspaceId),
+      executionWorkspaceId: readQueryString(req.query.executionWorkspaceId),
+      parentId: readQueryString(req.query.parentId),
+      descendantOf: readQueryString(req.query.descendantOf),
+      labelId: readQueryString(req.query.labelId),
+      originKind: readQueryString(req.query.originKind),
+      originId: readQueryString(req.query.originId),
+      includeRoutineExecutions: parseBooleanQuery(req.query.includeRoutineExecutions),
+      excludeRoutineExecutions: parseBooleanQuery(req.query.excludeRoutineExecutions),
+      includeBlockedBy: parseBooleanQuery(req.query.includeBlockedBy),
+      q: readQueryString(req.query.q),
       limit,
       offset,
     });
