@@ -130,7 +130,7 @@ describe("ctx.approvals SDK contract", () => {
 
   it("onResolved fires with the resolution event and cleans up", async () => {
     const companyId = randomUUID();
-    const harness = createTestHarness({ manifest: manifest(["approvals.create"]) });
+    const harness = createTestHarness({ manifest: manifest(["approvals.create", "approvals.read"]) });
 
     const { approvalId } = await harness.ctx.approvals.create({ companyId, prompt: "Wait for me." });
 
@@ -222,6 +222,16 @@ describe("ctx.approvals SDK contract", () => {
     await expect(
       harness.ctx.approvals.list({ companyId }),
     ).rejects.toThrow(/approvals\.read/);
+  });
+
+  it("blocks approvals.onResolved without approvals.read capability", async () => {
+    const companyId = randomUUID();
+    const harness = createTestHarness({ manifest: manifest(["approvals.create"]) });
+    const { approvalId } = await harness.ctx.approvals.create({ companyId, prompt: "Wait for me." });
+
+    expect(() => {
+      harness.ctx.approvals.onResolved(approvalId, async () => {});
+    }).toThrow(/approvals\.read/);
   });
 
   it("blocks approvals.cancel without approvals.create capability", async () => {

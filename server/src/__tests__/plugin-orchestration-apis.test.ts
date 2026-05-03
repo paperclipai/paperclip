@@ -5,12 +5,15 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  approvals,
   companies,
   costEvents,
   createDb,
   heartbeatRuns,
+  issueApprovals,
   issueRelations,
   issues,
+  plugins,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -56,10 +59,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(plugins);
   });
 
   afterAll(async () => {
@@ -367,6 +373,44 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       inputTokens: 30,
       cachedInputTokens: 3,
       outputTokens: 6,
+    });
+  });
+
+  it("keeps the validated approval prompt when payload contains prompt", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub());
+
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Validated prompt",
+      payload: { prompt: "spoofed prompt", detail: "kept" },
+    });
+
+    const [stored] = await db.select().from(approvals).where(eq(approvals.id, created.approvalId));
+    expect(stored?.payload).toMatchObject({
+      prompt: "Validated prompt",
+      detail: "kept",
     });
   });
 });

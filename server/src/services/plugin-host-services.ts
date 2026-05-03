@@ -1890,9 +1890,9 @@ export function buildHostServices(
           requestedByUserId: null,
           status: "pending",
           payload: {
+            ...(params.payload ?? {}),
             prompt: params.prompt,
             ...(params.actorRunId ? { actorRunId: params.actorRunId } : {}),
-            ...(params.payload ?? {}),
           },
           sourcePluginId: pluginId,
           sourcePluginKey: pluginKey,
