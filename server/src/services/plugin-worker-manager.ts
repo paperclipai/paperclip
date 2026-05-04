@@ -155,19 +155,27 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
  * A graceful exit means: log at INFO, do not bump crash counters, do not
  * trigger restart-with-backoff. Used for:
  *   - This worker's own `stop()` was called (`intentionalStop=true`).
- *   - The host process is shutting down and SIGTERM/SIGINT was forwarded to
- *     the worker as part of that shutdown (`isShuttingDown=true`). External
- *     SIGKILL or non-signal exits during shutdown still count as crashes —
- *     we only treat the documented graceful-shutdown signals as expected.
+ *   - The host process is shutting down (`isShuttingDown=true`) and the
+ *     worker either:
+ *       * was killed by SIGTERM/SIGINT (host forwarded the signal), or
+ *       * caught the signal itself and exited cleanly via `process.exit(0)`,
+ *         which Node reports as `signal=null, code=0`.
+ *
+ * During shutdown, SIGKILL and any non-zero exit code still count as a
+ * crash — those represent OOM-killer, supervisor-initiated `kill -9`, or
+ * a worker that errored on its own, none of which the host's shutdown
+ * caused.
  */
 export function classifyWorkerExit(input: {
   intentionalStop: boolean;
   isShuttingDown: boolean;
+  code: number | null;
   signal: NodeJS.Signals | null;
 }): "graceful" | "crash" {
   if (input.intentionalStop) return "graceful";
-  if (input.isShuttingDown && (input.signal === "SIGTERM" || input.signal === "SIGINT")) {
-    return "graceful";
+  if (input.isShuttingDown) {
+    if (input.signal === "SIGTERM" || input.signal === "SIGINT") return "graceful";
+    if (input.signal === null && input.code === 0) return "graceful";
   }
   return "crash";
 }
@@ -716,7 +724,7 @@ export function createPluginWorkerHandle(
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void {
-    const exitClass = classifyWorkerExit({ intentionalStop, isShuttingDown, signal });
+    const exitClass = classifyWorkerExit({ intentionalStop, isShuttingDown, code, signal });
 
     // Clean up readline interfaces
     if (readline) {

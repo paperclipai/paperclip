@@ -49,22 +49,32 @@ describe("plugin-worker-manager stderr failure context", () => {
 describe("classifyWorkerExit", () => {
   it("treats an explicit per-worker stop() as graceful", () => {
     expect(
-      classifyWorkerExit({ intentionalStop: true, isShuttingDown: false, signal: null }),
+      classifyWorkerExit({ intentionalStop: true, isShuttingDown: false, code: null, signal: null }),
     ).toBe("graceful");
     expect(
-      classifyWorkerExit({ intentionalStop: true, isShuttingDown: false, signal: "SIGTERM" }),
+      classifyWorkerExit({ intentionalStop: true, isShuttingDown: false, code: null, signal: "SIGTERM" }),
     ).toBe("graceful");
   });
 
   it("treats SIGTERM during host shutdown as graceful (issue #5131)", () => {
     expect(
-      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, signal: "SIGTERM" }),
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, code: null, signal: "SIGTERM" }),
     ).toBe("graceful");
   });
 
   it("treats SIGINT during host shutdown as graceful", () => {
     expect(
-      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, signal: "SIGINT" }),
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, code: null, signal: "SIGINT" }),
+    ).toBe("graceful");
+  });
+
+  it("treats a worker that catches SIGTERM and exits cleanly as graceful during host shutdown", () => {
+    // A well-behaved plugin that traps SIGTERM and calls process.exit(0)
+    // shows up as { code: 0, signal: null }. The host shouldn't penalize
+    // good behavior — without this, every routine restart bumps the
+    // crash counters for any plugin that does its own signal cleanup.
+    expect(
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, code: 0, signal: null }),
     ).toBe("graceful");
   });
 
@@ -72,7 +82,7 @@ describe("classifyWorkerExit", () => {
     // External `kill -TERM <pid>`, supervisor intervention, etc. should keep
     // counting as a crash so consecutiveCrashes/totalCrashes stay meaningful.
     expect(
-      classifyWorkerExit({ intentionalStop: false, isShuttingDown: false, signal: "SIGTERM" }),
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: false, code: null, signal: "SIGTERM" }),
     ).toBe("crash");
   });
 
@@ -80,19 +90,30 @@ describe("classifyWorkerExit", () => {
     // SIGKILL during shutdown indicates an abrupt external kill or OOM-killer,
     // not the host's own graceful-shutdown signal forwarding.
     expect(
-      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, signal: "SIGKILL" }),
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, code: null, signal: "SIGKILL" }),
     ).toBe("crash");
   });
 
-  it("treats a non-zero exit code with no signal as a crash even during host shutdown", () => {
+  it("treats a non-zero exit code as a crash even during host shutdown", () => {
+    // Worker errored on its own and happened to exit during shutdown —
+    // not the host's fault, still a real crash worth counting.
     expect(
-      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, signal: null }),
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: true, code: 1, signal: null }),
+    ).toBe("crash");
+  });
+
+  it("treats a clean exit when host is not shutting down as a crash", () => {
+    // Worker exited cleanly without anyone asking it to. Outside a host
+    // shutdown that's still unexpected behavior; the manager should
+    // surface it and consider whether to restart.
+    expect(
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: false, code: 0, signal: null }),
     ).toBe("crash");
   });
 
   it("treats a normal unexpected exit as a crash", () => {
     expect(
-      classifyWorkerExit({ intentionalStop: false, isShuttingDown: false, signal: null }),
+      classifyWorkerExit({ intentionalStop: false, isShuttingDown: false, code: null, signal: null }),
     ).toBe("crash");
   });
 });

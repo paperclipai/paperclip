@@ -4,7 +4,6 @@ node_modules/
 **/node_modules/
 dist/
 ui/storybook-static/
-.env
 *.tsbuildinfo
 drizzle/meta/
 .vite/
@@ -56,3 +55,4 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+config.bat
