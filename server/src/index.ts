@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -21,6 +21,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
@@ -44,6 +45,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { drainRunsBeforeRestart } from "./services/dispatcher-restart-drain.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -870,6 +872,52 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      const maxDrainMs = 300_000;
+      const pollIntervalMs = 5_000;
+      const restartReason = "restart_during_run";
+      const activeWindowStart = () => new Date(Date.now() - maxDrainMs);
+
+      try {
+        const drain = await drainRunsBeforeRestart({
+          maxDrainMs,
+          pollIntervalMs,
+          listActiveRuns: async () => {
+            const rows = await db
+              .select({ id: heartbeatRuns.id })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.status, "running"),
+                  gte(heartbeatRuns.updatedAt, activeWindowStart()),
+                ),
+              );
+            return rows;
+          },
+          forceTerminateRun: async (runId) => {
+            const now = new Date();
+            const rows = await db
+              .update(heartbeatRuns)
+              .set({
+                status: "failed",
+                errorCode: restartReason,
+                error: `Run terminated during dispatcher restart after drain timeout (${maxDrainMs}ms)`,
+                finishedAt: now,
+                updatedAt: now,
+              })
+              .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+              .returning({ id: heartbeatRuns.id });
+            return rows.length > 0;
+          },
+          emit: ({ name, value }) => {
+            logger.info({ metric: name, value, signal }, "dispatcher restart drain metric");
+          },
+        });
+
+        logger.info({ signal, ...drain }, "dispatcher restart drain completed");
+      } catch (err) {
+        logger.error({ err, signal }, "dispatcher restart drain failed; proceeding with shutdown");
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

@@ -10,6 +10,7 @@ const {
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
+  drainRunsBeforeRestartMock,
   detectPortMock,
   deriveAuthTrustedOriginsMock,
   feedbackExportServiceMock,
@@ -20,6 +21,11 @@ const {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
+  const drainRunsBeforeRestartMock = vi.fn(async () => ({
+    deferredMs: 0,
+    initialRunsInFlight: 0,
+    forcedTerminations: 0,
+  }));
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const feedbackExportServiceMock = {
@@ -41,6 +47,7 @@ const {
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
+    drainRunsBeforeRestartMock,
     detectPortMock,
     deriveAuthTrustedOriginsMock,
     feedbackExportServiceMock,
@@ -111,6 +118,14 @@ vi.mock("@paperclipai/db", () => ({
   authUsers: {},
   companies: {},
   companyMemberships: {},
+  heartbeatRuns: {
+    id: "id",
+    status: "status",
+    updatedAt: "updatedAt",
+    errorCode: "errorCode",
+    error: "error",
+    finishedAt: "finishedAt",
+  },
   instanceUserRoles: {},
 }));
 
@@ -192,6 +207,10 @@ vi.mock("../auth/better-auth.js", () => ({
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),
 }));
 
+vi.mock("../services/dispatcher-restart-drain.js", () => ({
+  drainRunsBeforeRestart: drainRunsBeforeRestartMock,
+}));
+
 import { startServer } from "../index.ts";
 
 describe("startServer feedback export wiring", () => {
@@ -260,6 +279,72 @@ describe("startServer authenticated auth origin setup", () => {
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
       serverPort: 3211,
     });
+  });
+});
+
+describe("startServer shutdown drain hook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadConfigMock.mockReturnValue(buildTestConfig());
+    createBetterAuthInstanceMock.mockReturnValue({});
+    deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("runs dispatcher drain on SIGTERM before process exit", async () => {
+    const onceSpy = vi.spyOn(process, "once");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    await startServer();
+
+    const sigtermHandler = onceSpy.mock.calls.find((call) => call[0] === "SIGTERM")?.[1];
+    expect(sigtermHandler).toBeTypeOf("function");
+
+    (sigtermHandler as () => unknown)();
+
+    expect(drainRunsBeforeRestartMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    onceSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("persists restart_during_run on forced termination path", async () => {
+    const returningMock = vi.fn(async () => [{ id: "run-1" }]);
+    const whereMock = vi.fn(() => ({ returning: returningMock }));
+    const setMock = vi.fn(() => ({ where: whereMock }));
+    const updateMock = vi.fn(() => ({ set: setMock }));
+    createDbMock.mockReturnValue({
+      update: updateMock,
+    } as never);
+
+    drainRunsBeforeRestartMock.mockImplementationOnce(async (deps) => {
+      await deps.forceTerminateRun("run-1");
+      return { deferredMs: 0, initialRunsInFlight: 1, forcedTerminations: 1 };
+    });
+
+    const onceSpy = vi.spyOn(process, "once");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    await startServer();
+    const sigtermHandler = onceSpy.mock.calls.find((call) => call[0] === "SIGTERM")?.[1];
+    expect(sigtermHandler).toBeTypeOf("function");
+    (sigtermHandler as () => unknown)();
+
+    await vi.waitFor(() => {
+      expect(setMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "failed",
+          errorCode: "restart_during_run",
+        }),
+      );
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    onceSpy.mockRestore();
+    exitSpy.mockRestore();
   });
 });
 
