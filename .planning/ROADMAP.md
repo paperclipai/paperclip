@@ -15,7 +15,8 @@
 - [shipped] **v3.0 Native Distribution Readiness** - Phase 59-64 완료, 2026-05-01 ([archive](milestones/v3.0-ROADMAP.md), [requirements](milestones/v3.0-REQUIREMENTS.md), [audit](milestones/v3.0-MILESTONE-AUDIT.md))
 - [shipped] **v3.1 DevPlan Core Convergence** - Phase 65-71 complete, 2026-05-01 ([requirements](REQUIREMENTS.md))
 - [shipped] **v3.2 Future Scope** - Phase 72-77 complete, 2026-05-01 ([requirements](REQUIREMENTS.md))
-- [planned] **v3.3** - TBD
+- [planned] **v3.3** - RT2 Engine Convergence (Phase 78-83 complete) ([archive](milestones/v3.3-ROADMAP.md))
+- [planned] **v3.4** - RT2 Integration & API Alignment
 
 ## 완료됨
 
@@ -137,18 +138,35 @@ v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 
 </details>
 
 <details open>
-<summary>v3.3 RT2 Engine Convergence (planned)</summary>
+<summary>v3.3 RT2 Engine Convergence (Phase 78-83 complete)</summary>
 
-**Goal:** RT2/Multica/wikiLLM+Graphify 삼중 기반 로직이 앱에 정확히 반영되어 RealTycoon2 운영엔진으로 동작하는지 확인하고 개선한다.
+**Goal:** RT2/Multica/wikiLLM+Graphify 삼중 기반 로직이 앱에 정확히 반영되어 RealTycoon2 운영엔진으로 동작하는지 확인하고 개선한다. 혹시나 아직 Paperclip 방식으로 동작하는 부분이 있으면 전면 개편한다.
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 78 | Multica Runtime Alignment | MULTICA-01..03 | Planned |
-| 79 | RT2 Event/Projector Alignment | RT2-01..02 | Planned |
-| 80 | Work Lifecycle Integration | RT2-03 | Planned |
-| 81 | wikiLLM/Graphify Knowledge Projection | WIKI-01..03 | Planned |
-| 82 | Paperclip Residue Cleanup | CLEANUP-01..03 | Planned |
-| 83 | v3.3 Acceptance Gate | GATE-01..02 | Planned |
+| 78 | Multica Runtime Alignment | MULTICA-01..03 | Complete |
+| 79 | RT2 Event/Projector Alignment | RT2-01..02 | Complete |
+| 80 | Work Lifecycle Integration | RT2-03 | Complete |
+| 81 | wikiLLM/Graphify Knowledge Projection | WIKI-01..03 | Complete |
+| 82 | Paperclip Residue Cleanup | CLEANUP-01..03 | Complete |
+| 83 | v3.3 Acceptance Gate | GATE-01..02 | Complete |
+
+**Audit status:** `passed`. Requirements 6/6, phases 6/6, DevPlan alignment 100%, acceptance gate passed.
+
+</details>
+
+<details open>
+<summary>v3.4 RT2 Integration & API Alignment (Phase 84-88 planned)</summary>
+
+**Goal:** RT2 event stream, projector, API contract, work entity lifecycle을 실제 제품 운영에 맞게 정렬하고, versioning strategy와 schema validation으로 미래 확장을 대비한다.
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Planned |
+| 85 | API Contract Alignment | API-01, API-02, API-03 | Planned |
+| 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Planned |
+| 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Planned |
+| 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Planned |
 
 </details>
 
@@ -555,12 +573,17 @@ Success criteria:
 | 75. Autonomous Jarvis Direct Apply | v3.2 | 0/0 | Complete | 2026-05-01 |
 | 76. Public Store Operations | v3.2 | 0/0 | Complete | 2026-05-01 |
 | 77. v3.2 Acceptance Gate | v3.2 | 0/0 | Complete | 2026-05-01 |
-| 78. Multica Runtime Alignment | v3.3 | 1/1 | Planned | — |
-| 79. RT2 Event/Projector Alignment | v3.3 | 1/1 | Planned | — |
-| 80. Work Lifecycle Integration | v3.3 | 1/1 | Planned | — |
-| 81. wikiLLM/Graphify Knowledge Projection | v3.3 | 0/0 | Planned | — |
-| 82. Paperclip Residue Cleanup | v3.3 | 0/0 | Planned | — |
-| 83. v3.3 Acceptance Gate | v3.3 | 0/0 | Planned | — |
+| 78. Multica Runtime Alignment | v3.3 | 1/1 | Complete | 2026-05-04 |
+| 79. RT2 Event/Projector Alignment | v3.3 | 1/1 | Complete | 2026-05-04 |
+| 80. Work Lifecycle Integration | v3.3 | 1/1 | Complete | 2026-05-04 |
+| 81. wikiLLM/Graphify Knowledge Projection | v3.3 | 0/0 | Complete | 2026-05-04 |
+| 82. Paperclip Residue Cleanup | v3.3 | 0/0 | Complete | 2026-05-04 |
+| 83. v3.3 Acceptance Gate | v3.3 | 0/0 | Complete | 2026-05-04 |
+| 84. RT2 Event/Projector Layer | v3.4 | 0/0 | Planned | — |
+| 85. API Contract Alignment | v3.4 | 0/0 | Planned | — |
+| 86. Work Entity Migration | v3.4 | 0/0 | Planned | — |
+| 87. RT2 Schema Validation | v3.4 | 0/0 | Planned | — |
+| 88. v3.4 Acceptance Gate | v3.4 | 0/0 | Planned | — |
 
 ## Archive
 
@@ -595,6 +618,9 @@ Success criteria:
 - [v3.0 roadmap archive](milestones/v3.0-ROADMAP.md)
 - [v3.0 requirements archive](milestones/v3.0-REQUIREMENTS.md)
 - [v3.0 milestone audit](milestones/v3.0-MILESTONE-AUDIT.md)
+- [v3.3 roadmap archive](milestones/v3.3-ROADMAP.md)
+- [v3.3 requirements archive](milestones/v3.3-REQUIREMENTS.md)
+- [v3.3 milestone audit](milestones/v3.3-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-05-01, Phase 68 completed*
+*마지막 업데이트: 2026-05-04, v3.4 started*

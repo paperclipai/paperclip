@@ -16,8 +16,10 @@
 | v3.0 | Native Distribution Readiness | Shipped | 2026-04-30 | 2026-05-01 | Phase 59-64 complete. Requirements 12/12, audit `tech_debt`; signing/updater/resident surface/push/final distribution evidence gates 완료 |
 | v3.1 | DevPlan Core Convergence | Shipped | 2026-05-01 | 2026-05-01 | Phase 65-71 complete. DevPlan alignment from 64% → 100%. Requirements 24/24 complete. Acceptance gate passed with +36pp delta. |
 | v3.2 | Future Scope | Shipped | 2026-05-01 | 2026-05-01 | Phase 72-77 complete. Public marketplace, billing/payroll, federation, autonomous Jarvis, store operations. DevPlan alignment 100%. |
+| v3.3 | RT2 Engine Convergence | Shipped | 2026-05-04 | 2026-05-04 | Phase 78-83 complete. RT2/Multica/wikiLLM/Graphify triple-based logic alignment. DevPlan alignment 100%. |
+| v3.4 | RT2 Integration & API Alignment | Planned | 2026-05-04 | — | RT2 event stream, projector, API contract, work entity lifecycle alignment. |
 
-## v2.0 RT2 Refoundation
+## v3.3 RT2 Engine Convergence
 
 **상태:** 2026-04-25 완료  
 **Phases:** 7  
@@ -681,5 +683,54 @@ RealTycoon2를 trusted internal company evidence ecosystem에서 public/open mar
 - 5개 스키마 확장 (marketplace, payroll, federation, autonomy, store operations)
 - Typecheck: 통과
 
+## v3.3 RT2 Engine Convergence
+
+**상태:** Shipped
+**시작:** 2026-05-04
+**완료:** 2026-05-04
+
+### 목표
+
+RT2/Multica/wikiLLM+Graphify 삼중 기반 로직이 앱에 정확히 반영되어 RealTycoon2 운영엔진으로 동작하는지 확인하고 개선한다.
+
+### 완료한 Phase
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 78 | Multica Runtime Alignment | MULTICA-01..03 | Complete |
+| 79 | RT2 Event/Projector Alignment | RT2-01..02 | Complete |
+| 80 | Work Lifecycle Integration | RT2-03 | Complete |
+| 81 | wikiLLM/Graphify Knowledge Projection | WIKI-01..03 | Complete |
+| 82 | Paperclip Residue Cleanup | CLEANUP-01..03 | Complete |
+| 83 | v3.3 Acceptance Gate | GATE-01..02 | Complete |
+
+### 주요 산출물
+
+- DevPlan alignment: 100% passed, 0 blockers
+- RT2/Multica/wikiLLM/Graphify integration verification: passed
+- Paperclip residue cleanup: complete
+- Typecheck/test: passed
+
+## v3.4 RT2 Integration & API Alignment
+
+**상태:** Planned
+**시작:** 2026-05-04
+**완료:** —
+**Phases:** 6 planned
+
+### 목표
+
+RT2 event stream, projector, API contract, work entity lifecycle을 실제 제품 운영에 맞게 정렬하고, versioning strategy와 schema validation으로 미래 확장을 대비한다.
+
+### 계획된 Phase
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Planned |
+| 85 | API Contract Alignment | API-01, API-02, API-03 | Planned |
+| 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Planned |
+| 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Planned |
+| 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Planned |
+
 ---
-*마지막 업데이트: 2026-05-01, v3.2 shipped*
+*마지막 업데이트: 2026-05-04, v3.4 started*
