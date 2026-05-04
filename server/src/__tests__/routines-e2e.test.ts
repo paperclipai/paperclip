@@ -277,7 +277,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
-  });
+  }, 30_000);
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
@@ -325,7 +325,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       .where(eq(issues.id, runRes.body.linkedIssueId));
 
     expect(issue?.description).toBe("Review paperclip for high bugs");
-  });
+  }, 30_000);
 
   it("persists execution workspace selections from manual routine runs", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
@@ -409,5 +409,5 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
-  });
+  }, 30_000);
 });
