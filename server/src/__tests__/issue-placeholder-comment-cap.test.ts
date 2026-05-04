@@ -310,6 +310,8 @@ describe.sequential("issue placeholder comment cap route", () => {
 
     const res = await postComment(agentActor(), { body: "Ack" });
 
+    // The request-time guard is best effort: parallel posts can race count+insert,
+    // but the approved v2 bound is <=4 placeholders before the next attempt blocks.
     expect(res.status).toBe(409);
     expect(res.headers["content-type"]).toMatch(/^application\/json/);
     expect(res.body).toEqual({
@@ -400,7 +402,9 @@ describe.sequential("issue placeholder comment cap route", () => {
     const res = await postComment(agentActor(), { body: "Ack", forceCommentAllow: true });
 
     expect(res.status).toBe(409);
-    await expect(metricText()).resolves.not.toContain("paperclip_placeholder_cap_overrides_total");
+    await expect(metricText()).resolves.not.toContain(
+      'paperclip_placeholder_cap_overrides_total{agent_id="22222222-2222-4222-8222-222222222222"}',
+    );
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 

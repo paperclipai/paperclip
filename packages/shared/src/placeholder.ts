@@ -1,25 +1,31 @@
-export const DEFAULT_PLACEHOLDER_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
-  /^\s*Parked\.?\s*$/i,
-  /^\s*Parking\.?\s*$/i,
-  /^\s*Silent(?:\.|\s+exit\.?)?\s*$/i,
-  /^\s*Self-?wake(?:\s+(?:loop|exit|waiting(?:\s+for\s+\w+)?))?\.?\s*$/i,
-  /^\s*Done for this heartbeat\.?\s*$/i,
-  /^\s*Noop\.?\s*$/i,
-  /^\s*Blocked\.?\s*$/i,
-  /^\s*\.{1,3}\s*$/,
-  /^\s*(?:Heartbeat over|Continuing|Working|Idle|Polling)\.?\s*$/i,
-]);
+export const PLACEHOLDER_COMMENT_PREFIXES = [
+  "acknowledg",
+  "working on",
+  "continuing",
+  "stale",
+  "pure self-comment",
+  "heartbeat handled",
+] as const;
 
-export function isPlaceholderCommentBody(
-  body: string | null | undefined,
-  regexSet: ReadonlyArray<RegExp> = DEFAULT_PLACEHOLDER_PATTERNS,
-): boolean {
-  const normalizedBody = body?.trim();
-  if (!normalizedBody) return false;
+export function stripMarkdown(body: string): string {
+  return body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_~>#]/g, "")
+    .replace(/^\s*[-+]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  for (const pattern of regexSet) {
-    pattern.lastIndex = 0;
-    if (pattern.test(normalizedBody)) return true;
-  }
+export function isPlaceholderCommentBody(body: string | null | undefined): boolean {
+  if (body == null) return false;
+  const stripped = stripMarkdown(body).trim();
+  if (stripped.length < 30) return true;
+
+  const lc = stripped.toLowerCase();
+  if (PLACEHOLDER_COMMENT_PREFIXES.some((prefix) => lc.startsWith(prefix))) return true;
+  if (lc.includes("no external context change")) return true;
   return false;
 }

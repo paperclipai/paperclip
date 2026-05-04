@@ -4,10 +4,10 @@ export const register = new Registry();
 
 collectDefaultMetrics({ register });
 
-export const placeholderCapHits = new Counter<"agent_id">({
+export const placeholderCapHits = new Counter<"agent_id" | "issue_id">({
   name: "paperclip_placeholder_cap_hits_total",
   help: "Times the placeholder-comment cap blocked an agent comment post.",
-  labelNames: ["agent_id"] as const,
+  labelNames: ["agent_id", "issue_id"] as const,
   registers: [register],
 });
 

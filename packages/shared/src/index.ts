@@ -220,7 +220,7 @@ export {
   validateConfiguredBindMode,
 } from "./network-bind.js";
 
-export { DEFAULT_PLACEHOLDER_PATTERNS, isPlaceholderCommentBody } from "./placeholder.js";
+export { PLACEHOLDER_COMMENT_PREFIXES, isPlaceholderCommentBody, stripMarkdown } from "./placeholder.js";
 
 export type {
   Company,

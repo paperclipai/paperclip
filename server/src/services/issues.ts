@@ -62,8 +62,7 @@ import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
-const PLACEHOLDER_COMMENT_WINDOW_SECONDS = 30 * 60;
-const PLACEHOLDER_COMMENT_WINDOW_COMMENTS = 5;
+const PLACEHOLDER_COMMENT_WINDOW_COMMENTS = 3;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
@@ -3515,20 +3514,26 @@ export function issueService(db: Db) {
     countOwnRecentPlaceholderComments: async (
       issueId: string,
       agentId: string,
-      opts?: { windowSeconds?: number; windowComments?: number; patterns?: readonly RegExp[] },
+      opts?: { windowComments?: number },
     ) => {
-      const windowSeconds = opts?.windowSeconds ?? PLACEHOLDER_COMMENT_WINDOW_SECONDS;
       const windowComments = opts?.windowComments ?? PLACEHOLDER_COMMENT_WINDOW_COMMENTS;
-      const cutoffMs = Date.now() - windowSeconds * 1000;
       const comments = await listComments(issueId, { order: "desc", limit: MAX_ISSUE_COMMENT_PAGE_LIMIT });
       const recentOwnComments = comments
-        .filter((comment) => comment.authorAgentId === agentId && new Date(comment.createdAt).getTime() > cutoffMs)
+        .filter((comment) => comment.authorAgentId === agentId)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, windowComments);
+      const placeholders: typeof recentOwnComments = [];
+      for (const comment of recentOwnComments) {
+        if (!isPlaceholderCommentBody(comment.body)) break;
+        placeholders.push(comment);
+      }
 
       return {
-        count: recentOwnComments.filter((comment) => isPlaceholderCommentBody(comment.body, opts?.patterns)).length,
-        windowSeconds,
+        count: placeholders.length,
         windowComments,
+        oldestPlaceholderAt: placeholders.length
+          ? new Date(placeholders[placeholders.length - 1]!.createdAt).toISOString()
+          : null,
       };
     },
 
