@@ -85,6 +85,19 @@ describe("redaction", () => {
     expect(result).not.toContain(jwt);
   });
 
+  it("redacts Slack and Supabase value shapes via redactSensitiveText", () => {
+    const slackBot = "xoxb-" + "1234567890-1234567890-AAAAAAAAAAAAAAAAAAAA";
+    const slackApp = "xapp-1-A012345678-1234567890123-" + "A".repeat(64);
+    const supabasePAT = "sbp_" + "a".repeat(40);
+    const blob = `bot=${slackBot} app=${slackApp} pat=${supabasePAT}`;
+    const out = redactSensitiveText(blob);
+
+    expect(out).not.toContain(slackBot);
+    expect(out).not.toContain(slackApp);
+    expect(out).not.toContain(supabasePAT);
+    expect(out).toContain(REDACTED_EVENT_VALUE);
+  });
+
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
     const input = {
       command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",
