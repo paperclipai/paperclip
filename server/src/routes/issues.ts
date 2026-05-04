@@ -109,6 +109,12 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  buildAuditBlock as buildPreCommentHookAuditBlock,
+  evaluatePreCommentHooks,
+  parsePreCommentHooks,
+  type PreCommentHookContext,
+} from "../services/pre-comment-hook.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -1100,6 +1106,34 @@ export function issueRoutes(
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
     };
+  }
+
+  async function runPreCommentHooksForActor(
+    res: Response,
+    actor: ReturnType<typeof getActorInfo>,
+    ctx: Omit<PreCommentHookContext, "agentId">,
+  ): Promise<boolean> {
+    if (!actor.agentId) return true;
+    const agent = await agentsSvc.getById(actor.agentId);
+    if (!agent) return true;
+    const hooks = parsePreCommentHooks(agent.adapterConfig);
+    if (hooks.length === 0) return true;
+    const evalCtx: PreCommentHookContext = { ...ctx, agentId: actor.agentId };
+    const result = await evaluatePreCommentHooks(db, hooks, evalCtx);
+    if (result.blocked) {
+      res.status(422).json({
+        error: "Comment blocked by pre-comment hook",
+        auditBlock: buildPreCommentHookAuditBlock(result.matches, evalCtx),
+        matches: result.matches.map((m) => ({
+          hookIndex: m.hookIndex,
+          action: m.action,
+          message: m.message,
+          trigger: m.trigger,
+        })),
+      });
+      return false;
+    }
+    return true;
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -4034,6 +4068,18 @@ export function issueRoutes(
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const statusTransition = issue.status !== existing.status ? `to_${issue.status}` : "none";
+      if (
+        !(await runPreCommentHooksForActor(res, actor, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          body: commentBody,
+          source: "update",
+          statusTransition,
+        }))
+      ) {
+        return;
+      }
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -5197,6 +5243,18 @@ export function issueRoutes(
           });
         }
       }
+    }
+
+    if (
+      !(await runPreCommentHooksForActor(res, actor, {
+        companyId: currentIssue.companyId,
+        issueId: currentIssue.id,
+        body: typeof req.body.body === "string" ? req.body.body : "",
+        source: "comment",
+        statusTransition: null,
+      }))
+    ) {
+      return;
     }
 
     const comment = await svc.addComment(id, req.body.body, {
