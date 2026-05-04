@@ -1,0 +1,15 @@
+services:
+  server:
+    environment:
+      HOST: "0.0.0.0"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      GH_TOKEN: "${GH_TOKEN}"
+
+volumes:
+  paperclip-data:
+    external: true
+    name: docker_paperclip-data
+  pgdata:
+    external: true
+    name: docker_pgdata
