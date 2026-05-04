@@ -1,11 +1,14 @@
 // Lightweight Work Entity service with event emission scaffold for RT2
 // This file implements the core operations for Work Entities and emits domain events
 
-import type { Db } from 'server/types';
-
-// Minimal type placeholders to keep TS happy in this patch environment
-type Rt2DomainEventActorType = any;
-type Rt2V33WorkEntitiesRow = any;
+import type { Db } from '@paperclipai/db';
+import { rt2V33WorkEntities, rt2V33DomainEvents } from '@paperclipai/db';
+import { v4 as uuidv4 } from 'uuid';
+import type { AppendRt2DomainEvent } from '@paperclipai/shared';
+import { eq } from 'drizzle-orm';
+import type { Rt2DomainEvent } from '@paperclipai/shared';
+// Row type derived from drizzle schema (best-effort)
+type Rt2V33WorkEntitiesRow = typeof rt2V33WorkEntities.$inferSelect;
 
 export interface CreateWorkInput {
   companyId: string;
@@ -22,10 +25,9 @@ export interface UpdateWorkStateInput {
   actorId?: string;
 }
 
-export function rt2WorkEntityService(db: any) {
+export function rt2WorkEntityService(db: Db) {
   // createWork: inserts rt2V33WorkEntities with state='draft', emits rt2.work.created
   async function createWork(input: CreateWorkInput): Promise<Rt2V33WorkEntitiesRow> {
-    const { v4: uuidv4 } = require('uuid');
     const workEntityId = uuidv4();
     const now = new Date();
     const row: any = {
@@ -39,10 +41,9 @@ export function rt2WorkEntityService(db: any) {
       createdAt: now,
       updatedAt: now,
     };
-
-    // Placeholder insert - adapt to actual ORM usage in repo
-    if (db?.insert?.bind) {
-      await db.insert('rt2_v33_work_entities').values(row);
+    // Persist using drizzle-like API
+    if ((db as any).insert) {
+      await (db as any).insert(rt2V33WorkEntities).values(row);
     }
 
     // Emit domain event (idempotency key pattern)
@@ -54,8 +55,8 @@ export function rt2WorkEntityService(db: any) {
       payload: { workEntityId, taskIssueId: input.taskIssueId, deliverableWorkProductId: input.deliverableWorkProductId },
       occurredAt: now,
     };
-    if (db?.insert?.bind) {
-      await db.insert('rt2_v33_domain_events').values(event);
+    if ((db as any).insert) {
+      await (db as any).insert(rt2V33DomainEvents).values(event);
     }
 
     // Update projector/read-model
@@ -66,8 +67,12 @@ export function rt2WorkEntityService(db: any) {
   }
 
   async function updateWorkState(input: UpdateWorkStateInput): Promise<Rt2V33WorkEntitiesRow> {
-    // Fetch existing - placeholder
-    const existing: any = await (db?.select?.bind ? db.select('rt2_v33_work_entities').where({ id: input.workEntityId }) : null);
+    // Fetch existing - placeholder using drizzle pattern
+    const existing: any = await (db as any)
+      .select()
+      .from(rt2V33WorkEntities)
+      .where(eq(rt2V33WorkEntities.id, input.workEntityId))
+      .then((rows: any[]) => rows[0] ?? null);
     const currentState = existing?.state ?? 'draft';
     // Terminal states
     if (currentState === 'completed' || currentState === 'cancelled') {
@@ -80,46 +85,50 @@ export function rt2WorkEntityService(db: any) {
       throw new Error('Invalid state transition');
     }
     const updated: any = { ...existing, state: input.newState, updatedAt: new Date() };
-    if (db?.update?.bind) {
-      await db.update('rt2_v33_work_entities').set(updated).where({ id: input.workEntityId });
+    if ((db as any).update) {
+      await (db as any).update(rt2V33WorkEntities).set(updated).where(eq(rt2V33WorkEntities.id, input.workEntityId));
     }
 
     // Emit domain event: state_changed
-    const event = {
-      id: require('uuid').v4(),
-      companyId: existing?.companyId,
+    const event: AppendRt2DomainEvent = {
+      companyId: existing?.companyId ?? input.companyId,
       eventType: 'rt2.work.state_changed',
-      idempotencyKey: `rt2.work.state_changed:${input.workEntityId}:${input.newState}`,
+      eventVersion: 1,
+      entityType: 'work',
+      entityId: input.workEntityId,
       payload: { workEntityId: input.workEntityId, previousState: currentState, newState: input.newState },
+      idempotencyKey: `rt2.work.state_changed:${input.workEntityId}:${input.newState}`,
       occurredAt: new Date(),
-    };
-    if (db?.insert?.bind) {
-      await db.insert('rt2_v33_domain_events').values(event);
+    } as any;
+    if ((db as any).insert) {
+      await (db as any).insert(rt2V33DomainEvents).values(event);
     }
     if (typeof (global as any).processEvent === 'function') {
-      await (global as any).processEvent('rt2.work_entity_projector', event.id, async (_evt: any) => {});
+      await (global as any).processEvent('rt2.work_entity_projector', (event as any).id, async (_evt: any) => {});
     }
     return updated;
   }
 
   async function archiveWork(workEntityId: string, migrationBatchId: string): Promise<void> {
     // Archive by setting archivedAt
-    if (db?.update?.bind) {
-      await db.update('rt2_v33_work_entities').set({ archivedAt: new Date(), updatedAt: new Date() }).where({ id: workEntityId });
+    if ((db as any).update) {
+      await (db as any).update(rt2V33WorkEntities).set({ archivedAt: new Date(), updatedAt: new Date() }).where(eq(rt2V33WorkEntities.id, workEntityId));
     }
-    const event = {
-      id: require('uuid').v4(),
-      companyId: null,
+    const event: AppendRt2DomainEvent = {
+      companyId: '',
       eventType: 'rt2.work.archived',
-      idempotencyKey: `rt2.work.archived:${workEntityId}:${migrationBatchId}`,
+      eventVersion: 1,
+      entityType: 'work',
+      entityId: workEntityId,
       payload: { workEntityId },
+      idempotencyKey: `rt2.work.archived:${workEntityId}:${migrationBatchId}`,
       occurredAt: new Date(),
-    };
-    if (db?.insert?.bind) {
-      await db.insert('rt2_v33_domain_events').values(event);
+    } as any;
+    if ((db as any).insert) {
+      await (db as any).insert(rt2V33DomainEvents).values(event);
     }
     if (typeof (global as any).processEvent === 'function') {
-      await (global as any).processEvent('rt2.work_entity_projector', event.id, async (_evt: any) => {});
+      await (global as any).processEvent('rt2.work_entity_projector', (event as any).id, async (_evt: any) => {});
     }
   }
 
