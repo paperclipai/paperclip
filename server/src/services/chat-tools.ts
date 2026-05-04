@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z, type ZodTypeAny } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -10,6 +11,7 @@ import {
 } from "@paperclipai/db";
 import { forbidden, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 export type ToolActor = {
   userId: string;
@@ -417,11 +419,141 @@ export function listChatToolSpecs(): AnthropicToolSpec[] {
   return CHAT_TOOLS.map((t) => t.spec);
 }
 
+// ─── Plugin tools bridge ──────────────────────────────────────────────
+//
+// Plugin tools (e.g. `3cx-tools:pbx_click_to_call`) are registered with
+// `PluginToolDispatcher` and live on a different surface than the
+// hardcoded chat tools above. To let chat-Agent mode invoke them, we
+// project each plugin tool into the same `AnthropicToolSpec` shape and
+// route execution back through the dispatcher.
+//
+// Anthropic / Bedrock / Gemini tool names must match
+// `^[a-zA-Z0-9_-]{1,64}$` — no colons. The plugin namespaced name
+// `<pluginKey>:<toolName>` is converted to `<pluginKey>__<toolName>`
+// using a double-underscore separator (only the FIRST colon is replaced
+// so plugin tool names that contain underscores are unaffected). The
+// reverse mapping happens at execute time.
+
+const PLUGIN_TOOL_SEPARATOR = "__";
+
+function pluginToolToChatName(namespacedName: string): string {
+  // "3cx-tools:pbx_click_to_call" -> "3cx-tools__pbx_click_to_call"
+  const idx = namespacedName.indexOf(":");
+  if (idx < 0) return namespacedName;
+  return (
+    namespacedName.slice(0, idx) +
+    PLUGIN_TOOL_SEPARATOR +
+    namespacedName.slice(idx + 1)
+  );
+}
+
+function chatNameToPluginTool(chatName: string): string {
+  // "3cx-tools__pbx_click_to_call" -> "3cx-tools:pbx_click_to_call"
+  const idx = chatName.indexOf(PLUGIN_TOOL_SEPARATOR);
+  if (idx < 0) return chatName;
+  return (
+    chatName.slice(0, idx) +
+    ":" +
+    chatName.slice(idx + PLUGIN_TOOL_SEPARATOR.length)
+  );
+}
+
+/**
+ * True if the chat-name looks like a plugin tool name we projected
+ * (contains `__`). None of the hardcoded chat tools above use that
+ * separator, so this is a clean partition.
+ */
+export function isPluginChatToolName(chatName: string): boolean {
+  return chatName.includes(PLUGIN_TOOL_SEPARATOR);
+}
+
+/**
+ * Enumerate plugin tools as AnthropicToolSpec[] for inclusion in a
+ * chat-Agent session's tool list. Returns [] when the session has no
+ * company in scope (every plugin tool would fail ECOMPANY_NOT_ALLOWED
+ * without one — exposing them to the LLM would just lead to confusing
+ * errors).
+ */
+export async function listPluginToolSpecsForChat(
+  dispatcher: PluginToolDispatcher | null,
+  companyId: string | null,
+): Promise<AnthropicToolSpec[]> {
+  if (!dispatcher || !companyId) return [];
+  let tools;
+  try {
+    tools = await dispatcher.listToolsForAgent({ companyId });
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err), companyId },
+      "Failed to list plugin tools for chat — proceeding without",
+    );
+    return [];
+  }
+  return tools.map((t) => ({
+    name: pluginToolToChatName(t.name),
+    description: `${t.displayName} — ${t.description}`,
+    input_schema: t.parametersSchema as AnthropicToolSpec["input_schema"],
+  }));
+}
+
+/**
+ * Execute a plugin tool that was surfaced into a chat-Agent session.
+ * Builds a synthetic `runContext` (`agentId="clippy:<userId>"`, fresh
+ * runId) since chat-Agent isn't an agent run. The plugin worker only
+ * uses agentId/runId for telemetry; companyId is the security-relevant
+ * field and that comes from the session.
+ */
+export async function executePluginChatTool(
+  dispatcher: PluginToolDispatcher | null,
+  chatName: string,
+  rawInput: unknown,
+  ctx: ToolContext,
+): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
+  if (!dispatcher) {
+    return {
+      ok: false,
+      error: "Plugin tool dispatch is not enabled on this server.",
+    };
+  }
+  if (!ctx.defaultCompanyId) {
+    return {
+      ok: false,
+      error:
+        "No company in scope. Plugin tools require a company — pin one on the chat session or ask the user which company they mean.",
+    };
+  }
+  const namespacedName = chatNameToPluginTool(chatName);
+  const runContext = {
+    agentId: `clippy:${ctx.actor.userId}`,
+    runId: randomUUID(),
+    companyId: ctx.defaultCompanyId,
+    projectId: "",
+  };
+  try {
+    const exec = await dispatcher.executeTool(namespacedName, rawInput, runContext);
+    if (exec.result.error) return { ok: false, error: exec.result.error };
+    return {
+      ok: true,
+      result: exec.result.data ?? exec.result.content ?? null,
+    };
+  } catch (err) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err), tool: namespacedName },
+      "Plugin chat tool execution failed",
+    );
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function executeChatTool(
   name: string,
   rawInput: unknown,
   ctx: ToolContext,
+  dispatcher?: PluginToolDispatcher | null,
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
+  if (isPluginChatToolName(name)) {
+    return executePluginChatTool(dispatcher ?? null, name, rawInput, ctx);
+  }
   const tool = getChatTool(name);
   if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
   const parsed = tool.inputSchema.safeParse(rawInput);

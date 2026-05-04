@@ -58,9 +58,13 @@ function writeSseEvent(res: Response, event: StreamEvent | { type: "ping" }) {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-export function chatRoutes(db: Db) {
+export interface ChatRoutesDeps {
+  pluginToolDispatcher?: import("../services/plugin-tool-dispatcher.js").PluginToolDispatcher | null;
+}
+
+export function chatRoutes(db: Db, deps: ChatRoutesDeps = {}) {
   const router = Router();
-  const svc = chatService(db);
+  const svc = chatService(db, { pluginToolDispatcher: deps.pluginToolDispatcher });
   const attachments = chatAttachmentService(db);
   const attachmentUpload = multer({
     storage: multer.memoryStorage(),

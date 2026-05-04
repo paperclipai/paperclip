@@ -217,7 +217,6 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(systemRoutes());
-  api.use(chatRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -240,6 +239,9 @@ export async function createApp(
     externalMcpToolSource: externalMcpSource,
     externalMcpServerManager: externalMcpManager,
   });
+  // chatRoutes mounted here (after toolDispatcher exists) so chat-Agent
+  // sessions can surface plugin tools via the dispatcher.
+  api.use(chatRoutes(db, { pluginToolDispatcher: toolDispatcher }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,

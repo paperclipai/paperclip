@@ -7,10 +7,12 @@ import {
   CHAT_TOOLS,
   executeChatTool,
   listChatToolSpecs,
+  listPluginToolSpecsForChat,
   resolveDefaultCompanyId,
   type ToolActor,
   type ToolContext,
 } from "./chat-tools.js";
+import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { chatPermissions } from "./chat-permissions.js";
 import {
   getProviderForModel,
@@ -109,6 +111,9 @@ function systemPromptFor(session: ChatSession, defaultCompanyId: string | null):
     lines.push(
       "You have access to tools that read and (when permitted) modify Paperclip state. Mutating tools may require the user to approve each call. If the user denies a tool, acknowledge it and stop.",
     );
+    lines.push(
+      "Plugin tools (names containing '__', e.g. '3cx-tools__pbx_click_to_call') are bridged from installed Paperclip plugins. They take a runContext implicitly from this chat session — pass only the documented parameters; never include agentId/runId/companyId yourself. Plugin tool errors arrive as `[E<CODE>] message` strings — read the code, surface a helpful explanation to the user, and don't loop on the same failure.",
+    );
   } else {
     lines.push(
       "You are in chat mode and have no tools. If the user asks you to do something that would require a tool, tell them to switch to Agent mode in the composer.",
@@ -176,8 +181,18 @@ function attachmentToBlock(att: ChatAttachment): CanonicalContentBlock {
   };
 }
 
-export function chatService(db: Db) {
+export interface ChatServiceOptions {
+  /**
+   * Plugin tool dispatcher. When provided, plugin tools are projected
+   * into chat-Agent sessions so the LLM can invoke them. Without it,
+   * Agent mode is limited to the hardcoded chat tools.
+   */
+  pluginToolDispatcher?: PluginToolDispatcher | null;
+}
+
+export function chatService(db: Db, options: ChatServiceOptions = {}) {
   const attachments = chatAttachmentService(db);
+  const pluginToolDispatcher = options.pluginToolDispatcher ?? null;
 
   // Pre-load attachment bytes referenced anywhere in the conversation so
   // providers can splice base64 inline without async fanout during the stream.
@@ -442,7 +457,17 @@ export function chatService(db: Db) {
     });
 
     const toolCtx: ToolContext = { db, actor, defaultCompanyId };
-    const tools = session.mode === "agent" ? listChatToolSpecs() : undefined;
+    let tools: ReturnType<typeof listChatToolSpecs> | undefined;
+    if (session.mode === "agent") {
+      const builtIn = listChatToolSpecs();
+      const plugin = await listPluginToolSpecsForChat(
+        pluginToolDispatcher,
+        defaultCompanyId,
+      );
+      tools = [...builtIn, ...plugin];
+    } else {
+      tools = undefined;
+    }
 
     let loops = 0;
     while (loops < MAX_TOOL_LOOPS && !aborted) {
@@ -558,7 +583,12 @@ export function chatService(db: Db) {
           continue;
         }
 
-        const outcome = await executeChatTool(block.name, block.input, toolCtx);
+        const outcome = await executeChatTool(
+          block.name,
+          block.input,
+          toolCtx,
+          pluginToolDispatcher,
+        );
         if (outcome.ok) {
           toolResults.push({
             type: "tool_result",
