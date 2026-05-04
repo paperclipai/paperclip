@@ -74,6 +74,13 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+function resolvePaperclipRuntimeHost(rawHost: string): string {
+  const host = rawHost.trim();
+  if (!host || host === "0.0.0.0" || host === "::") return "localhost";
+  if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
+  return host;
+}
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -314,7 +321,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
       )
     : [];
-  const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
+  const runtimeServicesPrimaryUrl = runtimeServices
+    .map((service) => asString(service.url, ""))
+    .find((value) => value.length > 0);
+  const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "") || runtimeServicesPrimaryUrl || "";
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
@@ -457,6 +467,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     if (!executionTargetIsRemote) {
       env.PAPERCLIP_API_URL = runtimePrimaryUrl;
+    }
+  } else if (!executionTargetIsRemote) {
+    const runtimeHost = resolvePaperclipRuntimeHost(
+      process.env.PAPERCLIP_LISTEN_HOST || process.env.HOST || "localhost",
+    );
+    const runtimePort = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
+    if (runtimePort.length > 0) {
+      env.PAPERCLIP_API_URL = `http://${runtimeHost}:${runtimePort}`;
     }
   }
   for (const [k, v] of Object.entries(envConfig)) {

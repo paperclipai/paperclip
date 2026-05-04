@@ -546,6 +546,65 @@ describe("codex execute", () => {
     }
   });
 
+  it("falls back PAPERCLIP_API_URL to active runtime listen host and port when primary URL is missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-listen-"));
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipListenHost = process.env.PAPERCLIP_LISTEN_HOST;
+    const previousPaperclipListenPort = process.env.PAPERCLIP_LISTEN_PORT;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3104";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3116";
+
+    let invocationEnv: Record<string, string> = {};
+    try {
+      const result = await execute({
+        runId: "run-listen-fallback",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "node",
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          invocationEnv = meta.env ?? {};
+        },
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(invocationEnv.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3116");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipListenHost === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
+      else process.env.PAPERCLIP_LISTEN_HOST = previousPaperclipListenHost;
+      if (previousPaperclipListenPort === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
+      else process.env.PAPERCLIP_LISTEN_PORT = previousPaperclipListenPort;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies remote-compaction high-demand failures as retryable transient upstream errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-transient-"));
     const workspace = path.join(root, "workspace");
