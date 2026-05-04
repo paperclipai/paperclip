@@ -524,4 +524,107 @@ describe("agent live run routes", () => {
     expect(res.body).toHaveLength(4);
     expect(db.select).toHaveBeenCalledTimes(2);
   });
+
+  it("rejects runs stats requests missing `since`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("since");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("returns grouped run stats and top recovery sources", async () => {
+    const runs = [
+      {
+        id: "run-1",
+        agentId: "agent-1",
+        failureReason: "process_lost",
+        createdAt: new Date("2026-04-12T10:00:00.000Z"),
+        retryOfRunId: "src-1",
+      },
+      {
+        id: "run-2",
+        agentId: "agent-2",
+        failureReason: "process_lost",
+        createdAt: new Date("2026-04-12T11:00:00.000Z"),
+        retryOfRunId: "src-1",
+      },
+      {
+        id: "run-3",
+        agentId: "agent-1",
+        failureReason: "restart_during_run",
+        createdAt: new Date("2026-04-13T09:00:00.000Z"),
+        retryOfRunId: "src-2",
+      },
+    ];
+    const sourceRuns = [
+      { id: "src-1", issueId: "issue-1" },
+      { id: "src-2", issueId: "issue-2" },
+    ];
+    const sourceIssues = [
+      { id: "issue-1", identifier: "SUP-1756" },
+      { id: "issue-2", identifier: "SUP-1757" },
+    ];
+
+    let call = 0;
+    const db = {
+      select: vi.fn().mockImplementation(() => {
+        call += 1;
+        const rows = call === 1 ? runs : call === 2 ? sourceRuns : sourceIssues;
+        return {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve(rows)),
+        };
+      }),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&until=2026-04-14T00:00:00.000Z&groupBy=failureReason",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.groups).toEqual([
+      { key: "process_lost", count: 2 },
+      { key: "restart_during_run", count: 1 },
+    ]);
+    expect(res.body.topRecoverySources).toEqual([
+      { identifier: "SUP-1756", count: 2 },
+      { identifier: "SUP-1757", count: 1 },
+    ]);
+  });
+
+  it("omits groups when groupBy is not provided", async () => {
+    const runs = [{
+      id: "run-1",
+      agentId: "agent-1",
+      failureReason: "process_lost",
+      createdAt: new Date("2026-04-12T10:00:00.000Z"),
+      retryOfRunId: null,
+    }];
+    const db = {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnValue(Promise.resolve(runs)),
+      })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body).not.toHaveProperty("groups");
+    expect(res.body.topRecoverySources).toEqual([]);
+  });
 });

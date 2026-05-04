@@ -110,6 +110,21 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function createRouteRateLimiter(maxAttempts: number, windowMs: number) {
+  const attempts = new Map<string, number[]>();
+  return {
+    check(key: string): boolean {
+      const now = Date.now();
+      const windowStart = now - windowMs;
+      const recent = (attempts.get(key) ?? []).filter((ts) => ts > windowStart);
+      if (recent.length >= maxAttempts) return false;
+      recent.push(now);
+      attempts.set(key, recent);
+      return true;
+    },
+  };
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -170,6 +185,7 @@ export function agentRoutes(
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const runsStatsRateLimiter = createRouteRateLimiter(30, 60_000);
 
   async function assertAgentEnvironmentSelection(
     companyId: string,
@@ -2844,6 +2860,126 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
     res.json(runs);
+  });
+
+  router.get("/companies/:companyId/runs/stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const sinceRaw = typeof req.query.since === "string" ? req.query.since : "";
+    if (!sinceRaw) {
+      res.status(400).json({ error: "`since` is required and must be an ISO timestamp" });
+      return;
+    }
+    const since = new Date(sinceRaw);
+    if (Number.isNaN(since.getTime())) {
+      res.status(400).json({ error: "`since` is required and must be an ISO timestamp" });
+      return;
+    }
+    const untilRaw = typeof req.query.until === "string" ? req.query.until : undefined;
+    const until = untilRaw ? new Date(untilRaw) : new Date();
+    if (Number.isNaN(until.getTime())) {
+      res.status(400).json({ error: "`until` must be an ISO timestamp when provided" });
+      return;
+    }
+
+    const failureReason = typeof req.query.failureReason === "string" ? req.query.failureReason : undefined;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const groupByRaw = typeof req.query.groupBy === "string" ? req.query.groupBy : undefined;
+    const groupBy = groupByRaw && ["agentId", "failureReason", "day"].includes(groupByRaw)
+      ? groupByRaw
+      : undefined;
+    if (groupByRaw && !groupBy) {
+      res.status(400).json({ error: "`groupBy` must be one of: agentId, failureReason, day" });
+      return;
+    }
+
+    const actorId = req.actor.type === "agent" ? req.actor.agentId : req.actor.userId ?? "board";
+    const rateLimitKey = `${companyId}:${req.actor.type}:${actorId}`;
+    if (!runsStatsRateLimiter.check(rateLimitKey)) {
+      res.status(429).json({ error: "Rate limit exceeded" });
+      return;
+    }
+
+    const whereClauses = [
+      eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.createdAt} >= ${since}`,
+      sql`${heartbeatRuns.createdAt} <= ${until}`,
+      ...(failureReason ? [eq(heartbeatRuns.errorCode, failureReason)] : []),
+      ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
+    ];
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        failureReason: heartbeatRuns.errorCode,
+        createdAt: heartbeatRuns.createdAt,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+      })
+      .from(heartbeatRuns)
+      .where(and(...whereClauses));
+
+    const total = runs.length;
+
+    let groups: Array<{ key: string; count: number }> | undefined;
+    if (groupBy) {
+      const counts = new Map<string, number>();
+      for (const run of runs) {
+        let key = "";
+        if (groupBy === "agentId") key = run.agentId;
+        if (groupBy === "failureReason") key = run.failureReason ?? "none";
+        if (groupBy === "day") key = (run.createdAt ?? new Date(0)).toISOString().slice(0, 10);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      groups = Array.from(counts.entries()).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
+    }
+
+    const retrySourceRunIds = [...new Set(runs.map((run) => run.retryOfRunId).filter((id): id is string => Boolean(id)))];
+    let topRecoverySources: Array<{ identifier: string; count: number }> = [];
+    if (retrySourceRunIds.length > 0) {
+      const sourceRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+        })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, retrySourceRunIds));
+
+      const issueIds = [...new Set(sourceRuns.map((row) => row.issueId).filter((id): id is string => Boolean(id)))];
+      const issueRows = issueIds.length > 0
+        ? await db.select({ id: issuesTable.id, identifier: issuesTable.identifier }).from(issuesTable).where(
+          and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)),
+        )
+        : [];
+      const issueIdentifierById = new Map(issueRows.map((row) => [row.id, row.identifier]));
+      const sourceIssueIdByRunId = new Map(sourceRuns.map((row) => [row.id, row.issueId]));
+
+      const counts = new Map<string, number>();
+      for (const run of runs) {
+        if (!run.retryOfRunId) continue;
+        const sourceIssueId = sourceIssueIdByRunId.get(run.retryOfRunId);
+        if (!sourceIssueId) continue;
+        const identifier = issueIdentifierById.get(sourceIssueId);
+        if (!identifier) continue;
+        counts.set(identifier, (counts.get(identifier) ?? 0) + 1);
+      }
+
+      topRecoverySources = Array.from(counts.entries())
+        .map(([identifier, count]) => ({ identifier, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+    }
+
+    res.json({
+      window: {
+        since: since.toISOString(),
+        until: until.toISOString(),
+      },
+      total,
+      ...(groups ? { groups } : {}),
+      topRecoverySources,
+    });
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
