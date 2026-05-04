@@ -11,6 +11,7 @@
  */
 
 import type { CatalogEntry, Catalog } from './index.js';
+import { resolveBedrockAlias, STATIC_ALIASES } from './aliases.js';
 
 // ---------- Public API ----------
 
@@ -22,6 +23,45 @@ export function normalizeKey(provider: string, model: string): string {
   if (p && m.startsWith(`${p}/`)) return m;
   if (!p) return m;
   return `${p}/${m}`;
+}
+
+/**
+ * Resolve the catalog lookup key for a `(provider, model)` pair coming off a
+ * heartbeat result. Returns null when there is not enough information to look
+ * anything up (e.g. acpx-local emits `model: null`).
+ *
+ * Ordering matters:
+ *   1. Lowercase + trim both inputs.
+ *   2. If `model` already begins with `${provider}/`, treat it as the full key
+ *      (handles opencode-local's `anthropic/claude-sonnet-4-6` shape).
+ *   3. Otherwise compose `${provider}/${model}`.
+ *   4. Try to collapse Bedrock regional aliases (`us.anthropic.claude-...`).
+ *   5. Apply static alias overrides.
+ */
+export function lookupKey(
+  provider: string | null | undefined,
+  model: string | null | undefined,
+): string | null {
+  const p = (provider ?? '').trim().toLowerCase();
+  const m = (model ?? '').trim().toLowerCase();
+  if (!p || !m) return null;
+
+  // Already provider-prefixed (opencode-local, pi-local).
+  let key = m.startsWith(`${p}/`) ? m : `${p}/${m}`;
+
+  // Collapse Bedrock-style `us.anthropic.claude-...-v1` keys onto the base.
+  const bedrock = resolveBedrockAlias(key);
+  if (bedrock) {
+    key = bedrock;
+  }
+
+  // Apply curated static aliases last so callers can patch over both raw and
+  // post-Bedrock-collapse keys.
+  if (STATIC_ALIASES[key]) {
+    key = STATIC_ALIASES[key]!;
+  }
+
+  return key;
 }
 
 export interface ModelsDevRecord {
