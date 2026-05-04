@@ -49,6 +49,7 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  minFireIntervalSec: number | null;
   variables: RoutineVariable[];
   createdByAgentId: string | null;
   createdByUserId: string | null;

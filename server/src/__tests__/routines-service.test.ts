@@ -283,6 +283,35 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.status).toBe("paused");
   });
 
+  it("persists minFireIntervalSec across create and update (THEA-2270)", async () => {
+    const { companyId, svc } = await seedFixture();
+
+    const created = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "cooldown routine",
+        description: null,
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        minFireIntervalSec: 15,
+      },
+      {},
+    );
+    expect(created.minFireIntervalSec).toBe(15);
+
+    const updated = await svc.update(created.id, { minFireIntervalSec: 60 }, {});
+    expect(updated?.minFireIntervalSec).toBe(60);
+
+    const cleared = await svc.update(created.id, { minFireIntervalSec: null }, {});
+    expect(cleared?.minFireIntervalSec).toBeNull();
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 
