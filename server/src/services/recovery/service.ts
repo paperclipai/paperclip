@@ -16,6 +16,7 @@ import {
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
   issueApprovals,
   issueRecoveryActions,
@@ -80,6 +81,18 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+// GGU-809: when a stranded `in_progress` issue would otherwise hit the
+// `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
+// escalation if the assignee posted a comment or attachment within this window.
+// Batch workflows (e.g. Image Spec multi-frame generation) make real progress
+// every heartbeat and would otherwise trigger a recovery issue after just two
+// productive heartbeats. Floor the override at 60s to keep the exemption from
+// being effectively disabled by misconfiguration.
+export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
+  60_000,
+  Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
+);
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -582,6 +595,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  // GGU-809: visible-progress signal for stranded-recovery escalation guard.
+  // Returns true if the assignee posted a comment, OR any attachment was added
+  // to the issue, within `windowMs`. Used to suppress false-positive recovery
+  // issues for batch workflows that genuinely advance every heartbeat.
+  async function hasRecentVisibleProgress(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    const [comment, attachment] = await Promise.all([
+      db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.authorAgentId, assigneeAgentId),
+            gt(issueComments.createdAt, since),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issueAttachments.id })
+        .from(issueAttachments)
+        .where(
+          and(
+            eq(issueAttachments.companyId, companyId),
+            eq(issueAttachments.issueId, issueId),
+            gt(issueAttachments.createdAt, since),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return Boolean(comment || attachment);
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -2475,6 +2529,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
+      recentProgressExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -2623,21 +2678,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "in_progress",
-            latestRun: successfulRun,
-            comment:
-              "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-              "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
+          // GGU-809: skip escalation if the assignee has shown visible progress
+          // (comment or attachment) within the exemption window. Falling
+          // through here lets the normal continuation-retry path enqueue the
+          // next wake, which is the correct behaviour for batch workflows.
+          const exempted = await hasRecentVisibleProgress(
+            issue.companyId,
+            issue.id,
+            agentId,
+            STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+          );
+          if (!exempted) {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun: successfulRun,
+              comment:
+                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
           }
-          continue;
+          result.recentProgressExempted += 1;
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
