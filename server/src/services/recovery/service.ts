@@ -1681,6 +1681,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      // Dead work is a terminal state — cancel unconditionally before the routine guard defers live-but-parked issues
+      const vestigialDetection = await checkVestigialIssue(db, issue);
+      if (vestigialDetection) {
+        await suppressVestigialIssue({ issue, latestRun, detection: vestigialDetection });
+        result.vestigialSuppressed += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
       if (await hasEnabledFutureRoutineForAgent(issue.companyId, agentId)) {
         result.skipped += 1;
         continue;
@@ -1688,16 +1699,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
-        continue;
-      }
-
-      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
-
-      const vestigialDetection = await checkVestigialIssue(db, issue);
-      if (vestigialDetection) {
-        await suppressVestigialIssue({ issue, latestRun, detection: vestigialDetection });
-        result.vestigialSuppressed += 1;
-        result.issueIds.push(issue.id);
         continue;
       }
 

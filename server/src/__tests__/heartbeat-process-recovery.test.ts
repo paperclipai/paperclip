@@ -2456,4 +2456,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(updatedIssue?.status).toBe("blocked");
   });
+
+
+  it("cancels vestigial issue with cancelled parent even when assignee has an enabled future routine", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Create a cancelled parent and link the stranded issue to it
+    const parentIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Cancelled parent",
+      status: "cancelled",
+      priority: "medium",
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+    });
+    await db.update(issues).set({ parentId: parentIssueId }).where(eq(issues.id, issueId));
+
+    // Give the assignee an enabled future routine
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Daily agent sweep",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      nextRunAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    // Dead work must be cancelled even when the agent has a live routine
+    expect(result.vestigialSuppressed).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("cancelled");
+  });
 });
