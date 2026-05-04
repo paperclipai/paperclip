@@ -1494,7 +1494,13 @@ export function registerCompanyCommands(program: Command): void {
   addCommonClientOptions(
     company
       .command("delete")
-      .description("Delete a company by ID or shortname/prefix (destructive)")
+      .description(
+        "Delete a company by ID or shortname/prefix (destructive)\n" +
+          "  Both --yes and --confirm <selector> are required to proceed.\n" +
+          "  Examples:\n" +
+          "    paperclipai company delete PAP --yes --confirm PAP\n" +
+          "    paperclipai company delete 5cbe79ee-acb3-4597-896e-7662742593cd --yes --confirm 5cbe79ee-acb3-4597-896e-7662742593cd",
+      )
       .argument("<selector>", "Company ID or issue prefix (for example PAP)")
       .option(
         "--by <mode>",
@@ -1504,7 +1510,7 @@ export function registerCompanyCommands(program: Command): void {
       .option("--yes", "Required safety flag to confirm destructive action", false)
       .option(
         "--confirm <value>",
-        "Required safety value: target company ID or shortname/prefix",
+        "Required safety value: must match the target company ID or issue prefix (for example PAP or the full UUID)",
       )
       .action(async (selector: string, opts: CompanyDeleteOptions) => {
         try {
