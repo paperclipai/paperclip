@@ -18,6 +18,8 @@ export interface IssueTimelineEvent {
     from: IssueTimelineAssignee;
     to: IssueTimelineAssignee;
   };
+  commentId?: string | null;
+  followUpRequested?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -53,10 +55,25 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
   const events: IssueTimelineEvent[] = [];
 
   for (const event of activity ?? []) {
-    if (event.action !== "issue.updated") continue;
-
     const details = asRecord(event.details);
     if (!details) continue;
+
+    if (event.action === "issue.comment_added") {
+      if (details.followUpRequested !== true && details.resumeIntent !== true) continue;
+      if (details.reopened === true) continue;
+      const commentId = nullableString(details.commentId);
+      events.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        actorType: event.actorType,
+        actorId: event.actorId,
+        commentId,
+        followUpRequested: true,
+      });
+      continue;
+    }
+
+    if (event.action !== "issue.updated") continue;
 
     const previous = asRecord(details._previous);
     const timelineEvent: IssueTimelineEvent = {
@@ -65,6 +82,10 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
       actorType: event.actorType,
       actorId: event.actorId,
     };
+    if (details.followUpRequested === true || details.resumeIntent === true) {
+      timelineEvent.followUpRequested = true;
+      timelineEvent.commentId = nullableString(details.commentId);
+    }
 
     if (hasOwn(details, "status")) {
       const from = nullableString(previous?.status) ?? nullableString(details.reopenedFrom);
@@ -96,7 +117,7 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
       }
     }
 
-    if (timelineEvent.statusChange || timelineEvent.assigneeChange) {
+    if (timelineEvent.statusChange || timelineEvent.assigneeChange || timelineEvent.followUpRequested) {
       events.push(timelineEvent);
     }
   }

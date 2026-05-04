@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { inArray } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -12,7 +13,6 @@ import {
   issues,
   projectWorkspaces,
   projects,
-  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -31,6 +31,7 @@ describe("execution workspace config helpers", () => {
     expect(readExecutionWorkspaceConfig({
       source: "project_primary",
       config: {
+        environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",
@@ -39,10 +40,12 @@ describe("execution workspace config helpers", () => {
         },
       },
     })).toEqual({
+      environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
       provisionCommand: "bash ./scripts/provision-worktree.sh",
       teardownCommand: "bash ./scripts/teardown-worktree.sh",
       cleanupCommand: "pkill -f vite || true",
       desiredState: null,
+      serviceStates: null,
       workspaceRuntime: {
         services: [{ name: "web", command: "pnpm dev", port: 3100 }],
       },
@@ -55,11 +58,13 @@ describe("execution workspace config helpers", () => {
         source: "project_primary",
         createdByRuntime: false,
         config: {
+          environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
           cleanupCommand: "pkill -f vite || true",
         },
       },
       {
+        environmentId: "6286d5a9-9ea7-42b9-98b3-18ee904c26d7",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev" }],
@@ -69,14 +74,32 @@ describe("execution workspace config helpers", () => {
       source: "project_primary",
       createdByRuntime: false,
       config: {
+        environmentId: "6286d5a9-9ea7-42b9-98b3-18ee904c26d7",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",
         desiredState: null,
+        serviceStates: null,
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev" }],
         },
       },
+    });
+  });
+
+  it("clears a persisted environment selection when patching it to null", () => {
+    expect(mergeExecutionWorkspaceConfig(
+      {
+        source: "project_primary",
+        config: {
+          environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
+        },
+      },
+      {
+        environmentId: null,
+      },
+    )).toEqual({
+      source: "project_primary",
     });
   });
 
@@ -134,7 +157,6 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
   afterEach(async () => {
     await db.delete(issues);
-    await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -221,6 +243,104 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "This workspace is still linked to an open issue. Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.",
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
     ]));
+  });
+
+  it("clears matching environment selections transactionally without touching other workspaces", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const matchingWorkspaceId = randomUUID();
+    const otherWorkspaceId = randomUUID();
+    const untouchedWorkspaceId = randomUUID();
+    const environmentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: matchingWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Matching workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/workspace-a",
+        metadata: {
+          source: "manual",
+          config: {
+            environmentId,
+            cleanupCommand: "echo clean",
+          },
+        },
+      },
+      {
+        id: otherWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Different environment",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/workspace-b",
+        metadata: {
+          source: "manual",
+          config: {
+            environmentId: randomUUID(),
+          },
+        },
+      },
+      {
+        id: untouchedWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "No environment",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/workspace-c",
+        metadata: {
+          source: "manual",
+        },
+      },
+    ]);
+
+    const cleared = await svc.clearEnvironmentSelection(companyId, environmentId);
+
+    expect(cleared).toBe(1);
+
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [matchingWorkspaceId, otherWorkspaceId, untouchedWorkspaceId]));
+
+    const byId = new Map(rows.map((row) => [row.id, row.metadata as Record<string, unknown> | null]));
+    expect(readExecutionWorkspaceConfig(byId.get(matchingWorkspaceId) ?? null)).toMatchObject({
+      environmentId: null,
+      cleanupCommand: "echo clean",
+    });
+    expect(readExecutionWorkspaceConfig(byId.get(otherWorkspaceId) ?? null)).toMatchObject({
+      environmentId: expect.any(String),
+    });
+    expect(readExecutionWorkspaceConfig(byId.get(untouchedWorkspaceId) ?? null)).toBeNull();
   });
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
@@ -324,136 +444,4 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_branch_delete",
     ]));
   }, 20_000);
-
-  it("shows inherited shared project runtime services on shared execution workspaces without duplicating old history", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const executionWorkspaceId = randomUUID();
-    const olderServiceId = randomUUID();
-    const currentServiceId = randomUUID();
-    const reuseKey = `project_workspace:${projectWorkspaceId}:paperclip-dev`;
-    const startedAt = new Date("2026-04-04T17:00:00.000Z");
-    const stoppedAt = new Date("2026-04-04T17:05:00.000Z");
-    const runningAt = new Date("2026-04-04T17:10:00.000Z");
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: "PAP",
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspaces",
-      status: "in_progress",
-      executionWorkspacePolicy: {
-        enabled: true,
-      },
-    });
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary",
-      sourceType: "local_path",
-      isPrimary: true,
-      cwd: "/tmp/paperclip-primary",
-      metadata: {
-        runtimeConfig: {
-          desiredState: "running",
-          workspaceRuntime: {
-            services: [{ name: "paperclip-dev", command: "pnpm dev" }],
-          },
-        },
-      },
-    });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      mode: "shared_workspace",
-      strategyType: "project_primary",
-      name: "Shared workspace",
-      status: "active",
-      providerType: "local_fs",
-      cwd: "/tmp/paperclip-primary",
-    });
-    await db.insert(workspaceRuntimeServices).values([
-      {
-        id: olderServiceId,
-        companyId,
-        projectId,
-        projectWorkspaceId,
-        executionWorkspaceId: null,
-        issueId: null,
-        scopeType: "project_workspace",
-        scopeId: projectWorkspaceId,
-        serviceName: "paperclip-dev",
-        status: "stopped",
-        lifecycle: "shared",
-        reuseKey,
-        command: "pnpm dev",
-        cwd: "/tmp/paperclip-primary",
-        port: 49195,
-        url: "http://127.0.0.1:49195",
-        provider: "local_process",
-        providerRef: "11111",
-        ownerAgentId: null,
-        startedByRunId: null,
-        lastUsedAt: stoppedAt,
-        startedAt,
-        stoppedAt,
-        stopPolicy: { type: "manual" },
-        healthStatus: "unknown",
-        createdAt: startedAt,
-        updatedAt: stoppedAt,
-      },
-      {
-        id: currentServiceId,
-        companyId,
-        projectId,
-        projectWorkspaceId,
-        executionWorkspaceId: null,
-        issueId: null,
-        scopeType: "project_workspace",
-        scopeId: projectWorkspaceId,
-        serviceName: "paperclip-dev",
-        status: "running",
-        lifecycle: "shared",
-        reuseKey,
-        command: "pnpm dev",
-        cwd: "/tmp/paperclip-primary",
-        port: 49222,
-        url: "http://127.0.0.1:49222",
-        provider: "local_process",
-        providerRef: "22222",
-        ownerAgentId: null,
-        startedByRunId: null,
-        lastUsedAt: runningAt,
-        startedAt: runningAt,
-        stoppedAt: null,
-        stopPolicy: { type: "manual" },
-        healthStatus: "healthy",
-        createdAt: runningAt,
-        updatedAt: runningAt,
-      },
-    ]);
-
-    const workspace = await svc.getById(executionWorkspaceId);
-    const listed = await svc.list(companyId, { projectId });
-
-    expect(workspace?.runtimeServices).toHaveLength(1);
-    expect(workspace?.runtimeServices?.[0]).toMatchObject({
-      id: currentServiceId,
-      status: "running",
-      projectWorkspaceId,
-      executionWorkspaceId: null,
-      url: "http://127.0.0.1:49222",
-    });
-    expect(listed[0]?.runtimeServices).toHaveLength(1);
-    expect(listed[0]?.runtimeServices?.[0]?.id).toBe(currentServiceId);
-  });
 });

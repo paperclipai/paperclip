@@ -177,6 +177,7 @@ export function PackageFileTree({
   renderFileExtra,
   fileRowClassName,
   showCheckboxes = true,
+  wrapLabels = false,
   depth = 0,
 }: {
   nodes: FileTreeNode[];
@@ -191,6 +192,8 @@ export function PackageFileTree({
   /** Optional additional className for file rows */
   fileRowClassName?: (node: FileTreeNode, checked: boolean) => string | undefined;
   showCheckboxes?: boolean;
+  /** Allow long file and directory names to wrap instead of forcing horizontal overflow. */
+  wrapLabels?: boolean;
   depth?: number;
 }) {
   const effectiveCheckedFiles = checkedFiles ?? new Set<string>();
@@ -239,7 +242,9 @@ export function PackageFileTree({
                       <Folder className="h-3.5 w-3.5" />
                     )}
                   </span>
-                  <span className="truncate">{node.name}</span>
+                  <span className={cn("min-w-0", wrapLabels ? "break-all leading-4" : "truncate")}>
+                    {node.name}
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -265,6 +270,7 @@ export function PackageFileTree({
                   renderFileExtra={renderFileExtra}
                   fileRowClassName={fileRowClassName}
                   showCheckboxes={showCheckboxes}
+                  wrapLabels={wrapLabels}
                   depth={depth + 1}
                 />
               )}
@@ -307,7 +313,9 @@ export function PackageFileTree({
               <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                 <FileIcon className="h-3.5 w-3.5" />
               </span>
-              <span className="truncate">{node.name}</span>
+              <span className={cn("min-w-0", wrapLabels ? "break-all leading-4" : "truncate")}>
+                {node.name}
+              </span>
             </button>
             {renderFileExtra?.(node, checked)}
           </div>

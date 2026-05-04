@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildIssueTree, countDescendants } from "./issue-tree";
+import { buildIssueTree, countDescendants, filterIssueDescendants } from "./issue-tree";
 
 function makeIssue(id: string, parentId: string | null = null): Issue {
   return {
@@ -126,5 +126,35 @@ describe("countDescendants", () => {
   it("returns 0 for an id not in the childMap", () => {
     const { childMap } = buildIssueTree([makeIssue("a"), makeIssue("b")]);
     expect(countDescendants("nonexistent", childMap)).toBe(0);
+  });
+});
+
+describe("filterIssueDescendants", () => {
+  it("returns only children and deeper descendants of the requested root", () => {
+    const root = makeIssue("root");
+    const child = makeIssue("child", "root");
+    const grandchild = makeIssue("grandchild", "child");
+    const unrelatedParent = makeIssue("other");
+    const unrelatedChild = makeIssue("other-child", "other");
+
+    expect(filterIssueDescendants("root", [
+      root,
+      child,
+      grandchild,
+      unrelatedParent,
+      unrelatedChild,
+    ]).map((issue) => issue.id)).toEqual(["child", "grandchild"]);
+  });
+
+  it("handles stale broad issue-list responses without requiring the root in the list", () => {
+    const child = makeIssue("child", "root");
+    const grandchild = makeIssue("grandchild", "child");
+    const globalIssue = makeIssue("global");
+
+    expect(filterIssueDescendants("root", [
+      globalIssue,
+      child,
+      grandchild,
+    ]).map((issue) => issue.id)).toEqual(["child", "grandchild"]);
   });
 });

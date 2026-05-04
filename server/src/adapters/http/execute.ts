@@ -36,6 +36,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       summary: `HTTP ${method} ${url}`,
     };
+  } catch (err) {
+    if (timer && err instanceof Error && err.name === "AbortError") {
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: true,
+        errorMessage: `HTTP ${method} ${url} timed out after ${timeoutMs}ms`,
+        errorCode: "timeout",
+      };
+    }
+    throw err;
   } finally {
     if (timer) clearTimeout(timer);
   }

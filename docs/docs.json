@@ -48,6 +48,8 @@
               "guides/board-operator/managing-tasks",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
