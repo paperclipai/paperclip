@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  countOwnRecentPlaceholderComments: vi.fn(),
   getDependencyReadiness: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -213,6 +214,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
+    mockIssueService.countOwnRecentPlaceholderComments.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
@@ -271,6 +273,11 @@ describe.sequential("issue comment reopen routes", () => {
       updatedAt: new Date(),
       authorAgentId: null,
       authorUserId: "local-board",
+    });
+    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue({
+      count: 0,
+      windowComments: 3,
+      oldestPlaceholderAt: null,
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getDependencyReadiness.mockResolvedValue({

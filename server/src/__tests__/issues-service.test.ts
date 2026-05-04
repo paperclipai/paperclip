@@ -209,6 +209,117 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds.has(excludedIssueId)).toBe(false);
   });
 
+  it("counts only the current placeholder streak from an agent's recent comments", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const resetIssueId = randomUUID();
+    const cappedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Backend",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: resetIssueId,
+        companyId,
+        title: "Reset issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: cappedIssueId,
+        companyId,
+        title: "Capped issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: resetIssueId,
+        authorAgentId: agentId,
+        body: "Ack",
+        createdAt: new Date("2026-05-04T16:00:00.000Z"),
+        updatedAt: new Date("2026-05-04T16:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: resetIssueId,
+        authorAgentId: agentId,
+        body: "Detailed implementation update with enough context to reset the placeholder streak.",
+        createdAt: new Date("2026-05-04T16:01:00.000Z"),
+        updatedAt: new Date("2026-05-04T16:01:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: cappedIssueId,
+        authorAgentId: agentId,
+        body: "Ack",
+        createdAt: new Date("2026-05-04T16:00:00.000Z"),
+        updatedAt: new Date("2026-05-04T16:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: cappedIssueId,
+        authorAgentId: otherAgentId,
+        body: "Ack",
+        createdAt: new Date("2026-05-04T16:01:00.000Z"),
+        updatedAt: new Date("2026-05-04T16:01:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: cappedIssueId,
+        authorAgentId: agentId,
+        body: "Ack",
+        createdAt: new Date("2026-05-04T16:02:00.000Z"),
+        updatedAt: new Date("2026-05-04T16:02:00.000Z"),
+      },
+    ]);
+
+    await expect(svc.countOwnRecentPlaceholderComments(resetIssueId, agentId)).resolves.toEqual({
+      count: 0,
+      windowComments: 3,
+      oldestPlaceholderAt: null,
+    });
+    await expect(svc.countOwnRecentPlaceholderComments(cappedIssueId, agentId)).resolves.toEqual({
+      count: 2,
+      windowComments: 3,
+      oldestPlaceholderAt: "2026-05-04T16:00:00.000Z",
+    });
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

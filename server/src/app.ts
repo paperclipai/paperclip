@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -41,6 +42,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { register as metricsRegister } from "./observability/prom.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -149,6 +151,8 @@ export async function createApp(
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
   });
+  const metricsToken = process.env.PAPERCLIP_METRICS_TOKEN?.trim() || null;
+  const mountMetrics = privateHostnameGateEnabled || metricsToken !== null;
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
@@ -160,6 +164,32 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  // Metrics are unauthenticated in private deployments because the hostname allowlist is the gate.
+  // Public deployments must opt in with PAPERCLIP_METRICS_TOKEN and present a matching bearer token.
+  // Without either gate, /metrics is not mounted so the route does not advertise its existence.
+  // This stays before actor middleware so Prometheus scrape jobs do not need an agent identity.
+  if (mountMetrics) {
+    app.get("/metrics", async (req, res, next) => {
+      if (metricsToken !== null && !privateHostnameGateEnabled) {
+        const auth = req.header("authorization") ?? "";
+        const provided = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+        const expected = Buffer.from(metricsToken, "utf8");
+        const got = Buffer.from(provided, "utf8");
+
+        if (got.length !== expected.length || !crypto.timingSafeEqual(got, expected)) {
+          res.status(401).end();
+          return;
+        }
+      }
+
+      try {
+        res.set("Content-Type", metricsRegister.contentType);
+        res.end(await metricsRegister.metrics());
+      } catch (err) {
+        next(err);
+      }
+    });
+  }
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,

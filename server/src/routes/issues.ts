@@ -30,6 +30,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isPlaceholderCommentBody,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -85,11 +86,35 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { placeholderCapHits, placeholderCapOverrides } from "../observability/prom.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const PLACEHOLDER_COMMENT_CAP = 3;
+const PLACEHOLDER_COMMENT_CAP_MESSAGE =
+  "Comment blocked: this would be your 3rd consecutive placeholder on this issue. Flip status (blocked / in_review / done with a real comment) or exit silent.";
+const PLACEHOLDER_COMMENT_CAP_ALTERNATIVES = [
+  'PATCH /api/issues/{id} {"status":"blocked","unblockOwner":"..."}',
+  'PATCH /api/issues/{id} {"status":"in_review"}',
+  "exit run silently — no post",
+] as const;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function isPlaceholderCapEnabled() {
+  return process.env.PAPERCLIP_PLACEHOLDER_CAP_ENABLED !== "false";
+}
+
+function placeholderCommentCapResponse(input: { oldestPlaceholderAt: string | null }) {
+  return {
+    error: "placeholder_cap",
+    message: PLACEHOLDER_COMMENT_CAP_MESSAGE,
+    cap: PLACEHOLDER_COMMENT_CAP,
+    last_n_placeholders: PLACEHOLDER_COMMENT_CAP,
+    oldest_placeholder_at: input.oldestPlaceholderAt,
+    alternatives: [...PLACEHOLDER_COMMENT_CAP_ALTERNATIVES],
+  };
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -3591,6 +3616,61 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const placeholderCapEnabled = isPlaceholderCapEnabled();
+    const commentIsPlaceholder = placeholderCapEnabled ? isPlaceholderCommentBody(req.body.body) : false;
+    const forceCommentAllow = req.actor.type === "board" ? req.body.forceCommentAllow === true : undefined;
+    if (placeholderCapEnabled && actor.actorType === "agent" && actor.agentId && commentIsPlaceholder) {
+      const placeholderWindow = await svc.countOwnRecentPlaceholderComments(id, actor.agentId);
+
+      // Best-effort request-time guard: concurrent POSTs can both pass before either insert commits,
+      // so worst case is bounded to <=4 placeholders before the next attempt observes the prior inserts.
+      if (placeholderWindow.count >= PLACEHOLDER_COMMENT_CAP - 1) {
+        placeholderCapHits.labels(actor.agentId, issue.id).inc();
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.placeholder_cap_hit",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            issueTitle: issue.title,
+            cap: PLACEHOLDER_COMMENT_CAP,
+            priorPlaceholderCount: placeholderWindow.count,
+            windowComments: placeholderWindow.windowComments,
+            oldestPlaceholderAt: placeholderWindow.oldestPlaceholderAt,
+          },
+        });
+        res.status(409).json(
+          placeholderCommentCapResponse({
+            oldestPlaceholderAt: placeholderWindow.oldestPlaceholderAt,
+          }),
+        );
+        return;
+      }
+    } else if (placeholderCapEnabled && forceCommentAllow === true && commentIsPlaceholder) {
+      const overriddenAgentId = issue.assigneeAgentId ?? "unassigned";
+      placeholderCapOverrides.labels(overriddenAgentId).inc();
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.placeholder_cap_overridden",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          issueTitle: issue.title,
+          forceCommentAllow: true,
+          overriddenAgentId,
+        },
+      });
+    }
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
