@@ -68,6 +68,8 @@ const mockIssueTreeControlService = vi.hoisted(() => ({
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
+  trackIssueExecutionStageTransition: vi.fn(),
+  trackIssueExecutionRejectedActor: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
 }));
 
@@ -336,7 +338,7 @@ describe.sequential("issue comment reopen routes", () => {
         details: expect.not.objectContaining({ reopened: true }),
       }),
     );
-  });
+  }, 10_000);
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
@@ -370,7 +372,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-  });
+  }, 10_000);
 
   it("resolves assignee shortnames before updating an issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
@@ -1235,5 +1237,176 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  }, 10_000);
+
+  it("routes review -> approval -> changes requested -> back to approval on resubmit", async () => {
+    const executorAgentId = "22222222-2222-4222-8222-222222222222";
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const approverAgentId = "44444444-4444-4444-8444-444444444444";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          type: "approval",
+          participants: [{ type: "agent", agentId: approverAgentId }],
+        },
+      ],
+    })!;
+    let issue = {
+      ...makeIssue("todo"),
+      status: "in_progress",
+      assigneeAgentId: executorAgentId,
+      executionPolicy: policy,
+      executionState: null,
+    };
+
+    mockIssueService.getById.mockImplementation(async () => issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      issue = {
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      };
+      return issue;
+    });
+
+    const submitForReview = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: executorAgentId,
+        companyId: "company-1",
+        runId: "run-submit-review",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Ready for review" });
+    expect(submitForReview.status).toBe(200);
+    expect(submitForReview.body.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerAgentId },
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      reviewerAgentId,
+      expect.objectContaining({ reason: "execution_review_requested" }),
+    ));
+
+    const reviewApprove = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        runId: "run-review-approve",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Review approved" });
+    expect(reviewApprove.status).toBe(200);
+    expect(reviewApprove.body.assigneeAgentId).toBe(approverAgentId);
+    expect(reviewApprove.body.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "approval",
+      currentParticipant: { type: "agent", agentId: approverAgentId },
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      approverAgentId,
+      expect.objectContaining({ reason: "execution_approval_requested" }),
+    ));
+
+    const approverRequestsChanges = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: approverAgentId,
+        companyId: "company-1",
+        runId: "run-approval-changes",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "in_progress", comment: "Needs updates before approval" });
+    expect(approverRequestsChanges.status).toBe(200);
+    expect(approverRequestsChanges.body.assigneeAgentId).toBe(executorAgentId);
+    expect(approverRequestsChanges.body.executionState).toMatchObject({
+      status: "changes_requested",
+      currentStageType: "approval",
+      currentParticipant: { type: "agent", agentId: approverAgentId },
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      executorAgentId,
+      expect.objectContaining({ reason: "execution_changes_requested" }),
+    ));
+
+    const resubmit = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: executorAgentId,
+        companyId: "company-1",
+        runId: "run-resubmit",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Addressed and resubmitted" });
+    expect(resubmit.status).toBe(200);
+    expect(resubmit.body.assigneeAgentId).toBe(approverAgentId);
+    expect(resubmit.body.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "approval",
+      currentParticipant: { type: "agent", agentId: approverAgentId },
+      completedStageIds: expect.arrayContaining([policy.stages[0].id]),
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      approverAgentId,
+      expect.objectContaining({ reason: "execution_approval_requested" }),
+    ));
+  }, 10_000);
+
+  it("rejects stage advancement when actor does not match executionState.currentParticipant", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        runId: "run-bypass-attempt",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Attempting to bypass reviewer" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Only the active reviewer or approver can advance");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });
+

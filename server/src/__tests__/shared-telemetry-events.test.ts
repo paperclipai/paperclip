@@ -4,6 +4,8 @@ import {
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
   trackInstallCompleted,
+  trackIssueExecutionRejectedActor,
+  trackIssueExecutionStageTransition,
 } from "@paperclipai/shared/telemetry";
 import type { TelemetryClient } from "@paperclipai/shared/telemetry";
 
@@ -69,5 +71,49 @@ describe("shared telemetry agent events", () => {
       "install.completed",
       expect.objectContaining({ agent_id: expect.any(String) }),
     );
+  });
+
+  it("tracks execution stage transitions", () => {
+    const client = createClient();
+
+    trackIssueExecutionStageTransition(client, {
+      fromStatus: "pending",
+      toStatus: "pending",
+      fromStageType: "review",
+      toStageType: "approval",
+      fromParticipantType: "agent",
+      toParticipantType: "user",
+      decisionOutcome: "approved",
+    });
+
+    expect(client.track).toHaveBeenCalledWith("issue.execution_stage_transition", {
+      from_status: "pending",
+      to_status: "pending",
+      from_stage_type: "review",
+      to_stage_type: "approval",
+      from_participant_type: "agent",
+      to_participant_type: "user",
+      decision_outcome: "approved",
+    });
+  });
+
+  it("tracks rejected execution actors", () => {
+    const client = createClient();
+
+    trackIssueExecutionRejectedActor(client, {
+      actorType: "agent",
+      requestedStatus: "done",
+      stageType: "review",
+      currentParticipantType: "agent",
+      actorMatchesCurrentParticipant: false,
+    });
+
+    expect(client.track).toHaveBeenCalledWith("issue.execution_actor_rejected", {
+      actor_type: "agent",
+      requested_status: "done",
+      stage_type: "review",
+      current_participant_type: "agent",
+      actor_matches_current_participant: false,
+    });
   });
 });

@@ -90,6 +90,48 @@ export function trackAgentTaskCompleted(
   });
 }
 
+export function trackIssueExecutionStageTransition(
+  client: TelemetryClient,
+  dims: {
+    fromStatus: string;
+    toStatus: string;
+    fromStageType: string;
+    toStageType: string;
+    fromParticipantType: string;
+    toParticipantType: string;
+    decisionOutcome?: string | null;
+  },
+): void {
+  client.track("issue.execution_stage_transition", {
+    from_status: dims.fromStatus,
+    to_status: dims.toStatus,
+    from_stage_type: dims.fromStageType,
+    to_stage_type: dims.toStageType,
+    from_participant_type: dims.fromParticipantType,
+    to_participant_type: dims.toParticipantType,
+    ...(dims.decisionOutcome ? { decision_outcome: dims.decisionOutcome } : {}),
+  });
+}
+
+export function trackIssueExecutionRejectedActor(
+  client: TelemetryClient,
+  dims: {
+    actorType: string;
+    requestedStatus: string;
+    stageType: string;
+    currentParticipantType: string;
+    actorMatchesCurrentParticipant: boolean;
+  },
+): void {
+  client.track("issue.execution_actor_rejected", {
+    actor_type: dims.actorType,
+    requested_status: dims.requestedStatus,
+    stage_type: dims.stageType,
+    current_participant_type: dims.currentParticipantType,
+    actor_matches_current_participant: dims.actorMatchesCurrentParticipant,
+  });
+}
+
 export function trackErrorHandlerCrash(
   client: TelemetryClient,
   dims: { errorCode: string },

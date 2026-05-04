@@ -31,7 +31,11 @@ import {
   isClosedIsolatedExecutionWorkspace,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
-import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+import {
+  trackAgentTaskCompleted,
+  trackIssueExecutionRejectedActor,
+  trackIssueExecutionStageTransition,
+} from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
@@ -380,6 +384,17 @@ function buildExecutionStageWakeup(input: {
   }
 
   return null;
+}
+
+function executionParticipantMatchesActor(input: {
+  participant: ParsedExecutionState["currentParticipant"] | null;
+  actor: { actorType: "agent" | "user"; actorId: string; agentId: string | null };
+}) {
+  if (!input.participant) return false;
+  if (input.participant.type === "agent") {
+    return !!input.actor.agentId && input.participant.agentId === input.actor.agentId;
+  }
+  return input.actor.actorType === "user" && input.participant.userId === input.actor.actorId;
 }
 
 export function issueRoutes(
@@ -2012,22 +2027,51 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      commentBody,
-      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-    });
+    let transition: ReturnType<typeof applyIssueExecutionPolicyTransition>;
+    try {
+      transition = applyIssueExecutionPolicyTransition({
+        issue: existing,
+        policy: nextExecutionPolicy,
+        requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+        requestedAssigneePatch: {
+          assigneeAgentId: normalizedAssigneeAgentId,
+          assigneeUserId:
+            req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+        },
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        commentBody,
+        reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+      });
+    } catch (err) {
+      const existingExecutionState = parseIssueExecutionState(existing.executionState);
+      const tc = getTelemetryClient();
+      if (
+        tc &&
+        err instanceof HttpError &&
+        err.status === 422 &&
+        typeof err.message === "string" &&
+        err.message.includes("Only the active reviewer or approver can advance")
+      ) {
+        trackIssueExecutionRejectedActor(tc, {
+          actorType: actor.actorType,
+          requestedStatus: typeof req.body.status === "string" ? req.body.status : "__omitted__",
+          stageType: existingExecutionState?.currentStageType ?? "none",
+          currentParticipantType: existingExecutionState?.currentParticipant?.type ?? "none",
+          actorMatchesCurrentParticipant: executionParticipantMatchesActor({
+            participant: existingExecutionState?.currentParticipant ?? null,
+            actor: {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId ?? null,
+            },
+          }),
+        });
+      }
+      throw err;
+    }
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
@@ -2436,6 +2480,22 @@ export function issueRoutes(
       req.body.status !== undefined;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
+    const executionStateTransitioned =
+      previousExecutionState?.status !== nextExecutionState?.status ||
+      previousExecutionState?.currentStageId !== nextExecutionState?.currentStageId ||
+      !executionPrincipalsEqual(previousExecutionState?.currentParticipant ?? null, nextExecutionState?.currentParticipant ?? null);
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient && executionStateTransitioned) {
+      trackIssueExecutionStageTransition(telemetryClient, {
+        fromStatus: previousExecutionState?.status ?? "none",
+        toStatus: nextExecutionState?.status ?? "none",
+        fromStageType: previousExecutionState?.currentStageType ?? "none",
+        toStageType: nextExecutionState?.currentStageType ?? "none",
+        fromParticipantType: previousExecutionState?.currentParticipant?.type ?? "none",
+        toParticipantType: nextExecutionState?.currentParticipant?.type ?? "none",
+        decisionOutcome: transition.decision?.outcome ?? nextExecutionState?.lastDecisionOutcome ?? null,
+      });
+    }
     const executionStageWakeup = buildExecutionStageWakeup({
       issueId: issue.id,
       previousState: previousExecutionState,

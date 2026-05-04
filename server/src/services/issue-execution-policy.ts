@@ -455,15 +455,27 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
       }
     }
 
+    const actorIsCurrentParticipant = principalsEqual(currentParticipant, actor);
+    const requestedStatusAttemptsDecision =
+      requestedStatus === "done" ||
+      (
+        requestedStatus !== undefined &&
+        requestedStatus !== "in_review" &&
+        requestedStatus !== input.issue.status
+      );
+    const assigneePatchAttemptsOverride =
+      requestedAssigneePatchProvided &&
+      !principalsEqual(explicitAssignee, currentParticipant) &&
+      input.issue.status === "in_review";
     const attemptedStageAdvance =
-      (requestedStatus !== undefined && requestedStatus !== "in_review") ||
-      (requestedAssigneePatchProvided && !principalsEqual(explicitAssignee, currentParticipant));
+      requestedStatusAttemptsDecision ||
+      assigneePatchAttemptsOverride;
     const stageStateDrifted =
       input.issue.status !== "in_review" ||
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
-    if (attemptedStageAdvance && !stageStateDrifted) {
+    if (attemptedStageAdvance && !actorIsCurrentParticipant) {
       throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
     }
 
