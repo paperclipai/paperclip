@@ -144,6 +144,11 @@ function getViewState(key: string): IssueViewState {
 
 function saveViewState(key: string, state: IssueViewState) {
   localStorage.setItem(key, JSON.stringify(state));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("paperclip:issue-view-state-changed", { detail: { key } }),
+    );
+  }
 }
 
 function getInitialViewState(

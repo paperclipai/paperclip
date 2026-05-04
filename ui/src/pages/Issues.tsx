@@ -18,6 +18,58 @@ import type { Issue } from "@paperclipai/shared";
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 500;
 
+const ISSUE_SERVER_SORT_FIELDS = new Set(["created", "updated", "priority", "status", "title"] as const);
+type IssueServerSortField = "created" | "updated" | "priority" | "status" | "title";
+type IssueServerSort = { sortField: IssueServerSortField; sortDir: "asc" | "desc" };
+
+export const ISSUE_VIEW_STATE_CHANGE_EVENT = "paperclip:issue-view-state-changed";
+
+function readPersistedIssueSort(key: string): IssueServerSort | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { sortField?: unknown; sortDir?: unknown };
+    if (typeof parsed?.sortField !== "string") return null;
+    if (!ISSUE_SERVER_SORT_FIELDS.has(parsed.sortField as IssueServerSortField)) return null;
+    if (parsed.sortDir !== "asc" && parsed.sortDir !== "desc") return null;
+    return { sortField: parsed.sortField as IssueServerSortField, sortDir: parsed.sortDir };
+  } catch {
+    return null;
+  }
+}
+
+function usePersistedIssueSort(key: string | null): IssueServerSort | null {
+  const [snapshot, setSnapshot] = useState<IssueServerSort | null>(
+    () => (key ? readPersistedIssueSort(key) : null),
+  );
+  useEffect(() => {
+    if (!key) {
+      setSnapshot(null);
+      return;
+    }
+    setSnapshot(readPersistedIssueSort(key));
+    const onChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ key?: string }>).detail;
+      if (detail?.key === key) {
+        setSnapshot(readPersistedIssueSort(key));
+      }
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === key) {
+        setSnapshot(readPersistedIssueSort(key));
+      }
+    };
+    window.addEventListener(ISSUE_VIEW_STATE_CHANGE_EVENT, onChange);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(ISSUE_VIEW_STATE_CHANGE_EVENT, onChange);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [key]);
+  return snapshot;
+}
+
 export function getNextIssuesPageOffset(
   loadedPageSize: number,
   currentOffset: number,
@@ -121,6 +173,11 @@ export function Issues() {
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
+  const issueViewStateKey = selectedCompanyId
+    ? `paperclip:issues-view:${selectedCompanyId}`
+    : null;
+  const persistedSort = usePersistedIssueSort(issueViewStateKey);
+
   const {
     data: issuePages,
     isLoading,
@@ -138,6 +195,9 @@ export function Issues() {
       "with-routine-executions",
       "infinite",
       issuePageSize,
+      "sort",
+      persistedSort?.sortField ?? "__default__",
+      persistedSort?.sortDir ?? "__default__",
     ],
     queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       participantAgentId,
@@ -145,6 +205,8 @@ export function Issues() {
       includeRoutineExecutions: true,
       limit: issuePageSize,
       offset: pageParam,
+      sortField: persistedSort?.sortField,
+      sortDir: persistedSort?.sortDir,
     }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
