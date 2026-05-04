@@ -1109,7 +1109,11 @@ export function routineService(
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
           : null,
         row.assigneeAgentId
-          ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null)
+          ? db
+              .select({ id: agents.id, name: agents.name, role: agents.role, title: agents.title })
+              .from(agents)
+              .where(eq(agents.id, row.assigneeAgentId))
+              .then((rows) => rows[0] ?? null)
           : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),

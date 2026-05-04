@@ -1111,4 +1111,72 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("getDetail does not expose adapterConfig, runtimeConfig or other sensitive agent fields in assignee", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { api_key: "sk-fake-secret-do-not-expose", token: "test-token-synthetic" },
+      runtimeConfig: { secret: "runtime-secret-synthetic" },
+      permissions: { canDoEverything: true },
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Redaction",
+      status: "in_progress",
+    });
+
+    const svc = routineService(db, {});
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "secret test routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const detail = await svc.getDetail(routine.id);
+
+    expect(detail).not.toBeNull();
+    expect(detail!.assignee).not.toBeNull();
+
+    // Safe summary fields must be present
+    expect(detail!.assignee!.id).toBe(agentId);
+    expect(detail!.assignee!.name).toBe("TestAgent");
+    expect(detail!.assignee!.role).toBe("engineer");
+
+    // Sensitive fields must not be present
+    expect((detail!.assignee as Record<string, unknown>).adapterConfig).toBeUndefined();
+    expect((detail!.assignee as Record<string, unknown>).runtimeConfig).toBeUndefined();
+    expect((detail!.assignee as Record<string, unknown>).permissions).toBeUndefined();
+    expect((detail!.assignee as Record<string, unknown>).budgetMonthlyCents).toBeUndefined();
+    expect((detail!.assignee as Record<string, unknown>).spentMonthlyCents).toBeUndefined();
+  });
 });
