@@ -582,7 +582,7 @@ Success criteria:
 | 84. RT2 Event/Projector Layer | v3.4 | 1/1 | Complete | 2026-05-04 |
 | 85. API Contract Alignment | v3.4 | 1/1 | Complete | 2026-05-04 |
 | 86. Work Entity Migration | v3.4 | 0/0 | Planned | — |
-| 87. RT2 Schema Validation | v3.4 | 0/0 | Planned | — |
+| 87. RT2 Schema Validation | v3.4 | 1/1 | Planned | — |
 | 88. v3.4 Acceptance Gate | v3.4 | 0/0 | Planned | — |
 
 ## Archive
