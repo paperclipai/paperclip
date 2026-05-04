@@ -238,6 +238,22 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/adapters/openrouter-external:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: ^0.3.1
+        version: 0.3.1
+      openai:
+        specifier: ^4.0.0
+        version: 4.104.0(ws@8.19.0)(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.11
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/adapters/openrouter-local:
     dependencies:
       '@paperclipai/adapter-utils':
@@ -2324,6 +2340,9 @@ packages:
 
   '@open-draft/deferred-promise@2.2.0':
     resolution: {integrity: sha512-CecwLWx3rhxVQF6V4bAgPS5t+So2sTbPgAzafKkVizyi7tlwpcFpdFqq+wqF2OwNBmqFuu6tOyouTuxgpMfzmA==}
+
+  '@paperclipai/adapter-utils@0.3.1':
+    resolution: {integrity: sha512-W66k+hJkQE8ma0asM/Sd90AC8HHy/BLG/sd0aOC+rDWw+gOasQyUkTnDoPv1zhQuTyKEEvLFV6ByOOKqEiAz/A==}
 
   '@paperclipai/adapter-utils@2026.325.0':
     resolution: {integrity: sha512-YDVSAgjkeJ0PvxXDJVN9MZDX7oYRzidLtGHmGgRGd6gSk/bF2ygAKvND4FI1YxDc/cRLQjqAFCpCYaC/9wqIEA==}
@@ -8725,6 +8744,8 @@ snapshots:
   '@noble/hashes@2.0.1': {}
 
   '@open-draft/deferred-promise@2.2.0': {}
+
+  '@paperclipai/adapter-utils@0.3.1': {}
 
   '@paperclipai/adapter-utils@2026.325.0': {}
 
