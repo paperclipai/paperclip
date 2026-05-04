@@ -47,6 +47,8 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { weeklyUsageService } from "./weekly-usage.js";
+import { mergeHeartbeatRunDiagnosticEvidence } from "./heartbeat-run-diagnostics.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -751,6 +753,21 @@ const heartbeatRunIssueSummaryColumns = {
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
+}
+
+function readErrorOutputField(err: unknown, field: "stdout" | "stderr") {
+  if (!err || typeof err !== "object") return null;
+  const value = (err as Record<string, unknown>)[field];
+  if (typeof value === "string" && value.length > 0) return value;
+  if (value instanceof Buffer && value.length > 0) return value.toString("utf8");
+  return null;
+}
+
+function appendErrorOutputExcerpt(prev: string, value: string | null) {
+  if (!value) return prev;
+  const normalized = value.endsWith("\n") ? value : `${value}\n`;
+  if (prev.includes(value) || prev.includes(normalized)) return prev;
+  return appendExcerpt(prev, normalized);
 }
 
 function truncateRunEventString(value: string) {
@@ -2002,8 +2019,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const weeklyUsage = weeklyUsageService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+
+  async function getInvocationBlock(
+    companyId: string,
+    agentId: string,
+    context?: { issueId?: string | null; projectId?: string | null },
+  ) {
+    const weeklyBlock = await weeklyUsage.getInvocationBlock(companyId, agentId);
+    if (weeklyBlock) return weeklyBlock;
+    return budgets.getInvocationBlock(companyId, agentId, context);
+  }
+
+  async function updateWeeklyUsageFromHeartbeatRuns() {
+    try {
+      await weeklyUsage.updateFromHeartbeatRuns();
+    } catch (err) {
+      logger.warn({ err }, "failed to update weekly usage snapshot from heartbeat runs");
+    }
+  }
 
   async function hasUnsafeTextProjectionDatabase() {
     if (!unsafeTextProjectionPromise) {
@@ -2801,7 +2837,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const budgetBlock =
       issue && agent
-        ? await budgets.getInvocationBlock(issue.companyId, agent.id, {
+        ? await getInvocationBlock(issue.companyId, agent.id, {
           issueId: issue.id,
           projectId: issue.projectId,
         })
@@ -3744,7 +3780,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
-    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+    const budgetBlock = await getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
     });
@@ -5478,7 +5514,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
+      let persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeAdapterRecoveryMetadata({
             resultJson: adapterResult.resultJson ?? null,
@@ -5490,6 +5526,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }),
         adapterResult.summary ?? null,
       );
+      if (outcome !== "succeeded") {
+        const diagnostic = mergeHeartbeatRunDiagnosticEvidence({
+          resultJson: persistedResultJson,
+          stdoutExcerpt,
+          stderrExcerpt,
+          failureSubtype: runErrorCode,
+        });
+        persistedResultJson = diagnostic.resultJson;
+        stdoutExcerpt = diagnostic.stdoutExcerpt;
+        stderrExcerpt = diagnostic.stderrExcerpt;
+      }
 
       let persistedRun = await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -5557,6 +5604,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
+        await updateWeeklyUsageFromHeartbeatRuns();
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
@@ -5584,6 +5632,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await getCurrentUserRedactionOptions(),
       );
       logger.error({ err, runId }, "heartbeat execution failed");
+      stdoutExcerpt = appendErrorOutputExcerpt(stdoutExcerpt, readErrorOutputField(err, "stdout"));
+      stderrExcerpt = appendErrorOutputExcerpt(stderrExcerpt, readErrorOutputField(err, "stderr"));
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -5601,14 +5651,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
-      const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
-        errorCode: "adapter_failed",
-        finishedAt: new Date(),
+      const diagnostic = mergeHeartbeatRunDiagnosticEvidence({
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: "adapter_failed",
           errorMessage: message,
         }),
+        stdoutExcerpt,
+        stderrExcerpt,
+        failureSubtype: "adapter_failed",
+      });
+      stdoutExcerpt = diagnostic.stdoutExcerpt;
+      stderrExcerpt = diagnostic.stderrExcerpt;
+
+      const failedRun = await setRunStatus(run.id, "failed", {
+        error: message,
+        errorCode: "adapter_failed",
+        finishedAt: new Date(),
+        resultJson: diagnostic.resultJson,
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -5640,6 +5699,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }, {
           legacySessionId: runtimeForAdapter.sessionId,
         });
+        await updateWeeklyUsageFromHeartbeatRuns();
 
         if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
           await upsertTaskSession({
@@ -6221,7 +6281,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0]?.projectId ?? null);
     }
 
-    const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
+    const budgetBlock = await getInvocationBlock(agent.companyId, agentId, {
       issueId,
       projectId,
     });
