@@ -208,6 +208,8 @@ function createIssue(): Issue {
     assigneeUserId: null,
     createdByAgentId: null,
     createdByUserId: "user-1",
+    assignedByAgentId: null,
+    assignedByUserId: null,
     issueNumber: 807,
     requestDepth: 0,
     billingCode: null,

@@ -116,6 +116,8 @@ export interface Issue {
   executionLockedAt: Date | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  assignedByAgentId: string | null;
+  assignedByUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;

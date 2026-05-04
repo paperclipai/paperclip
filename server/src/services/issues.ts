@@ -1367,7 +1367,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      assignedBy?: { agentId: string | null; userId: string | null },
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -1396,6 +1402,10 @@ export function issueService(db: Db) {
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
+          ...(assignedBy && {
+            assignedByAgentId: assignedBy.agentId,
+            assignedByUserId: assignedBy.userId,
+          }),
         })
         .where(
           and(

@@ -502,6 +502,8 @@ export function issueRoutes(
         parentId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        assignedByAgentId: issue.assignedByAgentId,
+        assignedByUserId: issue.assignedByUserId,
         updatedAt: issue.updatedAt,
       },
       ancestors: ancestors.map((ancestor) => ({
@@ -1034,10 +1036,15 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const hasInitialAssignee = !!(req.body.assigneeAgentId || req.body.assigneeUserId);
     const issue = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      ...(hasInitialAssignee && {
+        assignedByAgentId: actor.agentId,
+        assignedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      }),
     });
 
     await logActivity(db, {
@@ -1143,6 +1150,10 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (assigneeWillChange) {
+      updateFields.assignedByAgentId = actor.agentId;
+      updateFields.assignedByUserId = actor.actorType === "user" ? actor.actorId : null;
     }
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
@@ -1424,8 +1435,11 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
 
     await logActivity(db, {
       companyId: issue.companyId,

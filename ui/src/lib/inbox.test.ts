@@ -159,6 +159,8 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     assigneeUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
+    assignedByAgentId: null,
+    assignedByUserId: null,
     issueNumber: 1,
     identifier: `PAP-${id}`,
     requestDepth: 0,

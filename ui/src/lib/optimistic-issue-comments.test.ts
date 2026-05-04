@@ -145,6 +145,8 @@ describe("optimistic issue comments", () => {
         executionLockedAt: null,
         createdByAgentId: null,
         createdByUserId: "board-1",
+        assignedByAgentId: null,
+        assignedByUserId: null,
         issueNumber: 1,
         identifier: "PAP-1",
         originKind: "manual",

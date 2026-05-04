@@ -407,6 +407,13 @@
       "when": 1746662400000,
       "tag": "0057_default_issue_status_todo",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1746748800000,
+      "tag": "0058_assigned_by_fields",
+      "breakpoints": true
     }
   ]
 }

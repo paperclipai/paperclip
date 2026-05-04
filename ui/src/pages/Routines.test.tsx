@@ -275,6 +275,8 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     assigneeUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
+    assignedByAgentId: null,
+    assignedByUserId: null,
     issueNumber: 1000,
     originKind: "routine_execution",
     originId: "routine-1",
