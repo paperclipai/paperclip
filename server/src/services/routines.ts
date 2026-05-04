@@ -38,7 +38,7 @@ import {
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
-import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, tooManyRequests, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService } from "./issues.js";
@@ -1502,6 +1502,50 @@ export function routineService(
       const routine = await getRoutineById(trigger.routineId);
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
+
+      // THEA-2270 — Server-side per-routine cooldown. Defense in depth against
+      // runaway webhook fires (the caller's per-process cooldown can fail to
+      // ship — only the server can save us in that case). NULL
+      // min_fire_interval_sec = no cooldown, preserving existing behavior for
+      // every routine.
+      if (routine.minFireIntervalSec && routine.minFireIntervalSec > 0 && routine.lastTriggeredAt) {
+        const requestedAt = new Date();
+        const lastFiredAt = routine.lastTriggeredAt;
+        const elapsedMs = requestedAt.getTime() - lastFiredAt.getTime();
+        const intervalMs = routine.minFireIntervalSec * 1000;
+        if (elapsedMs < intervalMs) {
+          const retryAfterSec = Math.max(1, Math.ceil((intervalMs - elapsedMs) / 1000));
+          // Audit row — visible in the runs feed; failureReason carries the
+          // matched triple so a dashboard tripwire can surface "watcher hit
+          // cooldown N times in last 10m" without re-deriving.
+          await db.insert(routineRuns).values({
+            companyId: routine.companyId,
+            routineId: routine.id,
+            triggerId: trigger.id,
+            source: "webhook",
+            status: "cooldown_skipped",
+            triggeredAt: requestedAt,
+            idempotencyKey: input.idempotencyKey ?? null,
+            triggerPayload: (input.payload as Record<string, unknown>) ?? null,
+            failureReason: JSON.stringify({
+              code: "ROUTINE_COOLDOWN",
+              routineId: routine.id,
+              minFireIntervalSec: routine.minFireIntervalSec,
+              lastFiredAt: lastFiredAt.toISOString(),
+              requestedAt: requestedAt.toISOString(),
+              elapsedMs,
+            }),
+            completedAt: requestedAt,
+          });
+          throw tooManyRequests(`Routine cooldown active; retry in ${retryAfterSec}s`, {
+            code: "ROUTINE_COOLDOWN",
+            retryAfterSec,
+            minFireIntervalSec: routine.minFireIntervalSec,
+            lastFiredAt: lastFiredAt.toISOString(),
+            requestedAt: requestedAt.toISOString(),
+          });
+        }
+      }
 
       if (trigger.signingMode === "none") {
         // No authentication — the publicId in the URL acts as a shared secret.

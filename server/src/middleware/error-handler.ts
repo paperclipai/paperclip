@@ -49,6 +49,13 @@ export function errorHandler(
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
     }
+    // THEA-2270: 429 responses carry Retry-After when the service attached a
+    // numeric `retryAfterSec` field on details. Standard HTTP signal so callers
+    // can back off without baking interval-aware logic into each client.
+    if (err.status === 429 && err.details && typeof (err.details as { retryAfterSec?: unknown }).retryAfterSec === "number") {
+      const retryAfterSec = (err.details as { retryAfterSec: number }).retryAfterSec;
+      if (retryAfterSec > 0) res.setHeader("Retry-After", String(Math.ceil(retryAfterSec)));
+    }
     res.status(err.status).json({
       error: err.message,
       ...(err.details ? { details: err.details } : {}),

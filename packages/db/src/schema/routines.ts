@@ -33,6 +33,7 @@ export const routines = pgTable(
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
+    minFireIntervalSec: integer("min_fire_interval_sec"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
