@@ -33,11 +33,12 @@ import {
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  resolvePaperclipPromptTemplate,
+  renderPaperclipPromptAdditions,
   renderTemplate,
   renderPaperclipWakePrompt,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
@@ -194,10 +195,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
-  const promptTemplate = asString(
-    config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  );
+  const promptTemplate = resolvePaperclipPromptTemplate(config);
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
   const variant = asString(config.variant, "").trim();
@@ -502,6 +500,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+    const renderedPromptAdditions = shouldUseResumeDeltaPrompt ? "" : renderTemplate(renderPaperclipPromptAdditions(config), templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections([
       instructionsPrefix,
@@ -509,6 +508,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       wakePrompt,
       sessionHandoffNote,
       renderedPrompt,
+      renderedPromptAdditions,
     ]);
     const promptMetrics = {
       promptChars: prompt.length,

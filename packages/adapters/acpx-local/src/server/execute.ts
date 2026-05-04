@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 import {
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
   asNumber,
   asString,
@@ -19,6 +18,8 @@ import {
   parseObject,
   readPaperclipRuntimeSkillEntries,
   renderPaperclipWakePrompt,
+  resolvePaperclipPromptTemplate,
+  renderPaperclipPromptAdditions,
   renderTemplate,
   resolvePaperclipDesiredSkillNames,
   shapePaperclipWorkspaceEnvForExecution,
@@ -786,7 +787,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   commandNotes: string[];
 }> {
   const { agent, runId, config, context, onLog } = ctx;
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const promptTemplate = resolvePaperclipPromptTemplate(config);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
@@ -830,6 +831,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+  const renderedPromptAdditions = shouldUseResumeDeltaPrompt ? "" : renderTemplate(renderPaperclipPromptAdditions(config), templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
@@ -839,6 +841,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     sessionHandoffNote,
     taskContextNote,
     renderedPrompt,
+    renderedPromptAdditions,
   ]);
 
   return {

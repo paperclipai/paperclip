@@ -9,7 +9,10 @@ import {
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
+  renderPaperclipPromptAdditions,
   renderPaperclipWakePrompt,
+  resolvePaperclipDesiredSkillNames,
+  resolvePaperclipPromptTemplate,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -429,6 +432,41 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Respect budget, pause/cancel, approval gates, and company boundaries",
     );
+  });
+
+  it("lets adapter config replace the default Paperclip prompt template", () => {
+    expect(resolvePaperclipPromptTemplate({ promptTemplate: "Use this instead." })).toBe("Use this instead.");
+    expect(resolvePaperclipPromptTemplate({ promptTemplate: "" })).toBe(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  });
+
+  it("renders enabled prompt additions and skips disabled additions", () => {
+    const additions = renderPaperclipPromptAdditions({
+      paperclipPromptAdditions: [
+        { name: "Company Policy", content: "Stay company-scoped." },
+        { name: "Disabled", content: "Do not include this.", enabled: false },
+        "Raw extra instruction.",
+      ],
+    });
+
+    expect(additions).toContain("## Company Policy");
+    expect(additions).toContain("Stay company-scoped.");
+    expect(additions).toContain("Raw extra instruction.");
+    expect(additions).not.toContain("Do not include this.");
+  });
+
+  it("can opt out of always-forced bundled skills", () => {
+    const available = [
+      { key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip", required: true },
+      { key: "company/custom", runtimeName: "custom", required: false },
+    ];
+
+    expect(resolvePaperclipDesiredSkillNames({}, available)).toEqual(["paperclipai/paperclip/paperclip"]);
+    expect(resolvePaperclipDesiredSkillNames({
+      paperclipSkillSync: {
+        includeRequired: false,
+        desiredSkills: ["custom"],
+      },
+    }, available)).toEqual(["company/custom"]);
   });
 
   it("adds the execution contract to scoped wake prompts", () => {

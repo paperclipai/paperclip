@@ -104,6 +104,13 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 
+export type PaperclipPromptAddition = {
+  id?: string;
+  name?: string;
+  content: string;
+  enabled?: boolean;
+};
+
 export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
@@ -1466,9 +1473,16 @@ export function resolvePaperclipDesiredSkillNames(
   availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
-  const requiredSkills = availableEntries
-    .filter((entry) => entry.required)
-    .map((entry) => entry.key);
+  const raw = config.paperclipSkillSync;
+  const syncConfig = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const includeRequired = syncConfig.includeRequired !== false;
+  const requiredSkills = includeRequired
+    ? availableEntries
+      .filter((entry) => entry.required)
+      .map((entry) => entry.key)
+    : [];
   if (!preference.explicit) {
     return Array.from(new Set(requiredSkills));
   }
@@ -1481,6 +1495,7 @@ export function resolvePaperclipDesiredSkillNames(
 export function writePaperclipSkillSyncPreference(
   config: Record<string, unknown>,
   desiredSkills: string[],
+  options: { includeRequired?: boolean } = {},
 ): Record<string, unknown> {
   const next = { ...config };
   const raw = next.paperclipSkillSync;
@@ -1495,8 +1510,51 @@ export function writePaperclipSkillSyncPreference(
         .filter(Boolean),
     ),
   );
+  if (options.includeRequired !== undefined) {
+    current.includeRequired = options.includeRequired;
+  }
   next.paperclipSkillSync = current;
   return next;
+}
+
+export function resolvePaperclipPromptTemplate(config: Record<string, unknown>): string {
+  const raw = config.promptTemplate;
+  return typeof raw === "string" && raw.trim().length > 0
+    ? raw
+    : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+}
+
+export function resolvePaperclipPromptAdditions(config: Record<string, unknown>): PaperclipPromptAddition[] {
+  const raw = config.paperclipPromptAdditions;
+  if (!Array.isArray(raw)) return [];
+  const additions: PaperclipPromptAddition[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      if (entry.trim().length > 0) additions.push({ content: entry });
+      continue;
+    }
+    const parsed = parseObject(entry);
+    const content = asString(parsed.content, "").trim();
+    if (!content) continue;
+    additions.push({
+      id: asString(parsed.id, "") || undefined,
+      name: asString(parsed.name, "") || undefined,
+      content,
+      enabled: parsed.enabled !== false,
+    });
+  }
+  return additions.filter((entry) => entry.enabled !== false);
+}
+
+export function renderPaperclipPromptAdditions(config: Record<string, unknown>): string {
+  const additions = resolvePaperclipPromptAdditions(config);
+  if (additions.length === 0) return "";
+  return additions
+    .map((addition) => {
+      const title = addition.name?.trim();
+      return title ? `## ${title}\n\n${addition.content}` : addition.content;
+    })
+    .join("\n\n");
 }
 
 export async function ensurePaperclipSkillSymlink(

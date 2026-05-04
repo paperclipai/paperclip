@@ -36,11 +36,12 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  resolvePaperclipPromptTemplate,
+  renderPaperclipPromptAdditions,
   renderTemplate,
   renderPaperclipWakePrompt,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -216,10 +217,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
-  const promptTemplate = asString(
-    config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  );
+  const promptTemplate = resolvePaperclipPromptTemplate(config);
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
@@ -529,7 +527,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-        DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+        promptTemplate;
     } catch (err) {
       instructionsReadFailed = true;
       const reason = err instanceof Error ? err.message : String(err);
@@ -555,6 +553,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const renderedSystemPromptExtension = renderTemplate(systemPromptExtension, templateData);
+  const renderedPromptAdditions = renderTemplate(renderPaperclipPromptAdditions(config), templateData);
   const renderedBootstrapPrompt =
     !canResumeSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -568,6 +567,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePrompt,
     sessionHandoffNote,
     renderedHeartbeatPrompt,
+    shouldUseResumeDeltaPrompt ? "" : renderedPromptAdditions,
   ]);
   const promptMetrics = {
     systemPromptChars: renderedSystemPromptExtension.length,
