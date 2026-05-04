@@ -1,0 +1,27 @@
+{
+  "name": "@marcpbailey/paperclip-adapter-openai",
+  "version": "0.1.4",
+  "description": "Paperclip external adapter for any OpenAI Chat Completions-compatible endpoint (OpenRouter, api.openai.com, vLLM, etc.)",
+  "type": "module",
+  "license": "MIT",
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server/index.js",
+    "./ui-parser": "./dist/ui-parser.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "^0.3.1",
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
