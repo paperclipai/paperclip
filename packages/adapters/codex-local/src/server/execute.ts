@@ -25,8 +25,10 @@ import {
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensurePaperclipSkillSymlink,
+  type PaperclipSkillEntry,
+  ensurePaperclipRuntimeSkillLinked,
   ensurePathInEnv,
+  removeUnwantedPaperclipRuntimeSkills,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
@@ -163,7 +165,7 @@ function resolveCodexSkillsDir(codexHome: string): string {
 
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
-  skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
+  skillsEntries?: PaperclipSkillEntry[];
   desiredSkillNames?: string[];
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
@@ -227,37 +229,23 @@ export async function ensureCodexSkillsInjected(
 
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
   await fs.mkdir(skillsHome, { recursive: true });
+  const removedSkills = await removeUnwantedPaperclipRuntimeSkills(
+    skillsHome,
+    skillsEntries.map((entry) => entry.runtimeName),
+    allSkillsEntries,
+  );
+  for (const skillName of removedSkills) {
+    await onLog(
+      "stdout",
+      `[paperclip] Removed Codex skill "${skillName}" from ${skillsHome}\n`,
+    );
+  }
   const linkSkill = options.linkSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
     try {
-      const existing = await fs.lstat(target).catch(() => null);
-      if (existing?.isSymbolicLink()) {
-        const linkedPath = await fs.readlink(target).catch(() => null);
-        const resolvedLinkedPath = linkedPath
-          ? path.resolve(path.dirname(target), linkedPath)
-          : null;
-        if (
-          resolvedLinkedPath &&
-          resolvedLinkedPath !== entry.source &&
-          (await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.runtimeName))
-        ) {
-          await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
-          await onLog(
-            "stdout",
-            `[paperclip] Repaired Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
-          );
-          continue;
-        }
-      }
-
-      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
+      const result = await ensurePaperclipRuntimeSkillLinked(entry, target, { linkSkill });
       if (result === "skipped") continue;
 
       await onLog(
@@ -333,8 +321,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId, agent.id);
+  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId, agent.id);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   // Inject skills into the same CODEX_HOME that Codex will actually run with

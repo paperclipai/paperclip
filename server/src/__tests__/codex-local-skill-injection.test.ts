@@ -32,6 +32,7 @@ async function createCustomSkill(root: string, skillName: string) {
 
 describe("codex local adapter skill injection", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipIcKey = "paperclipai/paperclip/paperclip-ic";
   const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
   const cleanupDirs = new Set<string>();
 
@@ -187,6 +188,51 @@ describe("codex local adapter skill injection", () => {
     expect((await fs.lstat(path.join(skillsHome, "agent-browser"))).isSymbolicLink()).toBe(true);
     expect(await fs.realpath(path.join(skillsHome, "agent-browser"))).toBe(
       await fs.realpath(path.join(currentRepo, "skills", "agent-browser")),
+    );
+  });
+
+  it("removes the full Paperclip skill when an IC run injects only the IC variant", async () => {
+    const currentRepo = await makeTempDir("paperclip-codex-current-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(currentRepo);
+    cleanupDirs.add(skillsHome);
+
+    await createPaperclipRepoSkill(currentRepo, "paperclip");
+    const paperclipSkillDir = path.join(currentRepo, "skills", "paperclip");
+    await fs.writeFile(
+      path.join(paperclipSkillDir, "SKILL-IC.md"),
+      "---\nname: paperclip-ic\n---\n\n# Paperclip IC\n",
+      "utf8",
+    );
+    await fs.symlink(paperclipSkillDir, path.join(skillsHome, "paperclip"));
+
+    await ensureCodexSkillsInjected(async () => {}, {
+      skillsHome,
+      desiredSkillNames: [paperclipIcKey],
+      skillsEntries: [
+        {
+          key: paperclipKey,
+          runtimeName: "paperclip",
+          source: paperclipSkillDir,
+          required: true,
+        },
+        {
+          key: paperclipIcKey,
+          runtimeName: "paperclip-ic",
+          source: paperclipSkillDir,
+          required: false,
+          entryFile: "SKILL-IC.md",
+          variantOf: paperclipKey,
+        },
+      ],
+    });
+
+    await expect(fs.lstat(path.join(skillsHome, "paperclip"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await fs.lstat(path.join(skillsHome, "paperclip-ic"))).isDirectory()).toBe(true);
+    expect(await fs.realpath(path.join(skillsHome, "paperclip-ic", "SKILL.md"))).toBe(
+      await fs.realpath(path.join(paperclipSkillDir, "SKILL-IC.md")),
     );
   });
 });

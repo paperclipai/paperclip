@@ -69,6 +69,7 @@ export type {
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
 } from "./adapter-skills.js";
+export type { AgentSkillProfile } from "../constants.js";
 export type {
   Agent,
   AgentAccessState,

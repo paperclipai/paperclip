@@ -16,7 +16,12 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  deriveDefaultAgentSkillProfile,
+  isUuidLike,
+  normalizeAgentUrlKey,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -32,6 +37,7 @@ function createToken() {
 const CONFIG_REVISION_FIELDS = [
   "name",
   "role",
+  "agentSkillProfile",
   "title",
   "reportsTo",
   "capabilities",
@@ -91,6 +97,7 @@ function buildConfigSnapshot(
       ? sanitizeRecord(row.metadata as Record<string, unknown>)
       : row.metadata ?? null;
   return {
+    agentSkillProfile: row.agentSkillProfile,
     name: row.name,
     role: row.role,
     title: row.title,
@@ -161,6 +168,10 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   return {
     name: snapshot.name,
     role: snapshot.role,
+    agentSkillProfile:
+      typeof snapshot.agentSkillProfile === "string" && snapshot.agentSkillProfile.length > 0
+        ? snapshot.agentSkillProfile
+        : "custom",
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
     reportsTo:
       typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
@@ -422,11 +433,21 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
+      const agentSkillProfile =
+        data.agentSkillProfile ?? deriveDefaultAgentSkillProfile(data.name, role);
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+        .values({
+          ...data,
+          name: uniqueName,
+          companyId,
+          role,
+          agentSkillProfile,
+          permissions: normalizedPermissions,
+          runtimeConfig,
+        })
         .returning()
         .then((rows) => rows[0]);
 

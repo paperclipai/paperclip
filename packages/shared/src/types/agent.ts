@@ -1,5 +1,6 @@
 import type {
   AgentAdapterType,
+  AgentSkillProfile,
   ModelProfileKey,
   PauseReason,
   AgentRole,
@@ -76,6 +77,7 @@ export interface Agent {
   name: string;
   urlKey: string;
   role: AgentRole;
+  agentSkillProfile?: AgentSkillProfile;
   title: string | null;
   icon: string | null;
   status: AgentStatus;

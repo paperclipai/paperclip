@@ -26,13 +26,16 @@ type ApprovalRecord = {
   requestedByAgentId: string | null;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(
+  status: string,
+  payload: Record<string, unknown> = { agentId: "agent-1" },
+): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
     type: "hire_agent",
     status,
-    payload: { agentId: "agent-1" },
+    payload,
     requestedByAgentId: "requester-1",
   };
 }
@@ -103,5 +106,31 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows legacy hire approval payloads to use service-level profile derivation", async () => {
+    const payload = {
+      name: "Backend Engineer",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    };
+    const dbStub = createDbStub(
+      [[createApproval("pending", payload)]],
+      [createApproval("approved", payload)],
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.approve("approval-1", "board", "ship it");
+
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "Backend Engineer",
+        role: "engineer",
+        agentSkillProfile: undefined,
+        adapterType: "codex_local",
+      }),
+    );
   });
 });

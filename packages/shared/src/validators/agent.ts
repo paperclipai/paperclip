@@ -2,9 +2,11 @@ import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
+  AGENT_SKILL_PROFILES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
+export type { AgentSkillProfile } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -13,6 +15,7 @@ export const agentPermissionsSchema = z.object({
 });
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
+export const agentSkillProfileSchema = z.enum(AGENT_SKILL_PROFILES);
 
 export const updateAgentInstructionsBundleSchema = z.object({
   mode: agentInstructionsBundleModeSchema.optional(),
@@ -66,6 +69,7 @@ export const agentRuntimeConfigSchema = z.object({
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
+  agentSkillProfile: agentSkillProfileSchema.optional(),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   reportsTo: z.string().uuid().optional().nullable(),

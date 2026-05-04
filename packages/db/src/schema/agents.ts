@@ -18,6 +18,7 @@ export const agents = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     name: text("name").notNull(),
     role: text("role").notNull().default("general"),
+    agentSkillProfile: text("agent_skill_profile").notNull().default("custom"),
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),

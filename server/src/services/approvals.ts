@@ -119,6 +119,10 @@ export function approvalService(db: Db) {
           const created = await agentsSvc.create(updated.companyId, {
             name: String(payload.name ?? "New Agent"),
             role: String(payload.role ?? "general"),
+            agentSkillProfile:
+              typeof payload.agentSkillProfile === "string" && payload.agentSkillProfile.trim().length > 0
+                ? payload.agentSkillProfile
+                : undefined,
             title: typeof payload.title === "string" ? payload.title : null,
             reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
             capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
