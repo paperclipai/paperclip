@@ -537,6 +537,9 @@ importers:
       '@paperclipai/adapter-acpx-local':
         specifier: workspace:*
         version: link:../packages/adapters/acpx-local
+      '@paperclipai/adapter-bob-shell':
+        specifier: workspace:*
+        version: link:../packages/adapters/bob-shell
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
