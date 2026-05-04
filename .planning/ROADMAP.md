@@ -162,7 +162,7 @@ v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Planned |
+| 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Complete |
 | 85 | API Contract Alignment | API-01, API-02, API-03 | Planned |
 | 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Planned |
 | 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Planned |
@@ -579,7 +579,7 @@ Success criteria:
 | 81. wikiLLM/Graphify Knowledge Projection | v3.3 | 0/0 | Complete | 2026-05-04 |
 | 82. Paperclip Residue Cleanup | v3.3 | 0/0 | Complete | 2026-05-04 |
 | 83. v3.3 Acceptance Gate | v3.3 | 0/0 | Complete | 2026-05-04 |
-| 84. RT2 Event/Projector Layer | v3.4 | 0/0 | Planned | — |
+| 84. RT2 Event/Projector Layer | v3.4 | 1/1 | Complete | 2026-05-04 |
 | 85. API Contract Alignment | v3.4 | 0/0 | Planned | — |
 | 86. Work Entity Migration | v3.4 | 0/0 | Planned | — |
 | 87. RT2 Schema Validation | v3.4 | 0/0 | Planned | — |
