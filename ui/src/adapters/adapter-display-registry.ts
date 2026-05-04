@@ -117,6 +117,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Invoke an external agent via HTTP webhook",
     icon: Globe,
   },
+  picoclaw_local: {
+    label: "PicoClaw (local)",
+    description: "Run PicoClaw as a local agent",
+    icon: Terminal,
+  },
 };
 
 // ---------------------------------------------------------------------------
