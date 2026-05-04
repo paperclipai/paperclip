@@ -18,15 +18,16 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **현재 진행:** v3.2 Future Scope shipped (2026-05-01). 이제 v3.3 마일스톤을 시작합니다.
 
-## Current Milestone: v3.3 RT2 Engine Convergence
+## Current Milestone: v3.4 RT2 Integration & API Alignment
 
-**Goal:** RT2/Multica/wikiLLM+Graphify 삼중 기반 로직이 앱에 정확히 반영되어 RealTycoon2 운영엔진으로 동작하는지 확인하고 개선한다. 혹시나 아직 Paperclip 방식으로 동작하는 부분이 있으면 전면 개편한다.
+**Goal:** RT2 event stream, projector, API contract, work entity lifecycle을 실제 제품 운영에 맞게 정렬하고, versioning strategy와 schema validation으로 미래 확장을 대비한다.
 
 **Target features:**
-- RT2 execution engine과 Multica runtime 정합성 검증
-- wikiLLM/Graphify knowledge projection 정합성 검증
-- RT2-native operation 확인 및 Paperclip residue 제거
-- RealTycoon2 operating engine으로서의 완전한 안착
+- RT2 Event/Projector Layer: Multica runtime과 event stream 동기화, append-only projection validation
+- API Contract Alignment: REST/WebSocket contract를 RT2-native operation으로 재정의
+- Work Entity Migration: Work/Task/Deliverable lifecycle을 새 RT2 schema로 migration
+- API Versioning Strategy: backward compatibility, deprecation timeline, migration path
+- RT2 Schema Validation: product entity와 DB schema간 정합성 검증
 
 ## Current State After v3.0
 
@@ -289,7 +290,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-v3.3 마일스톤을 시작합니다. 목표는 아직 정의되지 않았습니다.
+v3.4 마일스톤을 시작합니다. 목표는 RT2 Integration & API Alignment입니다.
 
 ## Evolution
 
@@ -309,4 +310,4 @@ v3.3 마일스톤을 시작합니다. 목표는 아직 정의되지 않았습니
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-05-04 after v3.2 shipped, v3.3 started*
+*마지막 업데이트: 2026-05-04 after v3.3 shipped, v3.4 started*
