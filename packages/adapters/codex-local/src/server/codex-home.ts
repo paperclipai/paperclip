@@ -51,6 +51,17 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   }
 
   if (!existing.isSymbolicLink()) {
+    // Stale regular file (e.g. a copy left from Windows where symlink creation
+    // failed, or from a previous version). Remove it and replace with a symlink so
+    // auth tokens stay in sync with the shared Codex home on every run.
+    await fs.unlink(target);
+    try {
+      await fs.symlink(source, target);
+    } catch {
+      // Symlink creation failed (e.g. Windows without SeCreateSymbolicLinkPrivilege).
+      // Fall back to a fresh copy so the token is at least current for this run.
+      await fs.copyFile(source, target);
+    }
     return;
   }
 
