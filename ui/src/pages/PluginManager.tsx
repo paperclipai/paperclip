@@ -741,18 +741,64 @@ export function PluginManager() {
                     <div className="flex items-center gap-2 shrink-0">
                       {installedPlugin ? (
                         <>
-                          {installedPlugin.status !== "ready" && (
+                          <Button
+                            variant="outline"
+                            size="icon-sm"
+                            className="h-8 w-8"
+                            title={installedPlugin.status === "ready" ? "Disable" : "Enable"}
+                            onClick={() => {
+                              if (installedPlugin.status === "ready") {
+                                disableMutation.mutate(installedPlugin.id);
+                              } else {
+                                enableMutation.mutate(installedPlugin.id);
+                              }
+                            }}
+                            disabled={enableMutation.isPending || disableMutation.isPending}
+                          >
+                            <Power
+                              className={cn(
+                                "h-4 w-4",
+                                installedPlugin.status === "ready" ? "text-green-600" : "",
+                              )}
+                            />
+                          </Button>
+                          {installedPlugin.packagePath && (
                             <Button
                               variant="outline"
-                              size="sm"
-                              disabled={enableMutation.isPending}
-                              onClick={() => enableMutation.mutate(installedPlugin.id)}
+                              size="icon-sm"
+                              className="h-8 w-8"
+                              title="Reinstall from local path"
+                              onClick={() => reinstallMutation.mutate(installedPlugin.id)}
+                              disabled={reinstallMutation.isPending}
                             >
-                              Enable
+                              <RefreshCw
+                                className={cn(
+                                  "h-4 w-4",
+                                  reinstallMutation.isPending &&
+                                    reinstallMutation.variables === installedPlugin.id &&
+                                    "animate-spin",
+                                )}
+                              />
                             </Button>
                           )}
-                          <Button variant="outline" size="sm" asChild>
+                          <Button
+                            variant="outline"
+                            size="icon-sm"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            title="Uninstall"
+                            onClick={() => {
+                              setUninstallPluginId(installedPlugin.id);
+                              setUninstallPluginName(
+                                installedPlugin.manifestJson.displayName ?? installedPlugin.packageName,
+                              );
+                            }}
+                            disabled={uninstallMutation.isPending}
+                          >
+                            <Trash className="h-4 w-4" />
+                          </Button>
+                          <Button variant="outline" size="sm" className="h-8" asChild>
                             <Link to={`/instance/settings/plugins/${installedPlugin.id}`}>
+                              <Settings className="h-4 w-4" />
                               {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
                             </Link>
                           </Button>
