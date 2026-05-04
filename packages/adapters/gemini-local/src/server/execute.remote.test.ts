@@ -19,13 +19,12 @@ const {
     timedOut: false,
     stdout: [
       JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-1", model: "gemini-2.5-pro" }),
-      JSON.stringify({ type: "assistant", message: { content: [{ type: "output_text", text: "hello" }] } }),
+      JSON.stringify({ type: "message", role: "assistant", content: "hello" }),
       JSON.stringify({
         type: "result",
-        subtype: "success",
+        status: "success",
         session_id: "gemini-session-1",
-        usage: { promptTokenCount: 1, cachedContentTokenCount: 0, candidatesTokenCount: 1 },
-        result: "hello",
+        stats: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
       }),
     ].join("\n"),
     stderr: "",
