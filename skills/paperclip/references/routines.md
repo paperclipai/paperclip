@@ -132,6 +132,24 @@ No configuration. Fire via the manual run endpoint.
 
 ---
 
+## Deleting a Routine
+
+Hard-deletes a routine along with all its triggers and runs (via database cascade). Board-only — agents cannot delete routines, even if they are the assignee.
+
+```
+DELETE /api/routines/{routineId}
+```
+
+**Authorization:** Board user with `tasks:assign` permission or instance admin.
+
+**Responses:**
+- `204 No Content` — routine deleted successfully.
+- `403 Forbidden` — caller is an agent or board user without `tasks:assign`.
+- `404 Not Found` — routine does not exist.
+- `409 Conflict` — routine has active runs (status `received` or `issue_created`). Wait for them to complete or cancel before deleting.
+
+---
+
 ## Updating and Deleting Triggers
 
 ```

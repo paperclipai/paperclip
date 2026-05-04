@@ -1768,6 +1768,28 @@ export function routineService(
       });
     },
 
+    deleteRoutine: async (id: string): Promise<boolean> => {
+      const existing = await getRoutineById(id);
+      if (!existing) return false;
+      await db.delete(routines).where(eq(routines.id, id));
+      return true;
+    },
+
+    hasActiveRun: async (routineId: string): Promise<boolean> => {
+      const activeRun = await db
+        .select({ id: routineRuns.id })
+        .from(routineRuns)
+        .where(
+          and(
+            eq(routineRuns.routineId, routineId),
+            inArray(routineRuns.status, ["received", "issue_created"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length > 0);
+      return activeRun;
+    },
+
     deleteTrigger: async (id: string, actor: Actor = {}): Promise<{ deleted: boolean; revision: RoutineRevision | null }> => {
       const existing = await getTriggerById(id);
       if (!existing) return { deleted: false, revision: null };

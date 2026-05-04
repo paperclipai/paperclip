@@ -842,6 +842,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/routines/:routineId` | Routine details including triggers |
 | POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
 | PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |
+| DELETE | `/api/routines/:routineId` | Hard-delete routine + triggers + runs (board-only, `tasks:assign` required; 409 if active runs exist) |
 | POST   | `/api/routines/:routineId/triggers` | Add trigger (`schedule`, `webhook`, or `api` kind) |
 | PATCH  | `/api/routine-triggers/:triggerId` | Update trigger (e.g. disable, change cron) |
 | DELETE | `/api/routine-triggers/:triggerId` | Delete trigger |
