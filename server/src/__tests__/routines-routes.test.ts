@@ -351,4 +351,30 @@ describe("routine routes", () => {
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
+
+  it("returns nextRunAt: null for triggers when listing an archived routine", async () => {
+    const archivedRoutine = { ...routine, status: "archived" };
+    const disabledTrigger = { ...trigger, enabled: false, nextRunAt: null };
+    mockRoutineService.list.mockResolvedValue([
+      { ...archivedRoutine, triggers: [disabledTrigger], lastRun: null, activeIssue: null },
+    ]);
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get(`/api/companies/${companyId}/routines`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].status).toBe("archived");
+    expect(res.body[0].triggers).toHaveLength(1);
+    expect(res.body[0].triggers[0].enabled).toBe(false);
+    expect(res.body[0].triggers[0].nextRunAt).toBeNull();
+  });
 });

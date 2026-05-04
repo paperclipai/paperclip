@@ -1145,3 +1145,205 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 });
+
+describeEmbeddedPostgres("routines.update() atomic trigger disable", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-atomic-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(routineRuns);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(companies);
+    await db.delete(instanceSettings);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedAtomicFixture() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Atomic",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "AtomicBot",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Atomic",
+      status: "in_progress",
+    });
+
+    const svc = routineService(db, {
+      heartbeat: { wakeup: async () => null },
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "atomic test routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" },
+      {},
+    );
+
+    return { companyId, agentId, projectId, routine, svc, triggerId: trigger.id };
+  }
+
+  it("disables triggers and clears nextRunAt when archiving a routine", async () => {
+    const { routine, svc, triggerId } = await seedAtomicFixture();
+
+    const beforeTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+    expect(beforeTrigger?.enabled).toBe(true);
+    expect(beforeTrigger?.nextRunAt).not.toBeNull();
+
+    await svc.update(routine.id, { status: "archived" }, {});
+
+    const afterTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+    expect(afterTrigger?.enabled).toBe(false);
+    expect(afterTrigger?.nextRunAt).toBeNull();
+  });
+
+  it("disables triggers and clears nextRunAt when pausing a routine", async () => {
+    const { routine, svc, triggerId } = await seedAtomicFixture();
+
+    await svc.update(routine.id, { status: "paused" }, {});
+
+    const afterTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+    expect(afterTrigger?.enabled).toBe(false);
+    expect(afterTrigger?.nextRunAt).toBeNull();
+  });
+
+  it("does not touch triggers when editing title only (regression guard)", async () => {
+    const { routine, svc, triggerId } = await seedAtomicFixture();
+
+    const before = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+
+    await svc.update(routine.id, { title: "renamed routine" }, {});
+
+    const after = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+    expect(after?.enabled).toBe(before?.enabled);
+    expect(after?.nextRunAt?.toISOString()).toBe(before?.nextRunAt?.toISOString());
+  });
+
+  it("list() returns nextRunAt: null for triggers on archived routines", async () => {
+    const { companyId, routine, svc } = await seedAtomicFixture();
+
+    await svc.update(routine.id, { status: "archived" }, {});
+
+    const items = await svc.list(companyId);
+    const found = items.find((r) => r.id === routine.id);
+    expect(found).toBeDefined();
+    expect(found?.triggers).toHaveLength(1);
+    expect(found?.triggers[0].enabled).toBe(false);
+    expect(found?.triggers[0].nextRunAt).toBeNull();
+  });
+
+  it("rolls back trigger update when the routines update fails mid-transaction", async () => {
+    const { routine, triggerId } = await seedAtomicFixture();
+
+    const beforeTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+
+    // Simulate a transaction failure by running a transaction that throws after updating routines
+    await expect(
+      db.transaction(async (tx) => {
+        const txDb = tx as unknown as ReturnType<typeof createDb>;
+        await txDb
+          .update(routines)
+          .set({ status: "archived", updatedAt: new Date() })
+          .where(eq(routines.id, routine.id));
+        await txDb
+          .update(routineTriggers)
+          .set({ enabled: false, nextRunAt: null, updatedAt: new Date() })
+          .where(eq(routineTriggers.routineId, routine.id));
+        throw new Error("simulated mid-transaction failure");
+      }),
+    ).rejects.toThrow("simulated mid-transaction failure");
+
+    // Both the routines row and the trigger row should be unchanged
+    const afterTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, triggerId))
+      .then((rows) => rows[0]);
+    expect(afterTrigger?.enabled).toBe(beforeTrigger?.enabled);
+    expect(afterTrigger?.nextRunAt?.toISOString()).toBe(beforeTrigger?.nextRunAt?.toISOString());
+
+    const afterRoutine = await db
+      .select()
+      .from(routines)
+      .where(eq(routines.id, routine.id))
+      .then((rows) => rows[0]);
+    expect(afterRoutine?.status).toBe("active");
+  });
+});

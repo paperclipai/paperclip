@@ -1098,7 +1098,7 @@ export function routineService(
           enabled: trigger.enabled,
           cronExpression: trigger.cronExpression,
           timezone: trigger.timezone,
-          nextRunAt: trigger.nextRunAt,
+          nextRunAt: trigger.enabled ? trigger.nextRunAt : null,
           lastFiredAt: trigger.lastFiredAt,
           lastResult: trigger.lastResult,
         })),
@@ -1275,27 +1275,37 @@ export function routineService(
       if (enabledScheduleTriggers) {
         assertScheduleCompatibleVariables(nextVariables);
       }
-      const [updated] = await db
-        .update(routines)
-        .set({
-          projectId: nextProjectId,
-          goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
-          parentIssueId: patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
-          title: nextTitle,
-          description: nextDescription,
-          assigneeAgentId: nextAssigneeAgentId,
-          priority: patch.priority ?? existing.priority,
-          status: nextStatus,
-          concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
-          catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
-          variables: nextVariables,
-          updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
-          updatedAt: new Date(),
-        })
-        .where(eq(routines.id, id))
-        .returning();
-      return updated ?? null;
+      const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const [result] = await txDb
+          .update(routines)
+          .set({
+            projectId: nextProjectId,
+            goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
+            parentIssueId: patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
+            title: nextTitle,
+            description: nextDescription,
+            assigneeAgentId: nextAssigneeAgentId,
+            priority: patch.priority ?? existing.priority,
+            status: nextStatus,
+            concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
+            catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
+            variables: nextVariables,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(routines.id, id))
+          .returning();
+        if (nextStatus === "archived" || nextStatus === "paused") {
+          await txDb
+            .update(routineTriggers)
+            .set({ enabled: false, nextRunAt: null, updatedAt: new Date() })
+            .where(eq(routineTriggers.routineId, id));
+        }
+        return result ?? null;
+      });
+      return updated;
     },
 
     createTrigger: async (
