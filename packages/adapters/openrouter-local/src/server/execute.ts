@@ -1,0 +1,321 @@
+import OpenAI from "openai";
+import type {
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  TranscriptEntry,
+  UsageSummary,
+} from "@paperclipai/adapter-utils";
+import { renderTemplate, asString } from "@paperclipai/adapter-utils/server-utils";
+import {
+  DEFAULT_OPENROUTER_LOCAL_BASE_URL,
+  DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS,
+  DEFAULT_OPENROUTER_LOCAL_MODEL,
+  DEFAULT_OPENROUTER_LOCAL_RUN_COMMAND_TIMEOUT_SEC,
+  instructionsPathKey,
+  type as ADAPTER_TYPE,
+} from "../index.js";
+import {
+  loadInstructionFragments,
+  joinInstructionFragments,
+} from "./instructions.js";
+import {
+  DEFAULT_TOOLS,
+  buildToolMap,
+  dispatchToolCall,
+  toOpenAiTools,
+  type ToolContext,
+  type ToolHandler,
+} from "./tools.js";
+
+export interface ExecuteOptions {
+  /** Override the OpenAI SDK constructor — used for tests. */
+  openAiFactory?: (init: { apiKey: string; baseURL: string; defaultHeaders?: Record<string, string> }) => Pick<OpenAI, "chat">;
+  /** Override the tool registry — used for tests. */
+  tools?: ToolHandler[];
+}
+
+interface RunState {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  provider: string | null;
+  model: string;
+  finalAssistantText: string;
+}
+
+const DEFAULT_OPENROUTER_HEADERS: Record<string, string> = {
+  "HTTP-Referer": "https://github.com/paperclipai/paperclip",
+  "X-Title": "Paperclip (openrouter-local adapter)",
+};
+
+function isOpenRouter(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return url.hostname.endsWith("openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
+function resolveCwd(configCwd: unknown): string {
+  if (typeof configCwd === "string" && configCwd.trim().length > 0) return configCwd;
+  const envCwd = process.env.PAPERCLIP_WORKSPACE_PATH;
+  if (envCwd && envCwd.trim().length > 0) return envCwd;
+  return process.cwd();
+}
+
+function resolveExtraHeaders(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+function resolveDisabledTools(value: unknown): Set<string> {
+  const out = new Set<string>();
+  if (!Array.isArray(value)) return out;
+  for (const v of value) if (typeof v === "string") out.add(v);
+  return out;
+}
+
+function asInt(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  return fallback;
+}
+
+export async function execute(
+  ctx: AdapterExecutionContext,
+  options: ExecuteOptions = {},
+): Promise<AdapterExecutionResult> {
+  const { config, agent, context, onLog } = ctx;
+
+  const baseUrl = asString(config.baseUrl, DEFAULT_OPENROUTER_LOCAL_BASE_URL);
+  const model = asString(config.model, DEFAULT_OPENROUTER_LOCAL_MODEL);
+  const maxIterations = asInt(config.maxIterations, DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS);
+  const runCommandTimeoutSec = asInt(
+    config.maxRunCommandTimeoutSec,
+    DEFAULT_OPENROUTER_LOCAL_RUN_COMMAND_TIMEOUT_SEC,
+  );
+  const cwd = resolveCwd(config.cwd);
+  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+
+  const emit = async (entry: TranscriptEntry) => {
+    await onLog("stdout", `${JSON.stringify(entry)}\n`);
+  };
+
+  if (!apiKey) {
+    await onLog(
+      "stderr",
+      `${ADAPTER_TYPE}: missing OPENROUTER_API_KEY (or OPENAI_API_KEY)\n`,
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Missing OPENROUTER_API_KEY (or OPENAI_API_KEY)",
+      errorCode: "missing_api_key",
+    };
+  }
+
+  const promptTemplate = asString(
+    config.promptTemplate,
+    "Continue your work on issue {{taskTitle}}.",
+  );
+  const prompt = renderTemplate(promptTemplate, {
+    agentId: agent.id,
+    agentName: agent.name,
+    companyId: agent.companyId,
+    runId: ctx.runId,
+    taskId: String(context.taskId ?? ""),
+    taskTitle: String(context.taskTitle ?? ""),
+  });
+
+  const instructionsFilePath = asString(config[instructionsPathKey], "");
+  const fragments = await loadInstructionFragments({
+    cwd,
+    instructionsFilePath: instructionsFilePath || null,
+  });
+  const systemPrompt = joinInstructionFragments(fragments);
+
+  const disabledTools = resolveDisabledTools(config.disabledTools);
+  const tools = (options.tools ?? DEFAULT_TOOLS).filter(
+    (t) => !disabledTools.has(t.name),
+  );
+  const toolMap = buildToolMap(tools);
+
+  const extraHeaders = resolveExtraHeaders(config.extraHeaders);
+  const headers: Record<string, string> = {
+    ...(isOpenRouter(baseUrl) ? DEFAULT_OPENROUTER_HEADERS : {}),
+    ...(extraHeaders ?? {}),
+  };
+
+  const factory = options.openAiFactory ?? ((init) => new OpenAI(init));
+  const client = factory({
+    apiKey,
+    baseURL: baseUrl,
+    ...(Object.keys(headers).length > 0 ? { defaultHeaders: headers } : {}),
+  });
+
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+  if (systemPrompt) {
+    messages.push({ role: "system", content: systemPrompt });
+  }
+  messages.push({ role: "user", content: prompt });
+
+  const toolCtx: ToolContext = { cwd, runCommandTimeoutSec };
+  const state: RunState = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    provider: null,
+    model,
+    finalAssistantText: "",
+  };
+
+  await emit({
+    kind: "init",
+    ts: new Date().toISOString(),
+    model,
+    sessionId: ctx.runId,
+  });
+  if (systemPrompt) {
+    await emit({
+      kind: "system",
+      ts: new Date().toISOString(),
+      text: `loaded ${fragments.length} instruction fragment(s)`,
+    });
+  }
+
+  try {
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+      const completion = await client.chat.completions.create({
+        model,
+        messages,
+        tools: tools.length > 0 ? toOpenAiTools(tools) : undefined,
+        tool_choice: tools.length > 0 ? "auto" : undefined,
+      });
+
+      const usage = (completion as unknown as { usage?: OpenAI.Completions.CompletionUsage })
+        .usage;
+      if (usage) {
+        state.inputTokens += usage.prompt_tokens ?? 0;
+        state.outputTokens += usage.completion_tokens ?? 0;
+        const cached =
+          (usage as unknown as { prompt_tokens_details?: { cached_tokens?: number } })
+            .prompt_tokens_details?.cached_tokens ?? 0;
+        state.cachedInputTokens += cached;
+      }
+      const provider = (completion as unknown as { provider?: string }).provider;
+      if (provider && !state.provider) state.provider = provider;
+
+      const choice = completion.choices?.[0];
+      if (!choice) {
+        throw new Error("model returned no choices");
+      }
+      const message = choice.message;
+      if (!message) {
+        throw new Error("model returned no message");
+      }
+
+      messages.push(message);
+
+      if (message.content) {
+        await emit({
+          kind: "assistant",
+          ts: new Date().toISOString(),
+          text: message.content,
+        });
+        state.finalAssistantText = message.content;
+      }
+
+      const toolCalls = message.tool_calls ?? [];
+      if (toolCalls.length === 0) {
+        // Final assistant turn — no further tools requested.
+        break;
+      }
+
+      for (const call of toolCalls) {
+        if (call.type !== "function") continue;
+        let parsedInput: unknown;
+        try {
+          parsedInput = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          parsedInput = call.function.arguments;
+        }
+        await emit({
+          kind: "tool_call",
+          ts: new Date().toISOString(),
+          name: call.function.name,
+          input: parsedInput,
+          toolUseId: call.id,
+        });
+        const outcome = await dispatchToolCall(call, toolMap, toolCtx);
+        await emit({
+          kind: "tool_result",
+          ts: new Date().toISOString(),
+          toolUseId: call.id,
+          toolName: call.function.name,
+          content: outcome.content,
+          isError: outcome.isError,
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: outcome.content,
+        });
+      }
+    }
+
+    const usageSummary: UsageSummary = {
+      inputTokens: state.inputTokens,
+      outputTokens: state.outputTokens,
+      ...(state.cachedInputTokens > 0
+        ? { cachedInputTokens: state.cachedInputTokens }
+        : {}),
+    };
+
+    await emit({
+      kind: "result",
+      ts: new Date().toISOString(),
+      text: state.finalAssistantText,
+      inputTokens: usageSummary.inputTokens,
+      outputTokens: usageSummary.outputTokens,
+      cachedTokens: state.cachedInputTokens,
+      costUsd: 0,
+      subtype: "ok",
+      isError: false,
+      errors: [],
+    });
+
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      model: state.model,
+      provider: state.provider,
+      usage: usageSummary,
+      summary: state.finalAssistantText || null,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `${ADAPTER_TYPE}: ${message}\n`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      model: state.model,
+      provider: state.provider,
+      usage: {
+        inputTokens: state.inputTokens,
+        outputTokens: state.outputTokens,
+        ...(state.cachedInputTokens > 0
+          ? { cachedInputTokens: state.cachedInputTokens }
+          : {}),
+      },
+      errorMessage: message,
+      errorCode: "openrouter_local_call_failed",
+    };
+  }
+}
