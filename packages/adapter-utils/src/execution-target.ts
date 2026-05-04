@@ -10,7 +10,15 @@ import {
   remoteExecutionSessionMatches,
   type RemoteManagedRuntimeAsset,
 } from "./remote-managed-runtime.js";
-import { parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
+import {
+  createCommandManagedSandboxCallbackBridgeQueueClient,
+  createSandboxCallbackBridgeAsset,
+  createSandboxCallbackBridgeToken,
+  DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  startSandboxCallbackBridgeServer,
+  startSandboxCallbackBridgeWorker,
+} from "./sandbox-callback-bridge.js";
+import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
   ensureCommandResolvable,
   resolveCommandForLogs,
@@ -18,6 +26,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import { preferredShellForSandbox } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
@@ -31,7 +40,6 @@ export interface AdapterSshExecutionTarget {
   environmentId?: string | null;
   leaseId?: string | null;
   remoteCwd: string;
-  paperclipApiUrl?: string | null;
   spec: SshRemoteExecutionSpec;
 }
 
@@ -39,10 +47,10 @@ export interface AdapterSandboxExecutionTarget {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
   remoteCwd: string;
-  paperclipApiUrl?: string | null;
   timeoutMs?: number | null;
   runner?: CommandManagedRuntimeRunner;
 }
@@ -82,6 +90,11 @@ export interface AdapterExecutionTargetShellOptions {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }
 
+export interface AdapterExecutionTargetPaperclipBridgeHandle {
+  env: Record<string, string>;
+  stop(): Promise<void>;
+}
+
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -94,6 +107,27 @@ function readString(value: unknown): string | null {
 
 function readStringMeta(parsed: Record<string, unknown>, key: string): string | null {
   return readString(parsed[key]);
+}
+
+function resolveHostForUrl(rawHost: string): string {
+  const host = rawHost.trim();
+  if (!host || host === "0.0.0.0" || host === "::") return "localhost";
+  if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
+  return host;
+}
+
+function resolveDefaultPaperclipApiUrl(): string {
+  const runtimeHost = resolveHostForUrl(
+    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
+  );
+  // 3100 matches the default Paperclip dev server port when the runtime does not provide one.
+  const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  return `http://${runtimeHost}:${runtimePort}`;
+}
+
+function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.PAPERCLIP_BRIDGE_DEBUG?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }
 
 function isAdapterExecutionTargetInstance(value: unknown): value is AdapterExecutionTarget {
@@ -130,12 +164,21 @@ export function adapterExecutionTargetRemoteCwd(
   return target?.kind === "remote" ? target.remoteCwd : localCwd;
 }
 
-export function adapterExecutionTargetPaperclipApiUrl(
+export function resolveAdapterExecutionTargetCwd(
   target: AdapterExecutionTarget | null | undefined,
-): string | null {
-  if (target?.kind !== "remote") return null;
-  if (target.transport === "ssh") return target.paperclipApiUrl ?? target.spec.paperclipApiUrl ?? null;
-  return target.paperclipApiUrl ?? null;
+  configuredCwd: string | null | undefined,
+  localFallbackCwd: string,
+): string {
+  if (typeof configuredCwd === "string" && configuredCwd.trim().length > 0) {
+    return configuredCwd;
+  }
+  return adapterExecutionTargetRemoteCwd(target, localFallbackCwd);
+}
+
+export function adapterExecutionTargetUsesPaperclipBridge(
+  target: AdapterExecutionTarget | null | undefined,
+): boolean {
+  return target?.kind === "remote";
 }
 
 export function describeAdapterExecutionTarget(
@@ -153,6 +196,33 @@ function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandMan
   throw new Error(
     "Sandbox execution target is missing its provider runtime runner. Sandbox commands must execute through the environment runtime.",
   );
+}
+
+function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | "sh" {
+  return preferredShellForSandbox(target.shellCommand);
+}
+
+type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterSandboxExecutionTarget;
+
+function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
+  if (target.transport === "ssh") {
+    return createSshCommandManagedRuntimeRunner({
+      spec: target.spec,
+      defaultCwd: target.remoteCwd,
+      maxBufferBytes: DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES * 4,
+    });
+  }
+  return requireSandboxRunner(target);
+}
+
+function adapterExecutionTargetShellCommand(target: AdapterCommandCapableExecutionTarget): "bash" | "sh" {
+  return target.transport === "ssh" ? "sh" : preferredSandboxShell(target);
+}
+
+function adapterExecutionTargetTimeoutMs(
+  target: AdapterCommandCapableExecutionTarget,
+): number | null | undefined {
+  return target.transport === "sandbox" ? target.timeoutMs : undefined;
 }
 
 export async function ensureAdapterExecutionTargetCommandResolvable(
@@ -282,8 +352,9 @@ export async function runAdapterExecutionTargetShellCommand(
       }
     }
 
+    const shellCommand = preferredSandboxShell(target);
     return await requireSandboxRunner(target).execute({
-      command: "sh",
+      command: shellCommand,
       args: ["-lc", command],
       cwd: target.remoteCwd,
       env: options.env,
@@ -322,6 +393,60 @@ export async function readAdapterExecutionTargetHomeDir(
   return homeDir.length > 0 ? homeDir : null;
 }
 
+export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  installCommand?: string | null;
+  detectCommand?: string | null;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec?: number;
+  graceSec?: number;
+  onLog?: AdapterExecutionTargetShellOptions["onLog"];
+}): Promise<void> {
+  const installCommand = input.installCommand?.trim();
+  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+    return;
+  }
+
+  const detectCommand = input.detectCommand?.trim();
+  if (detectCommand) {
+    const probe = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec,
+        graceSec: input.graceSec,
+      },
+    );
+    if (!probe.timedOut && probe.exitCode === 0) {
+      return;
+    }
+  }
+
+  const result = await runAdapterExecutionTargetShellCommand(
+    input.runId,
+    input.target,
+    installCommand,
+    {
+      cwd: input.cwd,
+      env: input.env,
+      timeoutSec: input.timeoutSec,
+      graceSec: input.graceSec,
+      onLog: input.onLog,
+    },
+  );
+  if (result.timedOut) {
+    throw new Error(`Timed out while installing the adapter runtime command via: ${installCommand}`);
+  }
+  if ((result.exitCode ?? 0) !== 0) {
+    throw new Error(`Failed to install the adapter runtime command via: ${installCommand}`);
+  }
+}
+
 export async function ensureAdapterExecutionTargetFile(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -336,6 +461,64 @@ export async function ensureAdapterExecutionTargetFile(
   );
 }
 
+/**
+ * Ensure a working directory exists (and is a directory) on the execution target.
+ *
+ * For local targets this delegates to the local `ensureAbsoluteDirectory` helper
+ * (Node fs). For remote (SSH/sandbox) targets it shells out and runs
+ * `mkdir -p` (when allowed) followed by a `[ -d ]` check so the result reflects
+ * the directory state inside the environment, not on the Paperclip host.
+ *
+ * Throws an Error with a human-readable message on failure.
+ */
+export async function ensureAdapterExecutionTargetDirectory(
+  runId: string,
+  target: AdapterExecutionTarget | null | undefined,
+  cwd: string,
+  options: AdapterExecutionTargetShellOptions & { createIfMissing?: boolean },
+): Promise<void> {
+  const createIfMissing = options.createIfMissing ?? false;
+
+  if (!target || target.kind === "local") {
+    const { ensureAbsoluteDirectory } = await import("./server-utils.js");
+    await ensureAbsoluteDirectory(cwd, { createIfMissing });
+    return;
+  }
+
+  // Remote (SSH or sandbox): both expect POSIX absolute paths inside the env.
+  if (!cwd.startsWith("/")) {
+    throw new Error(`Working directory must be an absolute POSIX path on the remote target: "${cwd}"`);
+  }
+
+  const quoted = shellQuote(cwd);
+  const script = createIfMissing
+    ? `mkdir -p ${quoted} && [ -d ${quoted} ]`
+    : `[ -d ${quoted} ]`;
+
+  const result = await runAdapterExecutionTargetShellCommand(runId, target, script, {
+    cwd: target.kind === "remote" ? target.remoteCwd : cwd,
+    env: options.env,
+    timeoutSec: options.timeoutSec ?? 15,
+    graceSec: options.graceSec ?? 5,
+    onLog: options.onLog,
+  });
+
+  if (result.timedOut) {
+    throw new Error(`Timed out checking working directory on remote target: "${cwd}"`);
+  }
+  if ((result.exitCode ?? 1) !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim();
+    if (createIfMissing) {
+      throw new Error(
+        `Could not create working directory "${cwd}" on remote target${detail ? `: ${detail}` : "."}`,
+      );
+    }
+    throw new Error(
+      `Working directory does not exist on remote target: "${cwd}"${detail ? ` (${detail})` : ""}`,
+    );
+  }
+}
+
 export function adapterExecutionTargetSessionIdentity(
   target: AdapterExecutionTarget | null | undefined,
 ): Record<string, unknown> | null {
@@ -347,7 +530,6 @@ export function adapterExecutionTargetSessionIdentity(
     environmentId: target.environmentId ?? null,
     leaseId: target.leaseId ?? null,
     remoteCwd: target.remoteCwd,
-    ...(target.paperclipApiUrl ? { paperclipApiUrl: target.paperclipApiUrl } : {}),
   };
 }
 
@@ -366,8 +548,7 @@ export function adapterExecutionTargetSessionMatches(
     readStringMeta(parsedSaved, "providerKey") === current?.providerKey &&
     readStringMeta(parsedSaved, "environmentId") === current?.environmentId &&
     readStringMeta(parsedSaved, "leaseId") === current?.leaseId &&
-    readStringMeta(parsedSaved, "remoteCwd") === current?.remoteCwd &&
-    readStringMeta(parsedSaved, "paperclipApiUrl") === (current?.paperclipApiUrl ?? null)
+    readStringMeta(parsedSaved, "remoteCwd") === current?.remoteCwd
   );
 }
 
@@ -392,7 +573,6 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       environmentId: readStringMeta(parsed, "environmentId"),
       leaseId: readStringMeta(parsed, "leaseId"),
       remoteCwd: spec.remoteCwd,
-      paperclipApiUrl: readStringMeta(parsed, "paperclipApiUrl") ?? spec.paperclipApiUrl ?? null,
       spec,
     };
   }
@@ -407,7 +587,6 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       environmentId: readStringMeta(parsed, "environmentId"),
       leaseId: readStringMeta(parsed, "leaseId"),
       remoteCwd,
-      paperclipApiUrl: readStringMeta(parsed, "paperclipApiUrl"),
       timeoutMs: typeof parsed.timeoutMs === "number" ? parsed.timeoutMs : null,
     };
   }
@@ -428,7 +607,6 @@ export function adapterExecutionTargetFromRemoteExecution(
       environmentId: metadata.environmentId ?? null,
       leaseId: metadata.leaseId ?? null,
       remoteCwd: ssh.remoteCwd,
-      paperclipApiUrl: ssh.paperclipApiUrl ?? null,
       spec: ssh,
     };
   }
@@ -487,10 +665,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     runner: requireSandboxRunner(target),
     spec: {
       providerKey: target.providerKey,
+      shellCommand: target.shellCommand,
       leaseId: target.leaseId,
       remoteCwd: target.remoteCwd,
       timeoutMs: target.timeoutMs,
-      paperclipApiUrl: target.paperclipApiUrl,
     },
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
@@ -513,4 +691,196 @@ export function runtimeAssetDir(
   fallbackRemoteCwd: string,
 ): string {
   return prepared.assetDirs[key] ?? path.posix.join(fallbackRemoteCwd, ".paperclip-runtime", key);
+}
+
+function buildBridgeResponseHeaders(response: Response): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ["content-type", "etag", "last-modified"]) {
+    const value = response.headers.get(key);
+    if (value && value.trim().length > 0) out[key] = value.trim();
+  }
+  return out;
+}
+
+function buildBridgeForwardUrl(baseUrl: string, request: { path: string; query: string }): URL {
+  const url = new URL(request.path, baseUrl);
+  const query = request.query.trim();
+  url.search = query.startsWith("?") ? query.slice(1) : query;
+  return url;
+}
+
+function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
+  return new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
+}
+
+async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
+  const rawContentLength = response.headers.get("content-length");
+  if (rawContentLength) {
+    const contentLength = Number.parseInt(rawContentLength, 10);
+    if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+      throw bridgeResponseBodyLimitError(maxBodyBytes);
+    }
+  }
+
+  if (!response.body) {
+    return "";
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBodyBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw bridgeResponseBodyLimitError(maxBodyBytes);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, totalBytes).toString("utf8");
+}
+
+export async function startAdapterExecutionTargetPaperclipBridge(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  runtimeRootDir: string | null | undefined;
+  adapterKey: string;
+  hostApiToken: string | null | undefined;
+  hostApiUrl?: string | null;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  maxBodyBytes?: number | null;
+}): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
+  if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
+    return null;
+  }
+  if (!input.target || input.target.kind !== "remote") {
+    return null;
+  }
+
+  const target = input.target;
+  const onLog = input.onLog ?? (async () => {});
+  const hostApiToken = input.hostApiToken?.trim() ?? "";
+  if (hostApiToken.length === 0) {
+    throw new Error("Sandbox bridge mode requires a host-side Paperclip API token.");
+  }
+
+  const runtimeRootDir =
+    input.runtimeRootDir?.trim().length
+      ? input.runtimeRootDir.trim()
+      : path.posix.join(target.remoteCwd, ".paperclip-runtime", input.adapterKey);
+  const bridgeRuntimeDir = path.posix.join(runtimeRootDir, "paperclip-bridge");
+  const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
+  const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
+  const bridgeToken = createSandboxCallbackBridgeToken();
+  const maxBodyBytes =
+    typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
+      ? Math.trunc(input.maxBodyBytes)
+      : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+  const hostApiUrl =
+    input.hostApiUrl?.trim() ||
+    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
+    process.env.PAPERCLIP_API_URL?.trim() ||
+    resolveDefaultPaperclipApiUrl();
+  const shellCommand = adapterExecutionTargetShellCommand(target);
+  const runner = adapterExecutionTargetCommandRunner(target);
+
+  await onLog(
+    "stdout",
+    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir}.\n`,
+  );
+
+  const bridgeAsset = await createSandboxCallbackBridgeAsset();
+  let server: Awaited<ReturnType<typeof startSandboxCallbackBridgeServer>> | null = null;
+  let worker: Awaited<ReturnType<typeof startSandboxCallbackBridgeWorker>> | null = null;
+  try {
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: target.remoteCwd,
+      timeoutMs: adapterExecutionTargetTimeoutMs(target),
+      shellCommand,
+    });
+    // PAPERCLIP_BRIDGE_DEBUG opts into verbose stdout logs of every bridge
+    // proxy request/response. The query string is logged verbatim, so callers
+    // who pass auth tokens or other sensitive values as query parameters
+    // should be aware those values appear in the host process's stdout when
+    // this flag is enabled. Only intended for active debugging in trusted
+    // environments.
+    const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
+    worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      maxBodyBytes,
+      handleRequest: async (request) => {
+        const method = request.method.trim().toUpperCase() || "GET";
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(request.headers)) {
+          if (value.trim().length === 0) continue;
+          headers.set(key, value);
+        }
+        headers.set("authorization", `Bearer ${hostApiToken}`);
+        headers.set("x-paperclip-run-id", input.runId);
+        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+          method,
+          headers,
+          ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
+        return {
+          status: response.status,
+          headers: buildBridgeResponseHeaders(response),
+          body: await readBridgeForwardResponseBody(response, maxBodyBytes),
+        };
+      },
+    });
+    server = await startSandboxCallbackBridgeServer({
+      runner,
+      remoteCwd: target.remoteCwd,
+      assetRemoteDir,
+      queueDir,
+      bridgeToken,
+      bridgeAsset,
+      timeoutMs: adapterExecutionTargetTimeoutMs(target),
+      maxBodyBytes,
+      shellCommand,
+    });
+  } catch (error) {
+    await Promise.allSettled([
+      server?.stop(),
+      worker?.stop(),
+      bridgeAsset.cleanup(),
+    ]);
+    throw error;
+  }
+
+  return {
+    env: {
+      PAPERCLIP_API_URL: server.baseUrl,
+      PAPERCLIP_API_KEY: bridgeToken,
+      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+    },
+    stop: async () => {
+      await Promise.allSettled([
+        server?.stop(),
+      ]);
+      await Promise.allSettled([
+        worker?.stop(),
+        bridgeAsset.cleanup(),
+      ]);
+    },
+  };
 }

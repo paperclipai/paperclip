@@ -56,9 +56,37 @@ vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
   assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
 }));
 
+function registerWorkspaceRouteMocks() {
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    environmentService: () => mockEnvironmentService,
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    secretService: () => mockSecretService,
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/workspace-runtime.js", () => ({
+    cleanupExecutionWorkspaceArtifacts: vi.fn(),
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForExecutionWorkspace: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
+
+  vi.doMock("../routes/workspace-runtime-service-authz.js", () => ({
+    assertCanManageProjectWorkspaceRuntimeServices: mockAssertCanManageProjectWorkspaceRuntimeServices,
+    assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
+  }));
+}
+
 let appImportCounter = 0;
 
 async function createProjectApp(actor: Record<string, unknown>) {
+  registerWorkspaceRouteMocks();
   appImportCounter += 1;
   const routeModulePath = `../routes/projects.js?workspace-runtime-routes-authz-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?workspace-runtime-routes-authz-${appImportCounter}`;
@@ -78,6 +106,7 @@ async function createProjectApp(actor: Record<string, unknown>) {
 }
 
 async function createExecutionWorkspaceApp(actor: Record<string, unknown>) {
+  registerWorkspaceRouteMocks();
   appImportCounter += 1;
   const routeModulePath = `../routes/execution-workspaces.js?workspace-runtime-routes-authz-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?workspace-runtime-routes-authz-${appImportCounter}`;
@@ -289,6 +318,55 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(res.body.error).toContain("Missing permission");
     expect(mockProjectService.getById).toHaveBeenCalledWith(projectId);
     expect(mockAssertCanManageProjectWorkspaceRuntimeServices).toHaveBeenCalled();
+  }, 15000);
+
+  it("blocks shared-project stop/restart requests from agents", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      id: projectId,
+      workspaces: [{
+        id: workspaceId,
+        companyId: "company-1",
+        projectId,
+        name: "Workspace",
+        sourceType: "local_path",
+        cwd: "/tmp/project",
+        repoUrl: null,
+        repoRef: null,
+        defaultRef: null,
+        visibility: "default",
+        setupCommand: null,
+        cleanupCommand: null,
+        remoteProvider: null,
+        remoteWorkspaceRef: null,
+        sharedWorkspaceKey: "shared-key",
+        metadata: null,
+        runtimeConfig: null,
+        isPrimary: false,
+        runtimeServices: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+    }));
+    const app = await createProjectApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const responses = await Promise.all([
+      request(app).post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/stop`).send({}),
+      request(app).post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/restart`).send({}),
+    ]);
+
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Missing permission");
+      expect(mockProjectService.getById).toHaveBeenCalledWith(projectId);
+      expect(mockAssertCanManageProjectWorkspaceRuntimeServices).not.toHaveBeenCalled();
+    }
+
   }, 15000);
 
   it("rejects agent callers that create project execution workspace commands", async () => {

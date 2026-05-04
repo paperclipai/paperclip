@@ -1,5 +1,6 @@
 import type { AgentAdapterType, EnvironmentDriver } from "./constants.js";
 import type { SandboxEnvironmentProvider } from "./types/environment.js";
+import type { JsonSchema } from "./types/plugin.js";
 
 export type EnvironmentSupportStatus = "supported" | "unsupported";
 
@@ -20,6 +21,7 @@ export interface EnvironmentProviderCapability {
   source?: "builtin" | "plugin";
   pluginKey?: string;
   pluginId?: string;
+  configSchema?: JsonSchema;
 }
 
 export interface EnvironmentCapabilities {
@@ -29,6 +31,7 @@ export interface EnvironmentCapabilities {
 }
 
 const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
+  "acpx_local",
   "claude_local",
   "codex_local",
   "cursor",
@@ -81,7 +84,7 @@ export function getAdapterEnvironmentSupport(
   const supportedDrivers = new Set(supportedEnvironmentDriversForAdapter(adapterType));
   const supportedProviders = new Set(supportedSandboxProvidersForAdapter(adapterType, additionalSandboxProviders));
   const sandboxProviders: Record<SandboxEnvironmentProvider, EnvironmentSupportStatus> = {
-    fake: supportedProviders.has("fake") ? "supported" : "unsupported",
+    fake: "unsupported",
   };
   for (const provider of additionalSandboxProviders) {
     sandboxProviders[provider as SandboxEnvironmentProvider] = supportedProviders.has(provider as SandboxEnvironmentProvider)
@@ -130,6 +133,7 @@ export function getEnvironmentCapabilities(
       source: capability.source ?? "plugin",
       pluginKey: capability.pluginKey,
       pluginId: capability.pluginId,
+      configSchema: capability.configSchema,
     };
   }
   return {

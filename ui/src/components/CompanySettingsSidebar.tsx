@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, MailPlus, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 
 export function CompanySettingsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -32,7 +33,10 @@ export function CompanySettingsSidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      <div className="flex flex-col gap-1 px-3 py-3 shrink-0">
+      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
+        <SidebarCompanyMenu />
+      </div>
+      <div className="flex flex-col gap-1 px-3 pb-3 shrink-0">
         <Link
           to="/dashboard"
           onClick={() => {
@@ -54,6 +58,12 @@ export function CompanySettingsSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem
+            to="/company/settings/environments"
+            label="Environments"
+            icon={MonitorCog}
+            end
+          />
           <SidebarNavItem
             to="/company/settings/access"
             label="Access"

@@ -7,6 +7,8 @@ import {
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  issueInboxArchives,
+  issueReadStates,
   issues,
   projects,
   routineRuns,
@@ -758,6 +760,43 @@ export function routineService(
     return value;
   }
 
+  async function touchIssueForUserInbox(
+    executor: Db,
+    input: {
+      companyId: string;
+      issueId: string;
+      userId: string;
+      touchedAt: Date;
+    },
+  ) {
+    await executor
+      .insert(issueReadStates)
+      .values({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        userId: input.userId,
+        lastReadAt: input.touchedAt,
+        updatedAt: input.touchedAt,
+      })
+      .onConflictDoUpdate({
+        target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
+        set: {
+          lastReadAt: input.touchedAt,
+          updatedAt: input.touchedAt,
+        },
+      });
+
+    await executor
+      .delete(issueInboxArchives)
+      .where(
+        and(
+          eq(issueInboxArchives.companyId, input.companyId),
+          eq(issueInboxArchives.issueId, input.issueId),
+          eq(issueInboxArchives.userId, input.userId),
+        ),
+      );
+  }
+
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -770,6 +809,7 @@ export function routineService(
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
@@ -840,6 +880,7 @@ export function routineService(
       }
 
       const triggeredAt = new Date();
+      const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -864,6 +905,14 @@ export function routineService(
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          if (manualRunnerUserId) {
+            await touchIssueForUserInbox(txDb, {
+              companyId: input.routine.companyId,
+              issueId: activeIssue.id,
+              userId: manualRunnerUserId,
+              touchedAt: triggeredAt,
+            });
+          }
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: activeIssue.id,
@@ -891,6 +940,8 @@ export function routineService(
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId,
+            createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
+            createdByUserId: manualRunnerUserId,
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
@@ -914,6 +965,14 @@ export function routineService(
           const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          if (manualRunnerUserId) {
+            await touchIssueForUserInbox(txDb, {
+              companyId: input.routine.companyId,
+              issueId: existingIssue.id,
+              userId: manualRunnerUserId,
+              touchedAt: triggeredAt,
+            });
+          }
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: existingIssue.id,
@@ -1012,11 +1071,17 @@ export function routineService(
     get: getRoutineById,
     getTrigger: getTriggerById,
 
-    list: async (companyId: string): Promise<RoutineListItem[]> => {
+    list: async (
+      companyId: string,
+      filters?: { projectId?: string | null },
+    ): Promise<RoutineListItem[]> => {
+      const conditions = [eq(routines.companyId, companyId)];
+      if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+
       const rows = await db
         .select()
         .from(routines)
-        .where(eq(routines.companyId, companyId))
+        .where(and(...conditions))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
       const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine] = await Promise.all([
@@ -1383,7 +1448,7 @@ export function routineService(
       };
     },
 
-    runRoutine: async (id: string, input: RunRoutine) => {
+    runRoutine: async (id: string, input: RunRoutine, actor?: Actor) => {
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
@@ -1405,6 +1470,7 @@ export function routineService(
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        actor,
       });
     },
 

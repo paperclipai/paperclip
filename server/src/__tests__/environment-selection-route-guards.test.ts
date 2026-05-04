@@ -28,6 +28,10 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockIssueReferenceService = vi.hoisted(() => ({
   deleteDocumentSource: vi.fn(async () => undefined),
   diffIssueReferenceSummary: vi.fn(() => ({
@@ -51,6 +55,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   issueService: () => mockIssueService,
+  companyService: () => mockCompanyService,
   environmentService: () => mockEnvironmentService,
   issueReferenceService: () => mockIssueReferenceService,
   logActivity: mockLogActivity,
@@ -158,6 +163,11 @@ describe.sequential("execution environment route guards", () => {
     mockIssueService.update.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockCompanyService.getById.mockReset();
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: 10 * 1024 * 1024,
+    });
     mockEnvironmentService.getById.mockReset();
     mockIssueReferenceService.deleteDocumentSource.mockClear();
     mockIssueReferenceService.diffIssueReferenceSummary.mockClear();

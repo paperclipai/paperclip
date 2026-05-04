@@ -145,6 +145,7 @@ describe("routine routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockRoutineService.list.mockResolvedValue([routine]);
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
@@ -156,6 +157,23 @@ describe("routine routes", () => {
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("passes project filters to the routine list service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/routines`)
+      .query({ projectId });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, { projectId });
   });
 
   it("requires tasks:assign permission for non-admin board routine creation", async () => {
@@ -279,6 +297,29 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
+  });
+
+  it("passes the board actor through when manually running a routine", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/run`)
+      .send({});
+
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenCalledWith(routineId, {
+      source: "manual",
+    }, {
+      agentId: null,
+      userId: "board-user",
+    });
   });
 
   it("allows routine creation when the board user has tasks:assign", async () => {

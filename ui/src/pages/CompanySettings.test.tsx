@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanySettings } from "./CompanySettings";
+import { CompanyEnvironments } from "./CompanyEnvironments";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -105,7 +105,7 @@ async function flushReact() {
   });
 }
 
-describe("CompanySettings", () => {
+describe("CompanyEnvironments", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -146,7 +146,7 @@ describe("CompanySettings", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <CompanyEnvironments />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -159,6 +159,89 @@ describe("CompanySettings", () => {
     expect(optionLabels).not.toContain("Sandbox");
     expect(container.textContent).not.toContain("Fake sandbox");
     expect(container.textContent).not.toContain("Fake is the deterministic test provider");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("preserves sandbox config when re-selecting the same provider while editing", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      {
+        id: "env-1",
+        companyId: "company-1",
+        name: "Secure Sandbox",
+        description: null,
+        driver: "sandbox",
+        status: "active",
+        config: {
+          provider: "secure-plugin",
+          template: "saved-template",
+        },
+        metadata: null,
+        createdAt: new Date("2026-04-25T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-25T00:00:00.000Z"),
+      },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(AGENT_ADAPTER_TYPES, {
+        sandboxProviders: {
+          "secure-plugin": {
+            status: "supported",
+            supportsSavedProbe: true,
+            supportsUnsavedProbe: true,
+            supportsRunExecution: true,
+            supportsReusableLeases: true,
+            displayName: "Secure Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string", title: "Template" },
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const editButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Edit");
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const providerSelect = Array.from(container.querySelectorAll("select"))
+      .find((select) => Array.from(select.options).some((option) => option.value === "secure-plugin")) as HTMLSelectElement | undefined;
+    expect(providerSelect).toBeTruthy();
+
+    await act(async () => {
+      providerSelect!.value = "secure-plugin";
+      providerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    const templateInput = Array.from(container.querySelectorAll("input"))
+      .find((input) => (input as HTMLInputElement).value === "saved-template") as HTMLInputElement | undefined;
+    expect(templateInput?.value).toBe("saved-template");
 
     await act(async () => {
       root.unmount();

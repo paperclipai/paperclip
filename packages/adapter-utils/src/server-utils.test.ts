@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  materializePaperclipSkillCopy,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
+  sanitizeSshRemoteEnv,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
 
@@ -37,6 +45,162 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
   }
   return read().match(pattern);
 }
+
+describe("buildInvocationEnvForLogs", () => {
+  it("redacts inline secrets from resolved command metadata", () => {
+    const loggedEnv = buildInvocationEnvForLogs(
+      { SAFE_VALUE: "visible" },
+      {
+        resolvedCommand: "env OPENAI_API_KEY=sk-live-example custom-acp --token ghp_example_secret",
+      },
+    );
+
+    expect(loggedEnv.SAFE_VALUE).toBe("visible");
+    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
+      "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
+    );
+  });
+});
+
+describe("sanitizeSshRemoteEnv", () => {
+  it("drops inherited host shell identity variables for SSH remote execution", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          NVM_DIR: "/Users/local/.nvm",
+          TMPDIR: "/var/folders/local/T",
+          XDG_CONFIG_HOME: "/Users/local/.config",
+          SAFE_VALUE: "visible",
+        },
+        {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          NVM_DIR: "/Users/local/.nvm",
+          TMPDIR: "/var/folders/local/T",
+          XDG_CONFIG_HOME: "/Users/local/.config",
+        },
+      ),
+    ).toEqual({
+      SAFE_VALUE: "visible",
+    });
+  });
+
+  it("preserves explicit remote overrides even for filtered key names", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/custom/remote/bin:/usr/bin",
+          HOME: "/home/agent",
+          TMPDIR: "/tmp",
+          SAFE_VALUE: "visible",
+        },
+        {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          TMPDIR: "/var/folders/local/T",
+        },
+      ),
+    ).toEqual({
+      PATH: "/custom/remote/bin:/usr/bin",
+      HOME: "/home/agent",
+      TMPDIR: "/tmp",
+      SAFE_VALUE: "visible",
+    });
+  });
+
+  it("filters identity keys via case-insensitive match against the inherited env", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          // Caller passed PATH in upper case while the inherited (Windows-style)
+          // host env exposes it as Path. The lookup must still treat them as
+          // equal so the leaked host PATH gets stripped.
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/host/home",
+        },
+        {
+          Path: "/host/bin:/usr/bin",
+          home: "/host/home",
+        },
+      ),
+    ).toEqual({});
+  });
+
+  it("preserves explicitly-set identity keys when the inherited env disagrees in case but not in value", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/explicit/remote/bin",
+        },
+        {
+          Path: "/host/bin:/usr/bin",
+        },
+      ),
+    ).toEqual({ PATH: "/explicit/remote/bin" });
+  });
+});
+
+describe("materializePaperclipSkillCopy", () => {
+  it("refuses to materialize into an ancestor of the source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "parent", "skill");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      await expect(materializePaperclipSkillCopy(source, path.join(root, "parent"))).rejects.toThrow(
+        /ancestor/,
+      );
+      await expect(fs.readFile(path.join(source, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not delete and recopy an unchanged materialized skill target", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+      await fs.writeFile(path.join(target, "local-marker.txt"), "keep\n", "utf8");
+
+      const second = await materializePaperclipSkillCopy(source, target);
+      expect(second.copiedFiles).toBe(0);
+      await expect(fs.readFile(path.join(target, "local-marker.txt"), "utf8")).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("breaks stale materialization locks left by dead processes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.mkdir(lock, { recursive: true });
+      await fs.writeFile(
+        path.join(lock, "owner.json"),
+        JSON.stringify({ pid: 999_999_999, createdAt: "2000-01-01T00:00:00.000Z" }),
+        "utf8",
+      );
+
+      await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+      await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("runChildProcess", () => {
   it("does not arm a timeout when timeoutSec is 0", async () => {
@@ -422,6 +586,114 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("applyPaperclipWorkspaceEnv", () => {
+  it("adds shared workspace env vars including AGENT_HOME", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "/tmp/workspace",
+        workspaceSource: "project_primary",
+        workspaceStrategy: "git_worktree",
+        workspaceId: "workspace-1",
+        workspaceRepoUrl: "https://github.com/paperclipai/paperclip.git",
+        workspaceRepoRef: "main",
+        workspaceBranch: "feature/test",
+        workspaceWorktreePath: "/tmp/worktree",
+        agentHome: "/tmp/agent-home",
+      },
+    );
+
+    expect(env).toEqual({
+      PAPERCLIP_WORKSPACE_CWD: "/tmp/workspace",
+      PAPERCLIP_WORKSPACE_SOURCE: "project_primary",
+      PAPERCLIP_WORKSPACE_STRATEGY: "git_worktree",
+      PAPERCLIP_WORKSPACE_ID: "workspace-1",
+      PAPERCLIP_WORKSPACE_REPO_URL: "https://github.com/paperclipai/paperclip.git",
+      PAPERCLIP_WORKSPACE_REPO_REF: "main",
+      PAPERCLIP_WORKSPACE_BRANCH: "feature/test",
+      PAPERCLIP_WORKSPACE_WORKTREE_PATH: "/tmp/worktree",
+      AGENT_HOME: "/tmp/agent-home",
+    });
+  });
+
+  it("skips empty workspace env values", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "",
+        workspaceSource: null,
+        agentHome: "",
+      },
+    );
+
+    expect(env).toEqual({});
+  });
+});
+
+describe("shapePaperclipWorkspaceEnvForExecution", () => {
+  it("rewrites workspace env paths for remote execution", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/tmp/workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-2",
+          cwd: "/tmp/other-workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-3",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/remote/workspace",
+      workspaceWorktreePath: null,
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/remote/workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-2",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-3",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+      ],
+    });
+  });
+
+  it("leaves local execution workspace paths unchanged", () => {
+    const workspaceHints = [{ workspaceId: "workspace-1", cwd: "/tmp/workspace" }];
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints,
+      executionTargetIsRemote: false,
+      executionCwd: "/remote/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints,
+    });
   });
 });
 

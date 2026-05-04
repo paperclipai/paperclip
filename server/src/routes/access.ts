@@ -55,6 +55,7 @@ import {
 } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
+import { collectReachableInterfaceHosts } from "../runtime-api.js";
 import {
   accessService,
   agentService,
@@ -141,6 +142,7 @@ function readSkillMarkdown(skillName: string): string | null {
     normalized !== "paperclip" &&
     normalized !== "paperclip-create-agent" &&
     normalized !== "paperclip-create-plugin" &&
+    normalized !== "paperclip-converting-plans-to-tasks" &&
     normalized !== "para-memory-files"
   )
     return null;
@@ -1499,6 +1501,11 @@ function buildOnboardingConnectionCandidates(input: {
     candidates.add(`${protocol}//host.docker.internal${port}`);
   }
 
+  for (const host of collectReachableInterfaceHosts()) {
+    const formattedHost = host.includes(":") && !host.startsWith("[") && !host.endsWith("]") ? `[${host}]` : host;
+    candidates.add(`${protocol}//${formattedHost}${port}`);
+  }
+
   return Array.from(candidates);
 }
 
@@ -2617,6 +2624,7 @@ export function accessRoutes(
       userId: req.actor.userId,
       isInstanceAdmin: accessSnapshot.isInstanceAdmin,
       companyIds: accessSnapshot.companyIds,
+      memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
     });
@@ -2861,6 +2869,10 @@ export function accessRoutes(
         {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"
+        },
+        {
+          name: "paperclip-converting-plans-to-tasks",
+          path: "/api/skills/paperclip-converting-plans-to-tasks"
         }
       ]
     });

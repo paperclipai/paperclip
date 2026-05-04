@@ -282,15 +282,13 @@ export function findReusableSandboxProviderLeaseId(input: {
 }): string | null {
   const provider = getSandboxProvider(input.config.provider);
   if (!provider) {
-    // For plugin-backed providers, reuse matching is handled by the plugin
-    // environment driver. Fall back to metadata-based matching.
     for (const lease of input.leases) {
       const metadata = lease.metadata ?? {};
       if (
         typeof lease.providerLeaseId === "string" &&
         lease.providerLeaseId.length > 0 &&
         metadata.provider === input.config.provider &&
-        metadata.reuseLease === true
+        metadataMatchesPluginSandboxConfig(input.config, metadata)
       ) {
         return lease.providerLeaseId;
       }
@@ -303,6 +301,21 @@ export function findReusableSandboxProviderLeaseId(input: {
     }
   }
   return null;
+}
+
+function metadataMatchesPluginSandboxConfig(
+  config: SandboxEnvironmentConfig,
+  metadata: Record<string, unknown>,
+): boolean {
+  if (metadata.reuseLease !== true) return false;
+  for (const [key, value] of Object.entries(config)) {
+    if (key === "provider" || key === "reuseLease") continue;
+    if (value === undefined) continue;
+    if (JSON.stringify(metadata[key]) !== JSON.stringify(value)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function probeSandboxProvider(

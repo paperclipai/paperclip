@@ -14,9 +14,13 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady, findReachablePaperclipApiUrlOverSsh } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
-import { parseEnvironmentDriverConfig, resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
+import {
+  parseEnvironmentDriverConfig,
+  resolveEnvironmentDriverConfigForRuntime,
+  stripSandboxProviderEnvelope,
+} from "./environment-config.js";
 import {
   acquireSandboxProviderLease,
   findReusableSandboxProviderLeaseId,
@@ -31,8 +35,11 @@ import {
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
+  resolvePluginSandboxProviderDriverByKey,
+  resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
 } from "./plugin-environment-driver.js";
+import { collectSecretRefPaths } from "./json-schema-secret-refs.js";
 import { buildWorkspaceRealizationRecordFromDriverInput } from "./workspace-realization.js";
 
 export function buildEnvironmentLeaseContext(input: {
@@ -42,6 +49,53 @@ export function buildEnvironmentLeaseContext(input: {
     executionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
     executionWorkspaceMode: input.persistedExecutionWorkspace?.mode ?? null,
   };
+}
+
+function stripSecretRefValuesFromPluginLeaseMetadata(input: {
+  metadata: Record<string, unknown> | null | undefined;
+  schema: Record<string, unknown> | null | undefined;
+}): Record<string, unknown> {
+  const sanitized = structuredClone(input.metadata ?? {}) as Record<string, unknown>;
+
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const keys = path.split(".");
+    const parents: Array<{ container: Record<string, unknown>; key: string }> = [];
+    let cursor: Record<string, unknown> | null = sanitized;
+
+    for (let index = 0; index < keys.length - 1; index += 1) {
+      const key = keys[index]!;
+      const next = cursor?.[key];
+      if (!next || typeof next !== "object" || Array.isArray(next)) {
+        cursor = null;
+        break;
+      }
+      parents.push({ container: cursor, key });
+      cursor = next as Record<string, unknown>;
+    }
+
+    if (!cursor) continue;
+
+    const leafKey = keys[keys.length - 1]!;
+    if (!Object.prototype.hasOwnProperty.call(cursor, leafKey)) continue;
+    delete cursor[leafKey];
+
+    for (let index = parents.length - 1; index >= 0; index -= 1) {
+      const { container, key } = parents[index]!;
+      const value = container[key];
+      if (
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.keys(value as Record<string, unknown>).length === 0
+      ) {
+        delete container[key];
+      } else {
+        break;
+      }
+    }
+  }
+
+  return sanitized;
 }
 
 export interface EnvironmentDriverAcquireInput {
@@ -96,6 +150,13 @@ export interface EnvironmentRuntimeLeaseRecord {
   environment: Environment;
   lease: EnvironmentLease;
   leaseContext: ReturnType<typeof buildEnvironmentLeaseContext>;
+}
+
+const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
+const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getLeaseDriverKey(lease: Pick<EnvironmentLease, "metadata">, environment: Pick<Environment, "driver">): string {
@@ -166,27 +227,6 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       }
 
       const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
-      const candidateUrls = (() => {
-        const raw = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-        if (!raw) return [];
-        try {
-          const parsed = JSON.parse(raw);
-          return Array.isArray(parsed)
-            ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-            : [];
-        } catch {
-          return [];
-        }
-      })();
-      const paperclipApiUrl = await findReachablePaperclipApiUrlOverSsh({
-        config: parsed.config,
-        candidates: candidateUrls,
-      });
-      if (!paperclipApiUrl) {
-        throw new Error(
-          `SSH environment ${parsed.config.username}@${parsed.config.host} could not reach any Paperclip API candidates.`,
-        );
-      }
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -204,7 +244,6 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
-          paperclipApiUrl,
         },
       });
     },
@@ -235,35 +274,61 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
 
 function createSandboxEnvironmentDriver(
   db: Db,
-  pluginWorkerManager?: PluginWorkerManager,
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    pluginWorkerReadyTimeoutMs?: number;
+    pluginWorkerReadyPollMs?: number;
+  } = {},
 ): EnvironmentRuntimeDriver {
+  const pluginWorkerManager = options.pluginWorkerManager;
+  const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
+  const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
   const environmentsSvc = environmentService(db);
-  const pluginRegistry = pluginRegistryService(db);
 
-  /**
-   * Resolve a sandbox provider plugin by looking up a plugin whose manifest
-   * declares an environment driver with a matching driverKey. Returns null
-   * if no matching plugin is found or the worker isn't running.
-   */
-  async function resolvePluginForProvider(
-    provider: string,
-  ): Promise<{ pluginId: string; pluginKey: string } | null> {
-    if (!pluginWorkerManager) return null;
-    const plugins = await pluginRegistry.list();
-    for (const plugin of plugins) {
-      if (plugin.status !== "ready") continue;
-      const drivers = plugin.manifestJson.environmentDrivers ?? [];
-      for (const driver of drivers) {
-        if (
-          driver.driverKey === provider &&
-          driver.kind === "sandbox_provider" &&
-          pluginWorkerManager.isRunning(plugin.id)
-        ) {
-          return { pluginId: plugin.id, pluginKey: plugin.pluginKey };
-        }
-      }
+  async function resolveSandboxProviderPlugin(input: { provider: string }) {
+    const running = await resolvePluginSandboxProviderDriverByKey({
+      db,
+      driverKey: input.provider,
+      workerManager: pluginWorkerManager,
+      requireRunning: true,
+    });
+    if (running) {
+      return { state: "running" as const, resolved: running };
     }
-    return null;
+
+    const installed = await resolvePluginSandboxProviderDriverByKey({
+      db,
+      driverKey: input.provider,
+      workerManager: pluginWorkerManager,
+      requireRunning: false,
+    });
+    if (!installed) {
+      return { state: "missing" as const, resolved: null };
+    }
+
+    if (installed.plugin.status !== "ready") {
+      return { state: "not_ready" as const, resolved: installed };
+    }
+
+    if (!pluginWorkerManager) {
+      return { state: "worker_unavailable" as const, resolved: installed };
+    }
+
+    const deadline = Date.now() + Math.max(0, pluginWorkerReadyTimeoutMs);
+    while (Date.now() < deadline) {
+      const retried = await resolvePluginSandboxProviderDriverByKey({
+        db,
+        driverKey: input.provider,
+        workerManager: pluginWorkerManager,
+        requireRunning: true,
+      });
+      if (retried) {
+        return { state: "running" as const, resolved: retried };
+      }
+      await delay(Math.max(1, pluginWorkerReadyPollMs));
+    }
+
+    return { state: "worker_unavailable" as const, resolved: installed };
   }
 
   async function resolvePluginSandboxRuntimeConfig(input: {
@@ -308,29 +373,76 @@ function createSandboxEnvironmentDriver(
     driver: "sandbox",
 
     async acquireRunLease(input) {
+      const storedParsed = parseEnvironmentDriverConfig(input.environment);
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment);
-      if (parsed.driver !== "sandbox") {
+      if (parsed.driver !== "sandbox" || storedParsed.driver !== "sandbox") {
         throw new Error(`Expected sandbox environment config for driver "${input.environment.driver}".`);
       }
 
       // Check if this provider should be handled by a plugin.
       if (!isBuiltinSandboxProvider(parsed.config.provider)) {
-        const pluginProvider = await resolvePluginForProvider(parsed.config.provider);
-        if (!pluginProvider || !pluginWorkerManager) {
+        const pluginProvider = await resolveSandboxProviderPlugin({
+          provider: parsed.config.provider,
+        });
+        if (pluginProvider.state === "missing") {
           throw new Error(
             `Sandbox provider "${parsed.config.provider}" is not registered as a built-in provider and no matching plugin is available.`,
           );
         }
+        if (pluginProvider.state === "not_ready") {
+          throw new Error(
+            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but that plugin is currently ${pluginProvider.resolved.plugin.status}.`,
+          );
+        }
+        if (pluginProvider.state === "worker_unavailable") {
+          throw new Error(
+            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
+          );
+        }
+        if (!pluginWorkerManager) {
+          throw new Error(
+            `Sandbox provider "${parsed.config.provider}" is installed, but sandbox plugin workers are unavailable in this server process.`,
+          );
+        }
 
-        // Delegate to the plugin worker for lease acquisition.
-        const providerLease = await pluginWorkerManager.call(
-          pluginProvider.pluginId,
+        const workerConfig = stripSandboxProviderEnvelope(parsed.config);
+        const storedConfig = storedParsed.config;
+        const existingLeases = parsed.config.reuseLease
+          ? await environmentsSvc.listLeases(input.environment.id)
+          : [];
+        const reusableProviderLeaseId = parsed.config.reuseLease
+          ? findReusableSandboxLeaseId({ config: storedConfig, leases: existingLeases })
+          : null;
+        const reusableLease = reusableProviderLeaseId
+          ? existingLeases.find((lease) => lease.providerLeaseId === reusableProviderLeaseId)
+          : null;
+
+        const providerLease = reusableLease?.providerLeaseId
+          ? await pluginWorkerManager.call(
+              pluginProvider.resolved.plugin.id,
+              "environmentResumeLease",
+              {
+                driverKey: parsed.config.provider,
+                companyId: input.companyId,
+                environmentId: input.environment.id,
+                config: workerConfig,
+                providerLeaseId: reusableLease.providerLeaseId,
+                leaseMetadata: reusableLease.metadata ?? undefined,
+              },
+            ).then((resumed) =>
+              typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
+                ? resumed
+                : null,
+            ).catch(() => null)
+          : null;
+        const acquiredLease = providerLease ?? await pluginWorkerManager.call(
+          pluginProvider.resolved.plugin.id,
           "environmentAcquireLease",
           {
             driverKey: parsed.config.provider,
             companyId: input.companyId,
             environmentId: input.environment.id,
-            config: parsed.config as unknown as Record<string, unknown>,
+            config: workerConfig,
             runId: input.heartbeatRunId,
             workspaceMode: input.executionWorkspaceMode ?? undefined,
           },
@@ -348,16 +460,19 @@ function createSandboxEnvironmentDriver(
           heartbeatRunId: input.heartbeatRunId,
           leasePolicy: resolvedLeasePolicy,
           provider: parsed.config.provider,
-          providerLeaseId: providerLease.providerLeaseId,
-          expiresAt: providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
+          providerLeaseId: acquiredLease.providerLeaseId,
+          expiresAt: acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
           metadata: {
             driver: input.environment.driver,
             executionWorkspaceMode: input.executionWorkspaceMode,
-            pluginId: pluginProvider.pluginId,
-            pluginKey: pluginProvider.pluginKey,
+            pluginId: pluginProvider.resolved.plugin.id,
+            pluginKey: pluginProvider.resolved.plugin.pluginKey,
             sandboxProviderPlugin: true,
-            ...sandboxConfigForLeaseMetadata(parsed.config),
-            ...(providerLease.metadata ?? {}),
+            ...sandboxConfigForLeaseMetadata(storedConfig),
+            ...stripSecretRefValuesFromPluginLeaseMetadata({
+              metadata: acquiredLease.metadata,
+              schema: pluginProvider.resolved.driver.configSchema as Record<string, unknown> | null | undefined,
+            }),
           },
         });
       }
@@ -462,7 +577,7 @@ function createSandboxEnvironmentDriver(
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
-            config,
+            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
             lease: {
               providerLeaseId: input.lease.providerLeaseId,
               metadata: input.lease.metadata ?? undefined,
@@ -501,11 +616,12 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
+          const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
           return await pluginWorkerManager.call(pluginId, "environmentExecute", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
-            config,
+            config: sanitizedConfig,
             lease: {
               providerLeaseId: input.lease.providerLeaseId,
               metadata: input.lease.metadata ?? undefined,
@@ -517,7 +633,10 @@ function createSandboxEnvironmentDriver(
             env: input.env,
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
-          });
+          }, resolvePluginExecuteRpcTimeoutMs({
+            requestedTimeoutMs: input.timeoutMs,
+            config: sanitizedConfig,
+          }));
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
@@ -543,7 +662,7 @@ function createSandboxEnvironmentDriver(
           driverKey: providerKey,
           companyId: input.lease.companyId,
           environmentId: input.environment.id,
-          config,
+          config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
           providerLeaseId: input.lease.providerLeaseId,
           leaseMetadata: metadata,
         });
@@ -585,6 +704,7 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "pluginId",
   "pluginKey",
   "providerMetadata",
+  "shellCommand",
   "sandboxProviderPlugin",
 ]);
 
@@ -865,6 +985,8 @@ export function environmentRuntimeService(
   options: {
     drivers?: EnvironmentRuntimeDriver[];
     pluginWorkerManager?: PluginWorkerManager;
+    pluginWorkerReadyTimeoutMs?: number;
+    pluginWorkerReadyPollMs?: number;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -873,7 +995,11 @@ export function environmentRuntimeService(
   const defaultDrivers = [
     createLocalEnvironmentDriver(db),
     createSshEnvironmentDriver(db),
-    createSandboxEnvironmentDriver(db, options.pluginWorkerManager),
+    createSandboxEnvironmentDriver(db, {
+      pluginWorkerManager: options.pluginWorkerManager,
+      pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
+      pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
+    }),
     ...(options.pluginWorkerManager
       ? [createPluginEnvironmentDriver(db, options.pluginWorkerManager)]
       : []),

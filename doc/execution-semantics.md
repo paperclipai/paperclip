@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-04-23
+Date: 2026-04-26
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -67,12 +67,14 @@ This is the right state for:
 
 - waiting on another issue
 - waiting on a human decision
-- waiting on an external dependency or system
+- waiting on an external dependency or system when Paperclip does not own a scheduled re-check
 - work that automatic recovery could not safely continue
 
 ### `in_review`
 
 Execution work is paused because the next move belongs to a reviewer or approver, not the current executor.
+
+An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
 
 ### `done`
 
@@ -150,11 +152,24 @@ Blocked issues should stay idle while blockers remain unresolved. Paperclip shou
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
-## 7. Consistent Execution Path Rules
+## 7. Non-Terminal Issue Liveness Contract
 
-For agent-assigned, non-terminal, actionable issues, Paperclip should not leave work in a state where nobody is working it and nothing will wake it.
+For agent-owned, non-terminal issues, Paperclip should never leave work in a state where nobody is responsible for the next move and nothing will wake or surface it.
 
-The relevant execution path depends on status.
+This is a visibility contract, not an auto-completion contract. If Paperclip cannot safely infer the next action, it should surface the ambiguity with a blocked state, a visible comment, or an explicit recovery issue. It must not silently mark work done from prose comments or guess that a dependency is complete.
+
+An issue is healthy when the product can answer "what moves this forward next?" without requiring a human to reconstruct intent from the whole thread. An issue is stalled when it is non-terminal but has no live execution path, no explicit waiting path, and no recovery path.
+
+The valid action-path primitives are:
+
+- an active run linked to the issue
+- a queued wake or continuation that can be delivered to the responsible agent
+- a typed execution-policy participant, such as `executionState.currentParticipant`
+- a pending issue-thread interaction or linked approval that is waiting for a specific responder
+- a one-shot issue monitor (`executionPolicy.monitor.nextCheckAt`) that will wake the assignee for a future check
+- a human owner via `assigneeUserId`
+- a first-class blocker chain whose unresolved leaf issues are themselves healthy
+- an open explicit recovery issue that names the owner and action needed to restore liveness
 
 ### Agent-assigned `todo`
 
@@ -162,9 +177,11 @@ This is dispatch state: ready to start, not yet actively claimed.
 
 A healthy dispatch state means at least one of these is true:
 
-- the issue already has a queued/running wake path
-- the issue is intentionally resting in `todo` after a successful agent heartbeat, not after an interrupted dispatch
-- the issue has been explicitly surfaced as stranded
+- the issue already has a queued wake path
+- the issue is intentionally resting in `todo` after a completed agent heartbeat, with no interrupted dispatch evidence
+- the issue has been explicitly surfaced as stranded through a visible blocked/recovery path
+
+An assigned `todo` issue is stalled when dispatch was interrupted, no wake remains queued or running, and no recovery path has been opened.
 
 ### Agent-assigned `in_progress`
 
@@ -174,7 +191,63 @@ A healthy active-work state means at least one of these is true:
 
 - there is an active run for the issue
 - there is already a queued continuation wake
-- the issue has been explicitly surfaced as stranded
+- there is an active one-shot monitor that will wake the assignee for a future check
+- there is an open explicit recovery issue for the lost execution path
+
+An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, and no explicit recovery surface. A still-running but silent process is not automatically stalled; it is handled by the active-run watchdog contract.
+
+### `in_review`
+
+This is review/approval state: execution is paused because the next move belongs to a reviewer, approver, board user, or recovery owner.
+
+A healthy `in_review` issue has at least one valid action path:
+
+- a typed execution-policy participant who can approve or request changes
+- a pending issue-thread interaction or linked approval waiting for a named responder
+- a human owner via `assigneeUserId`
+- an active run or queued wake that is expected to process the review state
+- an active one-shot monitor for an external service or async review loop that the assignee owns
+- an open explicit recovery issue for an ambiguous review handoff
+
+Agent-assigned `in_review` with no typed participant is only healthy when one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
+
+An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery issue. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
+
+### Issue monitors
+
+An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress` or `in_review`.
+
+Use a monitor when the current assignee owns a future check against an async system or external service. Examples include Greptile review loops, GitHub checks, Vercel deployments, or provider jobs where the agent should come back later and decide what happens next.
+
+Monitor policy lives under `executionPolicy.monitor` and includes:
+
+- `nextCheckAt`: when Paperclip should wake the assignee
+- `notes`: non-secret instructions for what the assignee should check
+- `serviceName`: optional non-secret external-service context
+- `externalRef`: optional external-service reference input; Paperclip treats it as secret-adjacent, redacts it before persistence/visibility, and omits it from activity and wake payloads
+- `timeoutAt`, `maxAttempts`, and `recoveryPolicy`: optional recovery hints for bounded waits
+
+Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
+
+Because `serviceName` and `notes` remain visible in issue activity and wake context, operators should keep them short and non-secret. Put enough context for the assignee to know what to inspect, but do not include signed URLs, bearer tokens, customer secrets, tenant-private identifiers, or provider links with embedded credentials.
+
+Monitor bounds are enforced. Paperclip rejects attempts to re-arm a monitor whose `timeoutAt` or `maxAttempts` is already exhausted. When a scheduled monitor reaches an exhausted bound at trigger time, Paperclip clears it and follows `recoveryPolicy`: `wake_owner` queues a bounded recovery wake for the assignee, `create_recovery_issue` opens visible recovery work, and `escalate_to_board` records a board-visible escalation comment/activity.
+
+Use `blocked` instead of a monitor when no Paperclip assignee owns a responsible polling path. In that case, name the external owner/action or create first-class recovery/blocker work.
+
+### `blocked`
+
+This is explicit waiting state.
+
+A healthy `blocked` issue has an explicit waiting path:
+
+- first-class blockers exist, and each unresolved leaf has a valid action path under this contract
+- the issue is blocked on an explicit recovery issue that itself has a live or waiting path
+- the issue is waiting on a pending interaction, linked approval, human owner, or clearly named external owner/action
+
+A blocker chain is covered only when its unresolved leaf is live or explicitly waiting. An intermediate `blocked` issue does not make the chain healthy by itself.
+
+A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery issue. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 
 ## 8. Crash and Restart Recovery
 
@@ -279,6 +352,8 @@ Examples:
 - an active run is silent past the watchdog threshold
 
 The source issue remains visible and blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, or record the reason it is a false positive.
+
+Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery issues automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.
 
 ### Human Escalation
 

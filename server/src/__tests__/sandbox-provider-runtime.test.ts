@@ -109,6 +109,41 @@ describe("sandbox provider runtime", () => {
     ).toBe("sandbox-image-b");
   });
 
+  it("matches reusable plugin leases by persisted config fields", () => {
+    expect(
+      findReusableSandboxProviderLeaseId({
+        config: {
+          provider: "secure-plugin",
+          template: "template-b",
+          apiKey: "22222222-2222-2222-2222-222222222222",
+          timeoutMs: 300000,
+          reuseLease: true,
+        },
+        leases: [
+          {
+            providerLeaseId: "sandbox-template-a",
+            metadata: {
+              provider: "secure-plugin",
+              template: "template-a",
+              apiKey: "11111111-1111-1111-1111-111111111111",
+              reuseLease: true,
+            },
+          },
+          {
+            providerLeaseId: "sandbox-template-b",
+            metadata: {
+              provider: "secure-plugin",
+              template: "template-b",
+              apiKey: "22222222-2222-2222-2222-222222222222",
+              timeoutMs: 300000,
+              reuseLease: true,
+            },
+          },
+        ],
+      }),
+    ).toBe("sandbox-template-b");
+  });
+
   it("reconstructs fake sandbox config from lease metadata for later release", () => {
     const metadata = {
       provider: "fake",
@@ -143,6 +178,31 @@ describe("sandbox provider runtime", () => {
       timeoutMs: 45_000,
       remoteCwd: "/workspace/project",
       fakeRootDir: "/tmp/fake-root",
+    });
+  });
+
+  it("reconstructs plugin-backed secret-ref config from lease metadata for later release", () => {
+    expect(sandboxConfigFromLeaseMetadata({
+      metadata: {
+        provider: "secure-plugin",
+        template: "paperclip-template",
+      },
+    })).toBeNull();
+
+    expect(sandboxConfigFromLeaseMetadataLoose({
+      metadata: {
+        provider: "secure-plugin",
+        template: "paperclip-template",
+        timeoutMs: 120000,
+        reuseLease: true,
+        apiKey: "11111111-1111-1111-1111-111111111111",
+      },
+    })).toEqual({
+      provider: "secure-plugin",
+      template: "paperclip-template",
+      apiKey: "11111111-1111-1111-1111-111111111111",
+      timeoutMs: 120000,
+      reuseLease: true,
     });
   });
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockEnsureSshWorkspaceReady = vi.hoisted(() => vi.fn());
 const mockProbePluginEnvironmentDriver = vi.hoisted(() => vi.fn());
 const mockProbePluginSandboxProviderDriver = vi.hoisted(() => vi.fn());
+const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({
   ensureSshWorkspaceReady: mockEnsureSshWorkspaceReady,
@@ -11,6 +12,7 @@ vi.mock("@paperclipai/adapter-utils/ssh", () => ({
 vi.mock("../services/plugin-environment-driver.js", () => ({
   probePluginEnvironmentDriver: mockProbePluginEnvironmentDriver,
   probePluginSandboxProviderDriver: mockProbePluginSandboxProviderDriver,
+  resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
 }));
 
 import { probeEnvironment } from "../services/environment-probe.ts";
@@ -20,6 +22,8 @@ describe("probeEnvironment", () => {
     mockEnsureSshWorkspaceReady.mockReset();
     mockProbePluginEnvironmentDriver.mockReset();
     mockProbePluginSandboxProviderDriver.mockReset();
+    mockResolvePluginSandboxProviderDriverByKey.mockReset();
+    mockResolvePluginSandboxProviderDriverByKey.mockResolvedValue(null);
   });
 
   it("reports local environments as immediately available", async () => {
