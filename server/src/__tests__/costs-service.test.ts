@@ -61,6 +61,7 @@ const mockCostService = vi.hoisted(() => ({
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
+  byIssue: vi.fn().mockResolvedValue([]),
   issueTreeSummary: vi.fn().mockResolvedValue({
     issueId: "issue-1",
     issueCount: 1,
@@ -241,6 +242,57 @@ describe("cost routes", () => {
       cachedInputTokens: 0,
       outputTokens: 0,
     });
+  });
+
+  it("returns issue cost rollups with range and limit filters", async () => {
+    mockCostService.byIssue.mockResolvedValueOnce([
+      {
+        issueId: "issue-1",
+        issueIdentifier: "PAP-1",
+        issueTitle: "Top issue",
+        issueStatus: "in_progress",
+        issuePriority: "high",
+        costCents: 1200,
+        inputTokens: 100,
+        cachedInputTokens: 10,
+        outputTokens: 40,
+        apiRunCount: 2,
+        subscriptionRunCount: 1,
+      },
+    ]);
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-issue")
+      .query({
+        from: "2026-02-01T00:00:00.000Z",
+        to: "2026-02-28T23:59:59.999Z",
+        limit: "25",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.byIssue).toHaveBeenCalledWith(
+      "company-1",
+      {
+        from: new Date("2026-02-01T00:00:00.000Z"),
+        to: new Date("2026-02-28T23:59:59.999Z"),
+      },
+      25,
+    );
+    expect(res.body).toEqual([
+      {
+        issueId: "issue-1",
+        issueIdentifier: "PAP-1",
+        issueTitle: "Top issue",
+        issueStatus: "in_progress",
+        issuePriority: "high",
+        costCents: 1200,
+        inputTokens: 100,
+        cachedInputTokens: 10,
+        outputTokens: 40,
+        apiRunCount: 2,
+        subscriptionRunCount: 1,
+      },
+    ]);
   });
 
   it("returns 400 for invalid finance event list limits", async () => {
@@ -613,6 +665,133 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       cachedInputTokens: 6,
       outputTokens: 12,
     });
+  });
+
+  it("aggregates and ranks costs by issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueAId = randomUUID();
+    const issueBId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueAId,
+        companyId,
+        title: "Issue A",
+        status: "in_progress",
+        priority: "high",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: issueBId,
+        companyId,
+        title: "Issue B",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        issueId: issueAId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 60,
+        cachedInputTokens: 6,
+        outputTokens: 30,
+        costCents: 600,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: issueAId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "subscription_included",
+        model: "gpt-5",
+        inputTokens: 40,
+        cachedInputTokens: 4,
+        outputTokens: 20,
+        costCents: 400,
+        occurredAt: new Date("2026-04-10T01:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: issueBId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 20,
+        cachedInputTokens: 2,
+        outputTokens: 10,
+        costCents: 200,
+        occurredAt: new Date("2026-04-10T02:00:00.000Z"),
+      },
+    ]);
+
+    const rows = await costs.byIssue(
+      companyId,
+      {
+        from: new Date("2026-04-01T00:00:00.000Z"),
+        to: new Date("2026-04-15T23:59:59.999Z"),
+      },
+      10,
+    );
+
+    expect(rows).toEqual([
+      {
+        issueId: issueAId,
+        issueIdentifier: "TST-1",
+        issueTitle: "Issue A",
+        issueStatus: "in_progress",
+        issuePriority: "high",
+        costCents: 1000,
+        inputTokens: 100,
+        cachedInputTokens: 10,
+        outputTokens: 50,
+        apiRunCount: 0,
+        subscriptionRunCount: 0,
+      },
+      {
+        issueId: issueBId,
+        issueIdentifier: "TST-2",
+        issueTitle: "Issue B",
+        issueStatus: "done",
+        issuePriority: "medium",
+        costCents: 200,
+        inputTokens: 20,
+        cachedInputTokens: 2,
+        outputTokens: 10,
+        apiRunCount: 0,
+        subscriptionRunCount: 0,
+      },
+    ]);
   });
 
   it("aggregates finance event sums above int32 without raising Postgres integer overflow", async () => {

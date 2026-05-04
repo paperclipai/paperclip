@@ -423,5 +423,51 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
     },
+
+    byIssue: async (companyId: string, range?: CostDateRange, limit = 20) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const boundedLimit = Number.isFinite(limit)
+        ? Math.max(1, Math.min(500, Math.floor(limit)))
+        : 20;
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+
+      return db
+        .select({
+          issueId: costEvents.issueId,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          issueStatus: issues.status,
+          issuePriority: issues.priority,
+          costCents: costCentsExpr,
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+          apiRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
+          subscriptionRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
+        })
+        .from(costEvents)
+        .leftJoin(
+          issues,
+          and(
+            eq(costEvents.issueId, issues.id),
+            eq(issues.companyId, companyId),
+          ),
+        )
+        .where(and(...conditions, isNotNull(costEvents.issueId)))
+        .groupBy(
+          costEvents.issueId,
+          issues.identifier,
+          issues.title,
+          issues.status,
+          issues.priority,
+        )
+        .orderBy(desc(costCentsExpr))
+        .limit(boundedLimit);
+    },
   };
 }
