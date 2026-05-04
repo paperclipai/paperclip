@@ -1,4 +1,5 @@
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agentThreads } from "./agent_threads.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -25,5 +26,8 @@ export const agentThreadMessages = pgTable(
       table.createdAt,
     ),
     companyRunIdx: index("agent_thread_messages_company_run_idx").on(table.companyId, table.producingHeartbeatRunId),
+    threadRunUq: uniqueIndex("agent_thread_messages_thread_run_uq")
+      .on(table.threadId, table.producingHeartbeatRunId)
+      .where(sql`${table.producingHeartbeatRunId} IS NOT NULL`),
   }),
 );

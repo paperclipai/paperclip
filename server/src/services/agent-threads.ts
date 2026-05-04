@@ -170,7 +170,13 @@ export function agentThreadService(db: Db) {
             createdAt: now,
             updatedAt: now,
           })
+          .onConflictDoNothing()
           .returning();
+
+        if (!message) {
+          // Duplicate producing run — skip silently
+          return null;
+        }
 
         await tx
           .update(agentThreads)
