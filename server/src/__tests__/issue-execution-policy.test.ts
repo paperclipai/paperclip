@@ -1587,6 +1587,43 @@ describe("issue execution policy transitions", () => {
       });
     });
 
+    it("falls back at the post-auto-skip-loop site when the first pending stage is approval-only with the executor", () => {
+      // Site-4 throw path: issue has no executionState yet, requestedStatus is
+      // "done", and the workflow-start branch picks the first pending stage —
+      // an approval whose sole participant equals the executor.
+      // canAutoSkipPendingStage rejects approval stages, so the while loop
+      // never iterates and `participant` is null entering the post-loop
+      // fallback. Before the fix this throws "No eligible approval participant"
+      // right at workflow start; after the fix the executor self-approves.
+      const policy = makePolicy([
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done — only configured approver is the executor",
+      });
+
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: coderAgentId },
+      });
+    });
+
     it("falls back at the initial-active-stage path when currentParticipant is missing", () => {
       // Site-1 throw path: existingState has currentStageId but currentParticipant
       // is null (e.g., a partial state from an interrupted earlier transition).
