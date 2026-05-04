@@ -175,6 +175,7 @@ const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retr
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export {
+  ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
@@ -7461,16 +7462,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
-      if (issue.executionRunId === run.id) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, issue.id));
+      const clearExecution = issue.executionRunId === run.id;
+      const clearCheckout = issue.checkoutRunId === run.id;
+      if (clearExecution || clearCheckout) {
+        const patch: Partial<typeof issues.$inferInsert> = { updatedAt: new Date() };
+        if (clearExecution) {
+          patch.executionRunId = null;
+          patch.executionAgentNameKey = null;
+          patch.executionLockedAt = null;
+        }
+        if (clearCheckout) {
+          patch.checkoutRunId = null;
+        }
+        await tx.update(issues).set(patch).where(eq(issues.id, issue.id));
       }
 
       while (true) {

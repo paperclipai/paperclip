@@ -3,7 +3,8 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { issueExecutionDecisions } from "@paperclipai/db";
+import { agents, issueExecutionDecisions } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -3018,12 +3019,25 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/admin/force-release", async (req, res) => {
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board access required" });
+    let ceoAgentId: string | null = null;
+    if (req.actor.type === "board") {
+      if (!req.actor.userId) {
+        throw forbidden("Board user context required");
+      }
+    } else if (req.actor.type === "agent" && req.actor.agentId) {
+      const [agentRow] = await db
+        .select({ role: agents.role })
+        .from(agents)
+        .where(eq(agents.id, req.actor.agentId))
+        .limit(1);
+      if (agentRow?.role !== "ceo") {
+        res.status(403).json({ error: "Board access or CEO agent required" });
+        return;
+      }
+      ceoAgentId = req.actor.agentId;
+    } else {
+      res.status(403).json({ error: "Board access or CEO agent required" });
       return;
-    }
-    if (!req.actor.userId) {
-      throw forbidden("Board user context required");
     }
 
     const id = req.params.id as string;
@@ -3053,7 +3067,8 @@ export function issueRoutes(
       entityId: result.issue.id,
       details: {
         issueId: result.issue.id,
-        actorUserId: req.actor.userId,
+        actorUserId: req.actor.type === "board" ? req.actor.userId : null,
+        actorAgentId: ceoAgentId,
         prevCheckoutRunId: result.previous.checkoutRunId,
         prevExecutionRunId: result.previous.executionRunId,
         clearAssignee,

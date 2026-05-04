@@ -8,17 +8,22 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
   companies,
+  documentRevisions,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -49,7 +54,15 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+const ACTIVE_RUN_NO_PROGRESS_LIVENESS_BOOKKEEPING_ACTIONS = [
+  "environment.lease_acquired",
+  "environment.lease_released",
+  "heartbeat.output_stale_detected",
+  "heartbeat.output_stale_reasons_grown",
+];
+type StaleActiveRunReason = "output_silence" | "no_progress";
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -613,6 +626,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: issues.status,
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
+        description: issues.description,
         updatedAt: issues.updatedAt,
       })
       .from(issues)
@@ -627,6 +641,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1);
     return row ?? null;
+  }
+
+  function parseStaleRunReasonsFromDescription(description: string | null | undefined): Set<StaleActiveRunReason> {
+    const reasons = new Set<StaleActiveRunReason>();
+    if (!description) return reasons;
+    if (/^- output silence:/m.test(description)) reasons.add("output_silence");
+    if (/^- no progress:/m.test(description)) reasons.add("no_progress");
+    return reasons;
   }
 
   async function buildRunOutputSilence(
@@ -798,12 +820,107 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
   }
 
+  type RunProgressEvidenceCounts = {
+    issueComments: number;
+    documentRevisions: number;
+    workProducts: number;
+    workspaceOperations: number;
+    activityLog: number;
+    progressEvents: number;
+  };
+
+  async function countRunProgressEvidence(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+  ): Promise<RunProgressEvidenceCounts> {
+    const [comments, docs, workProducts, workspaceOps, activity, events] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(and(eq(issueComments.companyId, run.companyId), eq(issueComments.createdByRunId, run.id)))
+        .then((rows) => rows[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(documentRevisions)
+        .where(
+          and(eq(documentRevisions.companyId, run.companyId), eq(documentRevisions.createdByRunId, run.id)),
+        )
+        .then((rows) => rows[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueWorkProducts)
+        .where(
+          and(eq(issueWorkProducts.companyId, run.companyId), eq(issueWorkProducts.createdByRunId, run.id)),
+        )
+        .then((rows) => rows[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, run.companyId),
+            eq(workspaceOperations.heartbeatRunId, run.id),
+          ),
+        )
+        .then((rows) => rows[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, run.companyId),
+            eq(activityLog.runId, run.id),
+            notInArray(activityLog.action, ACTIVE_RUN_NO_PROGRESS_LIVENESS_BOOKKEEPING_ACTIONS),
+          ),
+        )
+        .then((rows) => rows[0]?.count ?? 0),
+      db
+        .select({
+          count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
+        })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id)))
+        .then((rows) => rows[0]?.count ?? 0),
+    ]);
+
+    return {
+      issueComments: comments,
+      documentRevisions: docs,
+      workProducts,
+      workspaceOperations: workspaceOps,
+      activityLog: activity,
+      progressEvents: events,
+    };
+  }
+
+  function totalProgressEvidence(counts: RunProgressEvidenceCounts) {
+    return (
+      counts.issueComments +
+      counts.documentRevisions +
+      counts.workProducts +
+      counts.workspaceOperations +
+      counts.activityLog +
+      counts.progressEvents
+    );
+  }
+
+  function runAgeMs(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "startedAt" | "processStartedAt" | "createdAt">,
+    now: Date,
+  ) {
+    const reference = run.startedAt ?? run.processStartedAt ?? run.createdAt ?? null;
+    if (!reference) return null;
+    return Math.max(0, now.getTime() - reference.getTime());
+  }
+
   function buildStaleRunEvaluationDescription(input: {
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
     sourceIssue: typeof issues.$inferSelect | null;
     prefix: string;
     evidence: Awaited<ReturnType<typeof collectStaleRunEvidence>>;
+    reasons: StaleActiveRunReason[];
+    progressEvidenceCounts: RunProgressEvidenceCounts | null;
+    runAgeMs: number | null;
     level: "suspicious" | "critical";
     now: Date;
   }) {
@@ -825,8 +942,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- ${issueUiLink({ identifier: issue.identifier, id: issue.id }, input.prefix)} \`${issue.status}\`: ${issue.title}`,
       ).join("\n")
       : "- none detected";
+    const reasonLabels: Record<StaleActiveRunReason, string> = {
+      output_silence: "output silence",
+      no_progress: "no progress",
+    };
+    const reasonsList = input.reasons;
+    const headlineReasons = reasonsList.map((r) => reasonLabels[r]).join(" + ");
+    const reasonBullets = [
+      reasonsList.includes("output_silence")
+        ? `- output silence: silent for ${formatDuration(input.evidence.silenceAgeMs)} (suspicious after ${formatDuration(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS)}, critical after ${formatDuration(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS)})`
+        : null,
+      reasonsList.includes("no_progress")
+        ? `- no progress: run age ${formatDuration(input.runAgeMs)} with zero rows across the 6 progress evidence sources (threshold ${formatDuration(ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS)})`
+        : null,
+    ].filter((line): line is string => line !== null);
+    const evidenceCountsLines = input.progressEvidenceCounts
+      ? [
+        `- issue_comments created by run: ${input.progressEvidenceCounts.issueComments}`,
+        `- document_revisions created by run: ${input.progressEvidenceCounts.documentRevisions}`,
+        `- issue_work_products created by run: ${input.progressEvidenceCounts.workProducts}`,
+        `- workspace_operations for run: ${input.progressEvidenceCounts.workspaceOperations}`,
+        `- activity_log entries for run (excluding lease bookkeeping): ${input.progressEvidenceCounts.activityLog}`,
+        `- heartbeat_run_events excluding \`lifecycle\`/\`adapter.invoke\`/\`error\`: ${input.progressEvidenceCounts.progressEvents}`,
+      ]
+      : ["- evidence counts not gathered"];
     return [
-      `Paperclip detected ${input.level} output silence on an active heartbeat run.`,
+      `Paperclip detected ${input.level} ${headlineReasons} on an active heartbeat run.`,
+      "",
+      "## Detection Reasons",
+      "",
+      ...reasonBullets,
       "",
       "## Run",
       "",
@@ -839,8 +984,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
       `- Last output sequence: ${input.run.lastOutputSeq ?? 0}`,
       `- Silent for: ${formatDuration(input.evidence.silenceAgeMs)}`,
-      `- Thresholds: suspicious after ${formatDuration(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS)}, critical after ${formatDuration(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS)}`,
+      `- Run age: ${formatDuration(input.runAgeMs)}`,
+      `- Thresholds: output-silence suspicious ${formatDuration(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS)} / critical ${formatDuration(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS)}; no-progress ${formatDuration(ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS)}`,
       `- Process metadata: pid \`${input.run.processPid ?? "unknown"}\`, process group \`${input.run.processGroupId ?? "unknown"}\`, in-memory handle \`${runningProcesses.has(input.run.id) ? "yes" : "no"}\``,
+      "",
+      "## Progress Evidence Counts",
+      "",
+      ...evidenceCountsLines,
       "",
       "## Last Output Excerpt",
       "",
@@ -929,8 +1079,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
+    reasons: StaleActiveRunReason[];
+    progressEvidenceCounts: RunProgressEvidenceCounts | null;
     now: Date;
   }) {
+    if (input.reasons.length === 0) return { kind: "skipped" as const };
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
@@ -942,9 +1095,74 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       prefix,
       now: input.now,
     });
-    const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const isCritical =
+      input.reasons.includes("output_silence") &&
+      (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+    const level: "suspicious" | "critical" = isCritical ? "critical" : "suspicious";
+    const ageMs = runAgeMs(input.run, input.now);
+    const titleSuffix = input.reasons.includes("no_progress") && !input.reasons.includes("output_silence")
+      ? "no-progress"
+      : "silent";
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
+      const knownReasons = parseStaleRunReasonsFromDescription(existing.description);
+      const newlyDetectedReasons = input.reasons.filter((r) => !knownReasons.has(r));
+      if (newlyDetectedReasons.length > 0) {
+        const mergedReasons: StaleActiveRunReason[] = [];
+        if (knownReasons.has("output_silence") || input.reasons.includes("output_silence")) {
+          mergedReasons.push("output_silence");
+        }
+        if (knownReasons.has("no_progress") || input.reasons.includes("no_progress")) {
+          mergedReasons.push("no_progress");
+        }
+        const updatedDescription = buildStaleRunEvaluationDescription({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          prefix,
+          evidence,
+          reasons: mergedReasons,
+          progressEvidenceCounts: input.progressEvidenceCounts,
+          runAgeMs: ageMs,
+          level,
+          now: input.now,
+        });
+        await issuesSvc.update(existing.id, {
+          description: updatedDescription,
+        });
+        const newLabels = newlyDetectedReasons.map((r) => r === "output_silence" ? "output silence" : "no progress");
+        const mergedLabels = mergedReasons.map((r) => r === "output_silence" ? "output silence" : "no progress");
+        await issuesSvc.addComment(existing.id, [
+          `Additional stale-run signal detected: ${newLabels.join(" + ")}.`,
+          "",
+          "Description updated to cover all current detection reasons.",
+          "",
+          `- Run: \`${input.run.id}\``,
+          `- Reasons now: ${mergedLabels.join(" + ")}`,
+          `- Run age: ${formatDuration(ageMs)}`,
+          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+        ].join("\n"), { runId: input.run.id });
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: existing.assigneeAgentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_reasons_grown",
+          entityType: "issue",
+          entityId: existing.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            level,
+            previousReasons: Array.from(knownReasons),
+            currentReasons: mergedReasons,
+            addedReasons: newlyDetectedReasons,
+            runAgeMs: ageMs,
+            silenceAgeMs: evidence.silenceAgeMs,
+            progressEvidenceCounts: input.progressEvidenceCounts,
+          },
+        });
+      }
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
           priority: "high",
@@ -980,13 +1198,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       sourceIssue,
       prefix,
       evidence,
+      reasons: input.reasons,
+      progressEvidenceCounts: input.progressEvidenceCounts,
+      runAgeMs: ageMs,
       level,
       now: input.now,
     });
     let evaluation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       evaluation = await issuesSvc.create(input.run.companyId, {
-        title: `Review silent active run for ${runningAgent.name}`,
+        title: `Review ${titleSuffix} active run for ${runningAgent.name}`,
         description,
         status: "todo",
         priority: level === "critical" ? "high" : "medium",
@@ -1019,9 +1240,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       details: {
         source: "recovery.scan_silent_active_runs",
         level,
+        reasons: input.reasons,
         sourceIssueId: sourceIssue?.id ?? null,
         silenceAgeMs: evidence.silenceAgeMs,
+        runAgeMs: ageMs,
         lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+        progressEvidenceCounts: input.progressEvidenceCounts,
       },
     });
     if (level === "critical") {
@@ -1059,6 +1283,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
+    const noProgressBefore = new Date(now.getTime() - ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS);
     const candidates = await db
       .select()
       .from(heartbeatRuns)
@@ -1066,7 +1291,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
+          sql`(
+            coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz
+            or coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.createdAt}) <= ${noProgressBefore.toISOString()}::timestamptz
+          )`,
         ),
       )
       .orderBy(asc(heartbeatRuns.createdAt))
@@ -1083,11 +1311,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const run of candidates) {
-      if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
-        result.snoozed += 1;
+      const reasons: StaleActiveRunReason[] = [];
+      const silenceAgeMs = silenceAgeMsForRun(run, now);
+      if ((silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS) {
+        reasons.push("output_silence");
+      }
+      const ageMs = runAgeMs(run, now);
+      let progressEvidenceCounts: RunProgressEvidenceCounts | null = null;
+      if ((ageMs ?? 0) >= ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS) {
+        progressEvidenceCounts = await countRunProgressEvidence(run);
+        if (totalProgressEvidence(progressEvidenceCounts) === 0) {
+          reasons.push("no_progress");
+        }
+      }
+      if (reasons.length === 0) {
+        result.skipped += 1;
         continue;
       }
-      const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
+      const quietUntilDecision = await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now);
+      if (quietUntilDecision) {
+        // Watchdog snooze/continue decisions today are scoped to output_silence (that's the
+        // only reason a reviewer can currently snooze for via the watchdog UX). no_progress is
+        // a distinct concern — zero useful work despite output ticking — and must surface even
+        // if the operator already acknowledged the silence. Bypass the snooze when no_progress
+        // is in the reasons set, but drop the (already-snoozed) output_silence reason from the
+        // effective set so we don't re-flag it.
+        if (!reasons.includes("no_progress")) {
+          result.snoozed += 1;
+          continue;
+        }
+        const silenceIdx = reasons.indexOf("output_silence");
+        if (silenceIdx >= 0) reasons.splice(silenceIdx, 1);
+      }
+      const outcome = await createOrUpdateStaleRunEvaluation({
+        run,
+        reasons,
+        progressEvidenceCounts,
+        now,
+      });
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;

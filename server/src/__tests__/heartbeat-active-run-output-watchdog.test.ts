@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueComments,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -15,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
@@ -94,7 +98,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(opts: {
+    now: Date;
+    ageMs: number;
+    withOutput?: boolean;
+    withProgressEvent?: boolean;
+    logChunk?: string;
+  }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -179,6 +189,17 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
           logBytes,
         })
         .where(eq(heartbeatRuns.id, runId));
+    }
+    if (opts.withProgressEvent) {
+      await db.insert(heartbeatRunEvents).values({
+        companyId,
+        runId,
+        agentId: coderId,
+        seq: 1,
+        eventType: "tool.invoke",
+        message: "ran a tool",
+        createdAt: new Date(opts.now.getTime() - 10 * 60 * 1000),
+      });
     }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     return { companyId, managerId, coderId, issueId, runId, issuePrefix };
@@ -272,14 +293,18 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   it("skips snoozed runs and healthy noisy runs", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
+    // Seed a stale run with at least one progress event so only output_silence fires; otherwise
+    // no_progress would surface even when output_silence is snoozed (see the dedicated bypass test below).
     const stale = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      withProgressEvent: true,
     });
     const noisy = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       withOutput: true,
+      withProgressEvent: true,
     });
     await db.insert(heartbeatRunWatchdogDecisions).values({
       companyId: stale.companyId,
@@ -294,7 +319,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const noisyResult = await heartbeat.scanSilentActiveRuns({ now, companyId: noisy.companyId });
 
     expect(staleResult).toMatchObject({ created: 0, snoozed: 1 });
-    expect(noisyResult).toMatchObject({ scanned: 0, created: 0 });
+    expect(noisyResult).toMatchObject({ created: 0, escalated: 0 });
+    expect(noisyResult.evaluationIssueIds).toHaveLength(0);
   });
 
   it("records watchdog decisions through recovery owner authorization", async () => {
@@ -545,5 +571,187 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("flags an old running run with output but zero progress evidence as no_progress", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS + 60_000,
+      withOutput: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.originId).toBe(runId);
+    expect(evaluation?.priority).toBe("medium");
+    expect(evaluation?.title).toMatch(/no-progress/i);
+    expect(evaluation?.description).toContain("no progress");
+    expect(evaluation?.description).toContain("Detection Reasons");
+    expect(evaluation?.description).toContain("Progress Evidence Counts");
+    expect(evaluation?.description).not.toContain("output silence");
+  });
+
+  it("does not flag an old running run that has at least one progress event", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS + 60_000,
+      withOutput: true,
+      withProgressEvent: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.evaluationIssueIds).toHaveLength(0);
+  });
+
+  it("includes both reasons when an old run is silent and has no progress evidence", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 5 * 60 * 1000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.originId).toBe(runId);
+    expect(evaluation?.description).toContain("output silence");
+    expect(evaluation?.description).toContain("no progress");
+  });
+
+  it("snooze does not suppress no_progress detection on a snoozed silent run", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    // Both reasons fire (silence age > suspicion AND age > no-progress with zero progress events).
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: Math.max(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS) + 60_000,
+    });
+    // Operator acknowledged the silence — but no_progress is a distinct concern they have not yet seen.
+    await db.insert(heartbeatRunWatchdogDecisions).values({
+      companyId,
+      runId,
+      decision: "snooze",
+      snoozedUntil: new Date(now.getTime() + 60 * 60 * 1000),
+      reason: "Operator acknowledged the silent stretch",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    expect(result.snoozed).toBe(0);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.originId).toBe(runId);
+    // Snooze swallows the (already-acknowledged) output_silence reason; only no_progress drives the eval.
+    expect(evaluation?.title).toMatch(/no-progress/i);
+    expect(evaluation?.description).toContain("- no progress:");
+    expect(evaluation?.description).not.toContain("- output silence:");
+  });
+
+  it("snooze still suppresses when only output_silence is detected", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    // Has 1 heartbeat_run_event so no_progress does NOT fire — only output_silence.
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      withProgressEvent: true,
+    });
+    await db.insert(heartbeatRunWatchdogDecisions).values({
+      companyId,
+      runId,
+      decision: "snooze",
+      snoozedUntil: new Date(now.getTime() + 60 * 60 * 1000),
+      reason: "Operator acknowledged the silent stretch",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, snoozed: 1 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("updates the existing evaluation issue when a new reason is detected later", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    // Round 1 setup: 1 progress event seeded → no_progress doesn't fire → only output_silence does.
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      withProgressEvent: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Round 1: only output_silence — issue gets created with that single reason.
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0]!;
+    const [createdEval] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, evaluationIssueId));
+    expect(createdEval?.description).toContain("- output silence:");
+    expect(createdEval?.description).not.toContain("- no progress:");
+
+    // Simulate "no further progress" between scans: clear non-bookkeeping heartbeat events.
+    // Round 1's `heartbeat.output_stale_detected` activity entry is intentionally left in place;
+    // it's in `ACTIVE_RUN_NO_PROGRESS_LIVENESS_BOOKKEEPING_ACTIONS` and excluded from the count
+    // so it must not block re-detection.
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+
+    // Round 2: now both reasons fire. Existing issue should grow to cover both.
+    const later = new Date(now.getTime() + ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS);
+    const second = await heartbeat.scanSilentActiveRuns({ now: later, companyId });
+    expect(second.existing).toBe(1);
+    expect(second.created).toBe(0);
+
+    const [updatedEval] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, evaluationIssueId));
+    expect(updatedEval?.description).toContain("- output silence:");
+    expect(updatedEval?.description).toContain("- no progress:");
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, evaluationIssueId));
+    expect(comments.some((c) => /Additional stale-run signal detected: no progress/.test(c.body ?? ""))).toBe(true);
+
+    const [reasonsGrownLog] = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "heartbeat.output_stale_reasons_grown"),
+      ));
+    expect(reasonsGrownLog).toBeTruthy();
+    expect(reasonsGrownLog?.details).toMatchObject({
+      addedReasons: ["no_progress"],
+      currentReasons: ["output_silence", "no_progress"],
+    });
   });
 });
