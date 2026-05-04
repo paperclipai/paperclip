@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "agent_thread_messages_thread_run_uq" ON "agent_thread_messages" USING btree ("thread_id","producing_heartbeat_run_id") WHERE "agent_thread_messages"."producing_heartbeat_run_id" IS NOT NULL;

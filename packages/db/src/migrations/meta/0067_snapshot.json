@@ -983,6 +983,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "agent_thread_messages_thread_run_uq": {
+          "name": "agent_thread_messages_thread_run_uq",
+          "columns": [
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "producing_heartbeat_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {},
+          "where": "\"agent_thread_messages\".\"producing_heartbeat_run_id\" IS NOT NULL"
         }
       },
       "foreignKeys": {

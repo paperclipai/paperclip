@@ -477,13 +477,6 @@
       "when": 1777875522570,
       "tag": "0067_agent_threads",
       "breakpoints": true
-    },
-    {
-      "idx": 68,
-      "version": "7",
-      "when": 1777907037716,
-      "tag": "0068_loving_spitfire",
-      "breakpoints": true
     }
   ]
 }

@@ -54,4 +54,5 @@ CREATE INDEX "agent_thread_messages_company_run_idx" ON "agent_thread_messages" 
 CREATE INDEX "agent_thread_reads_company_thread_idx" ON "agent_thread_reads" USING btree ("company_id","thread_id");--> statement-breakpoint
 CREATE INDEX "agent_thread_reads_company_user_idx" ON "agent_thread_reads" USING btree ("company_id","user_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "agent_thread_reads_company_thread_user_uq" ON "agent_thread_reads" USING btree ("company_id","thread_id","user_id");--> statement-breakpoint
-CREATE INDEX "issues_company_origin_thread_idx" ON "issues" USING btree ("company_id","origin_thread_id");
+CREATE INDEX "issues_company_origin_thread_idx" ON "issues" USING btree ("company_id","origin_thread_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_thread_messages_thread_run_uq" ON "agent_thread_messages" USING btree ("thread_id","producing_heartbeat_run_id") WHERE "agent_thread_messages"."producing_heartbeat_run_id" IS NOT NULL;
