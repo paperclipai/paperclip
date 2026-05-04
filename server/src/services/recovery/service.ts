@@ -19,6 +19,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -1509,6 +1511,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  async function hasEnabledFutureRoutineForAgent(companyId: string, agentId: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: routineTriggers.id })
+      .from(routineTriggers)
+      .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.assigneeAgentId, agentId),
+          eq(routineTriggers.enabled, true),
+          gt(routineTriggers.nextRunAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -1658,6 +1677,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasEnabledFutureRoutineForAgent(issue.companyId, agentId)) {
         result.skipped += 1;
         continue;
       }
@@ -1873,6 +1897,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       interactionRows,
       approvalRows,
       recoveryIssueRows,
+      agentIdsWithEnabledFutureRoutineRows,
     ] = await Promise.all([
       db
         .select({
@@ -1985,6 +2010,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             notInArray(issues.status, ["done", "cancelled"]),
           ),
         ),
+      db
+        .selectDistinct({ agentId: routines.assigneeAgentId })
+        .from(routineTriggers)
+        .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .where(
+          and(
+            sql`${routines.assigneeAgentId} is not null`,
+            eq(routineTriggers.enabled, true),
+            gt(routineTriggers.nextRunAt, new Date()),
+          ),
+        ),
     ]);
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
@@ -2021,6 +2057,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues,
+      agentIdsWithEnabledFutureRoutines: agentIdsWithEnabledFutureRoutineRows.flatMap((row) =>
+        row.agentId ? [row.agentId] : [],
+      ),
       now: new Date(),
     });
   }

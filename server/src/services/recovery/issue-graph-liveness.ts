@@ -102,6 +102,8 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  /** Agent IDs that have at least one enabled routine trigger with a future nextRunAt. */
+  agentIdsWithEnabledFutureRoutines?: string[];
   now?: Date | string;
 }
 
@@ -362,6 +364,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const agentsWithEnabledFutureRoutines = new Set(input.agentIdsWithEnabledFutureRoutines ?? []);
 
   for (const relation of input.relations) {
     const list = blockersByBlockedIssueId.get(relation.blockedIssueId) ?? [];
@@ -453,6 +456,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     }
 
     if (!reviewIssue.assigneeAgentId || reviewIssue.assigneeUserId) return null;
+
+    if (agentsWithEnabledFutureRoutines.has(reviewIssue.assigneeAgentId)) return null;
 
     return finding({
       issue: source,

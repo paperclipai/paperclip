@@ -421,4 +421,52 @@ describe("issue graph liveness classifier", () => {
       recoveryIssueId: reviewIssueId,
     });
   });
+
+  it("does not flag in_review issues when assignee has an enabled future routine", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-3000",
+          title: "Parked for routine",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      agentIdsWithEnabledFutureRoutines: [coderId],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("flags in_review issues when the assignee has no qualifying enabled future routine", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-3001",
+          title: "Stalled with no routine",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      agentIdsWithEnabledFutureRoutines: [],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "in_review_without_action_path",
+      recoveryIssueId: reviewIssueId,
+    });
+  });
 });
