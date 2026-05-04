@@ -254,6 +254,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     runId,
     target: executionTarget,
     installCommand: runtimeCommandSpec?.installCommand,
+    detectCommand: runtimeCommandSpec?.detectCommand,
     cwd,
     env: runtimeEnv,
     timeoutSec,

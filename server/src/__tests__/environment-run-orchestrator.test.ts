@@ -420,7 +420,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     }));
   });
 
-  it("does not run provision commands for ssh environments", async () => {
+  it("runs project-level provision commands for ssh environments", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "gemini_local",
@@ -492,7 +492,10 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       }),
     }));
 
-    expect(runtime.execute).not.toHaveBeenCalled();
+    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "bash",
+      args: ["-lc", "npm install -g @google/gemini-cli"],
+    }));
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
   });
 
