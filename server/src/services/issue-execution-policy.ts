@@ -636,7 +636,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     requestedStatus !== "done" &&
     requestedStatus !== "cancelled"
   ) {
-    patch.executionState = null;
+    // Preserve completed-policy state across reopens so re-checkout doesn't
+    // restart the workflow from stage 0 (issue #4928). Anything else
+    // (pending, changes_requested, idle) is stale and safe to drop.
+    if (existingState?.status !== COMPLETED_STATUS) {
+      patch.executionState = null;
+    }
     return { patch };
   }
 

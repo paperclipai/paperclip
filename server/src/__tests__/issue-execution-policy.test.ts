@@ -757,8 +757,13 @@ describe("issue execution policy transitions", () => {
     });
   });
 
-  describe("reopening from done/cancelled clears state", () => {
-    it("reopening a done issue clears execution state", () => {
+  describe("reopening from done/cancelled", () => {
+    it("preserves execution state when reopening a fully-completed policy (issue #4928)", () => {
+      // Reproduces the infinite-review-loop bug: a comment on a `done` issue
+      // re-opens it, and the policy state used to be cleared — wiping
+      // completedStageIds and forcing every stage to be re-approved. Now
+      // the completed shape is preserved so the next PATCH `done` passes
+      // through the existing nextPendingStage-returns-null fall-through.
       const policy = twoStagePolicy();
       const result = applyIssueExecutionPolicyTransition({
         issue: {
@@ -784,7 +789,84 @@ describe("issue execution policy transitions", () => {
         actor: { userId: boardUserId },
       });
 
+      // Absent (undefined) means the JSONB column is left untouched —
+      // the existing completed state stays in the DB.
+      expect(result.patch.executionState).toBeUndefined();
+    });
+
+    it("still clears execution state when reopening with a stale non-completed shape", () => {
+      // Regression guard: any executionState that isn't actually "completed"
+      // (e.g. left over in `pending` or `changes_requested` from an earlier
+      // crash mid-flow) is unsafe to keep. Drop it like before.
+      const policy = twoStagePolicy();
+      const reviewStageId = policy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "done",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "todo",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
       expect(result.patch.executionState).toBeNull();
+    });
+
+    it("lets PATCH status=done pass through when the policy is already complete", () => {
+      // After a comment re-opens a `done` issue and re-checkout sets
+      // `in_progress`, the executor agent's next PATCH `done` must NOT be
+      // converted to `in_review` + `changes_requested`. With completed
+      // state preserved, nextPendingStage returns null and the route
+      // applies the caller's status verbatim.
+      const policy = twoStagePolicy();
+      const completedState: IssueExecutionState = {
+        status: "completed",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        completedStageIds: [policy.stages[0].id, policy.stages[1].id],
+        lastDecisionId: null,
+        lastDecisionOutcome: "approved",
+      };
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: completedState,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Re-marking done after comment-driven reopen",
+      });
+
+      // No status override → caller's PATCH {status: "done"} survives intact.
+      expect(result.patch.status).toBeUndefined();
+      // No executionState mutation — JSONB unchanged.
+      expect(result.patch.executionState).toBeUndefined();
+      // Most importantly: NOT redirected into the changes_requested branch.
+      expect(result.patch.executionState).not.toMatchObject({ status: "changes_requested" });
     });
   });
 
