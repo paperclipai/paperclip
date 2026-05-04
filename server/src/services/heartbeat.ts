@@ -21,11 +21,11 @@ import {
   type RunLivenessState,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
-  activityLog,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -7552,16 +7552,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
+        const issueIsTerminal = issue.status === "done" || issue.status === "cancelled";
+
+        // POI-237 Option 1 — deferred-wake freshness guard. When a comment-bearing
+        // deferred wake targets a terminal issue, only allow the implicit reopen if
+        // at least one deferred comment was created AFTER the last terminal
+        // transition. Otherwise treat the wake as stale (it was enqueued while the
+        // issue was still active and the run has since closed it) and drop it.
+        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+          const closureRow = await tx
+            .select({ createdAt: activityLog.createdAt })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, issue.companyId),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, issue.id),
+                eq(activityLog.action, "issue.updated"),
+                sql`${activityLog.details} ->> 'status' in ('done','cancelled')`,
+              ),
+            )
+            .orderBy(desc(activityLog.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          const closedAt = closureRow?.createdAt ?? null;
+          if (closedAt) {
+            const commentRows = await tx
+              .select({ id: issueComments.id, createdAt: issueComments.createdAt })
+              .from(issueComments)
+              .where(
+                and(
+                  eq(issueComments.issueId, issue.id),
+                  inArray(issueComments.id, deferredCommentIds),
+                ),
+              );
+            if (commentRows.length > 0) {
+              const anyFresh = commentRows.some(
+                (row) => row.createdAt.getTime() > closedAt.getTime(),
+              );
+              if (!anyFresh) {
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    status: "failed",
+                    finishedAt: new Date(),
+                    error: "deferred_comment_wake_terminal_skipped",
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(agentWakeupRequests.id, deferred.id));
+                continue;
+              }
+            }
+            // Deleted/missing comment rows are treated leniently so comment cleanup
+            // cannot suppress a potentially fresh deferred reopen.
+          }
+          // No audit entry — lenient fallback: treat as fresh and proceed with reopen.
+        }
+
+        // Mention wakes (`issue_comment_mentioned`) are notifications targeted at
+        // another agent — they must not flip a finished issue back to todo. Other
+        // comment-bearing deferred wakes (e.g. `issue_commented`) keep the existing
+        // implicit reopen behaviour, still gated by the freshness check above.
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
+          issueIsTerminal &&
+          deferredWakeReason !== "issue_comment_mentioned";
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
