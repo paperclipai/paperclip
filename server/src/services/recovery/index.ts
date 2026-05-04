@@ -42,3 +42,10 @@ export {
 export type {
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
+export {
+  checkVestigialSignals,
+} from "./vestigial-check.js";
+export type {
+  VestigialIssueInput,
+  VestigialSignal,
+} from "./vestigial-check.js";
