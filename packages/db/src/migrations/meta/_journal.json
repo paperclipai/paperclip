@@ -792,6 +792,13 @@
       "when": 1776845400000,
       "tag": "0112_rt2_store_operations_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1746363600000,
+      "tag": "0113_rt2_v33_work_entities",
+      "breakpoints": true
     }
   ]
 }
