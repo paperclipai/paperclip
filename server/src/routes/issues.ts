@@ -30,6 +30,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -880,9 +881,10 @@ export function issueRoutes(
     });
   }
 
-  async function normalizeIssueIdentifier(rawId: string): Promise<string> {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      const issue = await svc.getByIdentifier(rawId);
+  async function resolveIssueRouteId(rawId: string): Promise<string> {
+    const identifier = normalizeIssueReferenceIdentifier(rawId);
+    if (identifier) {
+      const issue = await svc.getByIdentifier(identifier);
       if (issue) {
         return issue.id;
       }
@@ -920,7 +922,7 @@ export function issueRoutes(
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
-      req.params.id = await normalizeIssueIdentifier(rawId);
+      req.params.id = await resolveIssueRouteId(rawId);
       next();
     } catch (err) {
       next(err);
@@ -930,7 +932,7 @@ export function issueRoutes(
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for company-scoped attachment routes.
   router.param("issueId", async (req, res, next, rawId) => {
     try {
-      req.params.issueId = await normalizeIssueIdentifier(rawId);
+      req.params.issueId = await resolveIssueRouteId(rawId);
       next();
     } catch (err) {
       next(err);

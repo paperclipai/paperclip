@@ -13,6 +13,7 @@ import {
   createAgentSchema,
   deriveAgentUrlKey,
   isUuidLike,
+  normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
@@ -3088,8 +3089,8 @@ export function agentRoutes(
   router.get("/issues/:issueId/live-runs", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
-    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    const identifier = normalizeIssueIdentifier(rawId);
+    const issue = identifier ? await issueSvc.getByIdentifier(identifier) : await issueSvc.getById(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -3142,8 +3143,8 @@ export function agentRoutes(
   router.get("/issues/:issueId/active-run", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
-    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    const identifier = normalizeIssueIdentifier(rawId);
+    const issue = identifier ? await issueSvc.getByIdentifier(identifier) : await issueSvc.getById(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
