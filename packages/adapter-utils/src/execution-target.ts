@@ -125,6 +125,11 @@ function resolveDefaultPaperclipApiUrl(): string {
   return `http://${runtimeHost}:${runtimePort}`;
 }
 
+function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.PAPERCLIP_BRIDGE_DEBUG?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 function isAdapterExecutionTargetInstance(value: unknown): value is AdapterExecutionTarget {
   const parsed = parseObject(value);
   if (parsed.kind === "local") return true;
@@ -743,11 +748,25 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: adapterExecutionTargetTimeoutMs(target),
       shellCommand,
     });
+    // PAPERCLIP_BRIDGE_DEBUG opts into verbose stdout logs of every bridge
+    // proxy request/response. The query string is logged verbatim, so callers
+    // who pass auth tokens or other sensitive values as query parameters
+    // should be aware those values appear in the host process's stdout when
+    // this flag is enabled. Only intended for active debugging in trusted
+    // environments.
+    const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
       maxBodyBytes,
       handleRequest: async (request) => {
+        const method = request.method.trim().toUpperCase() || "GET";
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
         const headers = new Headers();
         for (const [key, value] of Object.entries(request.headers)) {
           if (value.trim().length === 0) continue;
@@ -755,13 +774,18 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
-        const method = request.method.trim().toUpperCase() || "GET";
         const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
           method,
           headers,
           ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
           signal: AbortSignal.timeout(30_000),
         });
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),
