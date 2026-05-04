@@ -43,6 +43,7 @@ import {
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { checkVestigialSignals, type VestigialSignal } from "./vestigial-check.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -448,6 +449,81 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       projectId: issue.projectId,
     });
     return Boolean(budgetBlock);
+  }
+
+
+  function vestigialCancellationComment(signal: VestigialSignal, prefix: string) {
+    if (signal.kind === "parent_cancelled") {
+      const parentLabel = signal.parentIdentifier ?? signal.parentId;
+      return [
+        "Paperclip detected this issue is vestigial — its parent",
+        ` [${parentLabel}](/${prefix}/issues/${parentLabel}) is cancelled.`,
+        " Halting retry and marking cancelled with reason `parent_cancelled`.",
+      ].join("");
+    }
+    if (signal.kind === "superseded") {
+      const label = signal.supersedingIdentifier ?? signal.supersedingIssueId;
+      return [
+        "Paperclip detected this issue is vestigial — it has a `superseded_by` relation to the completed issue",
+        ` [${label}](/${prefix}/issues/${label}).`,
+        " Halting retry and marking cancelled with reason `superseded`.",
+      ].join("");
+    }
+    if (signal.kind === "duplicate_resolved") {
+      const label = signal.duplicateIdentifier ?? signal.duplicateIssueId;
+      return [
+        "Paperclip detected this issue is vestigial — its `originFingerprint` already resolved in the completed issue",
+        ` [${label}](/${prefix}/issues/${label}).`,
+        " Halting retry and marking cancelled with reason `duplicate_resolved`.",
+      ].join("");
+    }
+    return "Paperclip detected this issue is vestigial. Halting retry and marking cancelled.";
+  }
+
+  async function suppressVestigialIssueInRecovery(
+    issue: typeof issues.$inferSelect,
+    signal: VestigialSignal,
+  ) {
+    const prefix = await getCompanyIssuePrefix(issue.companyId);
+    logger.info(
+      {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        vestigialKind: signal.kind,
+        signal,
+        source: "recovery.vestigial_issue_detected",
+      },
+      "vestigial_issue_detected",
+    );
+
+    const updated = await issuesSvc.update(issue.id, { status: "cancelled" });
+    if (!updated) return null;
+
+    await issuesSvc.addComment(
+      issue.id,
+      vestigialCancellationComment(signal, prefix),
+      {},
+    );
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "cancelled",
+        vestigialKind: signal.kind,
+        source: "recovery.vestigial_issue_suppression",
+      },
+    });
+
+    return updated;
   }
 
   async function reconcileUnassignedBlockingIssues() {
@@ -1597,6 +1673,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       escalated: 0,
+      vestigialSuppressed: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -1621,6 +1698,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
+        continue;
+      }
+
+      const vestigialSignal = await checkVestigialSignals(db, issue);
+      if (vestigialSignal) {
+        const suppressed = await suppressVestigialIssueInRecovery(issue, vestigialSignal);
+        if (suppressed) {
+          result.vestigialSuppressed += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
         continue;
       }
 
