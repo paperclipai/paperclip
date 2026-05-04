@@ -2,13 +2,18 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { logger } from "../middleware/logger.js";
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
+export const CONTINUATION_CHUNK_MAX_BYTES = 30 * 1024; // 30KB hard ceiling per run chunk
+export const CONTINUATION_WORKSPACE_TOTAL_MAX_BYTES = 500 * 1024; // 500KB hard ceiling per workspace
+// Kept for backwards compatibility — existing tests reference this constant by name
 export const ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS = 8_000;
 const SUMMARY_SECTION_MAX_CHARS = 1_200;
 const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.github)\/[A-Za-z0-9._/-]+)/g;
+const CHUNK_SEPARATOR = "\n\n---\n\n";
 
 type IssueSummaryInput = {
   id: string;
@@ -49,6 +54,56 @@ function truncateText(value: string, maxChars: number) {
   const trimmed = value.trim();
   if (trimmed.length <= maxChars) return trimmed;
   return `${trimmed.slice(0, Math.max(0, maxChars - 20)).trimEnd()}\n[truncated]`;
+}
+
+// Apply the spec-mandated truncation marker for per-chunk size overflow.
+function truncateChunk(body: string, maxLen: number): string {
+  if (body.length <= maxLen) return body;
+  const timestamp = new Date().toISOString();
+  const marker = `\n[TRUNCATED — continuation context exceeded safe threshold at ${timestamp}. Run context was reset.]`;
+  return body.slice(0, Math.max(0, maxLen - marker.length)).trimEnd() + marker;
+}
+
+// Trim oldest content (tail) when accumulated workspace summaries exceed the ceiling.
+// Chunks are prepended so the tail always holds the oldest material.
+function applyWorkspaceRolloff(
+  accumulated: string,
+  maxLen: number,
+): { text: string; wasTruncated: boolean } {
+  if (accumulated.length <= maxLen) return { text: accumulated, wasTruncated: false };
+  let trimmed = accumulated.slice(0, maxLen);
+  const lastSepIdx = trimmed.lastIndexOf(CHUNK_SEPARATOR);
+  if (lastSepIdx > 0) {
+    trimmed = trimmed.slice(0, lastSepIdx);
+  }
+  return {
+    text: trimmed + CHUNK_SEPARATOR + "[Oldest continuation summaries removed — workspace ceiling exceeded.]",
+    wasTruncated: true,
+  };
+}
+
+/**
+ * Pure assembly helper — exported for unit testing.
+ *
+ * Prepends newChunk to existingBody (newest chunk at top), enforces the 30KB
+ * per-chunk ceiling and the 500KB workspace ceiling, and returns the final
+ * body along with truncation flags.
+ */
+export function assembleContinuationSummaryBody(input: {
+  newChunk: string;
+  existingBody: string | null;
+}): { body: string; chunkTruncated: boolean; workspaceTruncated: boolean } {
+  const chunk = truncateChunk(input.newChunk, CONTINUATION_CHUNK_MAX_BYTES);
+  const chunkTruncated = chunk.length < input.newChunk.length;
+
+  const accumulated = input.existingBody ? chunk + CHUNK_SEPARATOR + input.existingBody : chunk;
+
+  const { text: body, wasTruncated: workspaceTruncated } = applyWorkspaceRolloff(
+    accumulated,
+    CONTINUATION_WORKSPACE_TOTAL_MAX_BYTES,
+  );
+
+  return { body, chunkTruncated, workspaceTruncated };
 }
 
 function asNonEmptyString(value: unknown) {
@@ -248,12 +303,31 @@ export async function refreshIssueContinuationSummary(input: {
   ]);
 
   if (!issue) return null;
-  const body = buildContinuationSummaryMarkdown({
+
+  const newChunk = buildContinuationSummaryMarkdown({
     issue,
     run,
     agent,
     previousSummaryBody: existing?.body ?? null,
   });
+
+  const { body, chunkTruncated, workspaceTruncated } = assembleContinuationSummaryBody({
+    newChunk,
+    existingBody: existing?.body ?? null,
+  });
+
+  if (chunkTruncated || workspaceTruncated) {
+    logger.info(
+      {
+        type: "continuation_truncated",
+        chunkBytes: newChunk.length,
+        totalBytes: body.length,
+        runId: run.id,
+      },
+      "continuation summary truncated",
+    );
+  }
+
   const result = await documentService(db).upsertIssueDocument({
     issueId,
     key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
