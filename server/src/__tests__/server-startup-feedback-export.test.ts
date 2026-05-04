@@ -346,6 +346,40 @@ describe("startServer shutdown drain hook", () => {
     onceSpy.mockRestore();
     exitSpy.mockRestore();
   });
+
+  it("includes stale running rows in drain active-run selection", async () => {
+    const selectWhereMock = vi.fn(async () => [{ id: "run-stale" }]);
+    const selectFromMock = vi.fn(() => ({ where: selectWhereMock }));
+    const selectMock = vi.fn(() => ({ from: selectFromMock }));
+    createDbMock.mockReturnValue({
+      select: selectMock,
+    } as never);
+
+    drainRunsBeforeRestartMock.mockImplementationOnce(async (deps) => {
+      const rows = await deps.listActiveRuns();
+      expect(rows).toEqual([{ id: "run-stale" }]);
+      return { deferredMs: 0, initialRunsInFlight: rows.length, forcedTerminations: 0 };
+    });
+
+    const onceSpy = vi.spyOn(process, "once");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    await startServer();
+
+    const sigtermHandler = onceSpy.mock.calls.find((call) => call[0] === "SIGTERM")?.[1];
+    expect(sigtermHandler).toBeTypeOf("function");
+    (sigtermHandler as () => unknown)();
+
+    await vi.waitFor(() => {
+      expect(selectWhereMock).toHaveBeenCalledTimes(1);
+      const whereArg = selectWhereMock.mock.calls[0]?.[0];
+      expect(JSON.stringify(whereArg)).not.toContain("updatedAt");
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    onceSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
 });
 
 describe("startServer PAPERCLIP_API_URL handling", () => {

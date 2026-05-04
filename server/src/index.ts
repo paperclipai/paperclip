@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -875,7 +875,6 @@ export async function startServer(): Promise<StartedServer> {
       const maxDrainMs = 300_000;
       const pollIntervalMs = 5_000;
       const restartReason = "restart_during_run";
-      const activeWindowStart = () => new Date(Date.now() - maxDrainMs);
 
       try {
         const drain = await drainRunsBeforeRestart({
@@ -885,12 +884,7 @@ export async function startServer(): Promise<StartedServer> {
             const rows = await db
               .select({ id: heartbeatRuns.id })
               .from(heartbeatRuns)
-              .where(
-                and(
-                  eq(heartbeatRuns.status, "running"),
-                  gte(heartbeatRuns.updatedAt, activeWindowStart()),
-                ),
-              );
+              .where(eq(heartbeatRuns.status, "running"));
             return rows;
           },
           forceTerminateRun: async (runId) => {
