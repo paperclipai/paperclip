@@ -153,6 +153,7 @@ export interface PaperclipActionDecl {
 
 /** Resolve the primary type string from a schema node. */
 export function resolveType(schema: JsonSchemaNode): string {
+  if (schema["x-paperclip-optionsFrom"]) return "dynamic-enum";
   if (schema.enum) return "enum";
   if (schema.const !== undefined) return "const";
   if (schema.format === "secret-ref") return "secret-ref";
@@ -204,6 +205,8 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
       return schema.minimum ?? 0;
     case "boolean":
       return false;
+    case "dynamic-enum":
+      return "";
     case "enum":
       return schema.enum?.[0] ?? "";
     case "array":
@@ -536,6 +539,115 @@ const EnumField = React.memo(({
 ));
 
 EnumField.displayName = "EnumField";
+
+// ---------------------------------------------------------------------------
+// DynamicEnumField — dropdown populated at render time via a plugin action
+// ---------------------------------------------------------------------------
+
+interface DynamicEnumOption {
+  value: string;
+  label: string;
+}
+
+const DynamicEnumField = React.memo(({
+  schema,
+  value,
+  onChange,
+  disabled,
+  label,
+  isRequired,
+  description,
+  error,
+}: {
+  schema: JsonSchemaNode;
+  value: unknown;
+  onChange: (val: unknown) => void;
+  disabled: boolean;
+  label: string;
+  isRequired?: boolean;
+  description?: string;
+  error?: string;
+}) => {
+  const ctx = React.useContext(FormRootContext);
+  const pluginId = ctx?.pluginId;
+  const optionsFrom = schema["x-paperclip-optionsFrom"] as
+    | { actionKey: string }
+    | undefined;
+
+  const [options, setOptions] = useState<DynamicEnumOption[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pluginId || !optionsFrom?.actionKey) return;
+    setLoading(true);
+    setFetchError(null);
+    fetch(`/api/plugins/${pluginId}/actions/${optionsFrom.actionKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ params: {} }),
+    })
+      .then((res) => res.json())
+      .then((json: { data?: { options?: unknown[] } }) => {
+        const raw = json.data?.options ?? [];
+        setOptions(
+          raw.map((o) =>
+            typeof o === "string"
+              ? { value: o, label: o }
+              : {
+                  value: String((o as { value: unknown }).value ?? ""),
+                  label: String(
+                    (o as { label?: unknown }).label ??
+                    (o as { value: unknown }).value ??
+                    "",
+                  ),
+                },
+          ),
+        );
+      })
+      .catch((err: Error) => setFetchError(err.message))
+      .finally(() => setLoading(false));
+  }, [pluginId, optionsFrom?.actionKey]);
+
+  // Fall back to text input when pluginId is unavailable or fetch failed with no options
+  if (!pluginId || (fetchError && options.length === 0)) {
+    return (
+      <StringField
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        label={label}
+        isRequired={isRequired}
+        description={fetchError ? `${description ?? ""} (Could not load options: ${fetchError})`.trim() : description}
+        error={error}
+      />
+    );
+  }
+
+  return (
+    <FieldWrapper label={label} description={description} required={isRequired} error={error} disabled={disabled}>
+      <Select
+        value={String(value ?? "")}
+        onValueChange={onChange}
+        disabled={disabled || loading}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder={loading ? "Loading…" : "Select an option"} />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value}>
+              {opt.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FieldWrapper>
+  );
+});
+
+DynamicEnumField.displayName = "DynamicEnumField";
 
 /**
  * Specialized field for secret-ref values.
@@ -1644,6 +1756,20 @@ const FormField = React.memo(({
       return (
         <BooleanField
           id={path}
+          value={value}
+          onChange={onChange}
+          disabled={isReadOnly}
+          label={label}
+          isRequired={isRequired}
+          description={propSchema.description}
+          error={error}
+        />
+      );
+
+    case "dynamic-enum":
+      return (
+        <DynamicEnumField
+          schema={propSchema}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
