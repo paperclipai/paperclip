@@ -46,6 +46,7 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { logger } from "../middleware/logger.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -208,6 +209,9 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
+// Must stay in sync: BYTES = CHARS × 4 (max UTF-8 bytes per code point).
+// descriptionTruncated in issueListSelect checks the char limit; the SQL
+// substring checks the byte limit. If these drift, the flag can give false negatives.
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
@@ -1402,6 +1406,12 @@ const issueListSelect = {
       )
     END
   `,
+  descriptionTruncated: sql<boolean>`
+    CASE
+      WHEN ${issues.description} IS NULL THEN false
+      ELSE length(${issues.description}) > ${ISSUE_LIST_DESCRIPTION_MAX_CHARS}
+    END
+  `,
   status: issues.status,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
@@ -2249,6 +2259,7 @@ export function issueService(db: Db) {
       const rows = (await pageQuery).map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
+        descriptionTruncated: row.descriptionTruncated ?? false,
       }));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
@@ -3725,21 +3736,60 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
+      // Verify that the runId exists in heartbeat_runs before inserting to avoid a
+      // FK violation 500 when a caller supplies a stale or fabricated x-paperclip-run-id.
+      let resolvedRunId: string | null = actor.runId ?? null;
+      if (resolvedRunId) {
+        const runExists = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, resolvedRunId))
+          .then((rows) => rows.length > 0);
+        if (!runExists) {
+          logger.warn({ runId: resolvedRunId, issueId }, "addComment: ignoring unknown x-paperclip-run-id");
+          resolvedRunId = null;
+        }
+      }
+
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      const [comment] = await db
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          createdByRunId: actor.runId ?? null,
-          body: redactedBody,
-        })
-        .returning();
+
+      // The pre-check above handles the common case, but a TOCTOU race (run deleted
+      // between the SELECT and the INSERT) can still trigger a FK violation. Catch it
+      // and retry with null so the comment is never lost.
+      let comment: typeof issueComments.$inferSelect;
+      try {
+        [comment] = await db
+          .insert(issueComments)
+          .values({
+            companyId: issue.companyId,
+            issueId,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            createdByRunId: resolvedRunId,
+            body: redactedBody,
+          })
+          .returning();
+      } catch (err) {
+        if (resolvedRunId && (err as { code?: string }).code === "23503") {
+          logger.warn({ runId: resolvedRunId, issueId }, "addComment: FK violation on created_by_run_id, retrying with null");
+          [comment] = await db
+            .insert(issueComments)
+            .values({
+              companyId: issue.companyId,
+              issueId,
+              authorAgentId: actor.agentId ?? null,
+              authorUserId: actor.userId ?? null,
+              createdByRunId: null,
+              body: redactedBody,
+            })
+            .returning();
+        } else {
+          throw err;
+        }
+      }
 
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await db
