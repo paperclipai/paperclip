@@ -113,6 +113,7 @@ export function useLiveRunTranscripts({
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const log404CountByRunRef = useRef(new Map<string, number>());
   const transcriptCacheRef = useRef(new Map<string, {
     adapterType: string;
     chunks: RunLogChunk[];
@@ -200,6 +201,11 @@ export function useLiveRunTranscripts({
         missingTerminalLogRunIdsRef.current.delete(runId);
       }
     }
+    for (const runId of log404CountByRunRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        log404CountByRunRef.current.delete(runId);
+      }
+    }
     for (const runId of transcriptCacheRef.current.keys()) {
       if (!knownRunIds.has(runId)) {
         transcriptCacheRef.current.delete(runId);
@@ -222,6 +228,7 @@ export function useLiveRunTranscripts({
         if (cancelled) return;
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
+        log404CountByRunRef.current.delete(run.id);
 
         if (result.nextOffset !== undefined) {
           logOffsetByRunRef.current.set(run.id, result.nextOffset);
@@ -231,8 +238,19 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        if (error instanceof ApiError && error.status === 404) {
+          if (isTerminalStatus(run.status)) {
+            missingTerminalLogRunIdsRef.current.add(run.id);
+          } else {
+            // Non-terminal runs sometimes 404 transiently while the log file
+            // is being created. Tolerate a few then give up so phantom runs
+            // (server forgot the log) don't generate an infinite poll storm.
+            const next = (log404CountByRunRef.current.get(run.id) ?? 0) + 1;
+            log404CountByRunRef.current.set(run.id, next);
+            if (next >= 3) {
+              missingTerminalLogRunIdsRef.current.add(run.id);
+            }
+          }
         }
       } finally {
         if (!cancelled) {
