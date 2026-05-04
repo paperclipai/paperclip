@@ -51,6 +51,8 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    startDate: null,
+    dueDate: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

@@ -42,6 +42,8 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    startDate: null,
+    dueDate: null,
     labels: [],
     labelIds: [],
     createdAt: new Date("2026-04-15T00:00:00.000Z"),

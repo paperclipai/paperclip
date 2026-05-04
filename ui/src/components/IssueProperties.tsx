@@ -33,7 +33,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Calendar, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -223,6 +223,8 @@ export function IssueProperties({
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [startDateOpen, setStartDateOpen] = useState(false);
+  const [dueDateOpen, setDueDateOpen] = useState(false);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1069,6 +1071,82 @@ export function IssueProperties({
           extra={labelsExtra}
         >
           {labelsContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Start date"
+          open={startDateOpen}
+          onOpenChange={setStartDateOpen}
+          triggerContent={
+            issue.startDate ? (
+              <span className="flex items-center gap-1 text-sm">
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                {formatDate(issue.startDate)}
+              </span>
+            ) : (
+              <span className="text-sm text-muted-foreground">Not set</span>
+            )
+          }
+          popoverClassName="w-52"
+        >
+          <div className="p-2 space-y-2">
+            <input
+              type="date"
+              className="w-full rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              value={issue.startDate ? new Date(issue.startDate).toISOString().split("T")[0] : ""}
+              onChange={(e) => {
+                onUpdate({ startDate: e.target.value ? new Date(e.target.value).toISOString() : null });
+                setStartDateOpen(false);
+              }}
+            />
+            {issue.startDate && (
+              <button
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive"
+                onClick={() => { onUpdate({ startDate: null }); setStartDateOpen(false); }}
+              >
+                <X className="h-3 w-3" /> Clear
+              </button>
+            )}
+          </div>
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Due date"
+          open={dueDateOpen}
+          onOpenChange={setDueDateOpen}
+          triggerContent={
+            issue.dueDate ? (
+              <span className="flex items-center gap-1 text-sm">
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                {formatDate(issue.dueDate)}
+              </span>
+            ) : (
+              <span className="text-sm text-muted-foreground">Not set</span>
+            )
+          }
+          popoverClassName="w-52"
+        >
+          <div className="p-2 space-y-2">
+            <input
+              type="date"
+              className="w-full rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              value={issue.dueDate ? new Date(issue.dueDate).toISOString().split("T")[0] : ""}
+              onChange={(e) => {
+                onUpdate({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null });
+                setDueDateOpen(false);
+              }}
+            />
+            {issue.dueDate && (
+              <button
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive"
+                onClick={() => { onUpdate({ dueDate: null }); setDueDateOpen(false); }}
+              >
+                <X className="h-3 w-3" /> Clear
+              </button>
+            )}
+          </div>
         </PropertyPicker>
 
         <PropertyPicker

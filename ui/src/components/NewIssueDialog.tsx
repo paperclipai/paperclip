@@ -39,6 +39,7 @@ import {
   Minimize2,
   MoreHorizontal,
   ChevronRight,
+  ChevronLeft,
   ChevronDown,
   CircleDot,
   Minus,
@@ -55,7 +56,7 @@ import {
   Eye,
   ShieldCheck,
 } from "lucide-react";
-import { cn } from "../lib/utils";
+import { cn, formatDate } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
@@ -321,6 +322,9 @@ export function NewIssueDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [moreDateField, setMoreDateField] = useState<"startDate" | "dueDate" | null>(null);
+  const [startDate, setStartDate] = useState("");
+  const [dueDate, setDueDate] = useState("");
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const stageFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -516,7 +520,7 @@ export function NewIssueDialog() {
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
     if (!newIssueOpen) return;
-    setDialogCompanyId(selectedCompanyId);
+    setDialogCompanyId(newIssueDefaults.companyId ?? selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
@@ -733,6 +737,8 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(startDate ? { startDate: new Date(startDate).toISOString() } : {}),
+      ...(dueDate ? { dueDate: new Date(dueDate).toISOString() } : {}),
     });
   }
 
@@ -1638,23 +1644,93 @@ export function NewIssueDialog() {
           </button>
 
           {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+          <Popover open={moreOpen} onOpenChange={(open) => { setMoreOpen(open); if (!open) setMoreDateField(null); }}>
             <PopoverTrigger asChild>
               <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
                 <MoreHorizontal className="h-3 w-3" />
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
+            <PopoverContent className="w-52 p-1" align="start">
+              {moreDateField === null ? (
+                <>
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+                    onClick={() => setMoreDateField("startDate")}
+                  >
+                    <Calendar className="h-3 w-3" />
+                    <span className="flex-1 text-left">Start date</span>
+                    {startDate && <span className="text-foreground">{formatDate(startDate)}</span>}
+                  </button>
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+                    onClick={() => setMoreDateField("dueDate")}
+                  >
+                    <Calendar className="h-3 w-3" />
+                    <span className="flex-1 text-left">Due date</span>
+                    {dueDate && <span className="text-foreground">{formatDate(dueDate)}</span>}
+                  </button>
+                </>
+              ) : (
+                <div className="px-1 py-1">
+                  <button
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2"
+                    onClick={() => setMoreDateField(null)}
+                  >
+                    <ChevronLeft className="h-3 w-3" />
+                    {moreDateField === "startDate" ? "Start date" : "Due date"}
+                  </button>
+                  <input
+                    type="date"
+                    className="w-full rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                    value={moreDateField === "startDate" ? startDate : dueDate}
+                    onChange={(e) => {
+                      if (moreDateField === "startDate") setStartDate(e.target.value);
+                      else setDueDate(e.target.value);
+                      setMoreDateField(null);
+                      setMoreOpen(false);
+                    }}
+                  />
+                  {(moreDateField === "startDate" ? startDate : dueDate) && (
+                    <button
+                      className="mt-1.5 text-xs text-muted-foreground hover:text-destructive"
+                      onClick={() => {
+                        if (moreDateField === "startDate") setStartDate("");
+                        else setDueDate("");
+                        setMoreDateField(null);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      Clear date
+                    </button>
+                  )}
+                </div>
+              )}
             </PopoverContent>
           </Popover>
+
+          {/* Date chips */}
+          {startDate && (
+            <button
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+              onClick={() => setStartDate("")}
+              title="Clear start date"
+            >
+              <Calendar className="h-3 w-3" />
+              {formatDate(startDate)}
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
+          {dueDate && (
+            <button
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+              onClick={() => setDueDate("")}
+              title="Clear due date"
+            >
+              <Calendar className="h-3 w-3" />
+              {formatDate(dueDate)}
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
         </div>
 
         {/* Footer */}
