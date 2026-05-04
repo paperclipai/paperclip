@@ -14,7 +14,24 @@ import { accessService, logActivity, routineService } from "../services/index.js
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { sanitizeRecord } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
+function redactRoutineDetailForClient(detail: unknown): unknown {
+  if (!detail || typeof detail !== "object") return detail;
+  const assignee = (detail as { assignee?: unknown }).assignee;
+  if (!assignee || typeof assignee !== "object" || Array.isArray(assignee)) return detail;
+  const a = assignee as Record<string, unknown>;
+  const adapterConfig = a.adapterConfig;
+  if (adapterConfig && typeof adapterConfig === "object" && !Array.isArray(adapterConfig)) {
+    a.adapterConfig = sanitizeRecord(adapterConfig as Record<string, unknown>);
+  }
+  const runtimeConfig = a.runtimeConfig;
+  if (runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)) {
+    a.runtimeConfig = sanitizeRecord(runtimeConfig as Record<string, unknown>);
+  }
+  return detail;
+}
 
 export function routineRoutes(
   db: Db,
@@ -99,7 +116,7 @@ export function routineRoutes(
       return;
     }
     assertCompanyAccess(req, detail.companyId);
-    res.json(detail);
+    res.json(redactRoutineDetailForClient(detail));
   });
 
   router.patch("/routines/:id", validate(updateRoutineSchema), async (req, res) => {
