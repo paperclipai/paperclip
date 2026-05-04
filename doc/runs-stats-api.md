@@ -28,6 +28,7 @@ Notes:
 - `groups` is omitted when `groupBy` is not provided.
 - `topRecoverySources` is limited to top 5 source issue identifiers.
 - Route-level guardrails enforce auth scope and a conservative rate limit (30 requests/min per actor+company).
+- `since`/`until` window is capped at 31 days.
 
 ## Example queries
 

@@ -668,6 +668,44 @@ describe("agent live run routes", () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it("rejects runs stats requests with non-ISO `since`", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("ISO");
+  });
+
+  it("rejects runs stats requests with malformed `until`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&until=tomorrow"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("until");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it("rejects runs stats requests with `since` later than `until`", async () => {
     const db = { select: vi.fn() };
     const res = await requestApp(
@@ -692,6 +730,85 @@ describe("agent live run routes", () => {
 
     expect(res.status).toBe(403);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with invalid `groupBy`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&groupBy=week"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("groupBy");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with an oversized time window", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-01-01T00:00:00.000Z&until=2026-04-12T00:00:00.000Z",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("window");
+  });
+
+  it("rate limits runs stats requests", async () => {
+    const db = {
+      select: vi.fn().mockImplementation((args) => {
+        if (args && typeof args === "object" && "identifier" in args) {
+          return {
+            from: vi.fn().mockReturnThis(),
+            where: vi.fn().mockReturnThis(),
+            innerJoin: vi.fn().mockReturnThis(),
+            groupBy: vi.fn().mockReturnThis(),
+            orderBy: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue([]),
+          };
+        }
+        return {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        };
+      }),
+    };
+
+    const app = await createApp(db);
+    for (let index = 0; index < 30; index += 1) {
+      const res = await requestApp(
+        app,
+        (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    }
+
+    const rateLimitedRes = await requestApp(
+      app,
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+    );
+
+    expect(rateLimitedRes.status, JSON.stringify(rateLimitedRes.body)).toBe(429);
+    expect(rateLimitedRes.body.error).toContain("Rate limit");
   });
 
   it("omits groups when groupBy is not provided", async () => {

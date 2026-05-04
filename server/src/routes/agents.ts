@@ -97,6 +97,9 @@ import { recoveryService } from "../services/recovery/service.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const RUNS_STATS_MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
+const RUNS_STATS_FAILURE_STATUSES = ["failed", "timed_out", "cancelled"];
+const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -109,6 +112,12 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function parseIsoTimestamp(value: string | undefined): Date | null {
+  if (!value || !ISO_TIMESTAMP_REGEX.test(value)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function createRouteRateLimiter(maxAttempts: number, windowMs: number) {
@@ -2878,23 +2887,23 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
 
     const sinceRaw = typeof req.query.since === "string" ? req.query.since : "";
-    if (!sinceRaw) {
-      res.status(400).json({ error: "`since` is required and must be an ISO timestamp" });
-      return;
-    }
-    const since = new Date(sinceRaw);
-    if (Number.isNaN(since.getTime())) {
+    const since = parseIsoTimestamp(sinceRaw);
+    if (!since) {
       res.status(400).json({ error: "`since` is required and must be an ISO timestamp" });
       return;
     }
     const untilRaw = typeof req.query.until === "string" ? req.query.until : undefined;
-    const until = untilRaw ? new Date(untilRaw) : new Date();
-    if (Number.isNaN(until.getTime())) {
+    const until = untilRaw ? parseIsoTimestamp(untilRaw) : new Date();
+    if (!until) {
       res.status(400).json({ error: "`until` must be an ISO timestamp when provided" });
       return;
     }
     if (since.getTime() > until.getTime()) {
       res.status(400).json({ error: "`since` must be less than or equal to `until`" });
+      return;
+    }
+    if (until.getTime() - since.getTime() > RUNS_STATS_MAX_WINDOW_MS) {
+      res.status(400).json({ error: "`since`/`until` window must be 31 days or less" });
       return;
     }
 
@@ -2920,6 +2929,7 @@ export function agentRoutes(
       eq(heartbeatRuns.companyId, companyId),
       sql`${heartbeatRuns.createdAt} >= ${since}`,
       sql`${heartbeatRuns.createdAt} <= ${until}`,
+      inArray(heartbeatRuns.status, RUNS_STATS_FAILURE_STATUSES),
       ...(failureReason ? [eq(heartbeatRuns.errorCode, failureReason)] : []),
       ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
     ];
