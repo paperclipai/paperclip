@@ -1746,6 +1746,7 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
+        env: config?.env as Record<string, string> | undefined,
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
