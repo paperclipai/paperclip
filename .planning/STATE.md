@@ -1,37 +1,39 @@
 ---
 gsd_state_version: 1.0
-milestone: v3.4
-milestone_name: RT2 Integration & API Alignment
-status: shipped
-last_updated: "2026-05-04T20:00:00+09:00"
-last_activity: 2026-05-04 — v3.4 shipped, Phase 84-88 complete
+milestone: v3.5
+milestone_name: Trello Advanced Parity
+status: planning
+last_updated: "2026-05-04T20:10:00+09:00"
+last_activity: 2026-05-04 — v3.5 milestone started
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # RealTycoon2 Planning State
 
 ## Current Position
 
-**v3.4 shipped (2026-05-04).** Phase 84-88 complete. Archive at milestones/v3.4-*.md.
+**Phase: Not started (defining requirements)**
+**Plan:** —
+**Status:** Defining requirements
+**Last activity:** 2026-05-04 — Milestone v3.5 started
 
-## Phase Progress (v3.4)
+## Phase Progress (v3.5)
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 84 | RT2 Event/Projector Layer | RT2-01~03 | Complete |
-| 85 | API Contract Alignment | API-01 | Complete |
-| 86 | Work Entity Migration | WORK-01~03 | Complete |
-| 87 | RT2 Schema Validation | SCHEMA-01~03 | Complete |
-| 88 | v3.4 Acceptance Gate | GATE-01~04 | Complete |
+| 89 | Trello Field Extension Parity | TRELLO-01~04 | Planned |
+| 90 | Automation / Power-up Parity (1) | POWER-01~03 | Planned |
+| 91 | Automation / Power-up Parity (2) | POWER-04~06 | Planned |
+| 92 | v3.5 Verification and Closure | GATE-01~02 | Planned |
 
 ## 다음 단계
 
-다음 milestone을 시작합니다. `/gsd-new-milestone`으로 새 milestone을 정의하세요.
+Phase 89 planning을 시작합니다. `/gsd-plan-phase 89`로 plan을 작성하세요.
 
 ---
-*상태 업데이트: 2026-05-04, v3.4 shipped*
+*상태 업데이트: 2026-05-04, v3.5 milestone started*

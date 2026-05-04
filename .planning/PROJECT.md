@@ -16,15 +16,22 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **최근 완료 마일스톤:** v3.4 RT2 Integration & API Alignment (2026-05-04). Phase 84-88 complete. 11/13 requirements satisfied, 2/13 intentionally deferred (API-02/API-03). Audit passed.
 
-**현재 진행:** v3.4 shipped (2026-05-04). 다음 milestone planning을 시작합니다.
+**현재 진행:** v3.5 Trello Advanced Parity planning started.
 
-## Current Milestone: v3.4 — SHIPPED
+## Current Milestone: v3.5 — Trello Advanced Parity
 
-v3.4 RT2 Integration & API Alignment shipped 2026-05-04. Phase 84-88 complete. Archive at milestones/v3.4-ROADMAP.md.
+**Goal:** Trello 고급 기능 parity를 필드 확장(checklist, due date, labels, members)과 automation/power-up 두 축으로 모두 포함해 RealTycoon2 업무 보드를 진짜 Trello 대안으로 완성한다.
+
+**Target features:**
+- Checklist, Due date, Labels, Members 필드 parity — Phase 89
+- Automation/_power-up parity (Custom fields, Formula, Calendar, Board限额) — Phase 90-91
+- Phase 89-91 검증 및 클로저 — Phase 92
 
 ## Next Milestone Goals
 
-다음 milestone을 시작합니다. `/gsd-new-milestone`으로 새 milestone을 정의하세요.
+- v3.5: Trello advanced parity (필드 확장 + automation)
+- v3.4 shipped (2026-05-04). Phase 84-88 complete. Archive at milestones/v3.4-ROADMAP.md.
+- 다음 milestone planning을 시작합니다. `/gsd-new-milestone`으로 새 milestone을 정의하세요.
 
 ## Current State After v3.0
 
@@ -314,4 +321,4 @@ v3.4 마일스톤을 시작합니다. 목표는 RT2 Integration & API Alignment�
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-05-04 after v3.4 shipped*
+*마지막 업데이트: 2026-05-04 after v3.5 milestone started*
