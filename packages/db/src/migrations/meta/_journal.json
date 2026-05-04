@@ -393,6 +393,13 @@
       "when": 1746489600000,
       "tag": "0055_phase2_compliance_automation",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1746576000000,
+      "tag": "0056_fix_issue_delete_fk_cascades",
+      "breakpoints": true
     }
   ]
 }
