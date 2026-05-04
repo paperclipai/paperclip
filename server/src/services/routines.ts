@@ -943,6 +943,58 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  // Null `executionRunId` on open routine_execution issues whose heartbeat run is
+  // no longer live. The unique index `issues_open_routine_execution_uq` includes
+  // any open issue with `executionRunId IS NOT NULL`, but `findLiveExecutionIssue`
+  // only matches when the heartbeat run is still queued/running/scheduled_retry.
+  // Without this auto-heal, a stale issue (heartbeat already terminal but the
+  // issue still in `blocked`/`in_progress`) is invisible to coalescence yet
+  // collides with the index when a fresh dispatch tries to set `executionRunId`,
+  // surfacing as 23505 `issues_open_routine_execution_uq` and failing the run.
+  async function healOrphanRoutineExecutionRunIds(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+  ) {
+    const orphanRows = await executor
+      .select({ id: issues.id, executionRunId: issues.executionRunId })
+      .from(issues)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issues.executionRunId))
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          or(
+            isNull(heartbeatRuns.id),
+            sql`${heartbeatRuns.status} not in ('queued', 'running', 'scheduled_retry')`,
+          ),
+        ),
+      );
+
+    if (orphanRows.length === 0) return [];
+
+    for (const orphan of orphanRows) {
+      if (!orphan.executionRunId) continue;
+      await executor
+        .update(issues)
+        .set({ executionRunId: null, updatedAt: new Date() })
+        .where(and(eq(issues.id, orphan.id), eq(issues.executionRunId, orphan.executionRunId)));
+    }
+
+    logger.warn(
+      {
+        routineId: routine.id,
+        companyId: routine.companyId,
+        healedIssueIds: orphanRows.map((row) => row.id),
+      },
+      "Cleared stale executionRunId on routine_execution issues to avoid issues_open_routine_execution_uq collisions",
+    );
+    return orphanRows;
+  }
+
   async function createWebhookSecret(
     companyId: string,
     routineId: string,
@@ -1156,36 +1208,48 @@ export function routineService(
         : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
+
+      const coalesceIntoExistingIssue = async (
+        existingIssue: typeof issues.$inferSelect,
+      ) => {
+        const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+        if (manualRunnerUserId) {
+          await touchIssueForUserInbox(txDb, {
+            companyId: input.routine.companyId,
+            issueId: existingIssue.id,
+            userId: manualRunnerUserId,
+            touchedAt: triggeredAt,
+          });
+        }
+        const updated = await finalizeRun(createdRun.id, {
+          status,
+          linkedIssueId: existingIssue.id,
+          coalescedIntoRunId: existingIssue.originRunId,
+          completedAt: triggeredAt,
+        }, txDb);
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt,
+          status,
+          issueId: existingIssue.id,
+          nextRunAt,
+        }, txDb);
+        return updated ?? createdRun;
+      };
+
       try {
+        // Heal stale orphan executionRunIds before checking for live issues, so
+        // a previously-failed dispatch's open issue cannot keep colliding with
+        // the unique index forever.
+        await healOrphanRoutineExecutionRunIds(input.routine, txDb);
+
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: activeIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: activeIssue.id,
-            coalescedIntoRunId: activeIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: activeIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          return await coalesceIntoExistingIssue(activeIssue);
         }
 
         try {
@@ -1221,6 +1285,7 @@ export function routineService(
             throw error;
           }
 
+          await healOrphanRoutineExecutionRunIds(input.routine, txDb);
           const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
@@ -1276,6 +1341,36 @@ export function routineService(
         }, txDb);
         return updated ?? createdRun;
       } catch (error) {
+        const isOpenExecutionConflict =
+          !!error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as { code?: string }).code === "23505" &&
+          "constraint" in error &&
+          (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
+
+        if (isOpenExecutionConflict && input.routine.concurrencyPolicy !== "always_enqueue") {
+          // The collision can fire either at issueSvc.create (concurrent insert
+          // of a fresh routine_execution issue) or at the downstream UPDATE that
+          // assigns executionRunId to a newly created issue when an orphan still
+          // holds the unique index entry. Drop the half-created issue, heal any
+          // remaining orphans, and try to coalesce into the surviving live issue.
+          if (createdIssue) {
+            await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
+            createdIssue = null;
+          }
+          await healOrphanRoutineExecutionRunIds(input.routine, txDb);
+          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+            kind: issueOriginKind,
+            id: issueOriginId,
+          });
+          if (existingIssue) {
+            return await coalesceIntoExistingIssue(existingIssue);
+          }
+          // No live issue found even after healing — fall through and surface the
+          // original constraint error so the run is marked failed for visibility.
+        }
+
         if (createdIssue) {
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
         }

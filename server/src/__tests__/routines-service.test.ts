@@ -258,6 +258,144 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("dispatches without 23505 when a previous open routine issue still references a terminal heartbeat run", async () => {
+    // Reproduces TER-1323: a stale routine_execution issue stuck open (e.g. 'blocked')
+    // with executionRunId pointing at a heartbeat run that is no longer queued/running
+    // would collide on issues_open_routine_execution_uq when the next dispatch tried
+    // to set executionRunId on a freshly created issue. The auto-heal on dispatch
+    // entry should null the orphan executionRunId and allow the new run to proceed.
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const terminalHeartbeatRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-04-29T15:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-04-29T15:01:00.000Z"),
+      finishedAt: new Date("2026-04-29T15:05:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: terminalHeartbeatRunId,
+        executionLockedAt: new Date("2026-04-29T15:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(run.status).toBe("issue_created");
+    expect(run.failureReason).toBeNull();
+    expect(run.linkedIssueId).toBeTruthy();
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id, status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toHaveLength(2);
+
+    const healedPrevious = routineIssues.find((issue) => issue.id === previousIssue.id);
+    expect(healedPrevious).toBeDefined();
+    expect(healedPrevious!.executionRunId).toBeNull();
+    expect(healedPrevious!.status).toBe("blocked");
+
+    const fresh = routineIssues.find((issue) => issue.id === run.linkedIssueId);
+    expect(fresh).toBeDefined();
+    expect(fresh!.executionRunId).toBeTruthy();
+  });
+
+  it("dispatches without 23505 across two consecutive scheduler ticks when an orphan persists", async () => {
+    // Mirrors the production smoke gate from TER-1323: two clean consecutive runs
+    // for the same routine after the fix lands. Without auto-heal the second tick
+    // would 23505 again because the first tick re-creates a fresh issue while the
+    // orphan still holds the unique-index entry.
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const terminalHeartbeatRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-04-29T15:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-04-29T15:01:00.000Z"),
+      finishedAt: new Date("2026-04-29T15:05:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: terminalHeartbeatRunId,
+        executionLockedAt: new Date("2026-04-29T15:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+
+    const firstRun = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(firstRun.status).toBe("issue_created");
+    expect(firstRun.failureReason).toBeNull();
+
+    const secondRun = await svc.runRoutine(routine.id, { source: "schedule" });
+    // The first tick already created a fresh issue with a live queued heartbeat run,
+    // so the second tick should coalesce into it instead of trying to insert another.
+    expect(secondRun.status).toBe("coalesced");
+    expect(secondRun.failureReason).toBeNull();
+    expect(secondRun.linkedIssueId).toBe(firstRun.linkedIssueId);
+  });
+
   it("creates draft routines without a project or default assignee", async () => {
     const { companyId, svc } = await seedFixture();
 
