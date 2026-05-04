@@ -116,6 +116,7 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 function parseIsoTimestamp(value: string | undefined): Date | null {
   if (!value) return null;
   if (!value.includes("T")) return null;
+  if (!/(Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }

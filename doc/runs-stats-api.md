@@ -6,8 +6,8 @@ Aggregates heartbeat run failures over a time window for telemetry and post-inci
 
 ## Query params
 
-- `since` (required): ISO timestamp start (inclusive)
-- `until` (optional): ISO timestamp end (inclusive), defaults to now
+- `since` (required): ISO timestamp start (inclusive), timezone required (`Z` or `±HH:MM`)
+- `until` (optional): ISO timestamp end (inclusive), defaults to now; timezone required when provided
 - `status` (optional): one of `failed`, `timed_out`, `cancelled`
 - `agentId` (optional): filter to one agent
 - `groupBy` (optional): one of `agentId`, `failureReason`, `day`

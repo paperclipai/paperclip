@@ -693,6 +693,32 @@ describe("agent live run routes", () => {
     expect(res.body.error).toContain("ISO");
   });
 
+  it("rejects runs stats requests with timezone-less `since`", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("ISO");
+  });
+
   it("rejects runs stats requests with malformed `until`", async () => {
     const db = { select: vi.fn() };
     const res = await requestApp(
