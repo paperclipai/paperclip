@@ -14,6 +14,25 @@ describe("network bind helpers", () => {
     ).toContain("local_trusted requires server.bind=loopback");
   });
 
+  it("honors an explicit :: host for lan bind on IPv6-only deployments", () => {
+    const resolved = resolveRuntimeBind({
+      bind: "lan",
+      host: "::",
+    });
+
+    expect(resolved.errors).toEqual([]);
+    expect(resolved.host).toBe("::");
+  });
+
+  it("defaults lan bind to 0.0.0.0 when no explicit IPv6 host is provided", () => {
+    const resolved = resolveRuntimeBind({
+      bind: "lan",
+    });
+
+    expect(resolved.errors).toEqual([]);
+    expect(resolved.host).toBe("0.0.0.0");
+  });
+
   it("resolves tailnet bind using the detected tailscale address", () => {
     const resolved = resolveRuntimeBind({
       bind: "tailnet",
