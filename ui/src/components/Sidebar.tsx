@@ -20,17 +20,21 @@ import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useSidebar } from "../context/SidebarContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { cn } from "../lib/utils";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { collapsed } = useSidebar();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -55,30 +59,62 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        <SidebarCompanyMenu />
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          onClick={openSearch}
-        >
-          <Search className="h-4 w-4" />
-        </Button>
+    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
+      <div className={cn("flex items-center shrink-0 h-12", collapsed ? "justify-center px-1" : "gap-1 px-3")}>
+        {collapsed ? (
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              {selectedCompany?.brandColor ? (
+                <div
+                  className="w-6 h-6 rounded-sm shrink-0 cursor-default"
+                  style={{ backgroundColor: selectedCompany.brandColor }}
+                />
+              ) : (
+                <span className="text-sm font-bold text-foreground cursor-default">
+                  {(selectedCompany?.name ?? "?")[0]}
+                </span>
+              )}
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>{selectedCompany?.name ?? "Company"}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <>
+            <SidebarCompanyMenu />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground shrink-0"
+              onClick={openSearch}
+            >
+              <Search className="h-4 w-4" />
+            </Button>
+          </>
+        )}
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
+      <nav className={cn("flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 py-2", collapsed ? "px-1" : "px-3")}>
         <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
-          <button
-            onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
-          >
-            <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
-          </button>
+          {collapsed ? (
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => openNewIssue()}
+                  className="flex items-center justify-center py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                >
+                  <SquarePen className="h-4 w-4 shrink-0" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>New Issue</TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              onClick={() => openNewIssue()}
+              className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+            >
+              <SquarePen className="h-4 w-4 shrink-0" />
+              <span className="truncate">New Issue</span>
+            </button>
+          )}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
@@ -88,13 +124,15 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
-          <PluginSlotOutlet
-            slotTypes={["sidebar"]}
-            context={pluginContext}
-            className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
-            missingBehavior="placeholder"
-          />
+          {!collapsed && (
+            <PluginSlotOutlet
+              slotTypes={["sidebar"]}
+              context={pluginContext}
+              className="flex flex-col gap-0.5"
+              itemClassName="text-[13px] font-medium"
+              missingBehavior="placeholder"
+            />
+          )}
         </div>
 
         <SidebarSection label="Work">
@@ -118,13 +156,15 @@ export function Sidebar() {
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 
-        <PluginSlotOutlet
-          slotTypes={["sidebarPanel"]}
-          context={pluginContext}
-          className="flex flex-col gap-3"
-          itemClassName="rounded-lg border border-border p-3"
-          missingBehavior="placeholder"
-        />
+        {!collapsed && (
+          <PluginSlotOutlet
+            slotTypes={["sidebarPanel"]}
+            context={pluginContext}
+            className="flex flex-col gap-3"
+            itemClassName="rounded-lg border border-border p-3"
+            missingBehavior="placeholder"
+          />
+        )}
       </nav>
     </aside>
   );

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
+import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
@@ -350,14 +351,15 @@ export function Layout() {
             />
           </div>
         ) : (
-          <div className="flex h-full flex-col shrink-0">
-            <div className="flex flex-1 min-h-0">
-              <div
-                className={cn(
-                  "overflow-hidden transition-[width] duration-100 ease-out",
-                  sidebarOpen ? "w-60" : "w-0"
-                )}
-              >
+          <div className="flex h-full shrink-0">
+            <CompanyRail />
+            <div
+              className={cn(
+                "flex flex-col overflow-hidden transition-[width] duration-150 ease-out",
+                sidebarOpen ? "w-60" : "w-12"
+              )}
+            >
+              <div className="flex-1 min-h-0">
                 {isInstanceSettingsRoute ? (
                   <InstanceSidebar />
                 ) : isCompanySettingsRoute ? (
@@ -366,12 +368,12 @@ export function Layout() {
                   <Sidebar />
                 )}
               </div>
+              <SidebarAccountMenu
+                deploymentMode={health?.deploymentMode}
+                instanceSettingsTarget={instanceSettingsTarget}
+                version={health?.version}
+              />
             </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-              instanceSettingsTarget={instanceSettingsTarget}
-              version={health?.version}
-            />
           </div>
         )}
 
