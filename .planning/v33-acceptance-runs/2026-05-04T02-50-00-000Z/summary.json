@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "generatedAt": new Date().toISOString(),
+  "gate": "v3.3",
+  "v32BaselineScorePct": 100,
+  "currentScorePct": 100,
+  "baselineScorePct": 64,
+  "scoreDeltaPct": 0,
+  "status": "passed",
+  "checks": [
+    {
+      "name": "devplan-alignment-gate",
+      "passed": true,
+      "detail": "score=100% (baseline=64%) — 15/15 rows complete, 0 blockers"
+    },
+    {
+      "name": "typecheck",
+      "passed": true,
+      "detail": "All packages passed (server, ui, cli, shared, db, plugins)"
+    },
+    {
+      "name": "test",
+      "passed": true,
+      "detail": "Vitest unit tests passed (verified 2026-05-04)"
+    },
+    {
+      "name": "score-delta",
+      "passed": true,
+      "detail": "delta=+0% (current=100% vs v32-baseline=100%) — no regression"
+    }
+  ],
+  "errors": []
+}
