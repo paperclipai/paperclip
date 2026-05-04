@@ -59,7 +59,9 @@ Overrides and special cases:
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers:
+  Authorization: Bearer $PAPERCLIP_API_KEY
+  X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID   # only if $PAPERCLIP_RUN_ID is set; OMIT this line entirely when unset — do NOT invent a value
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -95,14 +97,15 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
-**Step 8 — Update status and communicate.** Always include the run ID header.
-If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
+**Step 8 — Update status and communicate.** Include the run ID header **only when `$PAPERCLIP_RUN_ID` is set** (same conditional rule as Step 5; see "Run audit trail" above). If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers:
+  Authorization: Bearer $PAPERCLIP_API_KEY
+  X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID   # only if $PAPERCLIP_RUN_ID is set; OMIT this line entirely when unset — do NOT invent a value
 { "status": "done", "comment": "What was done and why." }
 ```
 
