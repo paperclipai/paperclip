@@ -273,6 +273,26 @@ export function Dashboard() {
                   {data.costs.monthBudgetCents > 0
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
+                  {(() => {
+                    // Defensive read: server may not yet populate this field on
+                    // DashboardSummary.costs (Lane D follow-up). Treat as
+                    // forward-compatible — render the suffix only when the
+                    // server actually reports unpriced runs.
+                    const unpriced = (data.costs as { unpricedRunCount?: number }).unpricedRunCount ?? 0;
+                    if (unpriced <= 0) return null;
+                    const label = unpriced === 1 ? "1 run unpriced" : `${unpriced} runs unpriced`;
+                    return (
+                      <>
+                        {" · "}
+                        <span
+                          className="text-muted-foreground"
+                          aria-label="Cost data not available for these runs; total may be undercount."
+                        >
+                          ({label})
+                        </span>
+                      </>
+                    );
+                  })()}
                 </span>
               }
             />

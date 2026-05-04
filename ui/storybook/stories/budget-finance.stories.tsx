@@ -159,6 +159,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       subscriptionCachedInputTokens: 210_000,
       subscriptionInputTokens: 1_420_000,
       subscriptionOutputTokens: 385_000,
+      unpricedRunCount: 0,
     },
     {
       provider: "anthropic",
@@ -174,6 +175,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       subscriptionCachedInputTokens: 0,
       subscriptionInputTokens: 0,
       subscriptionOutputTokens: 0,
+      unpricedRunCount: 0,
     },
   ],
   openai: [
@@ -191,6 +193,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       subscriptionCachedInputTokens: 164_000,
       subscriptionInputTokens: 1_050_000,
       subscriptionOutputTokens: 318_000,
+      unpricedRunCount: 0,
     },
     {
       provider: "openai",
@@ -206,6 +209,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       subscriptionCachedInputTokens: 91_000,
       subscriptionInputTokens: 410_000,
       subscriptionOutputTokens: 160_000,
+      unpricedRunCount: 0,
     },
   ],
   openrouter: [
@@ -223,6 +227,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       subscriptionCachedInputTokens: 0,
       subscriptionInputTokens: 0,
       subscriptionOutputTokens: 0,
+      unpricedRunCount: 0,
     },
     {
       provider: "google",
@@ -238,6 +243,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       subscriptionCachedInputTokens: 0,
       subscriptionInputTokens: 0,
       subscriptionOutputTokens: 0,
+      unpricedRunCount: 0,
     },
   ],
 };
@@ -296,6 +302,7 @@ const billerSpendRows: Array<{
       subscriptionOutputTokens: 385_000,
       providerCount: 1,
       modelCount: 2,
+      unpricedRunCount: 0,
     },
     providerRows: providerRowsByProvider.anthropic,
     totalCompanySpendCents: 83_000,
@@ -316,6 +323,7 @@ const billerSpendRows: Array<{
       subscriptionOutputTokens: 478_000,
       providerCount: 1,
       modelCount: 2,
+      unpricedRunCount: 0,
     },
     providerRows: providerRowsByProvider.openai,
     totalCompanySpendCents: 218_000,
@@ -336,6 +344,7 @@ const billerSpendRows: Array<{
       subscriptionOutputTokens: 0,
       providerCount: 2,
       modelCount: 2,
+      unpricedRunCount: 0,
     },
     providerRows: providerRowsByProvider.openrouter,
     totalCompanySpendCents: 286_000,

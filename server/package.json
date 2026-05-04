@@ -40,6 +40,7 @@
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
+    "pricing:backfill": "tsx src/scripts/backfill-cost-cents.ts",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
@@ -55,6 +56,7 @@
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/plugin-sdk": "workspace:*",
+    "@paperclipai/pricing": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",

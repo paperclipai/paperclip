@@ -1184,7 +1184,7 @@ async function buildAgentContext(
         inputTokens: runCosts.reduce((sum, row) => sum + row.inputTokens, 0),
         cachedInputTokens: runCosts.reduce((sum, row) => sum + row.cachedInputTokens, 0),
         outputTokens: runCosts.reduce((sum, row) => sum + row.outputTokens, 0),
-        costCents: runCosts.reduce((sum, row) => sum + row.costCents, 0),
+        costCents: runCosts.reduce((sum, row) => sum + (row.costCents ?? 0), 0),
       }
       : null,
   };

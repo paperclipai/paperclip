@@ -15,6 +15,7 @@ import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { CostCell } from "../components/CostCell";
 import { EmptyState } from "../components/EmptyState";
 import { FinanceBillerCard } from "../components/FinanceBillerCard";
 import { FinanceKindCard } from "../components/FinanceKindCard";
@@ -35,6 +36,28 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
 
+/**
+ * Compact text suffix appended next to a cost value when one or more
+ * underlying runs could not be priced. The full sentence form lives in
+ * BudgetPolicyCard; this is the row-/total-level compact variant.
+ *
+ * Returns an empty string when count <= 0 so callers can drop it inline
+ * without conditionals.
+ */
+export function unpricedSuffix(count: number): string {
+  if (!count || count <= 0) return "";
+  return count === 1 ? "(1 unpriced)" : `(${count} unpriced)`;
+}
+
+/**
+ * a11y/tooltip label for any UI surface that displays a cost total whose
+ * underlying rows include unpriced runs.
+ */
+export function unpricedTooltip(count: number): string | undefined {
+  if (!count || count <= 0) return undefined;
+  return `${count} ${count === 1 ? "run" : "runs"} missing cost data — total may be undercount.`;
+}
+
 function currentWeekRange(): { from: string; to: string } {
   const now = new Date();
   const day = now.getDay();
@@ -47,11 +70,16 @@ function currentWeekRange(): { from: string; to: string } {
 function ProviderTabLabel({ provider, rows }: { provider: string; rows: CostByProviderModel[] }) {
   const totalTokens = rows.reduce((sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0);
   const totalCost = rows.reduce((sum, row) => sum + row.costCents, 0);
+  const unpricedTotal = rows.reduce((sum, row) => sum + (row.unpricedRunCount ?? 0), 0);
+  const tooltip = unpricedTooltip(unpricedTotal);
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-1.5" title={tooltip} aria-label={tooltip}>
       <span>{providerDisplayName(provider)}</span>
       <span className="font-mono text-xs text-muted-foreground">{formatTokens(totalTokens)}</span>
       <span className="text-xs text-muted-foreground">{formatCents(totalCost)}</span>
+      {unpricedTotal > 0 ? (
+        <span className="text-xs text-muted-foreground">{unpricedSuffix(unpricedTotal)}</span>
+      ) : null}
     </span>
   );
 }
@@ -59,11 +87,16 @@ function ProviderTabLabel({ provider, rows }: { provider: string; rows: CostByPr
 function BillerTabLabel({ biller, rows }: { biller: string; rows: CostByBiller[] }) {
   const totalTokens = rows.reduce((sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0);
   const totalCost = rows.reduce((sum, row) => sum + row.costCents, 0);
+  const unpricedTotal = rows.reduce((sum, row) => sum + (row.unpricedRunCount ?? 0), 0);
+  const tooltip = unpricedTooltip(unpricedTotal);
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-1.5" title={tooltip} aria-label={tooltip}>
       <span>{providerDisplayName(biller)}</span>
       <span className="font-mono text-xs text-muted-foreground">{formatTokens(totalTokens)}</span>
       <span className="text-xs text-muted-foreground">{formatCents(totalCost)}</span>
+      {unpricedTotal > 0 ? (
+        <span className="text-xs text-muted-foreground">{unpricedSuffix(unpricedTotal)}</span>
+      ) : null}
     </span>
   );
 }
@@ -459,16 +492,25 @@ export function Costs() {
       (sum, provider) => sum + (byProvider.get(provider)?.reduce((acc, row) => acc + row.costCents, 0) ?? 0),
       0,
     );
+    const allUnpriced = providerKeys.reduce(
+      (sum, provider) =>
+        sum + (byProvider.get(provider)?.reduce((acc, row) => acc + (row.unpricedRunCount ?? 0), 0) ?? 0),
+      0,
+    );
+    const allTooltip = unpricedTooltip(allUnpriced);
     return [
       {
         value: "all",
         label: (
-          <span className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1.5" title={allTooltip} aria-label={allTooltip}>
             <span>All providers</span>
             {providerKeys.length > 0 ? (
               <>
                 <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
                 <span className="text-xs text-muted-foreground">{formatCents(allCents)}</span>
+                {allUnpriced > 0 ? (
+                  <span className="text-xs text-muted-foreground">{unpricedSuffix(allUnpriced)}</span>
+                ) : null}
               </>
             ) : null}
           </span>
@@ -491,16 +533,25 @@ export function Costs() {
       (sum, biller) => sum + (byBiller.get(biller)?.reduce((acc, row) => acc + row.costCents, 0) ?? 0),
       0,
     );
+    const allUnpriced = billerKeys.reduce(
+      (sum, biller) =>
+        sum + (byBiller.get(biller)?.reduce((acc, row) => acc + (row.unpricedRunCount ?? 0), 0) ?? 0),
+      0,
+    );
+    const allTooltip = unpricedTooltip(allUnpriced);
     return [
       {
         value: "all",
         label: (
-          <span className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1.5" title={allTooltip} aria-label={allTooltip}>
             <span>All billers</span>
             {billerKeys.length > 0 ? (
               <>
                 <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
                 <span className="text-xs text-muted-foreground">{formatCents(allCents)}</span>
+                {allUnpriced > 0 ? (
+                  <span className="text-xs text-muted-foreground">{unpricedSuffix(allUnpriced)}</span>
+                ) : null}
               </>
             ) : null}
           </span>
@@ -583,7 +634,11 @@ export function Costs() {
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={
+                (spendData?.summary.unpricedRunCount ?? 0) > 0
+                  ? `${formatTokens(inferenceTokenTotal)} tokens · ${unpricedSuffix(spendData?.summary.unpricedRunCount ?? 0)}`
+                  : `${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`
+              }
               icon={DollarSign}
             />
             <MetricTile
@@ -665,8 +720,16 @@ export function Costs() {
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
                     <div className="flex flex-wrap items-end justify-between gap-3">
                       <div>
-                        <div className="text-3xl font-semibold tabular-nums">
+                        <div
+                          className="text-3xl font-semibold tabular-nums"
+                          title={unpricedTooltip(spendData?.summary.unpricedRunCount ?? 0)}
+                        >
                           {formatCents(spendData?.summary.spendCents ?? 0)}
+                          {(spendData?.summary.unpricedRunCount ?? 0) > 0 ? (
+                            <span className="ml-2 text-sm font-normal text-muted-foreground">
+                              {unpricedSuffix(spendData?.summary.unpricedRunCount ?? 0)}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
@@ -727,8 +790,15 @@ export function Costs() {
                         const modelRows = agentModelRows.get(row.agentId) ?? [];
                         const isExpanded = expandedAgents.has(row.agentId);
                         const hasBreakdown = modelRows.length > 0;
+                        const rowUnpriced = row.unpricedRunCount ?? 0;
+                        const rowTooltip = unpricedTooltip(rowUnpriced);
                         return (
-                          <div key={row.agentId} className="border border-border px-4 py-3">
+                          <div
+                            key={row.agentId}
+                            className="border border-border px-4 py-3"
+                            title={rowTooltip}
+                            aria-label={rowTooltip}
+                          >
                             <div
                               className={cn("flex items-start justify-between gap-3", hasBreakdown ? "cursor-pointer select-none" : "")}
                               onClick={() => hasBreakdown && toggleAgent(row.agentId)}
@@ -745,7 +815,14 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCents(row.costCents)}</div>
+                                <div className="font-medium">
+                                  <CostCell cents={row.costCents} />
+                                  {rowUnpriced > 0 ? (
+                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                      {unpricedSuffix(rowUnpriced)}
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -765,10 +842,14 @@ export function Costs() {
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
                                   const sharePct = row.costCents > 0 ? Math.round((modelRow.costCents / row.costCents) * 100) : 0;
+                                  const modelUnpriced = modelRow.unpricedRunCount ?? 0;
+                                  const modelTooltip = unpricedTooltip(modelUnpriced);
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
                                       className="flex items-start justify-between gap-3 text-xs"
+                                      title={modelTooltip}
+                                      aria-label={modelTooltip}
                                     >
                                       <div className="min-w-0">
                                         <div className="truncate font-medium text-foreground">
@@ -782,8 +863,13 @@ export function Costs() {
                                       </div>
                                       <div className="text-right tabular-nums">
                                         <div className="font-medium">
-                                          {formatCents(modelRow.costCents)}
+                                          <CostCell cents={modelRow.costCents} />
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
+                                          {modelUnpriced > 0 ? (
+                                            <span className="ml-1 font-normal text-muted-foreground">
+                                              {unpricedSuffix(modelUnpriced)}
+                                            </span>
+                                          ) : null}
                                         </div>
                                         <div className="text-muted-foreground">
                                           {formatTokens(modelRow.inputTokens + modelRow.cachedInputTokens + modelRow.outputTokens)} tok
@@ -811,15 +897,28 @@ export function Costs() {
                       {(spendData?.byProject.length ?? 0) === 0 ? (
                         <p className="text-sm text-muted-foreground">No project-attributed run costs yet.</p>
                       ) : (
-                        spendData?.byProject.map((row, index) => (
-                          <div
-                            key={row.projectId ?? `unattributed-${index}`}
-                            className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
-                          >
-                            <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
-                          </div>
-                        ))
+                        spendData?.byProject.map((row, index) => {
+                          const projectUnpriced = row.unpricedRunCount ?? 0;
+                          const projectTooltip = unpricedTooltip(projectUnpriced);
+                          return (
+                            <div
+                              key={row.projectId ?? `unattributed-${index}`}
+                              className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
+                              title={projectTooltip}
+                              aria-label={projectTooltip}
+                            >
+                              <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
+                              <span className="font-medium tabular-nums">
+                                <CostCell cents={row.costCents} />
+                                {projectUnpriced > 0 ? (
+                                  <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                    {unpricedSuffix(projectUnpriced)}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                          );
+                        })
                       )}
                     </CardContent>
                   </Card>

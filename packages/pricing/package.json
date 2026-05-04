@@ -1,0 +1,38 @@
+{
+  "name": "@paperclipai/pricing",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/pricing"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./normalize": "./src/normalize.ts",
+    "./catalog.json": "./data/catalog.json"
+  },
+  "files": [
+    "dist",
+    "data/catalog.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "refresh": "tsx src/refresh.ts",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -612,6 +612,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       inputTokens: 60,
       cachedInputTokens: 6,
       outputTokens: 12,
+      unpricedRunCount: 0,
     });
   });
 

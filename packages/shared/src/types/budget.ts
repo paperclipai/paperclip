@@ -47,6 +47,13 @@ export interface BudgetPolicySummary {
   pauseReason: PauseReason | null;
   windowStart: Date;
   windowEnd: Date;
+  /**
+   * Count of runs in this window that contributed to the policy scope but
+   * could not be priced (adapter returned no costUsd and the pricing service
+   * had no entry for the model). The UI surfaces this so observedAmount is
+   * not silently undercounted. Defaults to 0.
+   */
+  unpricedRunCount: number;
 }
 
 export interface BudgetIncident {
@@ -78,6 +85,12 @@ export interface BudgetOverview {
   pausedAgentCount: number;
   pausedProjectCount: number;
   pendingApprovalCount: number;
+  /**
+   * Aggregate count of runs across all policies that could not be priced.
+   * Surfaces a company-wide "+N unpriced" badge in the budget overview.
+   * Defaults to 0.
+   */
+  unpricedRunCount: number;
 }
 
 export interface BudgetPolicyUpsertInput {

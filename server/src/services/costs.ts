@@ -17,6 +17,13 @@ function sumAsNumber(column: typeof costEvents.costCents | typeof costEvents.inp
   return sql<number>`coalesce(sum(${column}), 0)::double precision`;
 }
 
+// Count cost_events whose cost_cents is NULL — i.e. the heartbeat fallback could
+// not price the run. Surfaced alongside every cost aggregate so the UI can show
+// "$X.YZ + N unpriced" instead of silently undercounting.
+function unpricedRunCount() {
+  return sql<number>`count(*) filter (where ${costEvents.costCents} is null)::int`;
+}
+
 function currentUtcMonthWindow(now = new Date()) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
@@ -114,14 +121,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [row] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          unpricedRunCount: unpricedRunCount(),
         })
         .from(costEvents)
         .where(and(...conditions));
 
-      const spendCents = Number(total);
+      const spendCents = Number(row?.total ?? 0);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (spendCents / company.budgetMonthlyCents) * 100
@@ -132,6 +140,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unpricedRunCount: Number(row?.unpricedRunCount ?? 0),
       };
     },
 
@@ -165,6 +174,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedRunCount: unpricedRunCount(),
         })
         .from(issues)
         .leftJoin(
@@ -190,6 +200,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         inputTokens: Number(row?.inputTokens ?? 0),
         cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
         outputTokens: Number(row?.outputTokens ?? 0),
+        unpricedRunCount: Number(row?.unpricedRunCount ?? 0),
       };
     },
 
@@ -207,6 +218,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedRunCount: unpricedRunCount(),
           apiRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
@@ -240,6 +252,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedRunCount: unpricedRunCount(),
           apiRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
@@ -269,6 +282,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedRunCount: unpricedRunCount(),
           apiRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
@@ -311,6 +325,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               inputTokens: sumAsNumber(costEvents.inputTokens),
               cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
               outputTokens: sumAsNumber(costEvents.outputTokens),
+              unpricedRunCount: unpricedRunCount(),
             })
             .from(costEvents)
             .where(
@@ -331,6 +346,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             inputTokens: row.inputTokens,
             cachedInputTokens: row.cachedInputTokens,
             outputTokens: row.outputTokens,
+            unpricedRunCount: row.unpricedRunCount,
           }));
         }),
       );
@@ -359,6 +375,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedRunCount: unpricedRunCount(),
         })
         .from(costEvents)
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
@@ -415,6 +432,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedRunCount: unpricedRunCount(),
         })
         .from(costEvents)
         .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))

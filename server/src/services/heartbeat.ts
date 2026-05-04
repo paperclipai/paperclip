@@ -141,6 +141,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@paperclipai/shared";
+import { priceUsd } from "@paperclipai/pricing";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
@@ -1236,10 +1237,53 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
+function normalizeBilledCostCents(
+  adapterCostUsd: number | null | undefined,
+  billingType: BillingType | string | null | undefined,
+  pricingContext?: {
+    provider: string | null;
+    model: string | null;
+    usage: UsageSummary | UsageTotals | null | undefined;
+  },
+): number | null {
+  // subscription_included is genuinely free for the user — preserve "0", not null.
   if (billingType === "subscription_included") return 0;
-  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
-  return Math.max(0, Math.round(costUsd * 100));
+
+  // 1. Adapter wins. Even 0 wins (it means the adapter knows the run was free).
+  if (typeof adapterCostUsd === "number" && Number.isFinite(adapterCostUsd)) {
+    return Math.max(0, Math.round(adapterCostUsd * 100));
+  }
+
+  // 2. Pricing service fallback. Only fires when we have provider/model context.
+  if (pricingContext) {
+    const usage = pricingContext.usage;
+    const inputTokens = Math.max(0, Math.floor(asNumber((usage as { inputTokens?: unknown } | null | undefined)?.inputTokens, 0)));
+    const outputTokens = Math.max(0, Math.floor(asNumber((usage as { outputTokens?: unknown } | null | undefined)?.outputTokens, 0)));
+    const cachedInputTokens = Math.max(
+      0,
+      Math.floor(asNumber((usage as { cachedInputTokens?: unknown } | null | undefined)?.cachedInputTokens, 0)),
+    );
+    const reasoningTokens = Math.max(
+      0,
+      Math.floor(asNumber((usage as { reasoningTokens?: unknown } | null | undefined)?.reasoningTokens, 0)),
+    );
+    const usd = priceUsd({
+      provider: pricingContext.provider,
+      model: pricingContext.model,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      reasoningTokens,
+      billingType: typeof billingType === "string" ? billingType : null,
+    });
+    if (typeof usd === "number" && Number.isFinite(usd)) {
+      return Math.max(0, Math.round(usd * 100));
+    }
+    return null;
+  }
+
+  // 3. No adapter cost and no pricing context — write NULL.
+  return null;
 }
 
 async function resolveLedgerScopeForRun(
@@ -5987,29 +6031,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
-    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
+    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType, {
+      provider,
+      model: result.model ?? null,
+      usage: usage ?? result.usage ?? null,
+    });
+    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
+    // CRITICAL: only update totalCostCents when we have a real number. PG `n + NULL = NULL`
+    // would corrupt the running counter — Lane D plan, option (a).
+    const runtimeUpdate: Record<string, unknown> = {
+      adapterType: agent.adapterType,
+      sessionId: session.legacySessionId,
+      lastRunId: run.id,
+      lastRunStatus: run.status,
+      lastError: result.errorMessage ?? null,
+      totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
+      totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
+      totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
+      updatedAt: new Date(),
+    };
+    if (additionalCostCents !== null) {
+      runtimeUpdate.totalCostCents = sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`;
+    }
+
     await db
       .update(agentRuntimeState)
-      .set({
-        adapterType: agent.adapterType,
-        sessionId: session.legacySessionId,
-        lastRunId: run.id,
-        lastRunStatus: run.status,
-        lastError: result.errorMessage ?? null,
-        totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
-        totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
-        totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
-        totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
-        updatedAt: new Date(),
-      })
+      .set(runtimeUpdate)
       .where(eq(agentRuntimeState.agentId, agent.id));
 
-    if (additionalCostCents > 0 || hasTokenUsage) {
+    // Emit a cost_event when there's any signal worth recording: token usage or
+    // a non-zero adapter cost. Null `additionalCostCents` is fine — it lands in
+    // cost_events.cost_cents as NULL and the unpriced aggregates surface it.
+    const hasNonZeroCost = additionalCostCents !== null && additionalCostCents > 0;
+    if (hasNonZeroCost || hasTokenUsage) {
       const costs = costService(db, budgetHooks);
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,

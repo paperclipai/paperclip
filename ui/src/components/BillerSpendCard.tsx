@@ -20,29 +20,47 @@ export function BillerSpendCard({
   providerRows,
 }: BillerSpendCardProps) {
   const providerBreakdown = useMemo(() => {
-    const map = new Map<string, { provider: string; costCents: number; inputTokens: number; outputTokens: number }>();
+    const map = new Map<string, { provider: string; costCents: number; inputTokens: number; outputTokens: number; unpricedRunCount: number }>();
     for (const entry of providerRows) {
       const current = map.get(entry.provider) ?? {
         provider: entry.provider,
         costCents: 0,
         inputTokens: 0,
         outputTokens: 0,
+        unpricedRunCount: 0,
       };
       current.costCents += entry.costCents;
       current.inputTokens += entry.inputTokens + entry.cachedInputTokens;
       current.outputTokens += entry.outputTokens;
+      current.unpricedRunCount += entry.unpricedRunCount ?? 0;
       map.set(entry.provider, current);
     }
     return Array.from(map.values()).sort((a, b) => b.costCents - a.costCents);
   }, [providerRows]);
 
   const billingTypeBreakdown = useMemo(() => {
-    const map = new Map<string, number>();
+    const map = new Map<string, { costCents: number; unpricedRunCount: number }>();
     for (const entry of providerRows) {
-      map.set(entry.billingType, (map.get(entry.billingType) ?? 0) + entry.costCents);
+      const current = map.get(entry.billingType) ?? { costCents: 0, unpricedRunCount: 0 };
+      current.costCents += entry.costCents;
+      current.unpricedRunCount += entry.unpricedRunCount ?? 0;
+      map.set(entry.billingType, current);
     }
-    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+    return Array.from(map.entries()).sort((a, b) => b[1].costCents - a[1].costCents);
   }, [providerRows]);
+
+  const unpricedSuffix = (count: number) => {
+    if (count <= 0) return null;
+    const label = count === 1 ? "1 run unpriced" : `${count} runs unpriced`;
+    return (
+      <span
+        className="ml-1 text-xs font-normal text-muted-foreground"
+        aria-label="Cost data not available for these runs; total may be undercount."
+      >
+        ({label})
+      </span>
+    );
+  };
 
   const providerBudgetShare =
     budgetMonthlyCents > 0 && totalCompanySpendCents > 0
@@ -73,6 +91,7 @@ export function BillerSpendCard({
           </div>
           <span className="text-xl font-bold tabular-nums shrink-0">
             {formatCents(row.costCents)}
+            {unpricedSuffix(row.unpricedRunCount ?? 0)}
           </span>
         </div>
       </CardHeader>
@@ -105,10 +124,13 @@ export function BillerSpendCard({
                 Billing types
               </p>
               <div className="space-y-1.5">
-                {billingTypeBreakdown.map(([billingType, costCents]) => (
+                {billingTypeBreakdown.map(([billingType, agg]) => (
                   <div key={billingType} className="flex items-center justify-between gap-2 text-xs">
                     <span className="text-muted-foreground">{billingTypeDisplayName(billingType as any)}</span>
-                    <span className="font-medium tabular-nums">{formatCents(costCents)}</span>
+                    <span className="font-medium tabular-nums">
+                      {formatCents(agg.costCents)}
+                      {unpricedSuffix(agg.unpricedRunCount)}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -128,7 +150,10 @@ export function BillerSpendCard({
                   <div key={entry.provider} className="flex items-center justify-between gap-2 text-xs">
                     <span className="text-muted-foreground">{providerDisplayName(entry.provider)}</span>
                     <div className="text-right tabular-nums">
-                      <div className="font-medium">{formatCents(entry.costCents)}</div>
+                      <div className="font-medium">
+                        {formatCents(entry.costCents)}
+                        {unpricedSuffix(entry.unpricedRunCount)}
+                      </div>
                       <div className="text-muted-foreground">
                         {formatTokens(entry.inputTokens + entry.outputTokens)} tok
                       </div>

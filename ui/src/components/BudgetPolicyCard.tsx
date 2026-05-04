@@ -1,10 +1,75 @@
 import { useEffect, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
-import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
+import { AlertTriangle, Info, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
 import { cn, formatCents } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+const UNPRICED_TOOLTIP_TEXT =
+  "Cost data is not available for these runs; observed total may be undercount.";
+
+function unpricedAnnotation(count: number) {
+  return count === 1 ? "(1 run unpriced)" : `(${count} runs unpriced)`;
+}
+
+function allUnpricedSubtext(count: number) {
+  return count === 1 ? "All 1 run unpriced" : `All ${count} runs unpriced`;
+}
+
+function ObservedAmount({ summary }: { summary: BudgetPolicySummary }) {
+  const unpriced = summary.unpricedRunCount ?? 0;
+  const allUnpriced = unpriced > 0 && summary.observedAmount === 0;
+
+  if (allUnpriced) {
+    return (
+      <>
+        <div
+          className="mt-2 flex items-center gap-2 text-xl font-semibold tabular-nums"
+          aria-label={UNPRICED_TOOLTIP_TEXT}
+        >
+          <span>—</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info
+                className="h-3.5 w-3.5 text-muted-foreground"
+                aria-label={UNPRICED_TOOLTIP_TEXT}
+              />
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+              {UNPRICED_TOOLTIP_TEXT}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {allUnpricedSubtext(unpriced)}
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex items-baseline gap-2 text-xl font-semibold tabular-nums">
+      <span>{formatCents(summary.observedAmount)}</span>
+      {unpriced > 0 ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="text-xs font-normal text-muted-foreground"
+              aria-label={UNPRICED_TOOLTIP_TEXT}
+            >
+              {unpricedAnnotation(unpriced)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs">
+            {UNPRICED_TOOLTIP_TEXT}
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+}
 
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
@@ -57,7 +122,7 @@ export function BudgetPolicyCard({
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
-        <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
+        <ObservedAmount summary={summary} />
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
@@ -76,7 +141,7 @@ export function BudgetPolicyCard({
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
-        <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
+        <ObservedAmount summary={summary} />
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>

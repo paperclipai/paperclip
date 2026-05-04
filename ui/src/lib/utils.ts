@@ -21,7 +21,11 @@ export function asFiniteNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function formatCents(cents: number): string {
+export function formatCents(
+  cents: number | null | undefined,
+  opts?: { nullDisplay?: string },
+): string {
+  if (cents == null) return opts?.nullDisplay ?? "—";
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
@@ -127,22 +131,22 @@ function coerceBillingType(value: unknown): BillingType | null {
   return null;
 }
 
-function readRunCostUsd(payload: Record<string, unknown> | null): number {
-  if (!payload) return 0;
+function readRunCostUsd(payload: Record<string, unknown> | null): number | null {
+  if (!payload) return null;
   for (const key of ["costUsd", "cost_usd", "total_cost_usd"] as const) {
     const value = payload[key];
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
-  return 0;
+  return null;
 }
 
 export function visibleRunCostUsd(
   usage: Record<string, unknown> | null,
   result: Record<string, unknown> | null = null,
-): number {
+): number | null {
   const billingType = coerceBillingType(usage?.billingType) ?? coerceBillingType(result?.billingType);
   if (billingType === "subscription_included") return 0;
-  return readRunCostUsd(usage) || readRunCostUsd(result);
+  return readRunCostUsd(usage) ?? readRunCostUsd(result);
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
