@@ -116,7 +116,7 @@ export async function testEnvironment(
 
   // Prevent OpenCode from writing an opencode.json into the working directory.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config, targetIsRemote });
   if (asBoolean(config.dangerouslySkipPermissions, true)) {
     checks.push({
       code: "opencode_headless_permissions_enabled",
@@ -279,6 +279,13 @@ export async function testEnvironment(
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
 
+      // For remote targets, do NOT spread the host process.env into the
+      // probe env: it leaks macOS-only paths (HOME=/Users/..., host
+      // XDG_CONFIG_HOME, TMPDIR, etc.) into the remote shell, which causes
+      // opencode on the remote box to try to mkdir host paths like /Users.
+      // Match the pattern used by claude_local / codex_local / gemini_local
+      // probes: send only the user-configured adapter env across SSH.
+      const probeEnv = targetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
       try {
         const probe = await runAdapterExecutionTargetProcess(
           runId,
@@ -287,7 +294,7 @@ export async function testEnvironment(
           args,
           {
             cwd,
-            env: runtimeEnv,
+            env: probeEnv,
             timeoutSec: 60,
             graceSec: 5,
             stdin: "Respond with hello.",
