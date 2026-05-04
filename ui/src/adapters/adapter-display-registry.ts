@@ -93,6 +93,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Pi agent",
     icon: Terminal,
   },
+  openrouter_local: {
+    label: "OpenRouter",
+    description: "Tool-aware OpenRouter adapter (runs locally)",
+    icon: Bot,
+    experimental: true,
+  },
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",
