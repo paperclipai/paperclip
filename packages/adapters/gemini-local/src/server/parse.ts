@@ -124,6 +124,11 @@ export function parseGeminiJsonl(stdout: string) {
     if (type === "message") {
       const role = asString(event.role, "").trim().toLowerCase();
       if (role === "assistant") {
+        // Mirror the assistant-event handling above: collect every assistant
+        // message including deltas. Gemini CLI emits these as discrete final
+        // messages (one per assistant turn), not as cumulative streaming
+        // tokens, so collecting all of them produces the expected concatenated
+        // turn-by-turn summary rather than duplicated text.
         messages.push(...collectMessageText(event.content));
       }
       continue;
