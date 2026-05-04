@@ -57,6 +57,9 @@ import { prepareClaudePromptBundle } from "./prompt-cache.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const PAYLOAD_WARNING_BYTES = 8_388_608;   // 8 MB
+const PAYLOAD_HARD_CAP_BYTES = 20_971_520; // 20 MB
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -857,6 +860,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
+    const payloadBytes = Buffer.byteLength(prompt, "utf8");
+    if (payloadBytes >= PAYLOAD_HARD_CAP_BYTES) {
+      const structuredError = {
+        type: "payload_too_large",
+        payloadBytes,
+        thresholdBytes: PAYLOAD_HARD_CAP_BYTES,
+      };
+      await onLog(
+        "stderr",
+        `[paperclip] ${JSON.stringify({ ...structuredError, issueId: asString(context.issueId, ""), runId })}\n`,
+      );
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "payload_too_large",
+        errorMessage: JSON.stringify(structuredError),
+        resultJson: structuredError,
+      };
+    }
+    if (payloadBytes >= PAYLOAD_WARNING_BYTES) {
+      await onLog(
+        "stderr",
+        `[paperclip] ${JSON.stringify({ type: "payload_warning", payloadBytes, issueId: asString(context.issueId, ""), runId })}\n`,
+      );
+    }
     const initial = await runAttempt(sessionId ?? null);
     if (
       sessionId &&

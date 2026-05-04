@@ -7435,6 +7435,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: "todo" | "in_progress";
     latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
   }) {
+    if (input.latestRun?.errorCode === "payload_too_large") {
+      const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+      return (
+        `Run aborted before dispatch: the assembled prompt payload exceeds the 20 MB hard cap.${failureSummary ?? ""} ` +
+        "No retry will be attempted. Moving issue to `blocked` for human intervention — reduce context or clear session history."
+      );
+    }
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     if (input.status === "todo") {
       return (
@@ -7739,6 +7746,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldBlockImmediately =
+        run.errorCode === "payload_too_large" ||
         issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
