@@ -29,14 +29,15 @@ Human merges. You GC the worktree + branch.
 2. CI: `gh issue list --label ci-failure --state open` in bevy-rpg. Broken → assign Architect.
 3. Advance done subtasks:
    - Worker done → `in_review` subtask for Reviewer (include Worker's changed-file list)
-   - Reviewer done, `needs-build` → `in_review` subtask for Architect
+   - Reviewer done, `needs-build` → queue for **batch verify** (do NOT assign Architect yet — see §Batch verify below)
    - Reviewer done, `data-only` → Architect opens PR, then mark parent done after merge
    - Architect done → mark parent done after PR merges
-4. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
-5. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
-6. **Merge sweep**: for each PR opened by Architect, check status. Merged → tear down worktree + branch (see §Worktree teardown).
-7. New tasks from `docs/ROADMAP.md` current phase. Dedupe vs active. Create in `backlog` unassigned (step 4 assigns). Stock backlog ≥5.
-8. Exit.
+4. **Batch verify** (see §Batch verify below): if any tasks are queued for Architect review, run cargo once across all of them, then dispatch Architects in parallel.
+5. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
+6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
+7. **Merge sweep**: for each PR opened by Architect, check status. Merged → tear down worktree + branch (see §Worktree teardown).
+8. New tasks from `docs/ROADMAP.md` current phase. Dedupe vs active. Create in `backlog` unassigned (step 5 assigns). Stock backlog ≥5.
+9. Exit.
 
 Review/verify subtasks: `in_review`, not `todo`. Review = file list + "optimize, improve, IP compliance". Verify = `needs-build` + "cargo check/clippy/test, fix".
 
@@ -93,6 +94,102 @@ Skip allocation if the worktree already exists (idempotent re-promote).
 If the branch name collides (rare — e.g. an aborted task with the same
 ID), append a short hash: `task/{task-id}-{short-uuid}`.
 
+## Batch verify
+
+Architects do NOT run cargo per-task. cargo runs **once per Coordinator
+fire**, by Coordinator, against an integration worktree that holds every
+queued task branch merged together. All Architects then read the cached
+output in parallel and fix only the errors in files their own task
+touched.
+
+Why: cargo against this codebase costs ~30s incremental, ~8 min cold,
+and was the bottleneck for parallel Architects (multiple cargo
+invocations against the shared `CARGO_TARGET_DIR` serialize on lockfile
+contention anyway). Pay it once, parallelize the cheap response work.
+
+This is a deliberate evolution of the bevy-rpg `CLAUDE.md` "Architect
+Owns Cargo" rule: cargo *output* is still consumed only by Architects,
+but the *invocation* moves to Coordinator so it runs once per cycle
+instead of N times.
+
+### Phase 1 — collect
+
+After step 3 has advanced any `Reviewer done, needs-build` tasks, you
+hold a list of task IDs ready for verify. Call this set `Q`. If `Q` is
+empty, skip Batch verify entirely and move to step 5.
+
+### Phase 2 — integrate
+
+Recycle or create the integration worktree:
+
+```sh
+INT="$PAPERCLIP_PROJECT/.paperclip/worktrees/_verify"
+git fetch origin main
+
+if [ -d "$INT" ]; then
+  git -C "$INT" checkout integration/verify 2>/dev/null || \
+    git -C "$INT" checkout -B integration/verify origin/main
+  git -C "$INT" reset --hard origin/main
+else
+  git worktree add "$INT" -B integration/verify origin/main
+fi
+
+for task_id in $Q; do
+  if ! git -C "$INT" merge --no-ff --no-edit "task/$task_id"; then
+    git -C "$INT" merge --abort
+    # Comment on task: "Merge into integration failed — rebase onto
+    # origin/main and re-submit." Drop from Q and reassign to Worker.
+  fi
+done
+```
+
+Tasks that fail integration merge bounce back to Worker for rebase. Q
+is now the set of tasks that integrated cleanly.
+
+### Phase 3 — single cargo
+
+```sh
+cd "$INT"
+cargo check  2>&1 | tee /tmp/cargo-check-output.txt
+cargo clippy 2>&1 | tee /tmp/cargo-clippy-output.txt
+cargo test   2>&1 | tee /tmp/cargo-test-output.txt
+```
+
+Then write a manifest so Architects can detect stale output:
+
+```sh
+{
+  echo "timestamp=$(date -u +%s)"
+  echo "branches:"
+  for task_id in $Q; do
+    head=$(git -C "$PAPERCLIP_PROJECT/.paperclip/worktrees/$task_id" rev-parse HEAD)
+    echo "  task/$task_id $head"
+  done
+} > /tmp/cargo-verify-manifest.txt
+```
+
+### Phase 4 — dispatch Architects in parallel
+
+For each `task_id` in Q, create the Architect subtask (`in_review`
+status, `assigneeAgentId` = Architect). Assignment-wake fires all
+Architects concurrently. Each reads the cached output, filters to its
+own changed files, fixes or passes.
+
+### Phase 5 — re-verify loop
+
+Architects who commit fixes leave a `needs-reverify` comment on their
+task. Your next fire collects those tasks back into Q and runs Phase 2
+again. Loop until every task reports clean. Hard stop after 3 cycles
+per task → escalate to board.
+
+### Architect cap removed
+
+With cargo no longer running per-Architect, the previous "1 Architect"
+cap is obsolete. Scale Architects to match Q's depth — 3+ Architects
+fixing 3+ tasks in parallel is the explicit goal of this design.
+Coordinator/Planner/Facilitator caps still apply (those are
+single-instance orchestrators, not workers).
+
 ## Worktree teardown
 
 When the PR for `task/{task-id}` merges (step 6), tear down:
@@ -116,6 +213,30 @@ cross-reference active task IDs. Any worktree directory whose task is
 ## Scaling
 
 Backlogged Workers/Reviewers → spin up via `paperclip-create-agent`. Always 1 Architect, 1 Planner.
+
+**Hard cap before any `paperclip-create-agent` call**: query the existing
+agent roster first (`GET /api/companies/:companyId/agents`) and count
+agents by role. The caps are:
+
+| Role | Max instances |
+|---|---|
+| Architect | 1 |
+| Planner | 1 |
+| Facilitator | 1 |
+| Coordinator | 1 |
+| Worker | unbounded (gated by backlog depth) |
+| Reviewer | unbounded (gated by review queue depth) |
+
+If a role is already at cap, **do not create another** — and do not
+delete the existing one to make room (kept agents may have in-flight
+runs you can't see). If multiple already exist (e.g. 3 Architects from
+a prior over-creation), accept the current state, but do not add a
+fourth — leave decommissioning of the excess to the board.
+
+The `paperclip-create-agent` skill does not enforce this cap itself;
+the check belongs to the caller. Skipping it produces the
+3-Architects-running failure mode (cargo toolchain contention on a
+shared target dir).
 
 ## Context
 
