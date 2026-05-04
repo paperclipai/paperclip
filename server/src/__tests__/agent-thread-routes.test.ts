@@ -407,4 +407,31 @@ describe("agent thread routes", () => {
       },
     });
   });
+
+  it("rejects agent actors from GET thread messages with 403", async () => {
+    const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "agent",
+        agentId: "other-agent-id",
+        companyIds: [companyId],
+        memberships: [{ companyId, status: "active", membershipRole: "member" }],
+        source: "api_key",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", agentRoutes({} as any));
+    app.use(errorHandler);
+
+    const res = await request(app).get(`/api/agents/${agentId}/thread/messages`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Forbidden");
+  });
 });

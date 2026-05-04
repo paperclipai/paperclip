@@ -2656,7 +2656,7 @@ export function agentRoutes(db: Db) {
     const result = await agentThreadsSvc.postUserMessage({
       companyId: agent.companyId,
       agentId: agent.id,
-      authorUserId: req.actor.userId ?? "board",
+      authorUserId: req.actor.userId!,
       body: req.body.body,
     });
 
@@ -2716,6 +2716,10 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/agents/:id/thread/messages", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -2745,7 +2749,7 @@ export function agentRoutes(db: Db) {
     const result = await agentThreadsSvc.markRead({
       companyId: agent.companyId,
       agentId: agent.id,
-      userId: req.actor.userId ?? "board",
+      userId: req.actor.userId!,
       lastReadMessageId: req.body.lastReadMessageId ?? null,
     });
     res.json(result);
