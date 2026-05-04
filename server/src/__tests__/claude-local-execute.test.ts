@@ -2,8 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-claude-local/server";
+
+function runHookCommand(hookPath: string, event: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(process.execPath, [hookPath], (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(JSON.parse(stdout));
+    });
+    child.stdin?.end(JSON.stringify(event));
+  });
+}
 
 async function writeFailingClaudeCommand(
   commandPath: string,
@@ -321,6 +335,121 @@ describe("claude execute", () => {
         onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
       });
       expect(capturedNotes).toHaveLength(0);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+
+  it("passes generated mutation guard settings when allowedWritePaths is configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-guard-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const allowedPath = path.join(workspace, "allowed.md");
+    let capturedNotes: string[] = [];
+    try {
+      await execute({
+        runId: "run-guard",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "existing-session", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+          allowedWritePaths: [allowedPath],
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      const settingsIndex = captured.argv.indexOf("--settings");
+      expect(settingsIndex).toBeGreaterThanOrEqual(0);
+      expect(captured.argv).toContain("--no-session-persistence");
+      expect(captured.argv).not.toContain("--resume");
+      const settingsPath = captured.argv[settingsIndex + 1];
+      const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+      const hookPath = settings.hooks.PreToolUse[0].hooks[0].command;
+      const hookSource = await fs.readFile(hookPath, "utf-8");
+      expect(hookSource).toContain(allowedPath);
+      expect(hookSource).toContain("Bash is denied by claude_local mutation guard");
+      expect(capturedNotes.some((note) => note.includes("Claude mutation guard"))).toBe(true);
+
+      await fs.mkdir(path.join(workspace, "allowed-dir"));
+      const allowedDirRoot = path.join(workspace, "allowed-dir");
+      const deniedSibling = path.join(workspace, "allowed-dir-sibling", "x.md");
+      const symlinkParent = path.join(workspace, "symlink-parent");
+      await fs.mkdir(path.dirname(deniedSibling));
+      await fs.symlink(allowedDirRoot, symlinkParent);
+
+      // Re-run with a directory allowlist so the generated hook can be exercised directly.
+      await execute({
+        runId: "run-guard-dir",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+          allowedWritePaths: [allowedDirRoot],
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const dirCaptured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      const dirSettingsPath = dirCaptured.argv[dirCaptured.argv.indexOf("--settings") + 1];
+      const dirSettings = JSON.parse(await fs.readFile(dirSettingsPath, "utf-8"));
+      const dirHookPath = dirSettings.hooks.PreToolUse[0].hooks[0].command;
+      await expect(runHookCommand(dirHookPath, {
+        tool_name: "Write",
+        tool_input: { file_path: path.join(allowedDirRoot, "ok.md") },
+      })).resolves.toMatchObject({ decision: "approve" });
+      await expect(runHookCommand(dirHookPath, {
+        tool_name: "Write",
+        tool_input: { file_path: deniedSibling },
+      })).resolves.toMatchObject({ decision: "block" });
+      await expect(runHookCommand(dirHookPath, {
+        tool_name: "Write",
+        tool_input: { file_path: path.join(symlinkParent, "escape.md") },
+      })).resolves.toMatchObject({ decision: "block" });
+      await expect(runHookCommand(dirHookPath, {
+        tool_name: "Bash",
+        tool_input: { command: "git status --short" },
+      })).resolves.toMatchObject({ decision: "block" });
+      await expect(runHookCommand(dirHookPath, {
+        tool_name: "NotebookEdit",
+        tool_input: { file_path: path.join(allowedDirRoot, "nb.ipynb") },
+      })).resolves.toMatchObject({ decision: "block" });
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects relative allowedWritePaths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-guard-relative-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    try {
+      await expect(execute({
+        runId: "run-guard-relative",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+          allowedWritePaths: ["relative.md"],
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      })).rejects.toThrow(/absolute path/);
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

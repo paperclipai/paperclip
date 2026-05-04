@@ -2181,6 +2181,38 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
 }
 
+export type AutoCompleteIssueDecisionInput = {
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  autoCompleteIssueOnSuccess: unknown;
+  livenessState: RunLivenessState | null;
+  issueStatus: string | null;
+  issueAssigneeAgentId: string | null;
+  issueExecutionRunId: string | null;
+  agentId: string;
+  runId: string;
+};
+
+export type AutoCompleteIssueDecision =
+  | { shouldComplete: true }
+  | { shouldComplete: false; reason: "disabled" | "outcome" | "liveness" | "missing_issue" | "terminal_issue" | "assignee" | "execution_lock" };
+
+export function decideAutoCompleteIssueOnSuccessfulRun(input: AutoCompleteIssueDecisionInput): AutoCompleteIssueDecision {
+  if (input.autoCompleteIssueOnSuccess !== true) return { shouldComplete: false, reason: "disabled" };
+  if (input.outcome !== "succeeded") return { shouldComplete: false, reason: "outcome" };
+  if (input.livenessState !== "advanced" && input.livenessState !== "completed") {
+    return { shouldComplete: false, reason: "liveness" };
+  }
+  if (!input.issueStatus) return { shouldComplete: false, reason: "missing_issue" };
+  if (input.issueStatus === "done" || input.issueStatus === "cancelled") {
+    return { shouldComplete: false, reason: "terminal_issue" };
+  }
+  if (input.issueAssigneeAgentId !== input.agentId) return { shouldComplete: false, reason: "assignee" };
+  if (input.issueExecutionRunId && input.issueExecutionRunId !== input.runId) {
+    return { shouldComplete: false, reason: "execution_lock" };
+  }
+  return { shouldComplete: true };
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -4122,6 +4154,94 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const parsedPayload = parseObject(payload);
       const deferredContext = parseObject(parsedPayload[DEFERRED_WAKE_CONTEXT_KEY]);
       return Boolean(deriveCommentId(deferredContext, parsedPayload));
+    });
+  }
+
+  async function autoCompleteIssueOnSuccessfulRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    issueId: string;
+    config: Record<string, unknown>;
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+    onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  }) {
+    const livenessState = input.run.livenessState as RunLivenessState | null;
+    if (input.config.autoCompleteIssueOnSuccess !== true || input.outcome !== "succeeded") return;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    const decision = decideAutoCompleteIssueOnSuccessfulRun({
+      outcome: input.outcome,
+      autoCompleteIssueOnSuccess: input.config.autoCompleteIssueOnSuccess,
+      livenessState,
+      issueStatus: issue?.status ?? null,
+      issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
+      issueExecutionRunId: issue?.executionRunId ?? null,
+      agentId: input.agent.id,
+      runId: input.run.id,
+    });
+    if (!decision.shouldComplete) {
+      if (decision.reason === "liveness") {
+        await input.onLog(
+          "stderr",
+          `[paperclip] Skipped auto-complete: run liveness state is ${livenessState ?? "unknown"}\n`,
+        );
+      } else if (decision.reason === "assignee") {
+        await input.onLog("stderr", "[paperclip] Skipped auto-complete: issue assignee changed before run completion\n");
+      } else if (decision.reason === "execution_lock") {
+        await input.onLog("stderr", "[paperclip] Skipped auto-complete: issue execution lock no longer belongs to this run\n");
+      }
+      return;
+    }
+
+    const completedIssue = await db
+      .update(issues)
+      .set({
+        status: "done",
+        updatedAt: new Date(),
+        completedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.companyId, input.run.companyId),
+          eq(issues.status, "in_progress"),
+          eq(issues.assigneeAgentId, input.agent.id),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.run.id)),
+        ),
+      )
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+    if (!completedIssue) {
+      await input.onLog("stderr", "[paperclip] Skipped auto-complete: issue state changed before completion update\n");
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "agent",
+      actorId: input.agent.id,
+      agentId: input.agent.id,
+      action: "issue.status.changed",
+      entityType: "issue",
+      entityId: input.issueId,
+      runId: input.run.id,
+      details: { status: "done", source: "auto_complete_issue_on_success" },
+    });
+    await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "auto-completed issue after successful run",
+      payload: { issueId: input.issueId },
     });
   }
 
@@ -7236,6 +7356,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         await finalizeIssueCommentPolicy(livenessRun, agent);
+        if (issueId) {
+          await autoCompleteIssueOnSuccessfulRun({
+            run: livenessRun,
+            agent,
+            issueId,
+            config,
+            outcome,
+            onLog,
+          });
+        }
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
       }

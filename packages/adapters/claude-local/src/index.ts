@@ -40,6 +40,9 @@ Core fields:
 - dangerouslySkipPermissions (boolean, optional, default true): pass --dangerously-skip-permissions to claude; defaults to true because Paperclip runs Claude in headless --print mode where interactive permission prompts cannot be answered
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
+- allowedWritePaths (string[], optional): enables a Claude Code PreToolUse mutation guard for built-in mutation tools under these absolute write paths/directories; disables session resume for the guarded run. This is a path guard, not a full OS sandbox.
+- allowedBashCommands (string[], optional): exact Bash command strings allowed by the mutation guard; Bash is denied by default when allowedWritePaths is set
+- autoCompleteIssueOnSuccess (boolean, optional): server-side heartbeat option to mark the assigned issue done after a successful run with concrete liveness evidence; useful for bounded one-shot worker calls
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
