@@ -129,13 +129,6 @@ function readRequiresOutputContract(value: unknown) {
   return record.requiresOutputContract === true || record.requireOutputContracts === true;
 }
 
-function isExpectedOutputRequiredAtIntake(input: {
-  assigneeAgentId: string | null | undefined;
-  status: string | null | undefined;
-}) {
-  return Boolean(input.assigneeAgentId) || OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(input.status ?? ""));
-}
-
 async function assertExpectedOutputContractForIssue(input: {
   db: Db;
   companyId: string;
@@ -143,6 +136,7 @@ async function assertExpectedOutputContractForIssue(input: {
   assigneeAgentId: string | null | undefined;
   status: string | null | undefined;
   description: string | null | undefined;
+  requirePolicyCheck: boolean;
 }) {
   const parsed = parseIssueExpectedOutputContract(input.description);
   if (parsed.rawValue && !parsed.supported) {
@@ -152,7 +146,7 @@ async function assertExpectedOutputContractForIssue(input: {
     );
   }
 
-  if (!isExpectedOutputRequiredAtIntake(input)) return;
+  if (!input.requirePolicyCheck) return;
 
   const [company, project, assignee] = await Promise.all([
     companyService(input.db).getById(input.companyId),
@@ -1925,6 +1919,9 @@ export function issueRoutes(
       assigneeAgentId: req.body.assigneeAgentId ?? null,
       status: req.body.status ?? "backlog",
       description: req.body.description ?? null,
+      requirePolicyCheck:
+        Boolean(req.body.assigneeAgentId) ||
+        OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(req.body.status ?? "backlog")),
     });
 
     const actor = getActorInfo(req);
@@ -2027,6 +2024,9 @@ export function issueRoutes(
       assigneeAgentId: req.body.assigneeAgentId ?? null,
       status: req.body.status ?? "backlog",
       description: req.body.description ?? null,
+      requirePolicyCheck:
+        Boolean(req.body.assigneeAgentId) ||
+        OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(req.body.status ?? "backlog")),
     });
 
     const actor = getActorInfo(req);
@@ -2166,13 +2166,22 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const finalStatus = updateFields.status ?? existing.status;
+    const assignmentChanged =
+      normalizedAssigneeAgentId !== undefined && normalizedAssigneeAgentId !== existing.assigneeAgentId;
+    const requiresOutputContractPolicyCheck =
+      (assignmentChanged && Boolean(requestedAssigneeAgentId)) ||
+      (updateFields.status !== undefined && OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(updateFields.status))) ||
+      ((updateFields.description !== undefined || updateFields.projectId !== undefined) &&
+        OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(finalStatus)));
     await assertExpectedOutputContractForIssue({
       db,
       companyId: existing.companyId,
       projectId: updateFields.projectId === undefined ? existing.projectId : updateFields.projectId,
       assigneeAgentId: requestedAssigneeAgentId,
-      status: updateFields.status ?? existing.status,
+      status: finalStatus,
       description: updateFields.description === undefined ? existing.description : updateFields.description,
+      requirePolicyCheck: requiresOutputContractPolicyCheck,
     });
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const effectiveMoveToTodoRequested =
@@ -3031,6 +3040,7 @@ export function issueRoutes(
       assigneeAgentId: req.body.agentId,
       status: "in_progress",
       description: issue.description,
+      requirePolicyCheck: true,
     });
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
