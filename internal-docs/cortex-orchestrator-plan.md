@@ -241,4 +241,5 @@ Order of work that makes sense given today's understanding. Phase boundaries are
 
 - `cortex-branch-strategy.md` — formal branch model + workflow recipes (canonical, don't override silently — log here if intent changes)
 - `cortex-bayesian-engine-spec.md` — Bayesian Decision Engine architecture (treat as Phase 3 spec; Python pseudocode needs TS translation when picked up)
+- `cortex-multitenancy-audit.md` — verdict + evidence that inherited paperclip code is genuinely multi-tenant (2026-05-04); includes hardening checklist before exposing to non-WBIT tenants
 - `quick-onboarding-doc.md` — point-in-time onboarding snapshot (archival; some claims are stale, e.g. "no local clone yet")
