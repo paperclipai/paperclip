@@ -1,0 +1,92 @@
+[
+  {
+    "dir": "packages/adapter-utils",
+    "name": "@paperclipai/adapter-utils",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/acpx-local",
+    "name": "@paperclipai/adapter-acpx-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/claude-local",
+    "name": "@paperclipai/adapter-claude-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/codex-local",
+    "name": "@paperclipai/adapter-codex-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/cursor-local",
+    "name": "@paperclipai/adapter-cursor-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/gemini-local",
+    "name": "@paperclipai/adapter-gemini-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/opencode-local",
+    "name": "@paperclipai/adapter-opencode-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/pi-local",
+    "name": "@paperclipai/adapter-pi-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/openclaw-gateway",
+    "name": "@paperclipai/adapter-openclaw-gateway",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/shared",
+    "name": "@paperclipai/shared",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/db",
+    "name": "@paperclipai/db",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sdk",
+    "name": "@paperclipai/plugin-sdk",
+    "publishFromCi": true
+  },
+  {
+    "dir": "server",
+    "name": "@paperclipai/server",
+    "publishFromCi": true
+  },
+  {
+    "dir": "cli",
+    "name": "paperclipai",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/mcp-server",
+    "name": "@paperclipai/mcp-server",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/create-paperclip-plugin",
+    "name": "@paperclipai/create-paperclip-plugin",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/e2b",
+    "name": "@paperclipai/plugin-e2b",
+    "publishFromCi": true
+  },
+  {
+    "dir": "ui",
+    "name": "@paperclipai/ui",
+    "publishFromCi": true
+  }
+]
