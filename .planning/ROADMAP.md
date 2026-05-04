@@ -165,7 +165,7 @@ v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 
 | 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Complete |
 | 85 | API Contract Alignment | API-01, API-02, API-03 | Planned |
 | 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Planned |
-| 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Planned |
+| 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Complete |
 | 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Planned |
 
 </details>
