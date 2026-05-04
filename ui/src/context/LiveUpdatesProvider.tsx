@@ -625,6 +625,45 @@ function invalidateHeartbeatQueries(
   }
 }
 
+// Leading+trailing throttle for high-frequency invalidations.
+// activity.logged events arrive ~10/sec per running agent; with 2+ agents
+// every event used to fan out to 7+ react-query refetches (incl. the
+// 215 KB issues.list), saturating the node event loop until the UI froze.
+// Coalesce by key: fire immediately on leading edge, drop within window,
+// schedule one trailing-edge fire so the final state is consistent.
+type ThrottleSlot = { lastFired: number; trailingTimer: ReturnType<typeof setTimeout> | null };
+const invalidationThrottleSlots = new Map<string, ThrottleSlot>();
+const INVALIDATION_THROTTLE_MS = 1500;
+// issues.list refetch is the bandwidth heavyweight (~226 KB/response on a busy
+// company). At the 1500 ms cadence it saturates a thin VPN link and stalls
+// every other concurrent fetch (issue detail open, agent detail, etc.).
+// Bumping the window to 5000 ms keeps the inbox live but cuts background draw
+// to ~45 KB/s during sustained agent activity.
+const INVALIDATION_THROTTLE_MS_LIST = 5000;
+
+function throttledInvalidate(key: string, run: () => void, windowMs: number = INVALIDATION_THROTTLE_MS) {
+  const slot: ThrottleSlot = invalidationThrottleSlots.get(key) ?? { lastFired: 0, trailingTimer: null };
+  const now = Date.now();
+  const elapsed = now - slot.lastFired;
+  if (elapsed >= windowMs) {
+    slot.lastFired = now;
+    if (slot.trailingTimer) {
+      clearTimeout(slot.trailingTimer);
+      slot.trailingTimer = null;
+    }
+    invalidationThrottleSlots.set(key, slot);
+    run();
+  } else if (!slot.trailingTimer) {
+    slot.trailingTimer = setTimeout(() => {
+      slot.lastFired = Date.now();
+      slot.trailingTimer = null;
+      invalidationThrottleSlots.set(key, slot);
+      run();
+    }, windowMs - elapsed);
+    invalidationThrottleSlots.set(key, slot);
+  }
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -632,9 +671,14 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  const isForegrounded = options?.isForegrounded ?? true;
+  if (!isForegrounded) return;
+
+  throttledInvalidate(`activity.bulk:${companyId}`, () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -643,10 +687,12 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    throttledInvalidate(`issues.list:${companyId}`, () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    }, INVALIDATION_THROTTLE_MS_LIST);
     if (entityId) {
       const details = readRecord(payload.details);
       const selfCommentActivity =
@@ -792,6 +838,9 @@ function handleLiveEvent(
     return;
   }
 
+  const isForegrounded = isPageForegrounded();
+  if (!isForegrounded) return;
+
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
@@ -828,8 +877,8 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
-    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {
+    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname, isForegrounded });
+    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload, { isForegrounded })) {
       void hydrateVisibleIssueComment(queryClient, pathname, payload);
     }
     const action = readString(payload.action);
@@ -838,7 +887,7 @@ function handleLiveEvent(
       buildJoinRequestToast(payload);
     if (
       toast &&
-      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload)
+      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload, { isForegrounded })
     ) {
       gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
     }

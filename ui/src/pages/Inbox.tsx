@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
@@ -17,6 +17,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
+import { usePageForegrounded } from "../hooks/usePageForegrounded";
 import { queryKeys } from "../lib/queryKeys";
 import {
   applyIssueFilters,
@@ -83,8 +84,10 @@ import {
   Inbox as InboxIcon,
   AlertTriangle,
   Check,
+  ChevronDown,
   ChevronRight,
   Layers,
+  LoaderCircle,
   XCircle,
   X,
   RotateCcw,
@@ -93,8 +96,8 @@ import {
   ListTree,
 } from "lucide-react";
 
-const INBOX_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_HEARTBEAT_RUN_LIMIT = 50;
+const INBOX_ISSUE_PAGE_SIZE = 50;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -186,6 +189,28 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
   if (typeof taskId === "string" && taskId.length > 0) return taskId;
 
   return null;
+}
+
+function getNextInboxIssuePageOffset(
+  loadedPageSize: number,
+  currentOffset: number,
+): number | undefined {
+  return loadedPageSize >= INBOX_ISSUE_PAGE_SIZE ? currentOffset + INBOX_ISSUE_PAGE_SIZE : undefined;
+}
+
+function mergeInboxIssuePages(pages: Issue[][]): Issue[] {
+  const seenIssueIds = new Set<string>();
+  const merged: Issue[] = [];
+
+  for (const page of pages) {
+    for (const issue of page) {
+      if (seenIssueIds.has(issue.id)) continue;
+      seenIssueIds.add(issue.id);
+      merged.push(issue);
+    }
+  }
+
+  return merged;
 }
 
 function nonEmptyLabel(value: string | null | undefined): string | null {
@@ -653,6 +678,7 @@ export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { isMobile } = useSidebar();
+  const isForegrounded = usePageForegrounded();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -682,6 +708,21 @@ export function Inbox() {
       ? pathSegment
       : "mine";
   const canArchiveFromTab = isMineInboxTab(tab);
+  const showJoinRequestsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
+  const showTouchedCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
+  const showApprovalsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "approvals";
+  const showFailedRunsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
+  const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
+  const shouldLoadIssueLookup = isForegrounded && tab === "all" && showFailedRunsCategory;
+  const shouldLoadMineIssues = isForegrounded && tab === "mine";
+  const shouldLoadTouchedIssues = isForegrounded && (tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory));
+  const shouldLoadHeartbeatRuns = isForegrounded && tab === "all" && showFailedRunsCategory;
+  const issueStatusRequestFilter =
+    issueFilters.statuses.length > 0 ? issueFilters.statuses.join(",") : INBOX_MINE_ISSUE_STATUS_FILTER;
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -700,18 +741,18 @@ export function Inbox() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
     queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const { data: executionWorkspaces = [] } = useQuery({
@@ -719,7 +760,7 @@ export function Inbox() {
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
     queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
-    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
+    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled && isForegrounded,
   });
 
   useEffect(() => {
@@ -748,7 +789,7 @@ export function Inbox() {
   } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const {
@@ -766,14 +807,14 @@ export function Inbox() {
         throw err;
       }
     },
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
     retry: false,
   });
 
   const { data: dashboard, isLoading: isDashboardLoading } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
@@ -781,57 +822,71 @@ export function Inbox() {
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
+        limit: INBOX_ISSUE_PAGE_SIZE,
       }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && shouldLoadIssueLookup,
   });
   const {
-    data: mineIssuesRaw = [],
+    data: mineIssuePages,
     isLoading: isMineIssuesLoading,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
-    queryFn: () =>
+    isFetchingNextPage: isFetchingNextMineIssues,
+    hasNextPage: hasNextMineIssuesPage,
+    fetchNextPage: fetchNextMineIssuesPage,
+  } = useInfiniteQuery({
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter, "infinite", INBOX_ISSUE_PAGE_SIZE],
+    queryFn: ({ pageParam }) =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        status: issueStatusRequestFilter,
         includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
+        limit: INBOX_ISSUE_PAGE_SIZE,
+        offset: pageParam,
       }),
-    enabled: !!selectedCompanyId,
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextInboxIssuePageOffset(lastPage.length, lastPageParam),
+    enabled: !!selectedCompanyId && shouldLoadMineIssues,
   });
   const {
-    data: touchedIssuesRaw = [],
+    data: touchedIssuePages,
     isLoading: isTouchedIssuesLoading,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
-    queryFn: () =>
+    isFetchingNextPage: isFetchingNextTouchedIssues,
+    hasNextPage: hasNextTouchedIssuesPage,
+    fetchNextPage: fetchNextTouchedIssuesPage,
+  } = useInfiniteQuery({
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter, "infinite", INBOX_ISSUE_PAGE_SIZE],
+    queryFn: ({ pageParam }) =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        status: issueStatusRequestFilter,
         includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
+        limit: INBOX_ISSUE_PAGE_SIZE,
+        offset: pageParam,
       }),
-    enabled: !!selectedCompanyId,
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextInboxIssuePageOffset(lastPage.length, lastPageParam),
+    enabled: !!selectedCompanyId && shouldLoadTouchedIssues,
   });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && shouldLoadHeartbeatRuns,
   });
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
     refetchInterval: 5000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
@@ -844,6 +899,14 @@ export function Inbox() {
     [companyMembers?.users],
   );
 
+  const mineIssuesRaw = useMemo(
+    () => mergeInboxIssuePages(mineIssuePages?.pages ?? []),
+    [mineIssuePages],
+  );
+  const touchedIssuesRaw = useMemo(
+    () => mergeInboxIssuePages(touchedIssuePages?.pages ?? []),
+    [touchedIssuePages],
+  );
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const visibleMineIssues = useMemo(
@@ -935,9 +998,11 @@ export function Inbox() {
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
+    for (const issue of mineIssuesRaw) map.set(issue.id, issue);
+    for (const issue of touchedIssuesRaw) map.set(issue.id, issue);
     for (const issue of issues ?? []) map.set(issue.id, issue);
     return map;
-  }, [issues]);
+  }, [issues, mineIssuesRaw, touchedIssuesRaw]);
   const projectById = useMemo(() => {
     const map = new Map<string, { name: string; color: string | null }>();
     for (const project of projects ?? []) {
@@ -1015,15 +1080,6 @@ export function Inbox() {
     }
     return filtered;
   }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
-  const showJoinRequestsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
-  const showTouchedCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
-  const showApprovalsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "approvals";
-  const showFailedRunsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
-  const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
     if (tab === "all" && !showFailedRunsCategory) return [];
     return failedRuns;
@@ -1862,6 +1918,38 @@ export function Inbox() {
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
     !isRunsLoading;
+  const hasMoreInboxIssues =
+    normalizedSearchQuery.length === 0 &&
+    (
+      (tab === "mine" && hasNextMineIssuesPage === true) ||
+      ((tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory)) && hasNextTouchedIssuesPage === true)
+    );
+  const isLoadingMoreInboxIssues =
+    tab === "mine"
+      ? isFetchingNextMineIssues
+      : (tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory))
+        ? isFetchingNextTouchedIssues
+        : false;
+  const loadMoreInboxIssues = useCallback(() => {
+    if (tab === "mine") {
+      if (!hasNextMineIssuesPage || isFetchingNextMineIssues) return;
+      void fetchNextMineIssuesPage({ cancelRefetch: false });
+      return;
+    }
+
+    if (!(tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory))) return;
+    if (!hasNextTouchedIssuesPage || isFetchingNextTouchedIssues) return;
+    void fetchNextTouchedIssuesPage({ cancelRefetch: false });
+  }, [
+    fetchNextMineIssuesPage,
+    fetchNextTouchedIssuesPage,
+    hasNextMineIssuesPage,
+    hasNextTouchedIssuesPage,
+    isFetchingNextMineIssues,
+    isFetchingNextTouchedIssues,
+    showTouchedCategory,
+    tab,
+  ]);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2516,6 +2604,27 @@ export function Inbox() {
                 });
               })()}
             </div>
+            {hasMoreInboxIssues && (
+              <div className="mt-2 flex items-center gap-3 px-1 text-muted-foreground">
+                <div className="h-px flex-1 bg-border" />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-7 shrink-0 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                  onClick={loadMoreInboxIssues}
+                  disabled={isLoadingMoreInboxIssues}
+                >
+                  {isLoadingMoreInboxIssues ? (
+                    <LoaderCircle className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3" />
+                  )}
+                  {isLoadingMoreInboxIssues ? "Loading" : "Load more"}
+                </Button>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            )}
           </div>
         </>
       )}

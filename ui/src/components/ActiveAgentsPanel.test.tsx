@@ -12,6 +12,7 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  get: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -79,6 +80,7 @@ describe("ActiveAgentsPanel", () => {
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.get.mockResolvedValue(null);
   });
 
   afterEach(() => {
