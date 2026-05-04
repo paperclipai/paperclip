@@ -109,6 +109,37 @@ describe("sanitizeSshRemoteEnv", () => {
       SAFE_VALUE: "visible",
     });
   });
+
+  it("filters identity keys via case-insensitive match against the inherited env", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          // Caller passed PATH in upper case while the inherited (Windows-style)
+          // host env exposes it as Path. The lookup must still treat them as
+          // equal so the leaked host PATH gets stripped.
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/host/home",
+        },
+        {
+          Path: "/host/bin:/usr/bin",
+          home: "/host/home",
+        },
+      ),
+    ).toEqual({});
+  });
+
+  it("preserves explicitly-set identity keys when the inherited env disagrees in case but not in value", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/explicit/remote/bin",
+        },
+        {
+          Path: "/host/bin:/usr/bin",
+        },
+      ),
+    ).toEqual({ PATH: "/explicit/remote/bin" });
+  });
 });
 
 describe("materializePaperclipSkillCopy", () => {
