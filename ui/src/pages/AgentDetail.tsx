@@ -274,8 +274,9 @@ function runMetrics(run: HeartbeatRun) {
     "cached_input_tokens",
     "cache_read_input_tokens",
   );
-  const cost =
-    visibleRunCostUsd(usage, result);
+  // Coerce null → 0 to preserve historical aggregate behavior; tri-state
+  // rendering at user-facing surfaces is owned by lane E3.
+  const cost = visibleRunCostUsd(usage, result) ?? 0;
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
   return {

@@ -971,7 +971,9 @@ function IssueDetailActivityTab({
         "cached_input_tokens",
         "cache_read_input_tokens",
       );
-      const runCost = visibleRunCostUsd(usage, result);
+      // Coerce null → 0 to preserve historical aggregate behavior; null-safe
+      // surface rendering is owned by surface lanes.
+      const runCost = visibleRunCostUsd(usage, result) ?? 0;
       if (runCost > 0) hasCost = true;
       if (runInput + runOutput + runCached > 0) hasTokens = true;
       input += runInput;
