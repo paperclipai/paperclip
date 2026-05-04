@@ -369,7 +369,7 @@ export async function createApp(
           port: hmrPort,
           clientPort: hmrPort,
         },
-        allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+        allowedHosts: Array.from(privateHostnameAllowSet),
       },
     });
     viteHtmlRenderer = createCachedViteHtmlRenderer({
