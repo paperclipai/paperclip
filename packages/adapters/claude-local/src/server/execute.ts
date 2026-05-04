@@ -30,6 +30,7 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
@@ -590,19 +591,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
-    if (
-      sessionId &&
-      !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
-      await onLog(
-        "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
-      const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    if (sessionId && !initial.proc.timedOut && initial.parsed) {
+      const isUnknownSession =
+        (initial.proc.exitCode ?? 0) !== 0 && isClaudeUnknownSessionError(initial.parsed);
+      const isImageError = isClaudeImageProcessingError(initial.parsed);
+      if (isUnknownSession || isImageError) {
+        const logMsg = isImageError
+          ? `[paperclip] Claude resume session "${sessionId}" stored session contains an unprocessable image; retrying with a fresh session.\n`
+          : `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`;
+        await onLog("stdout", logMsg);
+        const retry = await runAttempt(null);
+        return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      }
     }
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
