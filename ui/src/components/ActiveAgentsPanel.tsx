@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
@@ -29,6 +29,7 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   });
 
   const runs = liveRuns ?? [];
+
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(companyId),
     queryFn: () => issuesApi.list(companyId),
@@ -42,6 +43,29 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
     }
     return map;
   }, [issues]);
+
+  // Fetch any run issues not present in the default (paginated) issues list.
+  const missingIssueIds = useMemo(() => {
+    if (!issues) return [];
+    return runs
+      .map((r) => r.issueId)
+      .filter((id): id is string => !!id && !issueById.has(id));
+  }, [runs, issues, issueById]);
+
+  const missingIssueResults = useQueries({
+    queries: missingIssueIds.map((id) => ({
+      queryKey: queryKeys.issues.detail(id),
+      queryFn: () => issuesApi.get(id),
+    })),
+  });
+
+  const issueByIdWithFallbacks = useMemo(() => {
+    const map = new Map(issueById);
+    for (const result of missingIssueResults) {
+      if (result.data) map.set(result.data.id, result.data);
+    }
+    return map;
+  }, [issueById, missingIssueResults]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs,
@@ -64,7 +88,7 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
             <AgentRunCard
               key={run.id}
               run={run}
-              issue={run.issueId ? issueById.get(run.issueId) : undefined}
+              issue={run.issueId ? issueByIdWithFallbacks.get(run.issueId) : undefined}
               transcript={transcriptByRun.get(run.id) ?? []}
               hasOutput={hasOutputForRun(run.id)}
               isActive={isRunActive(run)}

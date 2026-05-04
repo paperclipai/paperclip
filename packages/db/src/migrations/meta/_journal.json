@@ -414,6 +414,13 @@
       "when": 1746748800000,
       "tag": "0058_assigned_by_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1746835200000,
+      "tag": "0059_fix_heartbeat_runs_fk_cascades",
+      "breakpoints": true
     }
   ]
 }

@@ -257,9 +257,11 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
-        // cost_events and finance_events reference heartbeat_runs.id, so they must be
-        // deleted before heartbeat_runs to avoid FK violation (#5014).
+        // Delete from child tables in dependency order.
+        // activity_log, cost_events, finance_events, heartbeat_run_events, and
+        // agent_task_sessions all reference heartbeat_runs.id with ON DELETE NO ACTION,
+        // so they must be deleted before heartbeat_runs (#5014, #5163).
+        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
@@ -282,7 +284,6 @@ export function companyService(db: Db) {
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
