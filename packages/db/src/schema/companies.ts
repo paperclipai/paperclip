@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
@@ -23,10 +24,14 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    isPortfolioRoot: boolean("is_portfolio_root").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    portfolioRootSingletonUq: uniqueIndex("companies_portfolio_root_singleton_uq")
+      .on(table.isPortfolioRoot)
+      .where(sql`${table.isPortfolioRoot} = true`),
   }),
 );
