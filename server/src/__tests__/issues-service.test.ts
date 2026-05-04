@@ -1185,7 +1185,81 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("captures the assignee default environment when the issue has no explicit environment selection", async () => {
+  it("captures the assignee default environment when neither issue nor project specifies one", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const assigneeEnvironmentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(environments).values([
+      {
+        id: assigneeEnvironmentId,
+        companyId,
+        name: "QA E2B",
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "e2b" },
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "QA E2B Codex",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: assigneeEnvironmentId,
+      permissions: {},
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+        allowIssueOverride: true,
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    const issue = await svc.create(companyId, {
+      projectId,
+      assigneeAgentId,
+      title: "Environment matrix: e2b / codex_local",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(issue.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
+      environmentId: assigneeEnvironmentId,
+    });
+  });
+
+  it("does not promote the assignee default environment when the project policy already specifies one", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -1263,10 +1337,11 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(issue.executionWorkspaceSettings).toEqual({
-      mode: "shared_workspace",
-      environmentId: assigneeEnvironmentId,
-    });
+    // Project policy's environmentId must win over the assignee's default;
+    // executionWorkspaceSettings should not bake in an environmentId in this case
+    // so resolveExecutionWorkspaceEnvironmentId can fall through to the project
+    // policy's value at run time.
+    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
   });
 
   it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {

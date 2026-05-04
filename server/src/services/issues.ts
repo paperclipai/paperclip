@@ -2756,9 +2756,25 @@ export function issueService(db: Db) {
           const currentWorkspaceSettings = executionWorkspaceSettings == null
             ? {}
             : parseObject(executionWorkspaceSettings);
-          const hasExplicitEnvironmentSelection =
+          const issueHasEnvironmentSelection =
             Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
-          if (!hasExplicitEnvironmentSelection) {
+          // Don't promote the assignee agent's defaultEnvironmentId if either
+          // the issue or the project policy already specifies an environment.
+          // resolveExecutionWorkspaceEnvironmentId treats issue settings as
+          // higher priority than project policy, so promoting the agent's
+          // default to issue settings would invert the documented priority
+          // (project policy must win over agent default when explicitly set).
+          let projectHasEnvironmentSelection = false;
+          if (!issueHasEnvironmentSelection && issueData.projectId) {
+            const projectRow = await tx
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            const projectPolicy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
+          }
+          if (!issueHasEnvironmentSelection && !projectHasEnvironmentSelection) {
             const assigneeAgent = await tx
               .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
               .from(agents)
