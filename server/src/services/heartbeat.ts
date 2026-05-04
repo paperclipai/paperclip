@@ -59,7 +59,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentHomeDir, resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -6682,7 +6682,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       worktreePath: executionWorkspace.worktreePath,
       realization: workspaceRealization,
       agentHome: await (async () => {
-        const home = resolveDefaultAgentWorkspaceDir(agent.id);
+        const home = resolveDefaultAgentHomeDir(agent.companyId, agent.id);
         await fs.mkdir(home, { recursive: true });
         return home;
       })(),
