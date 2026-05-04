@@ -6,6 +6,7 @@ import type OpenAI from "openai";
 export interface ToolContext {
   cwd: string;
   runCommandTimeoutSec: number;
+  env?: Record<string, string>;
 }
 
 export interface ToolHandler {
@@ -60,12 +61,13 @@ export function runShellCommand(
   command: string,
   cwd: string,
   timeoutSec: number,
+  extraEnv?: Record<string, string>,
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("bash", ["-lc", command], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PAPERCLIP_TOOL_CWD: cwd },
+      env: { ...process.env, ...extraEnv, PAPERCLIP_TOOL_CWD: cwd },
     });
 
     let stdout = "";
@@ -207,7 +209,7 @@ export const RUN_COMMAND_TOOL: ToolHandler = {
     const command = asString(args.command, "command");
     const requested = asPositiveNumber(args.timeoutSec, ctx.runCommandTimeoutSec);
     const effective = Math.min(requested, ctx.runCommandTimeoutSec);
-    const result = await runShellCommand(command, ctx.cwd, effective);
+    const result = await runShellCommand(command, ctx.cwd, effective, ctx.env);
     const header = result.timedOut
       ? `[timed out after ${effective}s, signal=${result.signal ?? "SIGTERM"}]`
       : `[exitCode=${result.exitCode}${result.signal ? ` signal=${result.signal}` : ""}]`;

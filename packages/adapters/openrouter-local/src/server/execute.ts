@@ -1,11 +1,12 @@
 import OpenAI from "openai";
+import path from "node:path";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   TranscriptEntry,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
-import { renderTemplate, asString } from "@paperclipai/adapter-utils/server-utils";
+import { renderTemplate, asString, buildPaperclipEnv } from "@paperclipai/adapter-utils/server-utils";
 import {
   DEFAULT_OPENROUTER_LOCAL_BASE_URL,
   DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS,
@@ -57,10 +58,16 @@ function isOpenRouter(baseUrl: string): boolean {
   }
 }
 
-function resolveCwd(configCwd: unknown): string {
+function resolveCwd(configCwd: unknown, ctx: AdapterExecutionContext): string {
   if (typeof configCwd === "string" && configCwd.trim().length > 0) return configCwd;
-  const envCwd = process.env.PAPERCLIP_WORKSPACE_PATH;
-  if (envCwd && envCwd.trim().length > 0) return envCwd;
+  // Workspace-backed agents: executionTarget carries the resolved cwd
+  const targetCwd = (ctx.executionTarget as { cwd?: string } | null | undefined)?.cwd;
+  if (targetCwd && targetCwd.trim().length > 0) return targetCwd;
+  // Derive agent data directory from PAPERCLIP_HOME (set in Docker; avoids per-agent manual config)
+  const home = process.env.PAPERCLIP_HOME;
+  if (home) {
+    return path.join(home, "instances", "default", "companies", ctx.agent.companyId, "agents", ctx.agent.id);
+  }
   return process.cwd();
 }
 
@@ -98,8 +105,10 @@ export async function execute(
     config.maxRunCommandTimeoutSec,
     DEFAULT_OPENROUTER_LOCAL_RUN_COMMAND_TIMEOUT_SEC,
   );
-  const cwd = resolveCwd(config.cwd);
+  const cwd = resolveCwd(config.cwd, ctx);
   const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+  const paperclipEnv: Record<string, string> = buildPaperclipEnv(agent);
+  if (ctx.authToken) paperclipEnv.PAPERCLIP_API_KEY = ctx.authToken;
 
   const emit = async (entry: TranscriptEntry) => {
     await onLog("stdout", `${JSON.stringify(entry)}\n`);
@@ -164,7 +173,7 @@ export async function execute(
   }
   messages.push({ role: "user", content: prompt });
 
-  const toolCtx: ToolContext = { cwd, runCommandTimeoutSec };
+  const toolCtx: ToolContext = { cwd, runCommandTimeoutSec, env: paperclipEnv };
   const state: RunState = {
     inputTokens: 0,
     outputTokens: 0,
