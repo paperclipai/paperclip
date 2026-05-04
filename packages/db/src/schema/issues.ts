@@ -29,7 +29,7 @@ export const issues = pgTable(
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     description: text("description"),
-    status: text("status").notNull().default("backlog"),
+    status: text("status").notNull().default("todo"),
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
