@@ -126,6 +126,7 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import { checkVestigialSignals } from "./recovery/vestigial-check.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -4671,6 +4672,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorCode: gate.errorCode,
           issueId: gate.issueId,
         };
+      }
+    }
+    if (issueId) {
+      const issueForVestigialCheck = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
+          originFingerprint: issues.originFingerprint,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (issueForVestigialCheck) {
+        const vestigialSignal = await checkVestigialSignals(db, issueForVestigialCheck);
+        if (vestigialSignal) {
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "vestigial_issue_detected",
+            stream: "system",
+            level: "warn",
+            message: `Retry suppressed — vestigial issue detected (kind=${vestigialSignal.kind})`,
+            payload: { vestigialKind: vestigialSignal.kind, signal: vestigialSignal },
+          });
+          await issuesSvc.update(issueForVestigialCheck.id, { status: "cancelled" });
+          await issuesSvc.addComment(
+            issueForVestigialCheck.id,
+            `Paperclip suppressed a retry attempt — this issue is vestigial (\`${vestigialSignal.kind}\`). No further retries will be scheduled.`,
+            {},
+          );
+          return { outcome: "vestigial_suppressed" as const, vestigialKind: vestigialSignal.kind };
+        }
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
