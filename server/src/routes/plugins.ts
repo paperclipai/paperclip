@@ -1309,6 +1309,33 @@ export function pluginRoutes(
         await writeFile(target, data);
       }
 
+      // If the plugin is already installed and active, route through the
+      // upgrade path so the lifecycle state machine handles capability
+      // comparison and worker reload correctly. The downloaded archive in
+      // tempDir is passed as localPath so upgradePlugin uses it instead of
+      // trying to re-fetch from npm or the stored localSourcePath.
+      const alreadyInstalled = await registry.getByKey(id);
+      if (alreadyInstalled && (alreadyInstalled.status === "ready" || alreadyInstalled.status === "upgrade_pending")) {
+        const previousVersion = alreadyInstalled.version;
+        const result = await lifecycle.upgrade(alreadyInstalled.id, undefined, tempDir);
+        cachedLibrary = null;
+        await logPluginMutationActivity(req, "plugin.upgraded", alreadyInstalled.id, {
+          pluginId: alreadyInstalled.id,
+          pluginKey: alreadyInstalled.pluginKey,
+          previousVersion,
+          version: result.version,
+          source: "library",
+          libraryRepo: library.repo,
+          libraryReleaseTag: library.release.tag,
+        });
+        publishGlobalLiveEvent({
+          type: "plugin.ui.updated",
+          payload: { pluginId: alreadyInstalled.id, action: "upgraded" },
+        });
+        res.json(result);
+        return;
+      }
+
       const discovered = await loader.installPlugin({ localPath: tempDir });
       if (!discovered.manifest) {
         res.status(500).json({ error: "Plugin installed but manifest is missing" });
