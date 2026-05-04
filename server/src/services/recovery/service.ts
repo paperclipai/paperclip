@@ -38,6 +38,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
+import { checkVestigialIssue, type VestigialDetectionResult } from "./vestigial.js";
 import {
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
@@ -1577,6 +1578,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function suppressVestigialIssue(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    detection: VestigialDetectionResult;
+  }) {
+    logger.warn(
+      {
+        issueId: input.issue.id,
+        companyId: input.issue.companyId,
+        vestigialReason: input.detection.reason,
+        vestigialDetails: input.detection.details,
+      },
+      "vestigial_issue_detected",
+    );
+
+    if (input.latestRun) {
+      const [seqRow] = await db
+        .select({ maxSeq: sql<number | null>`MAX(${heartbeatRunEvents.seq})` })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, input.latestRun.id));
+      const seq = Number(seqRow?.maxSeq ?? 0) + 1;
+
+      await db.insert(heartbeatRunEvents).values({
+        companyId: input.issue.companyId,
+        runId: input.latestRun.id,
+        agentId: input.latestRun.agentId,
+        seq,
+        eventType: "vestigial_issue_detected",
+        stream: "system",
+        level: "warn",
+        message: `Vestigial issue suppressed: ${input.detection.reason}`,
+        payload: {
+          issueId: input.issue.id,
+          ...input.detection.details,
+        },
+      });
+    }
+
+    await issuesSvc.update(input.issue.id, { status: "cancelled" });
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -1597,6 +1639,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       escalated: 0,
+      vestigialSuppressed: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -1625,6 +1668,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      const vestigialDetection = await checkVestigialIssue(db, issue);
+      if (vestigialDetection) {
+        await suppressVestigialIssue({ issue, latestRun, detection: vestigialDetection });
+        result.vestigialSuppressed += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
