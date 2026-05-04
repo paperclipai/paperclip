@@ -163,10 +163,10 @@ v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Complete |
-| 85 | API Contract Alignment | API-01, API-02, API-03 | Planned |
-| 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Planned |
+| 85 | API Contract Alignment | API-01 | Complete |
+| 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Complete |
 | 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Complete |
-| 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Planned |
+| 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Context gathered |
 
 </details>
 
@@ -581,9 +581,9 @@ Success criteria:
 | 83. v3.3 Acceptance Gate | v3.3 | 0/0 | Complete | 2026-05-04 |
 | 84. RT2 Event/Projector Layer | v3.4 | 1/1 | Complete | 2026-05-04 |
 | 85. API Contract Alignment | v3.4 | 1/1 | Complete | 2026-05-04 |
-| 86. Work Entity Migration | v3.4 | 0/0 | Planned | — |
-| 87. RT2 Schema Validation | v3.4 | 1/1 | Planned | — |
-| 88. v3.4 Acceptance Gate | v3.4 | 0/0 | Planned | — |
+| 86. Work Entity Migration | v3.4 | 1/1 | Complete | 2026-05-04 |
+| 87. RT2 Schema Validation | v3.4 | 1/1 | Complete | 2026-05-04 |
+| 88. v3.4 Acceptance Gate | v3.4 | 0/0 | Context gathered | — |
 
 ## Archive
 
