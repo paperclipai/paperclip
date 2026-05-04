@@ -29,6 +29,8 @@ export interface UseChatSessionResult {
   streaming: boolean;
   pendingPermissions: PendingPermission[];
   send: (text: string, attachmentIds?: string[]) => Promise<void>;
+  /** Abort the in-flight stream and immediately start a new turn. */
+  abortAndSend: (text: string, attachmentIds?: string[]) => Promise<void>;
   decidePermission: (toolUseId: string, decision: "approve" | "deny") => Promise<void>;
   patchSession: (
     patch: Parameters<typeof chatApi.patchSession>[1],
@@ -80,9 +82,13 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
   }, [qc]);
 
   const send = useCallback(
-    async (text: string, attachmentIds: string[] = []) => {
+    async (text: string, attachmentIds: string[] = [], opts: { force?: boolean } = {}) => {
       if (!sessionId) throw new Error("No active session");
-      if (streaming) throw new Error("A turn is already streaming");
+      if (streaming && !opts.force) throw new Error("A turn is already streaming");
+      if (opts.force) {
+        abortRef.current?.();
+        abortRef.current = null;
+      }
       // Optimistically add user message + start an empty assistant entry.
       const optimisticBlocks: ChatContentBlock[] = [];
       if (text.length > 0) optimisticBlocks.push({ type: "text", text });
@@ -283,6 +289,7 @@ export function useChatSession(sessionId: string | null): UseChatSessionResult {
     streaming,
     pendingPermissions,
     send,
+    abortAndSend: (text, attachmentIds) => send(text, attachmentIds, { force: true }),
     decidePermission,
     patchSession,
     abort: () => {

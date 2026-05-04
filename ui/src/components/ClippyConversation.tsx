@@ -13,6 +13,7 @@ export function ClippyConversation({ sessionId }: Props) {
     streaming,
     pendingPermissions,
     send,
+    abortAndSend,
     decidePermission,
     patchSession,
     abort,
@@ -46,6 +47,9 @@ export function ClippyConversation({ sessionId }: Props) {
         streaming={streaming}
         onSend={(text, attachmentIds) => {
           void send(text, attachmentIds);
+        }}
+        onStopAndSend={(text, attachmentIds) => {
+          void abortAndSend(text, attachmentIds);
         }}
         onAbort={abort}
         onPatch={(patch) => {

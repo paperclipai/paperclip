@@ -59,6 +59,7 @@ interface Props {
   model: string;
   streaming: boolean;
   onSend: (text: string, attachmentIds: string[]) => void;
+  onStopAndSend?: (text: string, attachmentIds: string[]) => void;
   onAbort: () => void;
   onPatch: (patch: {
     mode?: ChatMode;
@@ -216,6 +217,7 @@ export function ClippyComposer({
   model,
   streaming,
   onSend,
+  onStopAndSend,
   onAbort,
   onPatch,
 }: Props) {
@@ -313,17 +315,20 @@ export function ClippyComposer({
     });
   };
 
-  const submit = () => {
+  const submit = (opts: { force?: boolean } = {}) => {
     const trimmed = text.trim();
     const ready = uploads.filter((u) => u.status === "done" && u.attachment);
-    if ((!trimmed && ready.length === 0) || streaming) return;
+    if (!trimmed && ready.length === 0) return;
+    if (!opts.force && streaming) return;
     if (uploads.some((u) => u.status === "uploading")) return;
+    const ids = ready.map((u) => u.attachment!.id);
     setText("");
     setUploads([]);
-    onSend(
-      trimmed,
-      ready.map((u) => u.attachment!.id),
-    );
+    if (opts.force && onStopAndSend) {
+      onStopAndSend(trimmed, ids);
+    } else {
+      onSend(trimmed, ids);
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -385,8 +390,10 @@ export function ClippyComposer({
   };
 
   const anyUploading = uploads.some((u) => u.status === "uploading");
+  const hasContent = !!text.trim() || uploads.filter((u) => u.status === "done").length > 0;
   const sendDisabled =
-    streaming || anyUploading || (!text.trim() && uploads.filter((u) => u.status === "done").length === 0);
+    streaming || anyUploading || !hasContent;
+  const canStopAndSend = streaming && hasContent && !anyUploading && !!onStopAndSend;
 
   return (
     <div
@@ -587,13 +594,18 @@ export function ClippyComposer({
                 <SelectItem value="high">Effort: High</SelectItem>
               </SelectContent>
             </Select>
-            <div className="ml-auto">
-              {streaming ? (
+            <div className="ml-auto flex items-center gap-1">
+              {streaming && (
                 <Button size="sm" variant="ghost" onClick={onAbort}>
                   <Square className="mr-1 h-3 w-3" /> Stop
                 </Button>
-              ) : (
-                <Button size="sm" onClick={submit} disabled={sendDisabled}>
+              )}
+              {canStopAndSend ? (
+                <Button size="sm" onClick={() => submit({ force: true })}>
+                  <Send className="mr-1 h-3 w-3" /> Stop & Send
+                </Button>
+              ) : !streaming && (
+                <Button size="sm" onClick={() => submit()} disabled={sendDisabled}>
                   <Send className="mr-1 h-3 w-3" /> Send
                 </Button>
               )}
