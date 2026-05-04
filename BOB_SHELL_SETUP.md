@@ -1,6 +1,6 @@
 # Using Paperclip with the Bob Shell Adapter
 
-This guide walks you through cloning this fork, building Paperclip, and setting up an agent that runs on [Bob Shell](https://bobshell.ai).
+This guide walks you through cloning this fork, building Paperclip, and setting up an agent that runs on Bob Shell.
 
 ## Prerequisites
 
@@ -27,15 +27,14 @@ The UI is available at `http://localhost:3000` by default.
 
 ## 2. Configure Your Bob API Key
 
-Bob Shell needs an API key to call its underlying AI model (Anthropic Claude).
-
+Bob Shell needs an API key to authenticate with the Bob service.
 Set it in your environment before starting Paperclip, or add it to your `.env`:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export BOBSHELL_API_KEY=<your-key>
 ```
 
-Alternatively you can inject it per-agent via the **Environment Variables** section in the agent config UI (key: `ANTHROPIC_API_KEY`).
+Alternatively you can inject it per-agent via the **Environment Variables** section in the agent config UI (key: `BOBSHELL_API_KEY`).
 
 ## 3. Create a Bob Shell Agent
 
@@ -87,7 +86,7 @@ Bob Shell is not in `PATH`. Either install it or set the full path in the **Comm
 - Check that `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are valid (visible in agent logs).
 
 **Authentication error from Bob Shell**
-`ANTHROPIC_API_KEY` is missing or invalid. Set it in the agent's environment variables.
+`BOBSHELL_API_KEY` is missing or invalid. Set it in the agent's environment variables.
 
 **`.bob/` files not generated**
 The agent's working directory must exist and be writable by the Paperclip server process.
