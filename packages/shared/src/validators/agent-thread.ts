@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const postAgentThreadMessageSchema = z.object({
-  body: z.string().trim().min(1),
+  body: z.string().trim().min(1).max(10_000),
 });
 
 export type PostAgentThreadMessage = z.infer<typeof postAgentThreadMessageSchema>;

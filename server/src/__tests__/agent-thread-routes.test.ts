@@ -359,6 +359,17 @@ describe("agent thread routes", () => {
     });
   });
 
+  it("rejects message body exceeding 10000 characters", async () => {
+    const app = await createApp();
+    const oversizedBody = "x".repeat(10_001);
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/thread/messages`)
+      .send({ body: oversizedBody });
+
+    expect(res.status).toBe(400);
+  });
+
   it("updates per-user read state for the active thread", async () => {
     const app = await createApp();
 
