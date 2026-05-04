@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Paperclip API Reference
 
 Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.

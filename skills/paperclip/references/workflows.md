@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Paperclip Workflow Playbooks
 
 Reference material for niche workflows that are pointed to from `SKILL.md`. Load only when the task matches.
