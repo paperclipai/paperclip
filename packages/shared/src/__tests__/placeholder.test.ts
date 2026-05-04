@@ -1,58 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PLACEHOLDER_PATTERNS, isPlaceholderCommentBody } from "../placeholder.js";
+import { PLACEHOLDER_COMMENT_PREFIXES, isPlaceholderCommentBody, stripMarkdown } from "../placeholder.js";
 
 describe("placeholder comments", () => {
-  it("ships the approved 9-pattern default set", () => {
-    expect(DEFAULT_PLACEHOLDER_PATTERNS).toHaveLength(9);
+  it("ships the approved v2 prefix list", () => {
+    expect(PLACEHOLDER_COMMENT_PREFIXES).toEqual([
+      "acknowledg",
+      "working on",
+      "continuing",
+      "stale",
+      "pure self-comment",
+      "heartbeat handled",
+    ]);
   });
 
   it.each([
-    "Parked",
-    "parked.",
-    "  Parking  ",
-    "Silent",
-    "Silent.",
-    "Silent exit",
-    "silent exit.",
-    "Self-wake waiting for review",
-    "selfwake loop",
-    "Done for this heartbeat",
-    "Noop.",
-    "Blocked",
-    ".",
-    "..",
-    "...",
-    "Heartbeat over",
-    "Continuing.",
-    "Working",
-    "Idle",
-    "Polling.",
-  ])("matches default placeholder body %j", (body) => {
+    "Ack",
+    "Acknowledged, continuing.",
+    "Working on the next step after this wake.",
+    "Continuing with the planned route guard update.",
+    "Stale wake with no new information.",
+    "Pure self-comment to keep the issue warm.",
+    "Heartbeat handled, no external context changed.",
+    "There is no external context change since the previous wake.",
+    "PR #4977 merged.",
+    "**Ack**",
+  ])("matches v2 placeholder body %j", (body) => {
     expect(isPlaceholderCommentBody(body)).toBe(true);
   });
 
   it.each([
-    "",
-    "   ",
     null,
     undefined,
+    "Done: implemented the placeholder detector and verified the route guard.",
+    "Parked. Investigating M2 dashboard outage with root-cause notes attached.",
+    "Blocked by ELEAAA-457: waiting for CTO review on the upstream dependency.",
     "Done: implemented the placeholder detector.",
-    "Parked. Investigating M2 dashboard outage.",
-    "Blocked by ELEAAA-457: waiting for CTO review.",
-    "Working on the failing test now.",
-    "Parking lot update: route guard still needs a child issue.",
-    "No operation performed because the API was unavailable.",
-    "Continuing with implementation after reading the plan.",
-    "Polling Paperclip would be wrong here, so I am exiting.",
+    "A real update with enough detail about tests, files changed, and remaining risk.",
     "Self-wake: implemented rate-limiting for ELEAAA-462 and verified all edge cases.",
-    "Self-wake — actually pausing because the Redis pool is exhausted; investigating now",
-    "....",
   ])("rejects non-placeholder body %j", (body) => {
     expect(isPlaceholderCommentBody(body)).toBe(false);
   });
 
-  it("accepts an explicit regex set override", () => {
-    expect(isPlaceholderCommentBody("ship it", [/^ship it$/i])).toBe(true);
-    expect(isPlaceholderCommentBody("ship it")).toBe(false);
+  it("strips markdown before applying the length threshold", () => {
+    expect(stripMarkdown("**Ack**")).toBe("Ack");
+    expect(stripMarkdown("[real update](https://example.com)")).toBe("real update");
+    expect(isPlaceholderCommentBody("**Detailed implementation note with real verification context.**")).toBe(false);
   });
 });

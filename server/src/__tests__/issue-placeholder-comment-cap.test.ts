@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { register } from "../observability/prom.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -201,8 +201,11 @@ function commentBody(body: string, agentId: string | null = "22222222-2222-4222-
   };
 }
 
+const ORIGINAL_PLACEHOLDER_CAP_ENABLED = process.env.PAPERCLIP_PLACEHOLDER_CAP_ENABLED;
+const OLDEST_PLACEHOLDER_AT = "2026-05-04T16:00:00.000Z";
+
 function placeholderCount(count: number) {
-  return { count, windowSeconds: 1800, windowComments: 5 };
+  return { count, windowComments: 3, oldestPlaceholderAt: count > 0 ? OLDEST_PLACEHOLDER_AT : null };
 }
 
 async function postComment(actor: Record<string, unknown>, body: Record<string, unknown>) {
@@ -218,6 +221,7 @@ async function metricText() {
 describe.sequential("issue placeholder comment cap route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_PLACEHOLDER_CAP_ENABLED;
     register.resetMetrics();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -259,10 +263,19 @@ describe.sequential("issue placeholder comment cap route", () => {
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
   });
 
+  afterEach(() => {
+    if (ORIGINAL_PLACEHOLDER_CAP_ENABLED === undefined) {
+      delete process.env.PAPERCLIP_PLACEHOLDER_CAP_ENABLED;
+    } else {
+      process.env.PAPERCLIP_PLACEHOLDER_CAP_ENABLED = ORIGINAL_PLACEHOLDER_CAP_ENABLED;
+    }
+  });
+
   it("allows agent non-placeholder comments", async () => {
     const res = await postComment(agentActor(), { body: "I found the failing route and am adding a focused test." });
 
     expect(res.status).toBe(201);
+    expect(mockIssueService.countOwnRecentPlaceholderComments).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "I found the failing route and am adding a focused test.",
@@ -270,10 +283,10 @@ describe.sequential("issue placeholder comment cap route", () => {
     );
   });
 
-  it("allows the first agent placeholder comment in the window", async () => {
+  it("allows the first agent placeholder comment", async () => {
     mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(0));
 
-    const res = await postComment(agentActor(), { body: "Parked." });
+    const res = await postComment(agentActor(), { body: "Ack" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.countOwnRecentPlaceholderComments).toHaveBeenCalledWith(
@@ -283,33 +296,58 @@ describe.sequential("issue placeholder comment cap route", () => {
     expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 
-  it("blocks the second agent placeholder comment in the window", async () => {
+  it("allows the second agent placeholder comment", async () => {
     mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(1));
 
-    const res = await postComment(agentActor(), { body: "Parked." });
+    const res = await postComment(agentActor(), { body: "Ack" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
+  it("blocks the third consecutive agent placeholder comment", async () => {
+    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(2));
+
+    const res = await postComment(agentActor(), { body: "Ack" });
 
     expect(res.status).toBe(409);
     expect(res.headers["content-type"]).toMatch(/^application\/json/);
     expect(res.body).toEqual({
-      error: "placeholder_comment_cap",
+      error: "placeholder_cap",
       message:
-        "Comment blocked: prior placeholder comment(s) already posted in window. Flip status (blocked / done / in_review with a real comment) or exit silent instead.",
-      windowSeconds: 1800,
-      windowComments: 5,
-      priorPlaceholderCount: 1,
+        "Comment blocked: this would be your 3rd consecutive placeholder on this issue. Flip status (blocked / in_review / done with a real comment) or exit silent.",
+      cap: 3,
+      last_n_placeholders: 3,
+      oldest_placeholder_at: OLDEST_PLACEHOLDER_AT,
       alternatives: [
         'PATCH /api/issues/{id} {"status":"blocked","unblockOwner":"..."}',
-        'PATCH /api/issues/{id} {"status":"in_review","assigneeUserId":"local-board"}',
-        "exit run silently -- no post",
+        'PATCH /api/issues/{id} {"status":"in_review"}',
+        "exit run silently — no post",
       ],
     });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.placeholder_cap_hit",
+        entityId: "11111111-1111-4111-8111-111111111111",
+        details: expect.objectContaining({
+          cap: 3,
+          priorPlaceholderCount: 2,
+          windowComments: 3,
+          oldestPlaceholderAt: OLDEST_PLACEHOLDER_AT,
+        }),
+      }),
+    );
+    await expect(metricText()).resolves.toContain(
+      'paperclip_placeholder_cap_hits_total{agent_id="22222222-2222-4222-8222-222222222222",issue_id="11111111-1111-4111-8111-111111111111"} 1',
+    );
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("allows a placeholder when the service window has expired", async () => {
-    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(0));
+  it("allows a placeholder when a real comment resets the sliding window", async () => {
+    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(1));
 
-    const res = await postComment(agentActor(), { body: "Idle." });
+    const res = await postComment(agentActor(), { body: "Ack" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalled();
@@ -318,7 +356,7 @@ describe.sequential("issue placeholder comment cap route", () => {
   it("does not count another agent's placeholders against the actor", async () => {
     mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(0));
 
-    const res = await postComment(agentActor(), { body: "Noop." });
+    const res = await postComment(agentActor(), { body: "Ack" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.countOwnRecentPlaceholderComments).toHaveBeenCalledWith(
@@ -336,7 +374,7 @@ describe.sequential("issue placeholder comment cap route", () => {
         source: "local_implicit",
         isInstanceAdmin: false,
       },
-      { body: "Parked.", forceCommentAllow: true },
+      { body: "Ack", forceCommentAllow: true },
     );
 
     expect(res.status).toBe(201);
@@ -357,34 +395,40 @@ describe.sequential("issue placeholder comment cap route", () => {
   });
 
   it("ignores agent supplied forceCommentAllow", async () => {
-    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(1));
+    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(2));
 
-    const res = await postComment(agentActor(), { body: "Parked.", forceCommentAllow: true });
+    const res = await postComment(agentActor(), { body: "Ack", forceCommentAllow: true });
 
     expect(res.status).toBe(409);
+    await expect(metricText()).resolves.not.toContain("paperclip_placeholder_cap_overrides_total");
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("increments the cap-hit metric and activity log when blocking", async () => {
-    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(1));
+  it("allows board actors to post placeholders without the agent guard", async () => {
+    const actor = {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    };
 
-    const res = await postComment(agentActor(), { body: "Parked." });
+    const first = await postComment(actor, { body: "Ack" });
+    const second = await postComment(actor, { body: "Ack" });
+    const third = await postComment(actor, { body: "Ack" });
 
-    expect(res.status).toBe(409);
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.placeholder_cap_hit",
-        entityId: "11111111-1111-4111-8111-111111111111",
-        details: expect.objectContaining({
-          priorPlaceholderCount: 1,
-          windowSeconds: 1800,
-          windowComments: 5,
-        }),
-      }),
-    );
-    await expect(metricText()).resolves.toContain(
-      'paperclip_placeholder_cap_hits_total{agent_id="22222222-2222-4222-8222-222222222222"} 1',
-    );
+    expect([first.status, second.status, third.status]).toEqual([201, 201, 201]);
+    expect(mockIssueService.countOwnRecentPlaceholderComments).not.toHaveBeenCalled();
+  });
+
+  it("skips the placeholder guard when PAPERCLIP_PLACEHOLDER_CAP_ENABLED is false", async () => {
+    process.env.PAPERCLIP_PLACEHOLDER_CAP_ENABLED = "false";
+    mockIssueService.countOwnRecentPlaceholderComments.mockResolvedValue(placeholderCount(2));
+
+    const res = await postComment(agentActor(), { body: "Ack" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.countOwnRecentPlaceholderComments).not.toHaveBeenCalled();
+    await expect(metricText()).resolves.not.toContain("paperclip_placeholder_cap_hits_total{");
   });
 });

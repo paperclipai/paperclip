@@ -102,7 +102,7 @@ function expectPrometheusCounters(text: string) {
     "# HELP paperclip_placeholder_cap_overrides_total Times a board override bypassed the placeholder-comment cap.",
   );
   expect(text).toContain("# TYPE paperclip_placeholder_cap_overrides_total counter");
-  expect((placeholderCapHits as unknown as { labelNames: string[] }).labelNames).toEqual(["agent_id"]);
+  expect((placeholderCapHits as unknown as { labelNames: string[] }).labelNames).toEqual(["agent_id", "issue_id"]);
   expect((placeholderCapOverrides as unknown as { labelNames: string[] }).labelNames).toEqual(["agent_id"]);
 }
 
