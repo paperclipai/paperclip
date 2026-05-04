@@ -403,15 +403,35 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
   };
+  const isLoopbackHost = (host: string): boolean => {
+    const h = host.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+    return h === "localhost" || h === "::1" || h === "127.0.0.1" || h.startsWith("127.");
+  };
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
-  const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
-  );
+  const rawListenHost = process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost";
+  const runtimeHost = resolveHostForUrl(rawListenHost);
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  const loopbackFallback = `http://${runtimeHost}:${runtimePort}`;
+
+  let apiUrl = process.env.PAPERCLIP_API_URL ?? loopbackFallback;
+
+  // When the server listens on a loopback address but PAPERCLIP_API_URL points to a
+  // non-loopback host (e.g. a cloud tunnel), local adapters can't reach that URL.
+  // Fall back to the loopback-based URL so local adapters stay reachable.
+  if (process.env.PAPERCLIP_API_URL && isLoopbackHost(rawListenHost)) {
+    try {
+      const parsed = new URL(process.env.PAPERCLIP_API_URL);
+      if (!isLoopbackHost(parsed.hostname)) {
+        apiUrl = loopbackFallback;
+      }
+    } catch {
+      // Malformed PAPERCLIP_API_URL — leave it as-is and let the adapter deal with it.
+    }
+  }
+
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }

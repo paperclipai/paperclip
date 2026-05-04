@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe("buildPaperclipEnv", () => {
-  it("prefers an explicit PAPERCLIP_API_URL", () => {
+  it("prefers an explicit loopback PAPERCLIP_API_URL when listen host is loopback", () => {
     process.env.PAPERCLIP_API_URL = "http://localhost:4100";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
     process.env.PAPERCLIP_LISTEN_PORT = "3101";
@@ -54,5 +54,35 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
+  });
+
+  it("overrides cloud tunnel URL with loopback when listen host is loopback (127.0.0.1)", () => {
+    process.env.PAPERCLIP_API_URL = "http://paperclip-hth.hqkj.com:3100";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+  });
+
+  it("overrides cloud tunnel URL with loopback when listen host is ::1", () => {
+    process.env.PAPERCLIP_API_URL = "http://paperclip-hth.hqkj.com:3100";
+    process.env.PAPERCLIP_LISTEN_HOST = "::1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3100");
+  });
+
+  it("keeps cloud tunnel URL when listen host is not loopback (LAN/public)", () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip-hth.hqkj.com";
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("https://paperclip-hth.hqkj.com");
   });
 });
