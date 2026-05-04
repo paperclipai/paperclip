@@ -79,6 +79,9 @@
 #   PAPERCLIP_CODEX_OPENAI_API_KEY  API key used only when PAPERCLIP_CODEX_AUTH=api_key
 #   PAPERCLIP_CODEX_TIMEOUT_SEC  Per-attempt Codex timeout (default: 1800)
 #   PAPERCLIP_CODEX_SANDBOX    Codex sandbox mode for the isolated build worktree (default: workspace-write)
+#   PAPERCLIP_CODEX_SKILL_FILES  Optional whitespace-separated local SKILL.md files appended to reconciliation prompts
+#   PAPERCLIP_CODEX_PROMPT_FILES Optional whitespace-separated local prompt component files appended to reconciliation prompts
+#   PAPERCLIP_CODEX_PROMPT_APPEND Optional inline prompt text appended to reconciliation prompts
 #   PAPERCLIP_SERVICE        Systemd user service name (default: paperclip)
 #   PAPERCLIP_API_TOKEN       Bearer token for API calls (required for authenticated deployments)
 #   PAPERCLIP_HOME           Paperclip data directory (default: ~/.paperclip)
@@ -110,6 +113,9 @@ _CODEX_OPENAI_API_KEY_WAS_SET=0
 _CODEX_TIMEOUT_SEC_WAS_SET=0
 _CODEX_SANDBOX_WAS_SET=0
 _CODEX_EXTRA_ARGS_WAS_SET=0
+_CODEX_SKILL_FILES_WAS_SET=0
+_CODEX_PROMPT_FILES_WAS_SET=0
+_CODEX_PROMPT_APPEND_WAS_SET=0
 [ "${PAPERCLIP_CODEX_RECONCILE+x}" ] && { _CODEX_RECONCILE_WAS_SET=1; _CODEX_RECONCILE_OVERRIDE="$PAPERCLIP_CODEX_RECONCILE"; }
 [ "${PAPERCLIP_CODEX_BIN+x}" ] && { _CODEX_BIN_WAS_SET=1; _CODEX_BIN_OVERRIDE="$PAPERCLIP_CODEX_BIN"; }
 [ "${PAPERCLIP_CODEX_MODEL+x}" ] && { _CODEX_MODEL_WAS_SET=1; _CODEX_MODEL_OVERRIDE="$PAPERCLIP_CODEX_MODEL"; }
@@ -119,6 +125,9 @@ _CODEX_EXTRA_ARGS_WAS_SET=0
 [ "${PAPERCLIP_CODEX_TIMEOUT_SEC+x}" ] && { _CODEX_TIMEOUT_SEC_WAS_SET=1; _CODEX_TIMEOUT_SEC_OVERRIDE="$PAPERCLIP_CODEX_TIMEOUT_SEC"; }
 [ "${PAPERCLIP_CODEX_SANDBOX+x}" ] && { _CODEX_SANDBOX_WAS_SET=1; _CODEX_SANDBOX_OVERRIDE="$PAPERCLIP_CODEX_SANDBOX"; }
 [ "${PAPERCLIP_CODEX_EXTRA_ARGS+x}" ] && { _CODEX_EXTRA_ARGS_WAS_SET=1; _CODEX_EXTRA_ARGS_OVERRIDE="$PAPERCLIP_CODEX_EXTRA_ARGS"; }
+[ "${PAPERCLIP_CODEX_SKILL_FILES+x}" ] && { _CODEX_SKILL_FILES_WAS_SET=1; _CODEX_SKILL_FILES_OVERRIDE="$PAPERCLIP_CODEX_SKILL_FILES"; }
+[ "${PAPERCLIP_CODEX_PROMPT_FILES+x}" ] && { _CODEX_PROMPT_FILES_WAS_SET=1; _CODEX_PROMPT_FILES_OVERRIDE="$PAPERCLIP_CODEX_PROMPT_FILES"; }
+[ "${PAPERCLIP_CODEX_PROMPT_APPEND+x}" ] && { _CODEX_PROMPT_APPEND_WAS_SET=1; _CODEX_PROMPT_APPEND_OVERRIDE="$PAPERCLIP_CODEX_PROMPT_APPEND"; }
 
 # Load local cron/operator configuration before reading overridable variables.
 # The file is intentionally outside git and must never be logged.
@@ -139,6 +148,9 @@ fi
 [ "$_CODEX_TIMEOUT_SEC_WAS_SET" = "1" ] && PAPERCLIP_CODEX_TIMEOUT_SEC="$_CODEX_TIMEOUT_SEC_OVERRIDE"
 [ "$_CODEX_SANDBOX_WAS_SET" = "1" ] && PAPERCLIP_CODEX_SANDBOX="$_CODEX_SANDBOX_OVERRIDE"
 [ "$_CODEX_EXTRA_ARGS_WAS_SET" = "1" ] && PAPERCLIP_CODEX_EXTRA_ARGS="$_CODEX_EXTRA_ARGS_OVERRIDE"
+[ "$_CODEX_SKILL_FILES_WAS_SET" = "1" ] && PAPERCLIP_CODEX_SKILL_FILES="$_CODEX_SKILL_FILES_OVERRIDE"
+[ "$_CODEX_PROMPT_FILES_WAS_SET" = "1" ] && PAPERCLIP_CODEX_PROMPT_FILES="$_CODEX_PROMPT_FILES_OVERRIDE"
+[ "$_CODEX_PROMPT_APPEND_WAS_SET" = "1" ] && PAPERCLIP_CODEX_PROMPT_APPEND="$_CODEX_PROMPT_APPEND_OVERRIDE"
 
 # Ensure systemctl --user works from non-interactive contexts (cron, agents, timers).
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -180,6 +192,9 @@ CODEX_OPENAI_API_KEY="${PAPERCLIP_CODEX_OPENAI_API_KEY:-}"
 CODEX_TIMEOUT_SEC="${PAPERCLIP_CODEX_TIMEOUT_SEC:-1800}"
 CODEX_SANDBOX="${PAPERCLIP_CODEX_SANDBOX:-workspace-write}"
 CODEX_EXTRA_ARGS="${PAPERCLIP_CODEX_EXTRA_ARGS:-}"
+CODEX_SKILL_FILES="${PAPERCLIP_CODEX_SKILL_FILES:-}"
+CODEX_PROMPT_FILES="${PAPERCLIP_CODEX_PROMPT_FILES:-}"
+CODEX_PROMPT_APPEND="${PAPERCLIP_CODEX_PROMPT_APPEND:-}"
 CODEX_RECONCILE_ACTIVE=1
 
 BUILD_DIR="$PAPERCLIP_HOME/upgrade-build"
@@ -483,6 +498,47 @@ ensure_codex_config() {
   return 0
 }
 
+append_codex_prompt_file() {
+  local prompt_file="$1"
+  local source_file="$2"
+  local label="$3"
+
+  if [ ! -f "$source_file" ]; then
+    log "WARN: Codex prompt component not found: $source_file"
+    return 0
+  fi
+
+  {
+    printf '\n\n## %s\n\n' "$label"
+    printf 'Source: %s\n\n' "$source_file"
+    cat "$source_file"
+  } >> "$prompt_file"
+}
+
+append_codex_prompt_extensions() {
+  local prompt_file="$1"
+  local source_file
+
+  if [ -n "$CODEX_SKILL_FILES" ]; then
+    for source_file in $CODEX_SKILL_FILES; do
+      append_codex_prompt_file "$prompt_file" "$source_file" "Local Skill"
+    done
+  fi
+
+  if [ -n "$CODEX_PROMPT_FILES" ]; then
+    for source_file in $CODEX_PROMPT_FILES; do
+      append_codex_prompt_file "$prompt_file" "$source_file" "Local Prompt Component"
+    done
+  fi
+
+  if [ -n "$CODEX_PROMPT_APPEND" ]; then
+    {
+      printf '\n\n## Local Prompt Addition\n\n'
+      printf '%s\n' "$CODEX_PROMPT_APPEND"
+    } >> "$prompt_file"
+  fi
+}
+
 write_codex_reconcile_prompt() {
   local operation="$1"
   local subject="$2"
@@ -521,6 +577,8 @@ Requirements:
 - Run the smallest relevant verification you can afford for touched files; if you cannot run it, leave a concise note in your final response.
 - Leave the worktree with no unmerged files and no conflict markers.
 EOF
+
+  append_codex_prompt_extensions "$prompt_file"
 }
 
 run_codex_reconcile_attempt() {
