@@ -2102,7 +2102,18 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      // Don't retry if the issue is already in a terminal state (#5021).
+      const contextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const contextIssue = contextIssueId
+        ? await db
+            .select({ status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, run.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const issueIsTerminal = contextIssue != null && ["cancelled", "done"].includes(contextIssue.status);
+
+      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1 && !issueIsTerminal;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
