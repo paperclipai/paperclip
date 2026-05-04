@@ -6,9 +6,9 @@ locally on the Paperclip host: built-in workspace tools (`read_file`,
 `write_file`, `list_directory`, `run_command`, `apply_patch`) are exposed
 to the model and dispatched here on the Paperclip side.
 
-Supersedes [`@marcpbailey/paperclip-adapter-openai`](../openrouter-external)
-(a.k.a. `openrouter-external`), which was chat-only and therefore unable
-to drive a Paperclip turn end-to-end.
+Supersedes the chat-only `@marcpbailey/paperclip-adapter-openai`
+(`openrouter-external`) smoke-test wrapper, which lacked a function-calling
+loop and therefore could not drive a Paperclip turn end-to-end.
 
 ## Configuration
 
