@@ -693,13 +693,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
-  async function resolveStaleRunSourceIssue(run: typeof heartbeatRuns.$inferSelect) {
+  async function resolveStaleRunSourceIssue(
+    run: typeof heartbeatRuns.$inferSelect,
+    opts: { includeHidden?: boolean } = {},
+  ) {
     const issueId = issueIdFromRunContext(run.contextSnapshot);
     if (!issueId) return null;
+    const conditions = [eq(issues.companyId, run.companyId), eq(issues.id, issueId)];
+    if (!opts.includeHidden) conditions.push(isNull(issues.hiddenAt));
     const [issue] = await db
       .select()
       .from(issues)
-      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId), isNull(issues.hiddenAt)))
+      .where(and(...conditions))
       .limit(1);
     return issue ?? null;
   }
@@ -930,10 +935,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
+    sourceIssue?: typeof issues.$inferSelect | null;
   }) {
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
-    const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    const sourceIssue = input.sourceIssue !== undefined
+      ? input.sourceIssue
+      : await resolveStaleRunSourceIssue(input.run);
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
@@ -1087,7 +1095,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.snoozed += 1;
         continue;
       }
-      const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
+      const resolvedSource = await resolveStaleRunSourceIssue(run, { includeHidden: true });
+      if (resolvedSource && ["done", "cancelled"].includes(resolvedSource.status)) {
+        result.skipped += 1;
+        await logActivity(db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.stale_run_skipped_terminal_source",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            reason: "source_issue_terminal",
+            sourceIssueId: resolvedSource.id,
+            sourceIssueStatus: resolvedSource.status,
+            sourceIssueHidden: resolvedSource.hiddenAt !== null,
+          },
+        });
+        continue;
+      }
+      const sourceIssueForEvaluation = resolvedSource && resolvedSource.hiddenAt === null
+        ? resolvedSource
+        : null;
+      const outcome = await createOrUpdateStaleRunEvaluation({
+        run,
+        now,
+        sourceIssue: sourceIssueForEvaluation,
+      });
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;

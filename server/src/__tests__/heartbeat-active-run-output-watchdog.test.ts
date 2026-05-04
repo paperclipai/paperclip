@@ -94,7 +94,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string; issueStatus?: string; skipSourceIssue?: boolean }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -135,18 +135,20 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         permissions: {},
       },
     ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Long running implementation",
-      status: "in_progress",
-      priority: "medium",
-      assigneeAgentId: coderId,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
-      updatedAt: startedAt,
-      createdAt: startedAt,
-    });
+    if (!opts.skipSourceIssue) {
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Long running implementation",
+        status: opts.issueStatus ?? "in_progress",
+        priority: "medium",
+        assigneeAgentId: coderId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        updatedAt: startedAt,
+        createdAt: startedAt,
+      });
+    }
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -159,7 +161,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
-      contextSnapshot: { issueId },
+      contextSnapshot: opts.skipSourceIssue ? {} : { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
     });
@@ -180,7 +182,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         })
         .where(eq(heartbeatRuns.id, runId));
     }
-    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    if (!opts.skipSourceIssue) {
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    }
     return { companyId, managerId, coderId, issueId, runId, issuePrefix };
   }
 
@@ -493,6 +497,103 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         reason: "closed evaluation should not authorize",
       }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("skips evaluation when source issue is cancelled", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      issueStatus: "cancelled",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("skips evaluation when source issue is done", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      issueStatus: "done",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("creates evaluation when source issue is in backlog", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      issueStatus: "backlog",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+  });
+
+  it("creates evaluation for orphan run with no source issue", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      skipSourceIssue: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+  });
+
+  it("skips evaluation when source issue is cancelled and hidden", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      issueStatus: "cancelled",
+    });
+    // Operator archived the cancelled issue after parking it. The terminal-source
+    // skip must still apply -- the work is abandoned even though it is no longer
+    // visible in the default issue list.
+    await db.update(issues).set({ hiddenAt: now }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
   });
 
   it("validates createdByRunId before storing watchdog decisions", async () => {

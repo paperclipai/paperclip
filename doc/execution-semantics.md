@@ -311,6 +311,7 @@ The recovery service owns this contract:
 - preserve redaction and truncation before evidence is written to issue descriptions
 - create at most one open `stale_active_run_evaluation` issue per run
 - honor active snooze decisions before creating more review work
+- skip review creation when the run's source issue has resolved to a terminal status (`done`, `cancelled`); the work has been abandoned by an operator and a diagnosis would not be actionable
 - build the `outputSilence` summary shown by live-run and active-run API responses
 
 Suspicious silence creates a medium-priority review issue for the selected recovery owner. Critical silence raises that review issue to high priority and blocks the source issue on the explicit evaluation task without cancelling the active process.
