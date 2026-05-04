@@ -8,7 +8,7 @@ Aggregates heartbeat run failures over a time window for telemetry and post-inci
 
 - `since` (required): ISO timestamp start (inclusive)
 - `until` (optional): ISO timestamp end (inclusive), defaults to now
-- `failureReason` (optional): filter by run `errorCode` (for example `process_lost`)
+- `status` (optional): one of `failed`, `timed_out`, `cancelled`
 - `agentId` (optional): filter to one agent
 - `groupBy` (optional): one of `agentId`, `failureReason`, `day`
 
@@ -33,9 +33,9 @@ Notes:
 ## Example queries
 
 ```bash
-# Total process_lost failures over the last 7 days
+# Total failed runs over the last 7 days
 curl -H "Authorization: Bearer <token>" \
-  "/api/companies/<companyId>/runs/stats?since=2026-04-22T00:00:00.000Z&failureReason=process_lost"
+  "/api/companies/<companyId>/runs/stats?since=2026-04-22T00:00:00.000Z&status=failed"
 
 # Group by failure reason
 curl -H "Authorization: Bearer <token>" \

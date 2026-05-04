@@ -99,7 +99,6 @@ const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 const RUNS_STATS_MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
 const RUNS_STATS_FAILURE_STATUSES = ["failed", "timed_out", "cancelled"];
-const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -115,7 +114,8 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 }
 
 function parseIsoTimestamp(value: string | undefined): Date | null {
-  if (!value || !ISO_TIMESTAMP_REGEX.test(value)) return null;
+  if (!value) return null;
+  if (!value.includes("T")) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
@@ -2907,7 +2907,16 @@ export function agentRoutes(
       return;
     }
 
-    const failureReason = typeof req.query.failureReason === "string" ? req.query.failureReason : undefined;
+    const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+    const status = statusRaw && RUNS_STATS_FAILURE_STATUSES.includes(statusRaw)
+      ? statusRaw
+      : undefined;
+    if (statusRaw && !status) {
+      res.status(400).json({
+        error: `\`status\` must be one of: ${RUNS_STATS_FAILURE_STATUSES.join(", ")}`,
+      });
+      return;
+    }
     const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
     const groupByRaw = typeof req.query.groupBy === "string" ? req.query.groupBy : undefined;
     const groupBy = groupByRaw && ["agentId", "failureReason", "day"].includes(groupByRaw)
@@ -2929,8 +2938,7 @@ export function agentRoutes(
       eq(heartbeatRuns.companyId, companyId),
       sql`${heartbeatRuns.createdAt} >= ${since}`,
       sql`${heartbeatRuns.createdAt} <= ${until}`,
-      inArray(heartbeatRuns.status, RUNS_STATS_FAILURE_STATUSES),
-      ...(failureReason ? [eq(heartbeatRuns.errorCode, failureReason)] : []),
+      inArray(heartbeatRuns.status, status ? [status] : RUNS_STATS_FAILURE_STATUSES),
       ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
     ];
 

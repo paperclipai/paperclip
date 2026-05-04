@@ -745,6 +745,70 @@ describe("agent live run routes", () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it("rejects runs stats requests with invalid `status`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&status=running"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("status");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("accepts runs stats requests with valid `status` filter", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&status=failed"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(1);
+  });
+
+  it("accepts runs stats requests with ISO `since` that has non-millisecond precision", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.12Z"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(1);
+  });
+
   it("rejects runs stats requests with an oversized time window", async () => {
     const db = {
       select: vi.fn()
