@@ -520,10 +520,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         accumulatedStdout += chunk;
         const parsed = parseBobShellStream(accumulatedStdout);
         
-        // Log summary updates to stderr only when the summary looks complete
-        // (ends with sentence-ending punctuation) to avoid token-by-token log spam.
-        const summaryComplete = parsed.summary ? /[.!?](\s|$)/.test(parsed.summary) : false;
-        if (summaryComplete &&
+        // Log summary updates to stderr for visibility (status updates not available in core adapter interface)
+        if (parsed.summary && 
+            parsed.summary.length > 0 && 
             parsed.summary !== lastPublishedSummary) {
           const statusParts: string[] = [parsed.summary];
           
