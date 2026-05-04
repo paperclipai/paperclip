@@ -1,0 +1,1 @@
+ALTER TABLE "cost_events" ALTER COLUMN "cost_cents" DROP NOT NULL;
