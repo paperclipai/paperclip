@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+@import url('https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@300;400;500;600;700&display=swap');
 
 @custom-variant dark (&:is(.dark *));
 
@@ -40,43 +41,55 @@
   --radius-md: 0.5rem;
   --radius-lg: 0px;
   --radius-xl: 0px;
+  --font-sans: 'Lexend Deca', system-ui, sans-serif;
+  --color-warm-100: var(--warm-100);
+  --color-warm-200: var(--warm-200);
+  --color-warm-300: var(--warm-300);
+  --color-warm-400: var(--warm-400);
+  --color-warm-500: var(--warm-500);
 }
 
 :root {
   color-scheme: light;
   --radius: 0;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  /* Warm palette tokens (#F5E6D3, #E8D5C4, #E8C5B0, #D4A574) */
+  --warm-100: oklch(0.978 0.012 60);
+  --warm-200: oklch(0.953 0.018 55);
+  --warm-300: oklch(0.878 0.034 55);
+  --warm-400: oklch(0.826 0.057 52);
+  --warm-500: oklch(0.724 0.091 60);
+  --background: oklch(0.978 0.012 60);
+  --foreground: oklch(0.145 0.015 50);
+  --card: oklch(0.988 0.009 60);
+  --card-foreground: oklch(0.145 0.015 50);
+  --popover: oklch(0.988 0.009 60);
+  --popover-foreground: oklch(0.145 0.015 50);
+  --primary: oklch(0.205 0.02 50);
+  --primary-foreground: oklch(0.978 0.012 60);
+  --secondary: oklch(0.953 0.018 55);
+  --secondary-foreground: oklch(0.205 0.02 50);
+  --muted: oklch(0.953 0.018 55);
+  --muted-foreground: oklch(0.556 0.02 50);
+  --accent: oklch(0.826 0.057 52);
+  --accent-foreground: oklch(0.205 0.02 50);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
+  --destructive-foreground: oklch(0.977 0 0);
+  --border: oklch(0.878 0.034 55);
+  --input: oklch(0.905 0.022 55);
+  --ring: oklch(0.724 0.091 60);
+  --chart-1: oklch(0.724 0.091 60);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.965 0.015 58);
+  --sidebar-foreground: oklch(0.145 0.015 50);
+  --sidebar-primary: oklch(0.205 0.02 50);
+  --sidebar-primary-foreground: oklch(0.978 0.012 60);
+  --sidebar-accent: oklch(0.934 0.025 55);
+  --sidebar-accent-foreground: oklch(0.205 0.02 50);
+  --sidebar-border: oklch(0.878 0.034 55);
+  --sidebar-ring: oklch(0.724 0.091 60);
 }
 
 .dark {
@@ -126,6 +139,9 @@
     @apply bg-background text-foreground antialiased;
     height: 100%;
     overflow: hidden;
+    font-family: 'Lexend Deca', system-ui, sans-serif;
+    line-height: 1.8;
+    letter-spacing: 0.01em;
   }
   h1,
   h2,
@@ -325,6 +341,66 @@
     -webkit-text-fill-color: unset;
     background: none;
   }
+}
+
+/* Goffer Chat micro-interactions */
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-message-in {
+  animation: chat-message-in 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes breathing-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(212, 165, 116, 0), 0 2px 16px rgba(0, 0, 0, 0.06);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(212, 165, 116, 0.15), 0 2px 20px rgba(212, 165, 116, 0.2);
+  }
+}
+
+.breathing-glow {
+  animation: breathing-glow 3s ease-in-out infinite;
+}
+
+.input-warm-focus {
+  transition:
+    box-shadow 300ms ease-in-out,
+    border-color 300ms ease-in-out;
+}
+
+.input-warm-focus:focus-within {
+  box-shadow:
+    0 0 0 3px rgba(212, 165, 116, 0.2),
+    0 4px 24px rgba(0, 0, 0, 0.08);
+  border-color: rgba(212, 165, 116, 0.5) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-in,
+  .breathing-glow {
+    animation: none;
+  }
+}
+
+/* Warm shadow utilities */
+.shadow-warm-sm {
+  box-shadow: 0 1px 4px rgba(212, 165, 116, 0.15), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.shadow-warm-md {
+  box-shadow: 0 4px 16px rgba(212, 165, 116, 0.2), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.shadow-warm-lg {
+  box-shadow: 0 8px 32px rgba(212, 165, 116, 0.25), 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
 /* MDXEditor theme integration */
