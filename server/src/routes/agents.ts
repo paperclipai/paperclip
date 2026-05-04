@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -112,9 +113,19 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 
 function createRouteRateLimiter(maxAttempts: number, windowMs: number) {
   const attempts = new Map<string, number[]>();
+  let lastCleanupAt = 0;
   return {
     check(key: string): boolean {
       const now = Date.now();
+      if (now - lastCleanupAt >= windowMs) {
+        const windowStart = now - windowMs;
+        for (const [existingKey, existingAttempts] of attempts.entries()) {
+          const recentExisting = existingAttempts.filter((ts) => ts > windowStart);
+          if (recentExisting.length === 0) attempts.delete(existingKey);
+          else attempts.set(existingKey, recentExisting);
+        }
+        lastCleanupAt = now;
+      }
       const windowStart = now - windowMs;
       const recent = (attempts.get(key) ?? []).filter((ts) => ts > windowStart);
       if (recent.length >= maxAttempts) return false;
@@ -2882,6 +2893,10 @@ export function agentRoutes(
       res.status(400).json({ error: "`until` must be an ISO timestamp when provided" });
       return;
     }
+    if (since.getTime() > until.getTime()) {
+      res.status(400).json({ error: "`since` must be less than or equal to `until`" });
+      return;
+    }
 
     const failureReason = typeof req.query.failureReason === "string" ? req.query.failureReason : undefined;
     const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
@@ -2909,67 +2924,58 @@ export function agentRoutes(
       ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
     ];
 
-    const runs = await db
-      .select({
-        id: heartbeatRuns.id,
-        agentId: heartbeatRuns.agentId,
-        failureReason: heartbeatRuns.errorCode,
-        createdAt: heartbeatRuns.createdAt,
-        retryOfRunId: heartbeatRuns.retryOfRunId,
-      })
-      .from(heartbeatRuns)
-      .where(and(...whereClauses));
-
-    const total = runs.length;
-
     let groups: Array<{ key: string; count: number }> | undefined;
+    let total = 0;
     if (groupBy) {
-      const counts = new Map<string, number>();
-      for (const run of runs) {
-        let key = "";
-        if (groupBy === "agentId") key = run.agentId;
-        if (groupBy === "failureReason") key = run.failureReason ?? "none";
-        if (groupBy === "day") key = (run.createdAt ?? new Date(0)).toISOString().slice(0, 10);
-        counts.set(key, (counts.get(key) ?? 0) + 1);
-      }
-      groups = Array.from(counts.entries()).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
-    }
-
-    const retrySourceRunIds = [...new Set(runs.map((run) => run.retryOfRunId).filter((id): id is string => Boolean(id)))];
-    let topRecoverySources: Array<{ identifier: string; count: number }> = [];
-    if (retrySourceRunIds.length > 0) {
-      const sourceRuns = await db
+      const groupKeyExpr = groupBy === "agentId"
+        ? heartbeatRuns.agentId
+        : groupBy === "failureReason"
+          ? sql<string>`coalesce(${heartbeatRuns.errorCode}, 'none')`
+          : sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+      const groupedRows = await db
         .select({
-          id: heartbeatRuns.id,
-          issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+          key: groupKeyExpr,
+          count: sql<number>`count(*)::int`,
         })
         .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.id, retrySourceRunIds));
-
-      const issueIds = [...new Set(sourceRuns.map((row) => row.issueId).filter((id): id is string => Boolean(id)))];
-      const issueRows = issueIds.length > 0
-        ? await db.select({ id: issuesTable.id, identifier: issuesTable.identifier }).from(issuesTable).where(
-          and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)),
-        )
-        : [];
-      const issueIdentifierById = new Map(issueRows.map((row) => [row.id, row.identifier]));
-      const sourceIssueIdByRunId = new Map(sourceRuns.map((row) => [row.id, row.issueId]));
-
-      const counts = new Map<string, number>();
-      for (const run of runs) {
-        if (!run.retryOfRunId) continue;
-        const sourceIssueId = sourceIssueIdByRunId.get(run.retryOfRunId);
-        if (!sourceIssueId) continue;
-        const identifier = issueIdentifierById.get(sourceIssueId);
-        if (!identifier) continue;
-        counts.set(identifier, (counts.get(identifier) ?? 0) + 1);
-      }
-
-      topRecoverySources = Array.from(counts.entries())
-        .map(([identifier, count]) => ({ identifier, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
+        .where(and(...whereClauses))
+        .groupBy(groupKeyExpr)
+        .orderBy(desc(sql`count(*)`));
+      groups = groupedRows.map((row) => ({ key: row.key, count: Number(row.count ?? 0) }));
+      total = groups.reduce((sum, row) => sum + row.count, 0);
+    } else {
+      const [totalRow] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .where(and(...whereClauses));
+      total = Number(totalRow?.count ?? 0);
     }
+
+    const sourceRuns = alias(heartbeatRuns, "source_runs");
+    const topRecoverySourceRows = await db
+      .select({
+        identifier: issuesTable.identifier,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(sourceRuns, eq(heartbeatRuns.retryOfRunId, sourceRuns.id))
+      .innerJoin(
+        issuesTable,
+        and(
+          eq(issuesTable.companyId, companyId),
+          sql`${sourceRuns.contextSnapshot} ->> 'issueId' = cast(${issuesTable.id} as text)`,
+        ),
+      )
+      .where(and(...whereClauses, sql`${heartbeatRuns.retryOfRunId} is not null`))
+      .groupBy(issuesTable.identifier)
+      .orderBy(desc(sql`count(*)`))
+      .limit(5);
+    const topRecoverySources = topRecoverySourceRows.map((row) => ({
+      identifier: row.identifier,
+      count: Number(row.count ?? 0),
+    }));
 
     res.json({
       window: {

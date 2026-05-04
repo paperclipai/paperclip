@@ -70,7 +70,10 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: Record<string, unknown> = {}) {
+async function createApp(
+  db: Record<string, unknown> = {},
+  actorOverrides: Partial<{ companyIds: string[]; source: string }> = {},
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -81,8 +84,8 @@ async function createApp(db: Record<string, unknown> = {}) {
     (req as any).actor = {
       type: "board",
       userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
+      companyIds: actorOverrides.companyIds ?? ["company-1"],
+      source: actorOverrides.source ?? "local_implicit",
       isInstanceAdmin: false,
     };
     next();
@@ -538,48 +541,28 @@ describe("agent live run routes", () => {
   });
 
   it("returns grouped run stats and top recovery sources", async () => {
-    const runs = [
-      {
-        id: "run-1",
-        agentId: "agent-1",
-        failureReason: "process_lost",
-        createdAt: new Date("2026-04-12T10:00:00.000Z"),
-        retryOfRunId: "src-1",
-      },
-      {
-        id: "run-2",
-        agentId: "agent-2",
-        failureReason: "process_lost",
-        createdAt: new Date("2026-04-12T11:00:00.000Z"),
-        retryOfRunId: "src-1",
-      },
-      {
-        id: "run-3",
-        agentId: "agent-1",
-        failureReason: "restart_during_run",
-        createdAt: new Date("2026-04-13T09:00:00.000Z"),
-        retryOfRunId: "src-2",
-      },
+    const groupedRows = [
+      { key: "process_lost", count: 2 },
+      { key: "restart_during_run", count: 1 },
     ];
-    const sourceRuns = [
-      { id: "src-1", issueId: "issue-1" },
-      { id: "src-2", issueId: "issue-2" },
-    ];
-    const sourceIssues = [
-      { id: "issue-1", identifier: "SUP-1756" },
-      { id: "issue-2", identifier: "SUP-1757" },
-    ];
+    const sourceIssues = [{ identifier: "SUP-1756", count: 2 }, { identifier: "SUP-1757", count: 1 }];
 
-    let call = 0;
     const db = {
-      select: vi.fn().mockImplementation(() => {
-        call += 1;
-        const rows = call === 1 ? runs : call === 2 ? sourceRuns : sourceIssues;
-        return {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
           from: vi.fn().mockReturnThis(),
-          where: vi.fn().mockReturnValue(Promise.resolve(rows)),
-        };
-      }),
+          where: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(Promise.resolve(groupedRows)),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnValue(Promise.resolve(sourceIssues)),
+        })),
     };
 
     const res = await requestApp(
@@ -592,29 +575,140 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.total).toBe(3);
-    expect(res.body.groups).toEqual([
-      { key: "process_lost", count: 2 },
-      { key: "restart_during_run", count: 1 },
-    ]);
+    expect(res.body.groups).toEqual(groupedRows);
     expect(res.body.topRecoverySources).toEqual([
       { identifier: "SUP-1756", count: 2 },
       { identifier: "SUP-1757", count: 1 },
     ]);
   });
 
-  it("omits groups when groupBy is not provided", async () => {
-    const runs = [{
-      id: "run-1",
-      agentId: "agent-1",
-      failureReason: "process_lost",
-      createdAt: new Date("2026-04-12T10:00:00.000Z"),
-      retryOfRunId: null,
-    }];
+  it("returns grouped run stats by agentId", async () => {
+    const groupedRows = [
+      { key: "agent-1", count: 2 },
+      { key: "agent-2", count: 1 },
+    ];
+
     const db = {
-      select: vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockReturnValue(Promise.resolve(runs)),
-      })),
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(Promise.resolve(groupedRows)),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&groupBy=agentId",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.groups).toEqual(groupedRows);
+  });
+
+  it("returns grouped run stats by day", async () => {
+    const groupedRows = [
+      { key: "2026-04-13", count: 5 },
+      { key: "2026-04-12", count: 1 },
+    ];
+
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(Promise.resolve(groupedRows)),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&groupBy=day",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(6);
+    expect(res.body.groups).toEqual(groupedRows);
+  });
+
+  it("rejects runs stats requests with malformed `since`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=not-a-timestamp"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("since");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with `since` later than `until`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-14T00:00:00.000Z&until=2026-04-12T00:00:00.000Z",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("since");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("forbids cross-company access for runs stats", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db, { companyIds: ["company-2"], source: "jwt" }),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+    );
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("omits groups when groupBy is not provided", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
     };
 
     const res = await requestApp(
