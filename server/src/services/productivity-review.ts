@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -26,6 +27,15 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+// Freshness window for the long_active_duration suppression check, expressed as
+// a multiple of the long_active threshold. A pending wake_assignee
+// request_confirmation older than this is treated as stale and no longer
+// suppresses the heuristic, so a forgotten interaction cannot silently disable
+// productivity review on an issue forever. With the default 6h threshold this
+// yields a 24h window — wide enough to cover overnight / weekend decision
+// delays on a board that responds within a day, while still bounded enough that
+// a wake_assignee left pending for multiple days no longer hides the issue.
+export const PRODUCTIVITY_REVIEW_LONG_ACTIVE_SUPPRESSION_MULTIPLIER = 4;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -342,6 +352,28 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return comment;
   }
 
+  async function hasFreshPendingWakeAssigneeConfirmation(
+    companyId: string,
+    issueId: string,
+    freshnessCutoff: Date,
+  ) {
+    const rows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+          sql`${issueThreadInteractions.createdAt} >= ${freshnessCutoff.toISOString()}::timestamptz`,
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async function countIssueRunsSince(companyId: string, agentId: string, issueId: string, since: Date) {
     return db
       .select({ count: sql<number>`count(*)::int` })
@@ -472,7 +504,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    let longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    if (longActive) {
+      const freshnessCutoff = new Date(
+        now.getTime() - thresholds.longActiveMs * PRODUCTIVITY_REVIEW_LONG_ACTIVE_SUPPRESSION_MULTIPLIER,
+      );
+      const suppressed = await hasFreshPendingWakeAssigneeConfirmation(
+        sourceIssue.companyId,
+        sourceIssue.id,
+        freshnessCutoff,
+      );
+      if (suppressed) longActive = false;
+    }
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
