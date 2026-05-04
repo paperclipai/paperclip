@@ -3764,11 +3764,18 @@ export function heartbeatService(db: Db) {
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])))
       .orderBy(desc(heartbeatRuns.createdAt));
 
+    // An undirected wake (no specific issue/task context) should coalesce with
+    // any active run for the agent, not just runs with a matching null scope.
+    // Without this, a manual /heartbeat/invoke while the agent is already
+    // executing an issue-scoped run would spawn a parallel duplicate run.
+    const scopeMatches = (candidate: typeof heartbeatRuns.$inferSelect) =>
+      taskKey === null || isSameTaskScope(runTaskKey(candidate), taskKey);
+
     const sameScopeQueuedRun = activeRuns.find(
-      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "queued" && scopeMatches(candidate),
     );
     const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "running" && scopeMatches(candidate),
     );
     const shouldQueueFollowupForCommentWake =
       Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
