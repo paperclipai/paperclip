@@ -50,6 +50,19 @@ PROJECT="paperclip-linkcast"
 # overlay must come after the upstream base.
 COMPOSE_FILES=(docker/docker-compose.yml paperclip-boot-linkcast.yaml)
 
+# If a paperclip overlay is configured, include it.
+# PAPERCLIP_OVERLAY_PATH points to the paperclip/companies folder in the crew
+# repo (e.g. ~/Projects/linkcast/crew/paperclip/companies). The compose overlay
+# file lives one level up in the paperclip/ directory.
+# We extract the value from .env manually as op run resolves secrets later.
+_PAPERCLIP_OVERLAY_PATH=$(grep -E '^PAPERCLIP_OVERLAY_PATH=' .env 2>/dev/null | cut -d= -f2 | tr -d '"' || true)
+if [[ -n "${_PAPERCLIP_OVERLAY_PATH:-}" ]]; then
+  _OVERLAY_COMPOSE="$(dirname "${_PAPERCLIP_OVERLAY_PATH}")/docker-compose-overlay.yaml"
+  if [[ -f "${_OVERLAY_COMPOSE}" ]]; then
+    COMPOSE_FILES+=("${_OVERLAY_COMPOSE}")
+  fi
+fi
+
 # Build the docker-compose invocation prefix once. Every subcommand below uses
 # `"${COMPOSE[@]}" ...` to inherit project name and file list.
 COMPOSE=(docker compose -p "$PROJECT")
