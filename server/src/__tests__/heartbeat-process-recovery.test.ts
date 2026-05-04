@@ -1930,6 +1930,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
   });
 
+  // Note: an integration-level "race guard" test for the inert-status gate
+  // previously lived here. It used a `db.select({id, status})` column-shape
+  // spy to fake the re-fetch result. Greptile flagged the spy as brittle
+  // (any future select with the same column shape upstream of the re-fetch
+  // would be silently hijacked) on PR #4944, so the test was removed. Gate
+  // semantics are fully covered by the unit tests in
+  // `server/src/services/recovery/service.test.ts`:
+  //   - `does NOT call issuesSvc.create OR issuesSvc.update when fresh DB status is 'blocked'/'cancelled'/'done'`
+  //   - `returns OPEN sibling for linkage when a recovery sibling was created 4 min ago`
+  //   - `suppresses creation but does NOT link when sibling within window is closed`
+  //   - `suppresses creation but does NOT link when sibling within window is hidden`
+  //   - `does NOT call create when an open [FOR OPS] issue mentions source.identifier`
+  //   - + four "proceeds past" negative-path tests
+  // The race itself (status flips between candidates-scan and re-fetch) is
+  // not directly testable without real concurrent transactions. The unit
+  // tests prove that *if* the re-fetch returns inert, the gate fires — which
+  // is the entire load-bearing claim of the race guard.
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
