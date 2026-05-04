@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -36,6 +37,16 @@ export interface RunLogStore {
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
 }
+
+export interface RunLogPruneSummary {
+  scannedFiles: number;
+  prunedFiles: number;
+  prunedBytes: number;
+}
+
+const RUN_LOG_RETENTION_DAYS_DEFAULT = 30;
+const RUN_LOG_RETENTION_SWEEP_INTERVAL_MS_DEFAULT = 6 * 60 * 60 * 1_000;
+const RUN_LOG_RETENTION_MAX_DELETES_PER_SWEEP = 5_000;
 
 function safeSegments(...segments: string[]) {
   return segments.map((segment) => segment.replace(/[^a-zA-Z0-9._-]/g, "_"));
@@ -154,4 +165,104 @@ export function getRunLogStore() {
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
+}
+
+async function listFilesRecursively(dirPath: string): Promise<string[]> {
+  const entries = await fs.readdir(dirPath, { withFileTypes: true }).catch(() => []);
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listFilesRecursively(fullPath));
+      continue;
+    }
+    if (entry.isFile()) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+async function pruneEmptyDirs(dirPath: string, stopAtPath: string): Promise<void> {
+  const resolvedStop = path.resolve(stopAtPath);
+  let current = path.resolve(dirPath);
+  while (current.startsWith(resolvedStop) && current !== resolvedStop) {
+    const entries = await fs.readdir(current).catch(() => null);
+    if (!entries || entries.length > 0) break;
+    await fs.rmdir(current).catch(() => {});
+    current = path.dirname(current);
+  }
+}
+
+export async function pruneExpiredRunLogs(input?: {
+  basePath?: string;
+  retentionDays?: number;
+  maxDeletes?: number;
+  now?: Date;
+}): Promise<RunLogPruneSummary> {
+  const basePath = input?.basePath ?? process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const retentionDays = Math.max(1, Math.floor(input?.retentionDays ?? RUN_LOG_RETENTION_DAYS_DEFAULT));
+  const maxDeletes = Math.max(1, Math.floor(input?.maxDeletes ?? RUN_LOG_RETENTION_MAX_DELETES_PER_SWEEP));
+  const now = input?.now ?? new Date();
+  const cutoffMs = now.getTime() - (retentionDays * 24 * 60 * 60 * 1_000);
+  const resolvedBasePath = path.resolve(basePath);
+  const files = await listFilesRecursively(resolvedBasePath);
+
+  let prunedFiles = 0;
+  let prunedBytes = 0;
+  for (const filePath of files) {
+    if (prunedFiles >= maxDeletes) break;
+    const stat = await fs.stat(filePath).catch(() => null);
+    if (!stat) continue;
+    if (stat.mtimeMs >= cutoffMs) continue;
+
+    await fs.rm(filePath, { force: true }).catch(() => {});
+    prunedFiles += 1;
+    prunedBytes += stat.size;
+    await pruneEmptyDirs(path.dirname(filePath), resolvedBasePath);
+  }
+
+  return {
+    scannedFiles: files.length,
+    prunedFiles,
+    prunedBytes,
+  };
+}
+
+export function startRunLogRetentionSweep(input?: {
+  basePath?: string;
+  retentionDays?: number;
+  intervalMs?: number;
+  maxDeletes?: number;
+}): () => void {
+  const basePath = input?.basePath ?? process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const retentionDays = Math.max(
+    1,
+    Math.floor(input?.retentionDays ?? (Number(process.env.RUN_LOG_RETENTION_DAYS) || RUN_LOG_RETENTION_DAYS_DEFAULT)),
+  );
+  const intervalMs = Math.max(
+    60_000,
+    Math.floor(input?.intervalMs ?? (Number(process.env.RUN_LOG_RETENTION_SWEEP_INTERVAL_MS) || RUN_LOG_RETENTION_SWEEP_INTERVAL_MS_DEFAULT)),
+  );
+  const maxDeletes = Math.max(1, Math.floor(input?.maxDeletes ?? RUN_LOG_RETENTION_MAX_DELETES_PER_SWEEP));
+
+  const runSweep = (phase: "initial" | "periodic") => {
+    pruneExpiredRunLogs({ basePath, retentionDays, maxDeletes })
+      .then((summary) => {
+        if (summary.prunedFiles > 0) {
+          logger.info(
+            { ...summary, retentionDays, basePath },
+            `${phase === "initial" ? "Initial" : "Periodic"} heartbeat run log retention sweep pruned files`,
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn({ err, retentionDays, basePath }, `${phase === "initial" ? "Initial" : "Periodic"} heartbeat run log retention sweep failed`);
+      });
+  };
+
+  runSweep("initial");
+  const timer = setInterval(() => runSweep("periodic"), intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }

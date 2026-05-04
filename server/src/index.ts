@@ -38,6 +38,7 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { startRunLogRetentionSweep } from "./services/run-log-store.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -668,6 +669,8 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
+
+  startRunLogRetentionSweep();
   
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
