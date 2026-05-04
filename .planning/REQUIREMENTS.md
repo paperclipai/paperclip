@@ -16,7 +16,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### API Contract Alignment
 
-- [ ] **API-01**: REST/WebSocket API contract가 RT2-native operation contract를 따른다.
+- [x] **API-01**: REST/WebSocket API contract가 RT2-native operation contract를 따른다.
 - [ ] **API-02**: API versioning strategy가 semantic versioning, breaking change policy, deprecation timeline을 정의한다.
 - [ ] **API-03**: API backward compatibility가 보장되며 migration path가 문서화되어 있다.
 
