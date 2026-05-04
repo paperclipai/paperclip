@@ -208,6 +208,8 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
   let finalStatus: string | null = null;
   let finalError: string | null = null;
   let finalRun: HeartbeatRun | null = null;
+  let consecutiveLog404s = 0;
+  const MAX_CONSECUTIVE_LOG_404S = 5;
 
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null;
   if (!activeRunId) {
@@ -258,6 +260,7 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
       { ignoreNotFound: true },
     );
     if (logResult && logResult.content) {
+      consecutiveLog404s = 0;
       for (const chunk of logResult.content.split(/\r?\n/)) {
         if (!chunk) continue;
         const parsed = safeParseLogLine(chunk);
@@ -268,6 +271,14 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
         logOffset = logResult.nextOffset;
       } else if (logResult.content) {
         logOffset += Buffer.byteLength(logResult.content, "utf8");
+      }
+    } else if (logResult === null) {
+      consecutiveLog404s++;
+      if (consecutiveLog404s >= MAX_CONSECUTIVE_LOG_404S) {
+        console.error(pc.yellow(`Log unavailable after ${consecutiveLog404s} consecutive 404s — run may be orphaned`));
+        finalStatus = finalStatus ?? "failed";
+        finalError = "Log storage unavailable; run may be orphaned";
+        break;
       }
     }
 
