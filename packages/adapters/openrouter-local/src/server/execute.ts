@@ -63,6 +63,9 @@ function resolveCwd(configCwd: unknown, ctx: AdapterExecutionContext): string {
   // Workspace-backed agents: executionTarget carries the resolved cwd
   const targetCwd = (ctx.executionTarget as { cwd?: string } | null | undefined)?.cwd;
   if (targetCwd && targetCwd.trim().length > 0) return targetCwd;
+  // Context snapshot carries the workspace cwd from paperclipWorkspace
+  const workspaceCwd = (ctx.context.paperclipWorkspace as { cwd?: string } | null | undefined)?.cwd;
+  if (workspaceCwd && workspaceCwd.trim().length > 0) return workspaceCwd;
   // Derive agent data directory from PAPERCLIP_HOME (set in Docker; avoids per-agent manual config)
   const home = process.env.PAPERCLIP_HOME;
   if (home) {
@@ -132,14 +135,19 @@ export async function execute(
     config.promptTemplate,
     "Continue your work on issue {{taskTitle}}.",
   );
-  const prompt = renderTemplate(promptTemplate, {
+  const issueTitle =
+    (context.paperclipWake as { issue?: { title?: string } } | null | undefined)?.issue?.title ??
+    "";
+  const promptIntro = renderTemplate(promptTemplate, {
     agentId: agent.id,
     agentName: agent.name,
     companyId: agent.companyId,
     runId: ctx.runId,
     taskId: String(context.taskId ?? ""),
-    taskTitle: String(context.taskTitle ?? ""),
+    taskTitle: issueTitle,
   });
+  const taskMarkdown = typeof context.paperclipTaskMarkdown === "string" ? context.paperclipTaskMarkdown : null;
+  const prompt = taskMarkdown ? `${promptIntro}\n\n${taskMarkdown}` : promptIntro;
 
   const instructionsFilePath = asString(config[instructionsPathKey], "");
   const fragments = await loadInstructionFragments({
