@@ -37,6 +37,7 @@ import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { InstanceSettings } from "./pages/InstanceSettings";
+import { InstanceSecrets } from "./pages/InstanceSecrets";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
@@ -274,6 +275,7 @@ export function App() {
             <Route path="profile" element={<ProfileSettings />} />
             <Route path="general" element={<InstanceGeneralSettings />} />
             <Route path="access" element={<InstanceAccess />} />
+            <Route path="secrets" element={<InstanceSecrets />} />
             <Route path="heartbeats" element={<InstanceSettings />} />
             <Route path="experimental" element={<InstanceExperimentalSettings />} />
             <Route path="plugins" element={<PluginManager />} />

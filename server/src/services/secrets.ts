@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySecrets, companySecretVersions } from "@paperclipai/db";
 import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
@@ -57,6 +57,14 @@ export function secretService(db: Db) {
       .select()
       .from(companySecrets)
       .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.name, name)))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getInstanceByName(name: string) {
+    return db
+      .select()
+      .from(companySecrets)
+      .where(and(isNull(companySecrets.companyId), eq(companySecrets.name, name)))
       .then((rows) => rows[0] ?? null);
   }
 
@@ -164,7 +172,70 @@ export function secretService(db: Db) {
 
     getById,
     getByName,
+    getInstanceByName,
     resolveSecretValue,
+
+    listInstance: async () =>
+      db
+        .select()
+        .from(companySecrets)
+        .where(isNull(companySecrets.companyId))
+        .orderBy(desc(companySecrets.createdAt)),
+
+    /**
+     * Create an instance-scoped secret (`company_id` = NULL). Same lifecycle
+     * as `create()` — secret row + first version row in one transaction —
+     * but with a global-name uniqueness check via the instance partial
+     * unique index. Use for shared credentials that don't belong to one
+     * company (e.g. a single GCP OAuth client for the workspace plugin).
+     */
+    createInstance: async (
+      input: {
+        name: string;
+        provider: SecretProvider;
+        value: string;
+        description?: string | null;
+        externalRef?: string | null;
+      },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => {
+      const existing = await getInstanceByName(input.name);
+      if (existing) throw conflict(`Instance secret already exists: ${input.name}`);
+
+      const provider = getSecretProvider(input.provider);
+      const prepared = await provider.createVersion({
+        value: input.value,
+        externalRef: input.externalRef ?? null,
+      });
+
+      return db.transaction(async (tx) => {
+        const secret = await tx
+          .insert(companySecrets)
+          .values({
+            companyId: null,
+            name: input.name,
+            provider: input.provider,
+            externalRef: prepared.externalRef,
+            latestVersion: 1,
+            description: input.description ?? null,
+            createdByAgentId: actor?.agentId ?? null,
+            createdByUserId: actor?.userId ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        await tx.insert(companySecretVersions).values({
+          secretId: secret.id,
+          version: 1,
+          material: prepared.material,
+          valueSha256: prepared.valueSha256,
+          createdByAgentId: actor?.agentId ?? null,
+          createdByUserId: actor?.userId ?? null,
+        });
+
+        return secret;
+      });
+    },
 
     create: async (
       companyId: string,
@@ -263,7 +334,9 @@ export function secretService(db: Db) {
       if (!secret) throw notFound("Secret not found");
 
       if (patch.name && patch.name !== secret.name) {
-        const duplicate = await getByName(secret.companyId, patch.name);
+        const duplicate = secret.companyId
+          ? await getByName(secret.companyId, patch.name)
+          : await getInstanceByName(patch.name);
         if (duplicate && duplicate.id !== secret.id) {
           throw conflict(`Secret already exists: ${patch.name}`);
         }

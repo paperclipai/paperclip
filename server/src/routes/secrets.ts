@@ -1,3 +1,4 @@
+import type { Request } from "express";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -8,8 +9,22 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+
+/**
+ * Dispatch the right auth check based on a secret's scope. Company-scoped
+ * secrets gate on company access (existing behaviour); instance-scoped
+ * secrets (`companyId === null`) gate on instance-admin. Throws on failure
+ * so callers can use it as a guard at the top of per-id routes.
+ */
+function assertSecretScope(req: Request, secret: { companyId: string | null }): void {
+  if (secret.companyId) {
+    assertCompanyAccess(req, secret.companyId);
+  } else {
+    assertInstanceAdmin(req);
+  }
+}
 
 export function secretRoutes(db: Db) {
   const router = Router();
@@ -74,7 +89,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    assertSecretScope(req, existing);
 
     const rotated = await svc.rotate(
       id,
@@ -86,7 +101,7 @@ export function secretRoutes(db: Db) {
     );
 
     await logActivity(db, {
-      companyId: rotated.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.rotated",
@@ -106,7 +121,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    assertSecretScope(req, existing);
 
     const updated = await svc.update(id, {
       name: req.body.name,
@@ -120,7 +135,7 @@ export function secretRoutes(db: Db) {
     }
 
     await logActivity(db, {
-      companyId: updated.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.updated",
@@ -140,7 +155,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    assertSecretScope(req, existing);
 
     const removed = await svc.remove(id);
     if (!removed) {
@@ -149,7 +164,7 @@ export function secretRoutes(db: Db) {
     }
 
     await logActivity(db, {
-      companyId: removed.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.deleted",
@@ -159,6 +174,48 @@ export function secretRoutes(db: Db) {
     });
 
     res.json({ ok: true });
+  });
+
+  // ========================================================================
+  // Instance-scoped routes
+  // ========================================================================
+
+  router.get("/instance/secret-providers", (req, res) => {
+    assertInstanceAdmin(req);
+    res.json(svc.listProviders());
+  });
+
+  router.get("/instance/secrets", async (req, res) => {
+    assertInstanceAdmin(req);
+    const secrets = await svc.listInstance();
+    res.json(secrets);
+  });
+
+  router.post("/instance/secrets", validate(createSecretSchema), async (req, res) => {
+    assertInstanceAdmin(req);
+
+    const created = await svc.createInstance(
+      {
+        name: req.body.name,
+        provider: req.body.provider ?? defaultProvider,
+        value: req.body.value,
+        description: req.body.description,
+        externalRef: req.body.externalRef,
+      },
+      { userId: req.actor.userId ?? "board", agentId: null },
+    );
+
+    await logActivity(db, {
+      companyId: null,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "instance_secret.created",
+      entityType: "secret",
+      entityId: created.id,
+      details: { name: created.name, provider: created.provider },
+    });
+
+    res.status(201).json(created);
   });
 
   return router;

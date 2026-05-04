@@ -7,7 +7,10 @@ export const activityLog = pgTable(
   "activity_log",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    // NULL when the activity belongs to instance scope (e.g. an
+    // instance-scoped secret operation). Company-scoped events still
+    // populate this; null values are excluded from per-company timelines.
+    companyId: uuid("company_id").references(() => companies.id),
     actorType: text("actor_type").notNull().default("system"),
     actorId: text("actor_id").notNull(),
     action: text("action").notNull(),
