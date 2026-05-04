@@ -16,7 +16,7 @@
 - [shipped] **v3.1 DevPlan Core Convergence** - Phase 65-71 complete, 2026-05-01 ([requirements](REQUIREMENTS.md))
 - [shipped] **v3.2 Future Scope** - Phase 72-77 complete, 2026-05-01 ([requirements](REQUIREMENTS.md))
 - [planned] **v3.3** - RT2 Engine Convergence (Phase 78-83 complete) ([archive](milestones/v3.3-ROADMAP.md))
-- [planned] **v3.4** - RT2 Integration & API Alignment
+- [shipped] **v3.4 RT2 Integration & API Alignment** - Phase 84-88 complete, 2026-05-04 ([archive](milestones/v3.4-ROADMAP.md), [requirements](milestones/v3.4-REQUIREMENTS.md), [audit](milestones/v3.4-MILESTONE-AUDIT.md))
 
 ## 완료됨
 
@@ -117,7 +117,7 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 100%. 이제 v3.3 마일스톤을 시작합니다.
+v3.4 RT2 Integration & API Alignment shipped (2026-05-04). Phase 84-88 complete, 11/13 requirements satisfied, 2/13 intentionally deferred. 이제 다음 milestone을 시작합니다.
 
 <details open>
 <summary>v3.2 Future Scope (Phase 72-77 complete)</summary>
@@ -155,18 +155,20 @@ v3.2 Future Scope 완료됨 (2026-05-01). Phase 72-77 완료, DevPlan alignment 
 
 </details>
 
-<details open>
-<summary>v3.4 RT2 Integration & API Alignment (Phase 84-88 planned)</summary>
+<details>
+<summary>v3.4 RT2 Integration & API Alignment (Phase 84-88 complete)</summary>
 
 **Goal:** RT2 event stream, projector, API contract, work entity lifecycle을 실제 제품 운영에 맞게 정렬하고, versioning strategy와 schema validation으로 미래 확장을 대비한다.
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 84 | RT2 Event/Projector Layer | RT2-01, RT2-02, RT2-03 | Complete |
-| 85 | API Contract Alignment | API-01 | Complete |
+| 85 | API Contract Alignment | API-01, API-02, API-03 | Complete |
 | 86 | Work Entity Migration | WORK-01, WORK-02, WORK-03 | Complete |
 | 87 | RT2 Schema Validation | SCHEMA-01, SCHEMA-02, SCHEMA-03 | Complete |
-| 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Context gathered |
+| 88 | v3.4 Acceptance Gate | GATE-01, GATE-02, GATE-03, GATE-04 | Complete |
+
+**Audit status:** `passed`. Requirements 11/13 complete, 2/13 deferred (API-02/API-03 — intentional scope reduction from Phase 85).
 
 </details>
 
@@ -621,6 +623,9 @@ Success criteria:
 - [v3.3 roadmap archive](milestones/v3.3-ROADMAP.md)
 - [v3.3 requirements archive](milestones/v3.3-REQUIREMENTS.md)
 - [v3.3 milestone audit](milestones/v3.3-MILESTONE-AUDIT.md)
+- [v3.4 roadmap archive](milestones/v3.4-ROADMAP.md)
+- [v3.4 requirements archive](milestones/v3.4-REQUIREMENTS.md)
+- [v3.4 milestone audit](milestones/v3.4-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-05-04, v3.4 started*
+*마지막 업데이트: 2026-05-04, v3.4 shipped*
