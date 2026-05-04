@@ -89,8 +89,11 @@ export function healthLongevityRoutes(db: Db) {
    *   date       (optional, ISO date string, defaults to today)
    */
   router.get("/environmental-score/map", medicalDisclaimer, async (req, res) => {
+    assertBoard(req);
+
     const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
     if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
 
     const dateParam = typeof req.query.date === "string" ? req.query.date.trim() : null;
     const targetDate = dateParam ? new Date(dateParam) : new Date();
