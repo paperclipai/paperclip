@@ -512,7 +512,9 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Authenticated mode auth origin configuration",
     );
-    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins, {
+      inferredBaseUrl: `http://localhost:${listenPort}`,
+    });
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
