@@ -7708,11 +7708,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      const expectedRetryReason =
+        issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
+      const recoveryFailed = didAutomaticRecoveryFail(run, expectedRetryReason);
+
+      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      let projectExecutionWorkspacePolicyForRecovery: ReturnType<
+        typeof parseProjectExecutionWorkspacePolicy
+      > | null = null;
+      if (issue.projectId) {
+        const projectRow = await tx
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .from(projects)
+          .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        projectExecutionWorkspacePolicyForRecovery = gateProjectExecutionWorkspacePolicy(
+          parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy),
+          isolatedWorkspacesEnabled,
+        );
+      }
+      const issueExecutionWorkspaceSettingsForRecovery = isolatedWorkspacesEnabled
+        ? parseIssueExecutionWorkspaceSettings(issue.executionWorkspaceSettings)
+        : null;
+      const issueAssigneeOverridesForRecovery =
+        issue.assigneeAgentId === run.agentId
+          ? parseIssueAssigneeAdapterOverrides(issue.assigneeAdapterOverrides)
+          : null;
+      const coordinationOnlyNoLiveAgentExecution =
+        issue.status === "in_progress" &&
+        resolveExecutionWorkspaceMode({
+          projectPolicy: projectExecutionWorkspacePolicyForRecovery,
+          issueSettings: issueExecutionWorkspaceSettingsForRecovery,
+          legacyUseProjectWorkspace: issueAssigneeOverridesForRecovery?.useProjectWorkspace ?? null,
+        }) === "agent_default";
+
+      if (recoveryFailed && coordinationOnlyNoLiveAgentExecution) {
+        return { kind: "released" as const };
+      }
+
       const shouldBlockImmediately =
         issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
-        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+        recoveryFailed;
       if (shouldBlockImmediately) {
         const comment = buildImmediateExecutionPathRecoveryComment({
           status: issue.status as "todo" | "in_progress",

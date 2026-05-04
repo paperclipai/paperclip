@@ -393,6 +393,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    assigneeAdapterOverrides?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -464,6 +465,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         executionRunId: runId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
+        ...(input?.assigneeAdapterOverrides !== undefined && input.assigneeAdapterOverrides !== null
+          ? { assigneeAdapterOverrides: input.assigneeAdapterOverrides }
+          : {}),
       });
     }
 
@@ -1070,6 +1074,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
+  });
+
+  it("does not block in_progress continuation recovery when assignee opts out of project workspace (agent_default / task_session)", async () => {
+    mockAdapterExecute.mockRejectedValueOnce(new Error("continuation recovery failed"));
+
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      assigneeAdapterOverrides: { useProjectWorkspace: false },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    expect(runs.find((row) => row.id === runId)?.status).toBe("failed");
+    const continuationRun = runs.find((row) => row.id !== runId);
+    expect(continuationRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: runId,
+    });
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "in_progress" && row.executionRunId === null ? row : null;
+      })
+    );
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBeNull();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+        ),
+      );
+    expect(recoveryIssues).toHaveLength(0);
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
