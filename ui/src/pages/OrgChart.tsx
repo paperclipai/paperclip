@@ -386,7 +386,7 @@ export function OrgChart() {
             <div
               key={node.id}
               data-org-card
-              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
+              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none overflow-hidden"
               style={{
                 left: node.x,
                 top: node.y,
@@ -408,19 +408,19 @@ export function OrgChart() {
                 </div>
                 {/* Name + role + adapter type */}
                 <div className="flex flex-col items-start min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-foreground leading-tight">
+                  <span className="text-sm font-semibold text-foreground leading-tight truncate w-full">
                     {node.name}
                   </span>
-                  <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
+                  <span className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate w-full">
                     {agent?.title ?? roleLabel(node.role)}
                   </span>
                   {agent && (
-                    <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
+                    <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1 truncate w-full">
                       {getAdapterLabel(agent.adapterType)}
                     </span>
                   )}
                   {agent && agent.capabilities && (
-                    <span className="text-[10px] text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
+                    <span className="text-[10px] text-muted-foreground/80 leading-tight mt-1 line-clamp-2 break-words w-full">
                       {agent.capabilities}
                     </span>
                   )}

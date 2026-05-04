@@ -1,14 +1,17 @@
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "opencode/gpt-5.2-codex";
 
+// Use opencode/* (Zen-routed) IDs — these work for both ChatGPT-OAuth users and
+// users with Zen API credentials. The openai/* equivalents fail for ChatGPT-OAuth
+// because gpt-5.2-codex and related codex models are not on the OAuth allowlist.
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "opencode/gpt-5.4", label: "opencode/gpt-5.4" },
+  { id: "opencode/gpt-5.2", label: "opencode/gpt-5.2" },
+  { id: "opencode/gpt-5.1-codex-max", label: "opencode/gpt-5.1-codex-max" },
+  { id: "opencode/gpt-5.1-codex-mini", label: "opencode/gpt-5.1-codex-mini" },
 ];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
