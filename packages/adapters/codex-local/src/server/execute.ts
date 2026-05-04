@@ -754,6 +754,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let watchdogTimeoutMs = 0;
     let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
     let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchdogLogPromise: Promise<unknown> | null = null;
 
     const watchdog =
       watchdogResolution.mode === "disabled"
@@ -772,9 +773,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 `timeoutMs=${watchdogResolution.timeoutMs} elapsedSinceLastEventMs=${watchdogElapsedMs} ` +
                 `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
                 `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
-              // Fire-and-forget: the 5s SIGKILL grace gives time to flush in practice.
-              // Not awaited to avoid delaying the kill signal on the hot path.
-              void onLog("stderr", logLine);
+              // Issue the log without awaiting on the kill hot path, but capture
+              // the promise so the surrounding try/finally can await flush before
+              // the run resolves. Without this the diagnostic that explains the
+              // kill could be dropped if the child exits faster than onLog flushes.
+              watchdogLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
               const target = killTarget;
               if (!target || (target.pid == null && target.processGroupId == null)) {
                 return;
@@ -840,6 +843,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (sigkillTimer) {
         clearTimeout(sigkillTimer);
         sigkillTimer = null;
+      }
+      if (watchdogLogPromise) {
+        await watchdogLogPromise;
+        watchdogLogPromise = null;
       }
     }
   };
