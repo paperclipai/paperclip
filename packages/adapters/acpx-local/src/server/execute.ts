@@ -21,6 +21,7 @@ import {
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipDesiredSkillNames,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -622,6 +623,21 @@ async function buildRuntime(input: {
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: input.ctx.executionTarget,
+    legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
+  });
+  const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
+  const effectiveExecutionCwd =
+    remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
+      ? remoteExecutionIdentity.remoteCwd
+      : cwd;
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceWorktreePath,
+    executionTargetIsRemote: remoteExecutionIdentity !== null,
+    executionCwd: effectiveExecutionCwd,
+  });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const acpxAgent = normalizeAgent(config);
@@ -659,14 +675,14 @@ async function buildRuntime(input: {
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   applyPaperclipWorkspaceEnv(env, {
-    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceStrategy,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
     workspaceBranch,
-    workspaceWorktreePath,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
     agentHome,
   });
   for (const [key, value] of Object.entries(envConfig)) {
@@ -718,11 +734,6 @@ async function buildRuntime(input: {
   const wrapperPath = wrapper?.wrapperPath ?? null;
   const overrides = wrapperPath ? { [acpxAgent]: wrapperPath } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
-  const executionTarget = readAdapterExecutionTarget({
-    executionTarget: input.ctx.executionTarget,
-    legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
-  });
-  const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const fingerprint = shortHash({
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,

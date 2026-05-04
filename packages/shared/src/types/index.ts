@@ -145,6 +145,8 @@ export type {
   IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueExecutionMonitorPolicy,
+  IssueExecutionMonitorState,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,

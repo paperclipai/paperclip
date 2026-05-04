@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import { clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -43,6 +44,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -1421,6 +1423,12 @@ const issueListSelect = {
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+  monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+  monitorAttemptCount: issues.monitorAttemptCount,
+  monitorNotes: issues.monitorNotes,
+  monitorScheduledBy: issues.monitorScheduledBy,
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
@@ -2726,23 +2734,67 @@ export function issueService(db: Db) {
             }
           }
         }
+        // Cache the project policy lookup for this insert. Both the
+        // default-settings block and the assignee-environment-promotion block
+        // need the same row; without caching they'd issue two round-trips.
+        let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
+        let projectPolicyLoaded = false;
+        const loadProjectPolicyOnce = async () => {
+          if (projectPolicyLoaded) return projectPolicyCached;
+          projectPolicyLoaded = true;
+          if (!issueData.projectId) return null;
+          const projectRow = await tx
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          projectPolicyCached = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+          return projectPolicyCached;
+        };
+
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
           issueData.projectId
         ) {
-          const project = await tx
-            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
           executionWorkspaceSettings =
             defaultIssueExecutionWorkspaceSettingsForProject(
               gateProjectExecutionWorkspacePolicy(
-                parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+                await loadProjectPolicyOnce(),
                 isolatedWorkspacesEnabled,
               ),
             ) as Record<string, unknown> | null;
+        }
+        if (data.assigneeAgentId && isolatedWorkspacesEnabled) {
+          const currentWorkspaceSettings = executionWorkspaceSettings == null
+            ? {}
+            : parseObject(executionWorkspaceSettings);
+          const issueHasEnvironmentSelection =
+            Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
+          // Don't promote the assignee agent's defaultEnvironmentId if either
+          // the issue or the project policy already specifies an environment.
+          // resolveExecutionWorkspaceEnvironmentId treats issue settings as
+          // higher priority than project policy, so promoting the agent's
+          // default to issue settings would invert the documented priority
+          // (project policy must win over agent default when explicitly set).
+          let projectHasEnvironmentSelection = false;
+          if (!issueHasEnvironmentSelection && issueData.projectId) {
+            const projectPolicy = await loadProjectPolicyOnce();
+            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
+          }
+          if (!issueHasEnvironmentSelection && !projectHasEnvironmentSelection) {
+            const assigneeAgent = await tx
+              .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
+              .from(agents)
+              .where(and(eq(agents.id, data.assigneeAgentId), eq(agents.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            if (typeof assigneeAgent?.defaultEnvironmentId === "string" && assigneeAgent.defaultEnvironmentId.length > 0) {
+              executionWorkspaceSettings = {
+                ...currentWorkspaceSettings,
+                environmentId: assigneeAgent.defaultEnvironmentId,
+              };
+            }
+          }
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -2815,6 +2867,15 @@ export function issueService(db: Db) {
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
         }
+        Object.assign(
+          values,
+          buildInitialIssueMonitorFields({
+            policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+            status: values.status ?? "backlog",
+            assigneeAgentId: values.assigneeAgentId ?? null,
+            assigneeUserId: values.assigneeUserId ?? null,
+          }),
+        );
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
@@ -2962,6 +3023,94 @@ export function issueService(db: Db) {
             issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
           ),
         ]);
+
+        // Mirror the create() path: when the assignee changes to a non-null
+        // agent, default the issue's executionWorkspaceSettings.environmentId
+        // to the new agent's defaultEnvironmentId. Skip when:
+        //   - this update explicitly sets executionWorkspaceSettings.environmentId
+        //     (caller is making a deliberate override; respect it), OR
+        //   - the project policy already specifies an environmentId (project
+        //     policy must win over agent default per the documented priority
+        //     order in resolveExecutionWorkspaceEnvironmentId), OR
+        //   - the issue already has an environmentId that was *not* the prior
+        //     assignee's default (i.e., the operator set it explicitly in an
+        //     earlier update; preserve their choice). When the existing
+        //     environmentId matches the prior assignee's default, treat it as
+        //     auto-promoted and refresh it to the new assignee's default.
+        const assigneeChanged =
+          issueData.assigneeAgentId !== undefined &&
+          issueData.assigneeAgentId !== null &&
+          issueData.assigneeAgentId !== existing.assigneeAgentId;
+        const explicitEnvInThisUpdate =
+          issueData.executionWorkspaceSettings !== undefined &&
+          Object.prototype.hasOwnProperty.call(
+            parseObject(issueData.executionWorkspaceSettings),
+            "environmentId",
+          );
+        if (assigneeChanged && isolatedWorkspacesEnabled && !explicitEnvInThisUpdate) {
+          let projectHasEnvironmentSelection = false;
+          if (nextProjectId) {
+            const projectRow = await tx
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
+              .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
+            const projectPolicy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
+          }
+          if (!projectHasEnvironmentSelection) {
+            const baseSettings = nextExecutionWorkspaceSettings == null
+              ? {}
+              : parseObject(nextExecutionWorkspaceSettings);
+            const existingEnvId = typeof baseSettings.environmentId === "string"
+              ? baseSettings.environmentId
+              : null;
+
+            // Look up both the prior assignee (to detect auto-promoted env)
+            // and the new assignee in a single query.
+            type AgentRow = { id: string; defaultEnvironmentId: string | null };
+            const agentRows: AgentRow[] = await tx
+              .select({ id: agents.id, defaultEnvironmentId: agents.defaultEnvironmentId })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.companyId, existing.companyId),
+                  inArray(
+                    agents.id,
+                    [issueData.assigneeAgentId!, existing.assigneeAgentId].filter(
+                      (value): value is string => typeof value === "string",
+                    ),
+                  ),
+                ),
+              );
+
+            const newAssignee = agentRows.find((row: AgentRow) => row.id === issueData.assigneeAgentId);
+            const previousAssignee = existing.assigneeAgentId
+              ? agentRows.find((row: AgentRow) => row.id === existing.assigneeAgentId)
+              : null;
+
+            const newDefaultEnvId =
+              typeof newAssignee?.defaultEnvironmentId === "string" && newAssignee.defaultEnvironmentId.length > 0
+                ? newAssignee.defaultEnvironmentId
+                : null;
+            const previousDefaultEnvId =
+              typeof previousAssignee?.defaultEnvironmentId === "string" && previousAssignee.defaultEnvironmentId.length > 0
+                ? previousAssignee.defaultEnvironmentId
+                : null;
+
+            const existingEnvWasAutoPromoted =
+              existingEnvId === null ||
+              (previousDefaultEnvId !== null && existingEnvId === previousDefaultEnvId);
+
+            if (newDefaultEnvId && existingEnvWasAutoPromoted) {
+              patch.executionWorkspaceSettings = {
+                ...baseSettings,
+                environmentId: newDefaultEnvId,
+              };
+            }
+          }
+        }
+
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
           currentGoalId: existing.goalId,
