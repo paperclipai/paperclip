@@ -125,6 +125,11 @@ function resolveDefaultPaperclipApiUrl(): string {
   return `http://${runtimeHost}:${runtimePort}`;
 }
 
+function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.PAPERCLIP_BRIDGE_DEBUG?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 function isAdapterExecutionTargetInstance(value: unknown): value is AdapterExecutionTarget {
   const parsed = parseObject(value);
   if (parsed.kind === "local") return true;
@@ -743,11 +748,18 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: adapterExecutionTargetTimeoutMs(target),
       shellCommand,
     });
+    const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
       maxBodyBytes,
       handleRequest: async (request) => {
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy ${request.method.trim().toUpperCase() || "GET"} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
         const headers = new Headers();
         for (const [key, value] of Object.entries(request.headers)) {
           if (value.trim().length === 0) continue;
@@ -762,6 +774,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
           signal: AbortSignal.timeout(30_000),
         });
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),
