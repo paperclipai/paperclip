@@ -125,6 +125,7 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
    * Legacy remote transport view. Prefer `executionTarget`, which is the
@@ -328,6 +329,23 @@ export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }
 
+export interface AdapterRuntimeCommandSpec {
+  /**
+   * The command Paperclip should execute for this adapter in the current config.
+   */
+  command: string;
+  /**
+   * Optional command name/path to probe for availability before launch.
+   * Defaults to `command` when omitted by the consumer.
+   */
+  detectCommand?: string | null;
+  /**
+   * Optional shell snippet that can install or expose the adapter command in a
+   * fresh remote runtime. It should be idempotent.
+   */
+  installCommand?: string | null;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -406,6 +424,11 @@ export interface ServerAdapterModule {
    * rather than reading config.paperclipRuntimeSkills.
    */
   requiresMaterializedRuntimeSkills?: boolean;
+  /**
+   * Optional: describe how this adapter's runtime command should be launched
+   * and provisioned in fresh remote environments such as sandboxes.
+   */
+  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
 }
 
 // ---------------------------------------------------------------------------
