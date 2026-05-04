@@ -24,7 +24,7 @@ while [[ "${1:-}" == -* ]]; do
   case "$1" in
     -v|--verbose) VERBOSE=true; shift ;;
     *)            echo "Unknown flag: $1" >&2
-                  echo "usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|status|logs|env}" >&2
+                  echo "usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|build|status|logs|env}" >&2
                   exit 1 ;;
   esac
 done
@@ -231,7 +231,7 @@ print_env_summary() {
 
 usage() {
   cat >&2 <<EOF
-usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|status|logs [service]|env}
+usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|build|status|logs [service]|env}
 
   -v, --verbose  Show environment summary on start/restart and log each
                  shell variable that is unset before invoking compose.
@@ -240,6 +240,10 @@ usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|status|logs 
   stop      Stop containers; keep them and all volumes.
   restart   stop, then start.
   teardown  docker compose down (removes containers, KEEPS volumes).
+  build     Rebuild the server image (no cache reuse for app source layers).
+            Run after pulling/cherry-picking changes to server or UI source.
+            Does not start or restart containers — follow with `start` or
+            `restart` to pick up the new image.
   status    docker compose ps.
   logs      Tail logs (optional service name).
   env       Print env diagnostics: op:// refs by source, and the env block
@@ -384,6 +388,7 @@ case "${1:-}" in
   stop)     without_secrets stop ;;
   restart)  without_secrets stop; print_env_summary; with_secrets up -d && print_server_url ;;
   teardown) without_secrets down ;;
+  build)    without_secrets build server ;;
   status)   without_secrets ps ;;
   logs)     without_secrets logs -f "${@:2}" ;;
   env)      env_diagnostics ;;
