@@ -576,7 +576,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
   });
 
-  it("does not coalesce live routine runs with different resolved variables", async () => {
+  it("coalesces live coalesce_if_active routine runs across resolved variable variants (THEA-2270)", async () => {
+    // THEA-2270: coalesce_if_active is documented as "if a live execution
+    // exists, coalesce subsequent fires into it." The previous payload-fingerprint
+    // behavior degraded the policy to always_enqueue for variable / event-driven
+    // routines. The new contract is: coalesce_if_active collapses on routine
+    // identity alone. Per-payload independence is the always_enqueue contract.
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const variableRoutine = await svc.create(
       companyId,
@@ -608,10 +613,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     expect(first.status).toBe("issue_created");
-    expect(second.status).toBe("issue_created");
-    expect(first.linkedIssueId).toBeTruthy();
-    expect(second.linkedIssueId).toBeTruthy();
-    expect(first.linkedIssueId).not.toBe(second.linkedIssueId);
+    expect(second.status).toBe("coalesced");
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
+    expect(second.coalescedIntoRunId).toBe(first.id);
 
     const routineIssues = await db
       .select({
@@ -622,12 +626,73 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, variableRoutine.id));
 
+    // Only the first fire's issue exists; second fire collapsed into it.
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0].title).toBe("pre-pr for feature/a");
+
+    // The dispatchFingerprint on the second routine_run is still recorded
+    // per-payload for audit (only the lookup scope changed).
+    const runs = await db
+      .select({
+        id: routineRuns.id,
+        status: routineRuns.status,
+        dispatchFingerprint: routineRuns.dispatchFingerprint,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, variableRoutine.id));
+
+    expect(runs).toHaveLength(2);
+    expect(new Set(runs.map((r) => r.dispatchFingerprint)).size).toBe(2);
+  });
+
+  it("keeps payload-scoped independence for always_enqueue routines (THEA-2270)", async () => {
+    // The always_enqueue policy short-circuits past the activeIssue check
+    // entirely (routines.ts:906 `!== "always_enqueue"`), so per-payload runs
+    // remain independent regardless of the AC #4 coalesce-fingerprint change.
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const enqueueRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "pre-pr for {{branch}}",
+        description: "Create a pre-PR from {{branch}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "branch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    const first = await svc.runRoutine(enqueueRoutine.id, {
+      source: "manual",
+      variables: { branch: "feature/a" },
+    });
+    const second = await svc.runRoutine(enqueueRoutine.id, {
+      source: "manual",
+      variables: { branch: "feature/b" },
+    });
+
+    expect(first.status).toBe("issue_created");
+    expect(second.status).toBe("issue_created");
+    expect(first.linkedIssueId).not.toBe(second.linkedIssueId);
+
+    const routineIssues = await db
+      .select({ id: issues.id, title: issues.title })
+      .from(issues)
+      .where(eq(issues.originId, enqueueRoutine.id));
+
     expect(routineIssues).toHaveLength(2);
     expect(routineIssues.map((issue) => issue.title).sort()).toEqual([
       "pre-pr for feature/a",
       "pre-pr for feature/b",
     ]);
-    expect(new Set(routineIssues.map((issue) => issue.originFingerprint)).size).toBe(2);
   });
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {

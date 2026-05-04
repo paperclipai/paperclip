@@ -902,7 +902,12 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+        // THEA-2270 — For coalesce_if_active, collapse on routine identity alone.
+        // Event-driven webhook routines have a unique payload (and therefore
+        // unique fingerprint) per fire, so a fingerprint-scoped lookup never
+        // finds the live issue and the policy degrades to always_enqueue.
+        const coalesceFingerprint = input.routine.concurrencyPolicy === "coalesce_if_active" ? null : dispatchFingerprint;
+        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, coalesceFingerprint);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
@@ -962,7 +967,12 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+          // Mirror the pre-create lookup: coalesce_if_active ignores fingerprint
+          // so concurrent inserts that lost the unique-index race still find
+          // the surviving open execution issue and coalesce instead of erroring
+          // up the call stack.
+          const conflictFingerprint = input.routine.concurrencyPolicy === "coalesce_if_active" ? null : dispatchFingerprint;
+          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, conflictFingerprint);
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
