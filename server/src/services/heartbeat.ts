@@ -127,6 +127,7 @@ import {
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import { recoveryService } from "./recovery/service.js";
+import { checkVestigialIssue } from "./recovery/vestigial.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
@@ -4650,6 +4651,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+
+    if (issueId) {
+      const issueRecord = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (issueRecord) {
+        const vestigialDetection = await checkVestigialIssue(db, issueRecord);
+        if (vestigialDetection) {
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "vestigial_issue_detected",
+            stream: "system",
+            level: "warn",
+            message: `Vestigial issue suppressed before retry: ${vestigialDetection.reason}`,
+            payload: { issueId, ...vestigialDetection.details },
+          });
+          await issuesSvc.update(issueId, { status: "cancelled" });
+          return {
+            outcome: "not_scheduled" as const,
+            reason: `Vestigial issue: ${vestigialDetection.reason}`,
+            errorCode: "issue_cancelled" as const,
+            issueId,
+          };
+        }
+      }
+    }
+
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {
@@ -7405,6 +7435,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: "todo" | "in_progress";
     latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
   }) {
+    if (input.latestRun?.errorCode === "payload_too_large") {
+      const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+      return (
+        `Run aborted before dispatch: the assembled prompt payload exceeds the 20 MB hard cap.${failureSummary ?? ""} ` +
+        "No retry will be attempted. Moving issue to `blocked` for human intervention — reduce context or clear session history."
+      );
+    }
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     if (input.status === "todo") {
       return (
@@ -7709,6 +7746,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldBlockImmediately =
+        run.errorCode === "payload_too_large" ||
         issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||

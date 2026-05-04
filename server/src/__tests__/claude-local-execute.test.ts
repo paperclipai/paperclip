@@ -1088,4 +1088,80 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("aborts with payload_too_large errorCode without spawning claude when prompt exceeds 20MB", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-too-large-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    const capturePath = path.join(root, "capture.json");
+    try {
+      const logs: Array<{ stream: string; chunk: string }> = [];
+      const result = await execute({
+        runId: "run-too-large",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "x".repeat(21 * 1024 * 1024),
+        },
+        context: { issueId: "PRO-9999" },
+        authToken: "tok",
+        onLog: async (stream, chunk) => { logs.push({ stream, chunk }); },
+        onMeta: async () => {},
+      });
+      expect(result.errorCode).toBe("payload_too_large");
+      expect(result.exitCode).toBe(1);
+      expect(result.timedOut).toBe(false);
+      expect(result.resultJson).toMatchObject({
+        type: "payload_too_large",
+        thresholdBytes: 20971520,
+      });
+      const payloadBytes = (result.resultJson as any).payloadBytes as number;
+      expect(payloadBytes).toBeGreaterThanOrEqual(20971520);
+      await expect(fs.stat(capturePath)).rejects.toThrow();
+      const stderrChunks = logs.filter(l => l.stream === "stderr").map(l => l.chunk).join("");
+      const loggedObj = JSON.parse(stderrChunks.replace("[paperclip] ", "").trim());
+      expect(loggedObj.type).toBe("payload_too_large");
+      expect(loggedObj.payloadBytes).toBeGreaterThanOrEqual(20971520);
+      expect(loggedObj.issueId).toBe("PRO-9999");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits payload_warning to stderr and proceeds normally when prompt is between 8MB and 20MB", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-warn-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const logs: Array<{ stream: string; chunk: string }> = [];
+      const result = await execute({
+        runId: "run-payload-warn",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "x".repeat(9 * 1024 * 1024),
+        },
+        context: { issueId: "PRO-9998" },
+        authToken: "tok",
+        onLog: async (stream, chunk) => { logs.push({ stream, chunk }); },
+        onMeta: async () => {},
+      });
+      expect(result.errorCode).toBeUndefined();
+      expect(result.timedOut).toBe(false);
+      const stderrChunks = logs.filter(l => l.stream === "stderr").map(l => l.chunk).join("");
+      const warningLine = stderrChunks.match(/\{.*"type":"payload_warning".*\}/)?.[0];
+      expect(warningLine).toBeDefined();
+      const loggedObj = JSON.parse(warningLine!);
+      expect(loggedObj.payloadBytes).toBeGreaterThanOrEqual(8388608);
+      expect(loggedObj.payloadBytes).toBeLessThan(20971520);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
