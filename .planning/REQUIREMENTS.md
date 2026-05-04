@@ -10,9 +10,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### RT2 Event/Projector Layer
 
-- [ ] **RT2-01**: RT2 event stream이 append-only projection pattern을 따르고 replay-safe projector state를 유지한다.
-- [ ] **RT2-02**: RT2 execution lifecycle event가 Multica runtime과 integrated되어 dispatch/heartbeat/cancel evidence를 갖는다.
-- [ ] **RT2-03**: Work/Task/Deliverable lifecycle이 RT2-native operation contract를 따르고 Paperclip legacy pattern이 없다.
+- [x] **RT2-01**: RT2 event stream이 append-only projection pattern을 따르고 replay-safe projector state를 유지한다.
+- [x] **RT2-02**: RT2 execution lifecycle event가 Multica runtime과 integrated되어 dispatch/heartbeat/cancel evidence를 갖는다.
+- [x] **RT2-03**: Work/Task/Deliverable lifecycle이 RT2-native operation contract를 따르고 Paperclip legacy pattern이 없다.
 
 ### API Contract Alignment
 
@@ -53,9 +53,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RT2-01 | Phase 84 | Pending |
-| RT2-02 | Phase 84 | Pending |
-| RT2-03 | Phase 85 | Pending |
+| RT2-01 | Phase 84 | Complete |
+| RT2-02 | Phase 84 | Complete |
+| RT2-03 | Phase 84 | Complete |
 | API-01 | Phase 85 | Pending |
 | API-02 | Phase 86 | Pending |
 | API-03 | Phase 86 | Pending |
