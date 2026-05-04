@@ -8,6 +8,7 @@ interface BobWorkspaceSyncInput {
   companyId: string;
   agentId: string;
   agentName: string;
+  agentRole: string;
   agentCapabilities: string | null;
   agentInstructions?: string;
   mode: string;
@@ -40,7 +41,6 @@ interface BobMcpConfig {
   mcpServers: Record<string, BobMcpServer>;
 }
 
-const PAPERCLIP_MODE_SLUG = "advanced";
 const PAPERCLIP_MCP_SERVER_NAME = "paperclip";
 
 /**
@@ -77,12 +77,35 @@ async function readExistingMcpConfig(bobDir: string): Promise<BobMcpConfig> {
   return { mcpServers: {} };
 }
 
+const ROLE_GROUPS: Record<string, string[]> = {
+  ceo:      ["read", "command", "mcp"],
+  cto:      ["read", "command", "mcp"],
+  cmo:      ["read", "mcp"],
+  cfo:      ["read", "mcp"],
+  coo:      ["read", "command", "mcp"],
+  vp:       ["read", "command", "mcp"],
+  manager:  ["read", "mcp"],
+  engineer: ["read", "edit", "command", "mcp"],
+};
+
+const ROLE_WHEN_TO_USE: Record<string, string> = {
+  ceo:      "Strategic oversight, executive decisions, and company-level approvals.",
+  cto:      "Architecture review, technical planning, and engineering governance.",
+  cmo:      "Marketing strategy, content direction, and brand decisions.",
+  cfo:      "Financial analysis, budget review, and cost decisions.",
+  coo:      "Operations coordination, process management, and cross-team work.",
+  vp:       "Division leadership, team management, and delivery oversight.",
+  manager:  "Task coordination, team management, and issue triage.",
+  engineer: "Coding, debugging, refactoring, testing, and validation.",
+};
+
 /**
  * Generates the Paperclip-managed custom mode for Bob Shell
  */
 function generatePaperclipMode(
   mode: string,
   agentName: string,
+  agentRole: string,
   agentCapabilities: string | null,
   agentInstructions: string | undefined,
   modeConfig?: Record<string, unknown>
@@ -128,6 +151,7 @@ function generatePaperclipMode(
     roleDefinition: "You are a repository-aware coding agent operating under Paperclip task control.",
     whenToUse:
       (typeof modeConfig?.whenToUse === "string" && modeConfig.whenToUse.trim()) ||
+      ROLE_WHEN_TO_USE[agentRole] ||
       "Use for Paperclip-managed coding, debugging, refactoring, and validation work.",
     customInstructions,
     groups:
@@ -135,6 +159,7 @@ function generatePaperclipMode(
         modeConfig.groups.every((g): g is string => typeof g === "string") &&
         modeConfig.groups.length > 0 &&
         modeConfig.groups) ||
+      ROLE_GROUPS[agentRole] ||
       defaultGroups,
   };
 }
@@ -146,7 +171,7 @@ function mergeCustomModes(
   existing: BobCustomModesConfig,
   paperclipMode: BobCustomMode,
 ): BobCustomModesConfig {
-  const filtered = existing.customModes.filter((m) => m.slug !== PAPERCLIP_MODE_SLUG);
+  const filtered = existing.customModes.filter((m) => !m.slug.startsWith("paperclip-"));
   return {
     customModes: [...filtered, paperclipMode],
   };
@@ -383,14 +408,14 @@ ${skillContent}
  * Syncs .bob/ workspace configuration for Paperclip agent
  */
 export async function syncBobWorkspace(input: BobWorkspaceSyncInput): Promise<void> {
-  const { cwd, companyId, agentId, agentName, agentCapabilities, agentInstructions, mode, modeConfig, skills, env, onLog } = input;
+  const { cwd, companyId, agentId, agentName, agentRole, agentCapabilities, agentInstructions, mode, modeConfig, skills, env, onLog } = input;
 
   const bobDir = path.join(cwd, ".bob");
   await fs.mkdir(bobDir, { recursive: true });
 
   // Sync custom_modes.yaml
   const existingModes = await readExistingCustomModes(bobDir);
-  const paperclipMode = generatePaperclipMode(mode, agentName, agentCapabilities, agentInstructions, modeConfig);
+  const paperclipMode = generatePaperclipMode(mode, agentName, agentRole, agentCapabilities, agentInstructions, modeConfig);
   const mergedModes = mergeCustomModes(existingModes, paperclipMode);
   const modesYaml = yaml.stringify(mergedModes);
   await fs.writeFile(path.join(bobDir, "custom_modes.yaml"), modesYaml, "utf-8");

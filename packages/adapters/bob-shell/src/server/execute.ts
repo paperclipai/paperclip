@@ -43,6 +43,7 @@ interface BobRuntimeConfig {
   resolvedCommand: string;
   cwd: string;
   mode: string;
+  agentRole: string;
   workspaceId: string | null;
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
@@ -57,7 +58,19 @@ async function buildBobRuntimeConfig(input: BobExecutionInput): Promise<BobRunti
   const { runId, agent, config, context, authToken } = input;
 
   const command = asString(config.command, "bob");
-  const mode = asString(config.mode, "advanced");
+  const ROLE_MODE_MAP: Record<string, string> = {
+    ceo:      "paperclip-ceo",
+    cto:      "paperclip-cto",
+    cmo:      "paperclip-cmo",
+    cfo:      "paperclip-cfo",
+    coo:      "paperclip-coo",
+    vp:       "paperclip-vp",
+    manager:  "paperclip-manager",
+    engineer: "paperclip-engineer",
+  };
+  const agentRole = asString((agent as unknown as Record<string, unknown>).role, "general");
+  const defaultMode = ROLE_MODE_MAP[agentRole] ?? "paperclip-agent";
+  const mode = asString(config.mode, defaultMode);
   
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -212,6 +225,7 @@ async function buildBobRuntimeConfig(input: BobExecutionInput): Promise<BobRunti
     resolvedCommand,
     cwd,
     mode,
+    agentRole,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -321,6 +335,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
     cwd,
     mode,
+    agentRole,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -362,6 +377,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     agentId: agent.id,
     agentName: agent.name,
+    agentRole: agentRole,
     agentCapabilities: null,
     mode,
     modeConfig,
@@ -406,6 +422,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     agentId: agent.id,
     agentName: agent.name,
+    agentRole: agentRole,
     agentCapabilities: null,
     agentInstructions: combinedInstructionsContents ?? undefined,
     mode,

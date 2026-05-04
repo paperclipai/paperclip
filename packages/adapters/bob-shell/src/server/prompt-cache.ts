@@ -152,6 +152,7 @@ export async function prepareBobPromptBundle(input: {
   companyId: string;
   agentId: string;
   agentName: string;
+  agentRole: string;
   agentCapabilities: string | null;
   mode: string;
   modeConfig: Record<string, unknown>;
@@ -163,6 +164,7 @@ export async function prepareBobPromptBundle(input: {
     companyId,
     agentId,
     agentName,
+    agentRole,
     agentCapabilities,
     mode,
     modeConfig,
@@ -188,7 +190,7 @@ export async function prepareBobPromptBundle(input: {
 
   // Generate custom_modes.yaml
   const customModesPath = path.join(bobDir, "custom_modes.yaml");
-  const customModesContent = generateCustomModesYaml(mode, agentName, agentCapabilities, modeConfig);
+  const customModesContent = generateCustomModesYaml(mode, agentName, agentRole, agentCapabilities, modeConfig);
   await ensureReadableFile(customModesPath, customModesContent);
 
   // Generate mcp.json
@@ -215,29 +217,58 @@ export async function prepareBobPromptBundle(input: {
   };
 }
 
+const ROLE_GROUPS: Record<string, string[]> = {
+  ceo:      ["read", "command", "mcp"],
+  cto:      ["read", "command", "mcp"],
+  cmo:      ["read", "mcp"],
+  cfo:      ["read", "mcp"],
+  coo:      ["read", "command", "mcp"],
+  vp:       ["read", "command", "mcp"],
+  manager:  ["read", "mcp"],
+  engineer: ["read", "edit", "command", "mcp"],
+};
+
+const ROLE_WHEN_TO_USE: Record<string, string> = {
+  ceo:      "Strategic oversight, executive decisions, and company-level approvals.",
+  cto:      "Architecture review, technical planning, and engineering governance.",
+  cmo:      "Marketing strategy, content direction, and brand decisions.",
+  cfo:      "Financial analysis, budget review, and cost decisions.",
+  coo:      "Operations coordination, process management, and cross-team work.",
+  vp:       "Division leadership, team management, and delivery oversight.",
+  manager:  "Task coordination, team management, and issue triage.",
+  engineer: "Coding, debugging, refactoring, testing, and validation.",
+};
+
 function generateCustomModesYaml(
   mode: string,
   agentName: string,
+  agentRole: string,
   agentCapabilities: string | null,
   modeConfig: Record<string, unknown>,
 ): string {
   const role = agentCapabilities || `You are ${agentName}, a Paperclip agent.`;
-  const whenToUse = `Use this mode when working on Paperclip tasks as agent ${agentName}.`;
-  
+  const whenToUse =
+    (typeof modeConfig.whenToUse === "string" && modeConfig.whenToUse.trim()) ||
+    ROLE_WHEN_TO_USE[agentRole] ||
+    `Use this mode when working on Paperclip tasks as agent ${agentName}.`;
+
   // Extract custom instructions from modeConfig if provided
-  const customInstructions = typeof modeConfig.customInstructions === "string" 
-    ? modeConfig.customInstructions 
+  const customInstructions = typeof modeConfig.customInstructions === "string"
+    ? modeConfig.customInstructions
     : "";
-  
+
   const instructions = [
     "You are operating within the Paperclip control plane.",
     "Use the Paperclip MCP server to interact with tasks, approvals, and the board.",
     customInstructions,
   ].filter(Boolean).join("\n\n");
 
-  const toolGroups = Array.isArray(modeConfig.toolGroups) 
-    ? modeConfig.toolGroups 
-    : ["read", "edit", "command", "browser", "mcp"];
+  const toolGroups =
+    (Array.isArray(modeConfig.toolGroups) && modeConfig.toolGroups.length > 0
+      ? modeConfig.toolGroups
+      : null) ??
+    ROLE_GROUPS[agentRole] ??
+    ["read", "edit", "command", "mcp"];
 
   const yaml = `${mode}:
   name: "${agentName}"
