@@ -1126,6 +1126,7 @@ export function issueRoutes(
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
       ]);
+    const resolvedExecutionWorkspaceId = issue.executionWorkspaceId ?? currentExecutionWorkspace?.id ?? null;
 
     res.json({
       issue: {
@@ -1144,6 +1145,8 @@ export function issueRoutes(
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        executionWorkspaceId: resolvedExecutionWorkspaceId,
+        currentExecutionWorkspace,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,

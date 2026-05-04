@@ -343,6 +343,11 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
+    expect(res.body.issue.executionWorkspaceId).toBe("55555555-5555-4555-8555-555555555555");
+    expect(res.body.issue.currentExecutionWorkspace).toEqual(expect.objectContaining({
+      id: "55555555-5555-4555-8555-555555555555",
+      mode: "isolated_workspace",
+    }));
     expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
       id: "55555555-5555-4555-8555-555555555555",
       mode: "isolated_workspace",
