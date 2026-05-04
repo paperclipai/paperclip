@@ -130,6 +130,18 @@ export interface Rt2BoardChecklistItem {
   updatedAt: Date;
 }
 
+export interface Rt2BoardCardLabel {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface Rt2BoardCardMember {
+  userId: string;
+  name: string;
+  avatarUrl?: string | null;
+}
+
 export interface Rt2BoardAttachmentPreview {
   id: string;
   issueId: string;
@@ -151,6 +163,8 @@ export interface Rt2BoardCardMeta {
   checklistDone: number;
   checklistTotal: number;
   checklistProgress: number;
+  labels: Rt2BoardCardLabel[];
+  members: Rt2BoardCardMember[];
 }
 
 export interface Rt2BoardOverview {

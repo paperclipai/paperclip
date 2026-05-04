@@ -150,6 +150,8 @@ export type {
   Rt2TaskDetail,
   Rt2BoardQualityStatus,
   Rt2BoardChecklistItem,
+  Rt2BoardCardLabel,
+  Rt2BoardCardMember,
   Rt2BoardAttachmentPreview,
   Rt2BoardCardMeta,
   Rt2BoardOverview,

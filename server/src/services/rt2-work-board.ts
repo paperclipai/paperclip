@@ -29,6 +29,8 @@ import {
   type UpsertRt2CaptureSource,
   type UpdateRt2BoardCard,
   type UpdateRt2BoardChecklistItem,
+  type Rt2BoardCardLabel,
+  type Rt2BoardCardMember,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { issueService } from "./issues.js";
@@ -401,12 +403,12 @@ function buildReliabilityMetrics(drafts: CaptureDraftView[]) {
   };
 }
 
-function cardSummary(row: CardRow | undefined, checklist: ReturnType<typeof toChecklist>[], attachments: ReturnType<typeof toAttachment>[]) {
+function cardSummary(row: CardRow | undefined, checklist: ReturnType<typeof toChecklist>[], attachments: ReturnType<typeof toAttachment>[], labels: Rt2BoardCardLabel[] = [], members: Rt2BoardCardMember[] = []) {
   const checklistDone = checklist.filter((item) => item.checked).length;
   const checklistTotal = checklist.length;
   return {
     issueId: row?.issueId ?? "",
-    dueDate: row?.dueDate ?? null,
+    dueDate: row?.dueDate ? new Date(row.dueDate).toISOString().slice(0, 10) : null,
     qualityStatus: (row?.qualityStatus ?? "none") as "none" | "pending_review" | "reviewed" | "needs_work",
     priceGold: row?.priceGold ?? null,
     detailNotes: row?.detailNotes ?? null,
@@ -415,6 +417,8 @@ function cardSummary(row: CardRow | undefined, checklist: ReturnType<typeof toCh
     checklistDone,
     checklistTotal,
     checklistProgress: checklistTotal === 0 ? 0 : Math.round((checklistDone / checklistTotal) * 100),
+    labels,
+    members,
   };
 }
 
@@ -622,10 +626,11 @@ export function rt2WorkBoardService(db: Db) {
         if (issue.assigneeUserId) assigneeSet.add(`user:${issue.assigneeUserId}`);
         if (issue.goalId) okrSet.add(issue.goalId);
         const card = cardsByIssue.get(issue.id);
-        const dueDate = card?.dueDate ?? null;
-        if (!dueDate) due.add("none");
-        else if (dueDate < today) due.add("overdue");
-        else if (dueDate === today) due.add("today");
+        const dueDateVal = card?.dueDate ?? null;
+        const dueDateStr = dueDateVal ? new Date(dueDateVal).toISOString().slice(0, 10) : null;
+        if (!dueDateStr) due.add("none");
+        else if (dueDateStr < today) due.add("overdue");
+        else if (dueDateStr === today) due.add("today");
         else due.add("upcoming");
         qualityStatuses.add((card?.qualityStatus ?? "none") as "none" | "pending_review" | "reviewed" | "needs_work");
       }
@@ -649,10 +654,11 @@ export function rt2WorkBoardService(db: Db) {
     updateCard: async (companyId: string, issueId: string, actorUserId: string, input: UpdateRt2BoardCard) => {
       await assertIssue(companyId, issueId);
       await ensureCard(companyId, issueId, actorUserId);
+      const dueDateValue = input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null;
       const [row] = await db
         .update(rt2WorkBoardCards)
         .set({
-          dueDate: input.dueDate === undefined ? undefined : input.dueDate,
+          dueDate: dueDateValue,
           qualityStatus: input.qualityStatus,
           priceGold: input.priceGold === undefined ? undefined : input.priceGold,
           detailNotes: input.detailNotes === undefined ? undefined : input.detailNotes,
