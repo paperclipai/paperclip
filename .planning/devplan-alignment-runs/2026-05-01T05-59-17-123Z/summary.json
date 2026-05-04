@@ -1,0 +1,437 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-01T05:59:17.123Z",
+  "status": "passed",
+  "baselineScorePct": 64,
+  "currentScorePct": 91,
+  "counts": {
+    "rows": 10,
+    "blockers": 0,
+    "passed": 8,
+    "byStatus": {
+      "complete": 8,
+      "partial": 1,
+      "missing": 1
+    }
+  },
+  "blockers": [],
+  "passed": [
+    {
+      "category": "passed",
+      "row": "alignment-truth",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "alignment-truth complete claim has 3 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "identity-boundary",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "identity-boundary complete claim has 3 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "identity-regression",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "identity-regression complete claim has 2 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "daily-cockpit",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "daily-cockpit complete claim has 5 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "mission-okr-rollup",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "mission-okr-rollup complete claim has 5 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "multica-runtime",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "multica-runtime complete claim has 5 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "wikillm-memory",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "wikillm-memory complete claim has 15 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "graphify-v3-sidecar",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "graphify-v3-sidecar complete claim has 9 evidence anchor(s)."
+    }
+  ],
+  "rows": [
+    {
+      "evidence": [
+        {
+          "type": "gate",
+          "path": "scripts/rt2-devplan-alignment-gate.mjs"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/pages/rt2/PlanAlignmentPage.tsx"
+        },
+        {
+          "type": "context",
+          "path": ".planning/phases/65-devplan-truth-and-identity-cleanup/65-CONTEXT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "ALIGN-01",
+        "ALIGN-02"
+      ],
+      "engineParity": false,
+      "id": "alignment-truth",
+      "axis": "DevPlan truth matrix",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "65"
+    },
+    {
+      "evidence": [
+        {
+          "type": "doc",
+          "path": "doc/REALTYCOON2-COMPATIBILITY.md"
+        },
+        {
+          "type": "doc",
+          "path": "doc/PRODUCT.md"
+        },
+        {
+          "type": "doc",
+          "path": "doc/SPEC.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "IDENTITY-01",
+        "IDENTITY-03"
+      ],
+      "engineParity": false,
+      "id": "identity-boundary",
+      "axis": "RealTycoon2 product identity boundary",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "65"
+    },
+    {
+      "evidence": [
+        {
+          "type": "gate",
+          "path": "scripts/rt2-identity-gate.mjs"
+        },
+        {
+          "type": "test",
+          "path": "scripts/rt2-identity-gate.test.mjs"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "IDENTITY-02"
+      ],
+      "engineParity": false,
+      "id": "identity-regression",
+      "axis": "Product-facing identity regression scan",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "65"
+    },
+    {
+      "evidence": [
+        {
+          "type": "ui",
+          "path": "ui/src/pages/rt2/DailyWorkPage.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2DailyBoard.tsx"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2DailyBoard.test.tsx"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-work-board.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-task-routes.test.ts"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "DAILY-01",
+        "DAILY-02",
+        "DAILY-03"
+      ],
+      "engineParity": false,
+      "id": "daily-cockpit",
+      "axis": "Daily Work cockpit",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "66"
+    },
+    {
+      "evidence": [
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-daily-report.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-daily-report.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-daily-report.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-daily-report-routes.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2DailyBoard.test.tsx"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "DAILY-03"
+      ],
+      "engineParity": false,
+      "id": "mission-okr-rollup",
+      "axis": "Mission to To-Do hierarchy",
+      "status": "complete",
+      "weight": 8,
+      "ownerPhase": "66"
+    },
+    {
+      "evidence": [
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-task-execution.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-tasks.ts"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2TaskPanel.tsx"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-task-routes.test.ts"
+        },
+        {
+          "type": "audit",
+          "path": ".planning/research/ENGINE-REFERENCE-AUDIT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "RUNTIME-01",
+        "RUNTIME-02",
+        "RUNTIME-03"
+      ],
+      "engineParity": true,
+      "id": "multica-runtime",
+      "axis": "Multica-style runtime execution",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "67"
+    },
+    {
+      "evidence": [
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-knowledge.ts"
+        },
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-governance.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-knowledge-projector.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-jarvis.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-knowledge.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-jarvis.ts"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/pages/rt2/KnowledgePage.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2QualityPanel.tsx"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-knowledge.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-knowledge-projector.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-knowledge-routes.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-phase6-intelligence.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2QualityPanel.test.tsx"
+        },
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_v33_wiki_pages.ts"
+        },
+        {
+          "type": "audit",
+          "path": ".planning/research/ENGINE-REFERENCE-AUDIT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "WIKI-01",
+        "WIKI-02",
+        "WIKI-03"
+      ],
+      "engineParity": true,
+      "id": "wikillm-memory",
+      "axis": "wikiLLM living memory workflow",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "68"
+    },
+    {
+      "evidence": [
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_v33_graph_projection.ts"
+        },
+        {
+          "type": "migration",
+          "path": "packages/db/src/migrations/0106_rt2_corpus_graph_sidecar.sql"
+        },
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-graph.ts"
+        },
+        {
+          "type": "shared",
+          "path": "packages/shared/src/validators/rt2-graph.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-corpus-graph.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-corpus-graph.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-graph.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-corpus-graph.test.ts"
+        },
+        {
+          "type": "audit",
+          "path": ".planning/research/ENGINE-REFERENCE-AUDIT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "GRAPH-01",
+        "GRAPH-02",
+        "GRAPH-03",
+        "GRAPH-04"
+      ],
+      "engineParity": true,
+      "id": "graphify-v3-sidecar",
+      "axis": "Graphify v3 corpus graph sidecar",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "69"
+    },
+    {
+      "evidence": [
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-personal-pnl.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-agent-marketplace.ts"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2GamificationPanel.tsx"
+        }
+      ],
+      "gaps": [
+        "Primary navigation loop and CareerMate progression tied to ledger/quality evidence remain Phase 70 scope."
+      ],
+      "requirements": [
+        "ECON-01",
+        "ECON-02",
+        "ECON-03"
+      ],
+      "engineParity": false,
+      "id": "economy-loop",
+      "axis": "Economy, marketplace, P&L, CareerMate loop",
+      "status": "partial",
+      "weight": 12,
+      "ownerPhase": "70"
+    },
+    {
+      "evidence": [
+        {
+          "type": "roadmap",
+          "path": ".planning/ROADMAP.md"
+        },
+        {
+          "type": "requirements",
+          "path": ".planning/REQUIREMENTS.md"
+        }
+      ],
+      "gaps": [
+        "Final score delta audit waits for Phases 66-70 and belongs to Phase 71."
+      ],
+      "requirements": [
+        "GATE-01",
+        "GATE-02"
+      ],
+      "engineParity": false,
+      "id": "v31-acceptance-gate",
+      "axis": "v3.1 acceptance score delta",
+      "status": "missing",
+      "weight": 4,
+      "ownerPhase": "71"
+    }
+  ],
+  "runDir": ".planning/devplan-alignment-runs/2026-05-01T05-59-17-123Z"
+}

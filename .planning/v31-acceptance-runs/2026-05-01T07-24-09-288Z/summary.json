@@ -1,0 +1,569 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-01T07:24:09.288Z",
+  "status": "blocker",
+  "baselineScorePct": 64,
+  "currentScorePct": 100,
+  "scoreDeltaPct": 36,
+  "alignmentRunDir": ".planning/devplan-alignment-runs/2026-05-01T07-24-09-288Z",
+  "counts": {
+    "checks": 8,
+    "checksPassed": 8,
+    "blockers": 9,
+    "acceptedDebt": 0,
+    "futureScope": 5,
+    "requiredEvidence": 63,
+    "missingEvidence": 0,
+    "dirtyEvidenceAnchors": 9
+  },
+  "checks": [
+    {
+      "id": "test-devplan-alignment-gate",
+      "area": "devplan-alignment",
+      "command": "pnpm run test:devplan-alignment-gate",
+      "evidence": [
+        "scripts/rt2-devplan-alignment-gate.test.mjs"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:09.291Z",
+      "endedAt": "2026-05-01T07:24:09.821Z",
+      "durationMs": 530,
+      "stdout": "> paperclip@ test:devplan-alignment-gate C:\\Real-Tycoon 2\n> node scripts/rt2-devplan-alignment-gate.test.mjs\n\nrt2-devplan-alignment-gate tests passed",
+      "stderr": ""
+    },
+    {
+      "id": "test-identity-gate",
+      "area": "identity",
+      "command": "pnpm run test:identity-gate",
+      "evidence": [
+        "scripts/rt2-identity-gate.test.mjs"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:09.821Z",
+      "endedAt": "2026-05-01T07:24:10.234Z",
+      "durationMs": 413,
+      "stdout": "> paperclip@ test:identity-gate C:\\Real-Tycoon 2\n> node scripts/rt2-identity-gate.test.mjs\n\nrt2-identity-gate tests passed",
+      "stderr": ""
+    },
+    {
+      "id": "rt2-identity-gate",
+      "area": "identity",
+      "command": "pnpm run rt2:identity-gate",
+      "evidence": [
+        "scripts/rt2-identity-gate.mjs"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:10.234Z",
+      "endedAt": "2026-05-01T07:24:10.657Z",
+      "durationMs": 423,
+      "stdout": "> paperclip@ rt2:identity-gate C:\\Real-Tycoon 2\n> node scripts/rt2-identity-gate.mjs\n\nRealTycoon2 identity gate passed (23 file(s) scanned).",
+      "stderr": ""
+    },
+    {
+      "id": "shared-core-contracts",
+      "area": "shared-contracts",
+      "command": "pnpm exec vitest run packages/shared/src/rt2-daily-report.test.ts packages/shared/src/rt2-task.test.ts packages/shared/src/rt2-knowledge.test.ts packages/shared/src/rt2-graph.test.ts packages/shared/src/rt2-gamification.test.ts",
+      "evidence": [
+        "packages/shared/src/rt2-daily-report.test.ts",
+        "packages/shared/src/rt2-task.test.ts",
+        "packages/shared/src/rt2-knowledge.test.ts",
+        "packages/shared/src/rt2-graph.test.ts",
+        "packages/shared/src/rt2-gamification.test.ts"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:10.657Z",
+      "endedAt": "2026-05-01T07:24:12.696Z",
+      "durationMs": 2039,
+      "stdout": "\u001b[1m\u001b[46m RUN \u001b[49m\u001b[22m \u001b[36mv3.2.4 \u001b[39m\u001b[90mC:/Real-Tycoon 2\u001b[39m\n\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-knowledge.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 10\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-gamification.test.ts \u001b[2m(\u001b[22m\u001b[2m3 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 4\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-graph.test.ts \u001b[2m(\u001b[22m\u001b[2m6 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 6\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-daily-report.test.ts \u001b[2m(\u001b[22m\u001b[2m10 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 9\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-task.test.ts \u001b[2m(\u001b[22m\u001b[2m11 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 9\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m5 passed\u001b[39m\u001b[22m\u001b[90m (5)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m34 passed\u001b[39m\u001b[22m\u001b[90m (34)\u001b[39m\n\u001b[2m   Start at \u001b[22m 16:24:11\n\u001b[2m   Duration \u001b[22m 905ms\u001b[2m (transform 319ms, setup 0ms, collect 1.88s, tests 38ms, environment 1ms, prepare 707ms)\u001b[22m",
+      "stderr": ""
+    },
+    {
+      "id": "ui-core-surfaces",
+      "area": "ui",
+      "command": "pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx ui/src/components/Rt2TaskPanel.test.tsx ui/src/components/Rt2QualityPanel.test.tsx",
+      "evidence": [
+        "ui/src/components/Rt2DailyBoard.test.tsx",
+        "ui/src/components/Rt2TaskPanel.test.tsx",
+        "ui/src/components/Rt2QualityPanel.test.tsx"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:12.696Z",
+      "endedAt": "2026-05-01T07:24:15.711Z",
+      "durationMs": 3015,
+      "stdout": "\u001b[1m\u001b[46m RUN \u001b[49m\u001b[22m \u001b[36mv3.2.4 \u001b[39m\u001b[90mC:/Real-Tycoon 2\u001b[39m\n\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[43m @paperclipai/ui \u001b[49m\u001b[39m src/components/Rt2TaskPanel.test.tsx \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 86\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[43m @paperclipai/ui \u001b[49m\u001b[39m src/components/Rt2QualityPanel.test.tsx \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 74\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[43m @paperclipai/ui \u001b[49m\u001b[39m src/components/Rt2DailyBoard.test.tsx \u001b[2m(\u001b[22m\u001b[2m13 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 420\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m3 passed\u001b[39m\u001b[22m\u001b[90m (3)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m15 passed\u001b[39m\u001b[22m\u001b[90m (15)\u001b[39m\n\u001b[2m   Start at \u001b[22m 16:24:13\n\u001b[2m   Duration \u001b[22m 1.98s\u001b[2m (transform 328ms, setup 25ms, collect 711ms, tests 580ms, environment 2.81s, prepare 392ms)\u001b[22m",
+      "stderr": ""
+    },
+    {
+      "id": "server-core-routes",
+      "area": "server",
+      "command": "pnpm exec vitest run server/src/__tests__/rt2-task-routes.test.ts server/src/__tests__/rt2-knowledge-projector.test.ts server/src/__tests__/rt2-knowledge-routes.test.ts server/src/__tests__/rt2-corpus-graph.test.ts server/src/__tests__/rt2-phase7-economy-marketplace.test.ts",
+      "evidence": [
+        "server/src/__tests__/rt2-task-routes.test.ts",
+        "server/src/__tests__/rt2-knowledge-projector.test.ts",
+        "server/src/__tests__/rt2-knowledge-routes.test.ts",
+        "server/src/__tests__/rt2-corpus-graph.test.ts",
+        "server/src/__tests__/rt2-phase7-economy-marketplace.test.ts"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:15.711Z",
+      "endedAt": "2026-05-01T07:24:40.579Z",
+      "durationMs": 24868,
+      "stdout": "\u001b[1m\u001b[46m RUN \u001b[49m\u001b[22m \u001b[36mv3.2.4 \u001b[39m\u001b[90mC:/Real-Tycoon 2\u001b[39m\n\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/server \u001b[49m\u001b[39m src/__tests__/rt2-knowledge-projector.test.ts \u001b[2m(\u001b[22m\u001b[2m3 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 10634\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 knowledge projector\u001b[2m > \u001b[22mmaterializes cumulative wiki pages and extracted graph edges from domain events \u001b[33m 853\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/server \u001b[49m\u001b[39m src/__tests__/rt2-knowledge-routes.test.ts \u001b[2m(\u001b[22m\u001b[2m3 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 11169\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 knowledge routes\u001b[2m > \u001b[22mprojects and returns company-scoped wiki pages \u001b[33m 1926\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/server \u001b[49m\u001b[39m src/__tests__/rt2-corpus-graph.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 11644\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 corpus graph sidecar\u001b[2m > \u001b[22mingests sources incrementally and exposes graph query/report data \u001b[33m 1234\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 corpus graph sidecar\u001b[2m > \u001b[22mserves corpus graph routes with company access checks \u001b[33m 572\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/server \u001b[49m\u001b[39m src/__tests__/rt2-phase7-economy-marketplace.test.ts \u001b[2m(\u001b[22m\u001b[2m7 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 12066\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 phase 7 economy, collaboration, and marketplace\u001b[2m > \u001b[22mmaterializes P&L from approved deliverable evidence and exposes actor drilldowns \u001b[33m 1325\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 phase 7 economy, collaboration, and marketplace\u001b[2m > \u001b[22mserializes concurrent ledger writes for one actor balance scope \u001b[33m 747\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 phase 7 economy, collaboration, and marketplace\u001b[2m > \u001b[22mderives CareerMate progression from settlement, ledger, quality, and gamification evidence \u001b[33m 616\u001b[2mms\u001b[22m\u001b[39m\n   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m rt2 phase 7 economy, collaboration, and marketplace\u001b[2m > \u001b[22mreturns marketplace listings with live skill, pricing, quality, reputation, and subscription evidence \u001b[33m 417\u001b[2mms\u001b[22m\u001b[39m\n\u001b[90mstdout\u001b[2m | src/__tests__/rt2-task-routes.test.ts\u001b[2m > \u001b[22m\u001b[2mrt2 task routes\n\u001b[22m\u001b[39m{\n  severity_local: \u001b[32m'WARNING'\u001b[39m,\n  severity: \u001b[32m'WARNING'\u001b[39m,\n  code: \u001b[32m'57P02'\u001b[39m,\n  message: \u001b[32m'terminating connection because of crash of another server process'\u001b[39m,\n  detail: \u001b[32m'The postmaster has commanded this server process to roll back the current transaction and exit, because another server process exited abnormally and possibly corrupted shared memory.'\u001b[39m,\n  hint: \u001b[32m'In a moment you should be able to reconnect to the database and repeat your command.'\u001b[39m,\n  file: \u001b[32m'postgres.c'\u001b[39m,\n  line: \u001b[32m'2994'\u001b[39m,\n  routine: \u001b[32m'quickdie'\u001b[39m\n}\n\n\u001b[90mstdout\u001b[2m | src/__tests__/rt2-task-routes.test.ts\u001b[2m > \u001b[22m\u001b[2mrt2 task routes\n\u001b[22m\u001b[39m{\n  severity_local: \u001b[32m'WARNING'\u001b[39m,\n  severity: \u001b[32m'WARNING'\u001b[39m,\n  code: \u001b[32m'57P02'\u001b[39m,\n  message: \u001b[32m'terminating connection because of crash of another server process'\u001b[39m,\n  detail: \u001b[32m'The postmaster has commanded this server process to roll back the current transaction and exit, because another server process exited abnormally and possibly corrupted shared memory.'\u001b[39m,\n  hint: \u001b[32m'In a moment you should be able to reconnect to the database and repeat your command.'\u001b[39m,\n  file: \u001b[32m'postgres.c'\u001b[39m,\n  line: \u001b[32m'2994'\u001b[39m,\n  routine: \u001b[32m'quickdie'\u001b[39m\n}\n\n\u001b[90mstdout\u001b[2m | src/__tests__/rt2-task-routes.test.ts\u001b[2m > \u001b[22m\u001b[2mrt2 task routes\n\u001b[22m\u001b[39m{\n  severity_local: \u001b[32m'WARNING'\u001b[39m,\n  severity: \u001b[32m'WARNING'\u001b[39m,\n  code: \u001b[32m'57P02'\u001b[39m,\n  message: \u001b[32m'terminating connection because of crash of another server process'\u001b[39m,\n  detail: \u001b[32m'The postmaster has commanded this server process to roll back the current transaction and exit, because another server process exited abnormally and possibly corrupted shared memory.'\u001b[39m,\n  hint: \u001b[32m'\n[trimmed 1631 chars]",
+      "stderr": ""
+    },
+    {
+      "id": "typecheck",
+      "area": "standard-verification",
+      "command": "pnpm typecheck",
+      "evidence": [
+        "package.json"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:24:40.579Z",
+      "endedAt": "2026-05-01T07:25:59.141Z",
+      "durationMs": 78562,
+      "stdout": "> paperclip@ typecheck C:\\Real-Tycoon 2\n> pnpm run preflight:workspace-links && pnpm -r typecheck\n\n\n> paperclip@ preflight:workspace-links C:\\Real-Tycoon 2\n> node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts\n\nScope: 21 of 22 workspace projects\npackages/shared typecheck$ tsc --noEmit\npackages/adapter-utils typecheck$ tsc --noEmit\npackages/adapter-utils typecheck: Done\npackages/shared typecheck: Done\npackages/adapters/codex-local typecheck$ tsc --noEmit\npackages/adapters/cursor-local typecheck$ tsc --noEmit\npackages/adapters/gemini-local typecheck$ tsc --noEmit\npackages/adapters/claude-local typecheck$ tsc --noEmit\npackages/adapters/gemini-local typecheck: Done\npackages/adapters/openclaw-gateway typecheck$ tsc --noEmit\npackages/adapters/cursor-local typecheck: Done\npackages/adapters/opencode-local typecheck$ tsc --noEmit\npackages/adapters/claude-local typecheck: Done\npackages/adapters/pi-local typecheck$ tsc --noEmit\npackages/adapters/codex-local typecheck: Done\npackages/db typecheck$ pnpm run check:migrations && tsc --noEmit\npackages/db typecheck: > @paperclipai/db@0.3.1 check:migrations C:\\Real-Tycoon 2\\packages\\db\npackages/db typecheck: > tsx src/check-migration-numbering.ts\npackages/adapters/opencode-local typecheck: Done\npackages/mcp-server typecheck$ tsc --noEmit\npackages/adapters/pi-local typecheck: Done\npackages/plugins/sdk typecheck$ pnpm --filter @paperclipai/shared build && tsc --noEmit\npackages/adapters/openclaw-gateway typecheck: Done\npackages/plugins/sdk typecheck: > @paperclipai/shared@0.3.1 build C:\\Real-Tycoon 2\\packages\\shared\npackages/plugins/sdk typecheck: > tsc\npackages/mcp-server typecheck: Done\npackages/db typecheck: Done\npackages/plugins/sdk typecheck: Done\npackages/plugins/create-paperclip-plugin typecheck$ tsc --noEmit\n.../plugin-authoring-smoke-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit\n.../examples/plugin-file-browser-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit\n.../examples/plugin-hello-world-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit\n.../plugin-authoring-smoke-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\\Real-Tycoon 2\\packages\\plugins\\sdk\n.../plugin-authoring-smoke-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs\n.../examples/plugin-hello-world-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\\Real-Tycoon 2\\packages\\plugins\\sdk\n.../examples/plugin-hello-world-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs\n.../examples/plugin-file-browser-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\\Real-Tycoon 2\\packages\\plugins\\sdk\n.../examples/plugin-file-browser-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs\npackages/plugins/create-paperclip-plugin typecheck: Done\n.../examples/plugin-kitchen-sink-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit\n.../examples/plugin-kitchen-sink-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\\Real-Tycoon 2\\packages\\plugins\\sdk\n.../examples/plugin-kitchen-sink-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs\n.../examples/plugin-hello-world-example typecheck: Done\n.../paperclip-plugin-fake-sandbox typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit\n.../plugin-authoring-smoke-example typecheck: Done\nserver typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit\n.../examples/plugin-file-browser-example typecheck: Done\nui typecheck$ tsc -b\n.../paperclip-plugin-fake-sandbox typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\\Real-Tycoon 2\\packages\\plugins\\sdk\n.../paperclip-plugin-fake-sandbox typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs\nserver typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-buil\n[trimmed 312 chars]",
+      "stderr": ""
+    },
+    {
+      "id": "unit-suite",
+      "area": "standard-verification",
+      "command": "pnpm test",
+      "evidence": [
+        "package.json"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "startedAt": "2026-05-01T07:25:59.141Z",
+      "endedAt": "2026-05-01T07:32:57.880Z",
+      "durationMs": 418739,
+      "stdout": "> paperclip@ test C:\\Real-Tycoon 2\n> pnpm run test:run\n\n\n> paperclip@ test:run C:\\Real-Tycoon 2\n> pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs\n\n\n> paperclip@ preflight:workspace-links C:\\Real-Tycoon 2\n> node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts\n\n\n[test:run] non-server project @paperclipai/shared\n\n\u001b[1m\u001b[46m RUN \u001b[49m\u001b[22m \u001b[36mv3.2.4 \u001b[39m\u001b[90mC:/Real-Tycoon 2\u001b[39m\n\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/workspace-commands.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 7\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-knowledge.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 11\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/validators/approval.test.ts \u001b[2m(\u001b[22m\u001b[2m3 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 4\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/issue-thread-interactions.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 6\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/routine-variables.test.ts \u001b[2m(\u001b[22m\u001b[2m8 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 5\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/issue-references.test.ts \u001b[2m(\u001b[22m\u001b[2m7 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 5\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/validators/issue.test.ts \u001b[2m(\u001b[22m\u001b[2m7 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 9\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-domain-events.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 8\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-graph.test.ts \u001b[2m(\u001b[22m\u001b[2m6 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 9\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-daily-report.test.ts \u001b[2m(\u001b[22m\u001b[2m10 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 8\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-task.test.ts \u001b[2m(\u001b[22m\u001b[2m11 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 9\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/adapter-types.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 5\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/project-mentions.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 4\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/rt2-gamification.test.ts \u001b[2m(\u001b[22m\u001b[2m3 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 4\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[45m @paperclipai/shared \u001b[49m\u001b[39m src/environment-support.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 2\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m15 passed\u001b[39m\u001b[22m\u001b[90m (15)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m79 passed\u001b[39m\u001b[22m\u001b[90m (79)\u001b[39m\n\u001b[2m   Start at \u001b[22m 16:26:01\n\u001b[2m   Duration \u001b[22m 1.50s\u001b[2m (transform 862ms, setup 0ms, collect 2.79s, tests 97ms, environment 3ms, prepare 2.76s)\u001b[22m\n\n\n[test:run] non-server project @paperclipai/db\n\n\u001b[1m\u001b[46m RUN \u001b[49m\u001b[22m \u001b[36mv3.2.4 \u001b[39m\u001b[90mC:/Real-Tycoon 2\u001b[39m\n\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[43m @paperclipai/db \u001b[49m\u001b[39m src/embedded-postgres-error.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 3\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[43m @paperclipai/db \u001b[49m\u001b[39m src/runtime-config.test.ts \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 16\u001b[2mms\u001b[22m\u001b[39m\n \u001b[2m\u001b[90m↓\u001b[39m\u001b[22m \u001b[30m\u001b[43m @paperclipai/db \u001b[49m\u001b[39m src/rt2-daily-report-persistence.test.ts \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m | \u001b[22m\u001b[33m1 skipped\u001b[39m\u001b[2m)\u001b[22m\n \u001b[2m\u001b[90m↓\u001b[39m\u001b[22m \u001b[30m\u001b[43m @paperclipai/db \u001b[49m\u001b[39m src/rt2-task-persistence.test.ts \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m | \u001b[22m\u001b[33m1 skipped\u001b[39m\u001b[2m)\u001b[22m\n \u001b[2m\u001b[90m↓\u001b[39m\u001b[22m \u001b[30m\u001b[43m @paperclipai/db \u001b[49m\u001b[39m src/client.test.ts \u001b[2m(\u001b[22m\u001b[2m8 tests\u001b[22m\u001b[2m | \u001b[22m\u001b[33m8 skipped\u001b[39m\u001b[2m)\u001b[22m\n \u001b[32m✓\u001b[39m \u001b[30m\u001b[43m @paperclipai/db \u001b[49m\u001b[39m src/backup-lib.test.ts \u001b[2m(\u001b[22m\u001b[2m3 tests\u001b[22m\u001b[2m | \u001b[22m\u001b[33m2 skipped\u001b[39m\u001b[2m)\u001b[22m\u001b[32m 5\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m3 passed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m\u001b[33m3 s\n[trimmed 184267 chars]",
+      "stderr": "\u001b[90mstderr\u001b[2m | src/rt2-daily-report-persistence.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres RT2 daily report persistence tests on this host: embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them\n\n\u001b[90mstderr\u001b[2m | src/rt2-task-persistence.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres RT2 task persistence tests on this host: embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them\n\n\u001b[90mstderr\u001b[2m | src/backup-lib.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres backup tests on this host: embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them\n\n\u001b[90mstderr\u001b[2m | src/client.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres migration tests on this host: embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them\n\n\u001b[90mstderr\u001b[2m | src/ssh-fixture.test.ts\u001b[2m > \u001b[22m\u001b[2mssh env-lab fixture\u001b[2m > \u001b[22m\u001b[2mstarts an isolated sshd fixture and executes commands through it\n\u001b[22m\u001b[39mSkipping SSH env-lab fixture test: Missing required command: ssh\n\n\u001b[90mstderr\u001b[2m | src/ssh-fixture.test.ts\u001b[2m > \u001b[22m\u001b[2mssh env-lab fixture\u001b[2m > \u001b[22m\u001b[2mdoes not treat an unrelated reused pid as the running fixture\n\u001b[22m\u001b[39mSkipping SSH env-lab fixture test: Missing required command: ssh\n\n\u001b[90mstderr\u001b[2m | src/ssh-fixture.test.ts\u001b[2m > \u001b[22m\u001b[2mssh env-lab fixture\u001b[2m > \u001b[22m\u001b[2msyncs a local directory into the remote fixture workspace\n\u001b[22m\u001b[39mSkipping SSH env-lab fixture test: Missing required command: ssh\n\n\u001b[90mstderr\u001b[2m | src/ssh-fixture.test.ts\u001b[2m > \u001b[22m\u001b[2mssh env-lab fixture\u001b[2m > \u001b[22m\u001b[2mcan dereference local symlinks while syncing to the remote fixture\n\u001b[22m\u001b[39mSkipping SSH symlink sync test: Missing required command: ssh\n\n\u001b[90mstderr\u001b[2m | src/ssh-fixture.test.ts\u001b[2m > \u001b[22m\u001b[2mssh env-lab fixture\u001b[2m > \u001b[22m\u001b[2mround-trips a git workspace through the SSH fixture\n\u001b[22m\u001b[39mSkipping SSH workspace round-trip test: Missing required command: ssh\n\n\u001b[90mstderr\u001b[2m | src/sandbox-managed-runtime.test.ts\u001b[2m > \u001b[22m\u001b[2msandbox managed runtime\u001b[2m > \u001b[22m\u001b[2msyncs workspace and assets through a provider-neutral sandbox client\n\u001b[22m\u001b[39mSkipping sandbox symlink asset test: Windows symlink permission denied\n\n\u001b[90mstderr\u001b[2m | src/pages/InviteLanding.test.tsx\u001b[2m > \u001b[22m\u001b[2mInviteLandingPage\u001b[2m > \u001b[22m\u001b[2mauto-accepts the invite after account creation and redirects into the company\n\u001b[22m\u001b[39mNo routes matched location \"/\" \n\n\u001b[90mstderr\u001b[2m | src/pages/CompanySettings.test.tsx\u001b[2m > \u001b[22m\u001b[2mCompanySettings\u001b[2m > \u001b[22m\u001b[2mhides sandbox creation when no run-capable sandbox provider plugins are installed\n\u001b[22m\u001b[39mNot implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package\n\n\u001b[90mstderr\u001b[2m | src/pages/InviteLanding.test.tsx\u001b[2m > \u001b[22m\u001b[2mInviteLandingPage\u001b[2m > \u001b[22m\u001b[2mredirects straight to the company after sign-in when the user already has access\n\u001b[22m\u001b[39mNo routes matched location \"/\" \n\n\u001b[90mstderr\u001b[2m | src/pages/CompanySettings.test.tsx\u001b[2m > \u001b[22m\u001b[2mCompanySettings\u001b[2m > \u001b[22m\u001b[2mpreserves sandbox config when re-selecting the same provider while editing\n\u001b[22m\u001b[39mNot implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package\n\n\u001b[90mstderr\u001b[2m | src/__tests__/worktree.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres worktree CLI tests on this host: embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them\n\n\u001b[90mstderr\u001b[2m | src/__tests__/company-import-export-e2e.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres company import/export e2e tests on this host: embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them\n\n\u001b[90mstderr\u001b[2m | src/__tests__/routines.test.ts\n\u001b[22m\u001b[39mSkipping embedded Postgres \n[trimmed 14726 chars]"
+    }
+  ],
+  "blockers": [
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: packages/db/src/schema/rt2_v33_graph_projection.ts.",
+      "source": "packages/db/src/schema/rt2_v33_graph_projection.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: packages/shared/src/rt2-graph.test.ts.",
+      "source": "packages/shared/src/rt2-graph.test.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: packages/shared/src/types/rt2-graph.ts.",
+      "source": "packages/shared/src/types/rt2-graph.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: packages/shared/src/validators/rt2-graph.ts.",
+      "source": "packages/shared/src/validators/rt2-graph.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: scripts/rt2-devplan-alignment-gate.mjs.",
+      "source": "scripts/rt2-devplan-alignment-gate.mjs",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: packages/db/src/migrations/0106_rt2_corpus_graph_sidecar.sql.",
+      "source": "packages/db/src/migrations/0106_rt2_corpus_graph_sidecar.sql",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: server/src/__tests__/rt2-corpus-graph.test.ts.",
+      "source": "server/src/__tests__/rt2-corpus-graph.test.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: server/src/routes/rt2-corpus-graph.ts.",
+      "source": "server/src/routes/rt2-corpus-graph.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    },
+    {
+      "category": "blocker",
+      "area": "dirty-evidence",
+      "check": "git-status",
+      "code": "V31_DIRTY_EVIDENCE_ANCHOR",
+      "message": "Prior-phase evidence anchor is dirty or untracked: server/src/services/rt2-corpus-graph.ts.",
+      "source": "server/src/services/rt2-corpus-graph.ts",
+      "owner": "v31-acceptance",
+      "nextCommand": "git status --short --untracked-files=all"
+    }
+  ],
+  "passed": [
+    {
+      "category": "passed",
+      "area": "devplan-alignment",
+      "check": "alignment-summary",
+      "code": "V31_ALIGNMENT_GATE_PASSED",
+      "message": "DevPlan alignment gate passed.",
+      "source": ".planning/devplan-alignment-runs/2026-05-01T07-24-09-288Z/summary.json"
+    },
+    {
+      "category": "passed",
+      "area": "score-delta",
+      "check": "score-delta",
+      "code": "V31_SCORE_DELTA_POSITIVE",
+      "message": "Score improved by 36 percentage points from baseline.",
+      "source": ".planning/devplan-alignment-runs/2026-05-01T07-24-09-288Z/summary.json"
+    },
+    {
+      "category": "passed",
+      "area": "devplan-alignment",
+      "check": "test-devplan-alignment-gate",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "test-devplan-alignment-gate passed.",
+      "source": "scripts/rt2-devplan-alignment-gate.test.mjs"
+    },
+    {
+      "category": "passed",
+      "area": "identity",
+      "check": "test-identity-gate",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "test-identity-gate passed.",
+      "source": "scripts/rt2-identity-gate.test.mjs"
+    },
+    {
+      "category": "passed",
+      "area": "identity",
+      "check": "rt2-identity-gate",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "rt2-identity-gate passed.",
+      "source": "scripts/rt2-identity-gate.mjs"
+    },
+    {
+      "category": "passed",
+      "area": "shared-contracts",
+      "check": "shared-core-contracts",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "shared-core-contracts passed.",
+      "source": "packages/shared/src/rt2-daily-report.test.ts"
+    },
+    {
+      "category": "passed",
+      "area": "ui",
+      "check": "ui-core-surfaces",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "ui-core-surfaces passed.",
+      "source": "ui/src/components/Rt2DailyBoard.test.tsx"
+    },
+    {
+      "category": "passed",
+      "area": "server",
+      "check": "server-core-routes",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "server-core-routes passed.",
+      "source": "server/src/__tests__/rt2-task-routes.test.ts"
+    },
+    {
+      "category": "passed",
+      "area": "standard-verification",
+      "check": "typecheck",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "typecheck passed.",
+      "source": "package.json"
+    },
+    {
+      "category": "passed",
+      "area": "standard-verification",
+      "check": "unit-suite",
+      "code": "V31_FOCUSED_CHECK_PASSED",
+      "message": "unit-suite passed.",
+      "source": "package.json"
+    },
+    {
+      "category": "passed",
+      "area": "required-evidence",
+      "check": "evidence-exists",
+      "code": "V31_REQUIRED_EVIDENCE_PRESENT",
+      "message": "63 required evidence path(s) exist.",
+      "source": null
+    }
+  ],
+  "acceptedDebt": [],
+  "futureScope": [
+    {
+      "category": "future_scope",
+      "title": "Public/open marketplace launch",
+      "source": ".planning/REQUIREMENTS.md",
+      "reason": "v3.1 is scoped to trusted-company evidence, not public rollout."
+    },
+    {
+      "category": "future_scope",
+      "title": "Autonomous Jarvis direct apply",
+      "source": ".planning/PROJECT.md",
+      "reason": "Approval-first Jarvis apply remains the safety boundary."
+    },
+    {
+      "category": "future_scope",
+      "title": "Cross-company federation full apply",
+      "source": ".planning/PROJECT.md",
+      "reason": "Federation remains outside the trusted single-company v3.1 loop."
+    },
+    {
+      "category": "future_scope",
+      "title": "Native credentials and public store operations",
+      "source": ".planning/ROADMAP.md",
+      "reason": "v3.0 defined evidence gates; real credential/store operations are operator scope."
+    },
+    {
+      "category": "future_scope",
+      "title": "Billing, payroll, and external payment settlement",
+      "source": ".planning/phases/70-economy-marketplace-p-l-and-careermate-loop/70-CONTEXT.md",
+      "reason": "Phase 70 explicitly deferred real billing/payroll/export behavior."
+    }
+  ],
+  "missingEvidence": [],
+  "dirtyEvidenceAnchors": [
+    {
+      "path": "packages/db/src/schema/rt2_v33_graph_projection.ts",
+      "status": " M",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "packages/shared/src/rt2-graph.test.ts",
+      "status": " M",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "packages/shared/src/types/rt2-graph.ts",
+      "status": " M",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "packages/shared/src/validators/rt2-graph.ts",
+      "status": " M",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "scripts/rt2-devplan-alignment-gate.mjs",
+      "status": " M",
+      "rows": [
+        "alignment-truth"
+      ],
+      "ownerPhases": [
+        "65"
+      ]
+    },
+    {
+      "path": "packages/db/src/migrations/0106_rt2_corpus_graph_sidecar.sql",
+      "status": "??",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "server/src/__tests__/rt2-corpus-graph.test.ts",
+      "status": "??",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "server/src/routes/rt2-corpus-graph.ts",
+      "status": "??",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    },
+    {
+      "path": "server/src/services/rt2-corpus-graph.ts",
+      "status": "??",
+      "rows": [
+        "graphify-v3-sidecar"
+      ],
+      "ownerPhases": [
+        "69"
+      ]
+    }
+  ],
+  "gitStatus": {
+    "available": true,
+    "lines": [
+      " M .planning/MILESTONES.md",
+      " M .planning/NEXT-SESSION.md",
+      " M .planning/PROJECT.md",
+      " M .planning/REQUIREMENTS.md",
+      " M .planning/ROADMAP.md",
+      " M .planning/STATE.md",
+      " M package.json",
+      " M packages/db/src/migrations/meta/_journal.json",
+      " M packages/db/src/schema/index.ts",
+      " M packages/db/src/schema/rt2_v33_graph_projection.ts",
+      " M packages/shared/src/constants.ts",
+      " M packages/shared/src/index.ts",
+      " M packages/shared/src/rt2-graph.test.ts",
+      " M packages/shared/src/types/index.ts",
+      " M packages/shared/src/types/rt2-graph.ts",
+      " M packages/shared/src/validators/index.ts",
+      " M packages/shared/src/validators/rt2-graph.ts",
+      " M scripts/rt2-devplan-alignment-gate.mjs",
+      " M scripts/rt2-devplan-alignment-gate.test.mjs",
+      " M server/src/app.ts",
+      " M server/src/routes/index.ts",
+      "?? .planning/devplan-alignment-runs/2026-05-01T05-59-17-123Z/report.md",
+      "?? .planning/devplan-alignment-runs/2026-05-01T05-59-17-123Z/summary.json",
+      "?? .planning/devplan-alignment-runs/2026-05-01T07-09-06-699Z/report.md",
+      "?? .planning/devplan-alignment-runs/2026-05-01T07-09-06-699Z/summary.json",
+      "?? .planning/devplan-alignment-runs/2026-05-01T07-24-09-288Z/report.md",
+      "?? .planning/devplan-alignment-runs/2026-05-01T07-24-09-288Z/summary.json",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-01-PLAN.md",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-CONTEXT.md",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-DISCUSSION-LOG.md",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-RESEARCH.md",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-SUMMARY.md",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-VALIDATION.md",
+      "?? .planning/phases/69-graphify-v3-corpus-graph-sidecar/69-VERIFICATION.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-01-PLAN.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-01-SUMMARY.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-CONTEXT.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-DISCUSSION-LOG.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-RESEARCH.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-VALIDATION.md",
+      "?? .planning/phases/71-v31-devplan-acceptance-gate/71-VERIFICATION.md",
+      "?? .planning/v31-acceptance-runs/2026-05-01T07-09-06-699Z/report.md",
+      "?? .planning/v31-acceptance-runs/2026-05-01T07-09-06-699Z/summary.json",
+      "?? .tmp-operations-rollout-dev.err.log",
+      "?? .tmp-operations-rollout-dev.out.log",
+      "?? _refs/graphify-v3/",
+      "?? _refs/multica/",
+      "?? byte-check.cjs",
+      "?? debug-migrate.cjs",
+      "?? debug-migrate.ts",
+      "?? debug-stmts.cjs",
+      "?? dump-stmt3.cjs",
+      "?? find-offset.cjs",
+      "?? find-pending.cjs",
+      "?? find-pos.cjs",
+      "?? find-pos2.cjs",
+      "?? find-pos3.cjs",
+      "?? find-pos4.cjs",
+      "?? packages/db/analyze-statements.cjs",
+      "?? packages/db/check-drizzle-schema.cjs",
+      "?? packages/db/check-drizzle.cjs",
+      "?? packages/db/check-local-pg.cjs",
+      "?? packages/db/check-pending3.cjs",
+      "?? packages/db/check-pg2.cjs",
+      "?? packages/db/check-pg3.cjs",
+      "?? packages/db/check-pg4.cjs",
+      "?? packages/db/check-pg5.cjs",
+      "?? packages/db/debug-all.cjs",
+      "?? packages/db/debug-migrate.cjs",
+      "?? packages/db/drizzle-split.cjs",
+      "?? packages/db/find-big.cjs",
+      "?? packages/db/find-big2.cjs",
+      "?? packages/db/find-byte.cjs",
+      "?? packages/db/find-missing.cjs",
+      "?? packages/db/find-pending2.cjs",
+      "?? packages/db/instrument-migrate.ts",
+      "?? packages/db/src/migrations/0106_rt2_corpus_graph_sidecar.sql",
+      "?? packages/db/src/migrations/0107_rt2_gamification_tables.sql",
+      "?? packages/db/src/migrations/0108_rt2_career_mate_tables.sql",
+      "?? packages/db/test-0029.cjs",
+      "?? packages/db/test-batch.cjs",
+      "?? packages/db/test-local-pg.cjs",
+      "?? packages/db/test-migration.cjs",
+      "?? packages/db/test-port.cjs",
+      "?? packages/db/test-ports.cjs",
+      "?? raw-stmt3.cjs",
+      "?? scripts/rt2-v31-acceptance-gate.mjs",
+      "?? scripts/rt2-v31-acceptance-gate.test.mjs",
+      "?? server/src/__tests__/rt2-corpus-graph.test.ts",
+      "?? server/src/routes/rt2-corpus-graph.ts",
+      "?? server/src/services/rt2-corpus-graph.ts",
+      "?? test-migrate.cjs",
+      "?? test-migrate.mjs",
+      "?? test-pg.cjs",
+      "?? test-pg.mjs"
+    ],
+    "error": null
+  },
+  "runDir": ".planning/v31-acceptance-runs/2026-05-01T07-24-09-288Z"
+}

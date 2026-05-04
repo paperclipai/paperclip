@@ -1,0 +1,139 @@
+C:\Real-Tycoon 2\server\src\routes\rt2-jarvis.ts:5
+  endRt2SessionSchema,
+  ^
+
+SyntaxError: The requested module '@paperclipai/shared' does not provide an export named 'endRt2SessionSchema'
+    at ModuleJob._instantiate (node:internal/modules/esm/module_job:220:21)
+    at async ModuleJob.run (node:internal/modules/esm/module_job:321:5)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+C:\Real-Tycoon 2\server\src\routes\rt2-jarvis.ts:5
+  endRt2SessionSchema,
+  ^
+
+SyntaxError: The requested module '@paperclipai/shared' does not provide an export named 'endRt2SessionSchema'
+    at ModuleJob._instantiate (node:internal/modules/esm/module_job:220:21)
+    at async ModuleJob.run (node:internal/modules/esm/module_job:321:5)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+C:\Real-Tycoon 2\server\src\routes\rt2-jarvis.ts:5
+  endRt2SessionSchema,
+  ^
+
+SyntaxError: The requested module '@paperclipai/shared' does not provide an export named 'endRt2SessionSchema'
+    at ModuleJob._instantiate (node:internal/modules/esm/module_job:220:21)
+    at async ModuleJob.run (node:internal/modules/esm/module_job:321:5)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33
+export const updateGoalSchema = createGoalSchema.partial();
+                                                 ^
+
+
+TypeError: createGoalSchema.partial is not a function
+    at <anonymous> (C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33:50)
+    at ModuleJob.run (node:internal/modules/esm/module_job:329:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33
+export const updateGoalSchema = createGoalSchema.partial();
+                                                 ^
+
+
+TypeError: createGoalSchema.partial is not a function
+    at <anonymous> (C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33:50)
+    at ModuleJob.run (node:internal/modules/esm/module_job:329:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33
+export const updateGoalSchema = createGoalSchema.partial();
+                                                 ^
+
+
+TypeError: createGoalSchema.partial is not a function
+    at <anonymous> (C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33:50)
+    at ModuleJob.run (node:internal/modules/esm/module_job:329:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33
+export const updateGoalSchema = createGoalSchema.partial();
+                                                 ^
+
+
+TypeError: createGoalSchema.partial is not a function
+    at <anonymous> (C:\Real-Tycoon 2\packages\shared\src\validators\goal.ts:33:50)
+    at ModuleJob.run (node:internal/modules/esm/module_job:329:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
+
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+Error [TransformError]: Transform failed with 1 error:
+C:\Real-Tycoon 2\server\src\routes\rt2-tasks.ts:1362:3: ERROR: Unexpected ")"
+    at failureErrorWithLog (C:\Real-Tycoon 2\node_modules\.pnpm\esbuild@0.27.3\node_modules\esbuild\lib\main.js:1467:15)
+    at C:\Real-Tycoon 2\node_modules\.pnpm\esbuild@0.27.3\node_modules\esbuild\lib\main.js:736:50
+    at responseCallbacks.<computed> (C:\Real-Tycoon 2\node_modules\.pnpm\esbuild@0.27.3\node_modules\esbuild\lib\main.js:603:9)
+    at handleIncomingPacket (C:\Real-Tycoon 2\node_modules\.pnpm\esbuild@0.27.3\node_modules\esbuild\lib\main.js:658:12)
+    at Socket.readFromStdout (C:\Real-Tycoon 2\node_modules\.pnpm\esbuild@0.27.3\node_modules\esbuild\lib\main.js:581:7)
+    at Socket.emit (node:events:518:28)
+    at addChunk (node:internal/streams/readable:561:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:512:3)
+    at Readable.push (node:internal/streams/readable:392:5)
+    at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+
+Node.js v22.17.0
+
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\Real-Tycoon 2\server\src\routes\goals.js' imported from C:\Real-Tycoon 2\server\src\app.ts
+    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
+    at moduleResolve (node:internal/modules/esm/resolve:860:10)
+    at defaultResolve (node:internal/modules/esm/resolve:984:11)
+    at nextResolve (node:internal/modules/esm/hooks:748:28)
+    at resolveBase (file:///C:/Real-Tycoon%202/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1776834478984:2:3744)
+    at async resolveDirectory (file:///C:/Real-Tycoon%202/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1776834478984:2:4237)
+    at async resolve (file:///C:/Real-Tycoon%202/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1776834478984:2:5355)
+    at async nextResolve (node:internal/modules/esm/hooks:748:22)
+    at async Hooks.resolve (node:internal/modules/esm/hooks:240:24)
+    at async handleMessage (node:internal/modules/esm/worker:199:18) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///C:/Real-Tycoon%202/server/src/routes/goals.js'
+}
+
+Node.js v22.17.0
+
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\Real-Tycoon 2\server\src\services\rt2-task-mesh.js' imported from C:\Real-Tycoon 2\server\src\services\index.ts
+    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
+    at moduleResolve (node:internal/modules/esm/resolve:860:10)
+    at defaultResolve (node:internal/modules/esm/resolve:984:11)
+    at nextResolve (node:internal/modules/esm/hooks:748:28)
+    at resolveBase (file:///C:/Real-Tycoon%202/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1776847874550:2:3744)
+    at async resolveDirectory (file:///C:/Real-Tycoon%202/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1776847874550:2:4237)
+    at async resolve (file:///C:/Real-Tycoon%202/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1776847874550:2:5355)
+    at async nextResolve (node:internal/modules/esm/hooks:748:22)
+    at async Hooks.resolve (node:internal/modules/esm/hooks:240:24)
+    at async handleMessage (node:internal/modules/esm/worker:199:18) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///C:/Real-Tycoon%202/server/src/services/rt2-task-mesh.js'
+}
+
+Node.js v22.17.0

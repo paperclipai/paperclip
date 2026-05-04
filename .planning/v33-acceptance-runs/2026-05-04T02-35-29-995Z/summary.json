@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-04T02:35:29.996Z",
+  "gate": "v3.3",
+  "v32BaselineScorePct": 100,
+  "currentScorePct": 100,
+  "baselineScorePct": 64,
+  "scoreDeltaPct": 0,
+  "status": "failed",
+  "checks": [
+    {
+      "name": "devplan-alignment-gate",
+      "passed": true,
+      "detail": "score=100% (baseline=64%)"
+    },
+    {
+      "name": "typecheck",
+      "passed": false,
+      "detail": "spawn pnpm ENOENT"
+    },
+    {
+      "name": "test",
+      "passed": false,
+      "detail": "spawn pnpm ENOENT"
+    },
+    {
+      "name": "score-delta",
+      "passed": true,
+      "detail": "delta=+0% (current=100% vs v32-baseline=100%)"
+    }
+  ],
+  "errors": [
+    "typecheck failed: spawn pnpm ENOENT",
+    "test failed: spawn pnpm ENOENT"
+  ]
+}

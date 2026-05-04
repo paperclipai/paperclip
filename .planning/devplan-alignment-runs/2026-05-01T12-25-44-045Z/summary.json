@@ -1,0 +1,714 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-01T12:25:44.045Z",
+  "status": "passed",
+  "baselineScorePct": 64,
+  "currentScorePct": 100,
+  "counts": {
+    "rows": 15,
+    "blockers": 0,
+    "passed": 15,
+    "byStatus": {
+      "complete": 15
+    }
+  },
+  "blockers": [],
+  "passed": [
+    {
+      "category": "passed",
+      "row": "alignment-truth",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "alignment-truth complete claim has 3 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "identity-boundary",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "identity-boundary complete claim has 3 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "identity-regression",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "identity-regression complete claim has 2 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "daily-cockpit",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "daily-cockpit complete claim has 5 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "mission-okr-rollup",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "mission-okr-rollup complete claim has 5 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "multica-runtime",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "multica-runtime complete claim has 5 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "wikillm-memory",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "wikillm-memory complete claim has 15 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "graphify-v3-sidecar",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "graphify-v3-sidecar complete claim has 9 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "economy-loop",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "economy-loop complete claim has 12 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "public-marketplace",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "public-marketplace complete claim has 6 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "billing-payroll-settlement",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "billing-payroll-settlement complete claim has 6 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "federation-cross-company-evidence",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "federation-cross-company-evidence complete claim has 6 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "autonomous-jarvis-apply",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "autonomous-jarvis-apply complete claim has 2 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "public-store-operations",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "public-store-operations complete claim has 4 evidence anchor(s)."
+    },
+    {
+      "category": "passed",
+      "row": "v31-acceptance-gate",
+      "code": "DEVPLAN_COMPLETE_HAS_EVIDENCE",
+      "message": "v31-acceptance-gate complete claim has 10 evidence anchor(s)."
+    }
+  ],
+  "rows": [
+    {
+      "evidence": [
+        {
+          "type": "gate",
+          "path": "scripts/rt2-devplan-alignment-gate.mjs"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/pages/rt2/PlanAlignmentPage.tsx"
+        },
+        {
+          "type": "context",
+          "path": ".planning/phases/65-devplan-truth-and-identity-cleanup/65-CONTEXT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "ALIGN-01",
+        "ALIGN-02"
+      ],
+      "engineParity": false,
+      "id": "alignment-truth",
+      "axis": "DevPlan truth matrix",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "65"
+    },
+    {
+      "evidence": [
+        {
+          "type": "doc",
+          "path": "doc/REALTYCOON2-COMPATIBILITY.md"
+        },
+        {
+          "type": "doc",
+          "path": "doc/PRODUCT.md"
+        },
+        {
+          "type": "doc",
+          "path": "doc/SPEC.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "IDENTITY-01",
+        "IDENTITY-03"
+      ],
+      "engineParity": false,
+      "id": "identity-boundary",
+      "axis": "RealTycoon2 product identity boundary",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "65"
+    },
+    {
+      "evidence": [
+        {
+          "type": "gate",
+          "path": "scripts/rt2-identity-gate.mjs"
+        },
+        {
+          "type": "test",
+          "path": "scripts/rt2-identity-gate.test.mjs"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "IDENTITY-02"
+      ],
+      "engineParity": false,
+      "id": "identity-regression",
+      "axis": "Product-facing identity regression scan",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "65"
+    },
+    {
+      "evidence": [
+        {
+          "type": "ui",
+          "path": "ui/src/pages/rt2/DailyWorkPage.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2DailyBoard.tsx"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2DailyBoard.test.tsx"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-work-board.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-task-routes.test.ts"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "DAILY-01",
+        "DAILY-02",
+        "DAILY-03"
+      ],
+      "engineParity": false,
+      "id": "daily-cockpit",
+      "axis": "Daily Work cockpit",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "66"
+    },
+    {
+      "evidence": [
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-daily-report.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-daily-report.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-daily-report.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-daily-report-routes.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2DailyBoard.test.tsx"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "DAILY-03"
+      ],
+      "engineParity": false,
+      "id": "mission-okr-rollup",
+      "axis": "Mission to To-Do hierarchy",
+      "status": "complete",
+      "weight": 8,
+      "ownerPhase": "66"
+    },
+    {
+      "evidence": [
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-task-execution.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-tasks.ts"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2TaskPanel.tsx"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-task-routes.test.ts"
+        },
+        {
+          "type": "audit",
+          "path": ".planning/research/ENGINE-REFERENCE-AUDIT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "RUNTIME-01",
+        "RUNTIME-02",
+        "RUNTIME-03"
+      ],
+      "engineParity": true,
+      "id": "multica-runtime",
+      "axis": "Multica-style runtime execution",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "67"
+    },
+    {
+      "evidence": [
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-knowledge.ts"
+        },
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-governance.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-knowledge-projector.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-jarvis.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-knowledge.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-jarvis.ts"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/pages/rt2/KnowledgePage.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2QualityPanel.tsx"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-knowledge.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-knowledge-projector.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-knowledge-routes.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-phase6-intelligence.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2QualityPanel.test.tsx"
+        },
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_v33_wiki_pages.ts"
+        },
+        {
+          "type": "audit",
+          "path": ".planning/research/ENGINE-REFERENCE-AUDIT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "WIKI-01",
+        "WIKI-02",
+        "WIKI-03"
+      ],
+      "engineParity": true,
+      "id": "wikillm-memory",
+      "axis": "wikiLLM living memory workflow",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "68"
+    },
+    {
+      "evidence": [
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_v33_graph_projection.ts"
+        },
+        {
+          "type": "migration",
+          "path": "packages/db/src/migrations/0106_rt2_corpus_graph_sidecar.sql"
+        },
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-graph.ts"
+        },
+        {
+          "type": "shared",
+          "path": "packages/shared/src/validators/rt2-graph.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-corpus-graph.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-corpus-graph.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-graph.test.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2-corpus-graph.test.ts"
+        },
+        {
+          "type": "audit",
+          "path": ".planning/research/ENGINE-REFERENCE-AUDIT.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "GRAPH-01",
+        "GRAPH-02",
+        "GRAPH-03",
+        "GRAPH-04"
+      ],
+      "engineParity": true,
+      "id": "graphify-v3-sidecar",
+      "axis": "Graphify v3 corpus graph sidecar",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "69"
+    },
+    {
+      "evidence": [
+        {
+          "type": "shared",
+          "path": "packages/shared/src/types/rt2-gamification.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/shared/src/rt2-gamification.test.ts"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-career-mate.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-career-mate.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-personal-pnl.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-agent-marketplace.ts"
+        },
+        {
+          "type": "test",
+          "path": "server/src/__tests__/rt2_phase7-economy-marketplace.test.ts"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Sidebar.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/MobileBottomNav.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2DailyBoard.tsx"
+        },
+        {
+          "type": "ui",
+          "path": "ui/src/components/Rt2GamificationPanel.tsx"
+        },
+        {
+          "type": "test",
+          "path": "ui/src/components/Rt2DailyBoard.test.tsx"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "ECON-01",
+        "ECON-02",
+        "ECON-03"
+      ],
+      "engineParity": false,
+      "id": "economy-loop",
+      "axis": "Economy, marketplace, P&L, CareerMate loop",
+      "status": "complete",
+      "weight": 12,
+      "ownerPhase": "70"
+    },
+    {
+      "evidence": [
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_agent_marketplace.ts"
+        },
+        {
+          "type": "migration",
+          "path": "packages/db/src/migrations/0109_rt2_public_marketplace_approval.sql"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-agent-marketplace.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-agent-marketplace.ts"
+        },
+        {
+          "type": "context",
+          "path": ".planning/phases/72-public-marketplace-launch/72-CONTEXT.md"
+        },
+        {
+          "type": "plan",
+          "path": ".planning/phases/72-public-marketplace-launch/72-01-PLAN.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "MKT-01",
+        "MKT-02",
+        "MKT-03"
+      ],
+      "engineParity": false,
+      "id": "public-marketplace",
+      "axis": "Public/open marketplace launch",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "72"
+    },
+    {
+      "evidence": [
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_payroll_settlement.ts"
+        },
+        {
+          "type": "migration",
+          "path": "packages/db/src/migrations/0110_rt2_payroll_settlement_tables.sql"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-payroll-settlement.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-payroll-settlement.ts"
+        },
+        {
+          "type": "context",
+          "path": ".planning/phases/73-billing-payroll-settlement/73-CONTEXT.md"
+        },
+        {
+          "type": "plan",
+          "path": ".planning/phases/73-billing-payroll-settlement/73-01-PLAN.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "BILL-01",
+        "BILL-02",
+        "BILL-03"
+      ],
+      "engineParity": false,
+      "id": "billing-payroll-settlement",
+      "axis": "Billing, payroll, and settlement processing",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "73"
+    },
+    {
+      "evidence": [
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_federation.ts"
+        },
+        {
+          "type": "migration",
+          "path": "packages/db/src/migrations/0111_rt2_federation_tables.sql"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-enterprise.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-federation.ts"
+        },
+        {
+          "type": "context",
+          "path": ".planning/phases/74-federation-cross-company-evidence/74-CONTEXT.md"
+        },
+        {
+          "type": "plan",
+          "path": ".planning/phases/74-federation-cross-company-evidence/74-01-PLAN.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "FED-01",
+        "FED-02"
+      ],
+      "engineParity": false,
+      "id": "federation-cross-company-evidence",
+      "axis": "Federation and Cross-Company Evidence",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "74"
+    },
+    {
+      "evidence": [
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-jarvis-autonomy.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-jarvis-autonomy.ts"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "AUTO-01",
+        "AUTO-02"
+      ],
+      "engineParity": false,
+      "id": "autonomous-jarvis-apply",
+      "axis": "Autonomous Jarvis Direct Apply",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "75"
+    },
+    {
+      "evidence": [
+        {
+          "type": "schema",
+          "path": "packages/db/src/schema/rt2_store_operations.ts"
+        },
+        {
+          "type": "migration",
+          "path": "packages/db/src/migrations/0112_rt2_store_operations_tables.sql"
+        },
+        {
+          "type": "service",
+          "path": "server/src/services/rt2-store-operations.ts"
+        },
+        {
+          "type": "route",
+          "path": "server/src/routes/rt2-store-operations.ts"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "STORE-01",
+        "STORE-02"
+      ],
+      "engineParity": false,
+      "id": "public-store-operations",
+      "axis": "Public Store Operations",
+      "status": "complete",
+      "weight": 10,
+      "ownerPhase": "76"
+    },
+    {
+      "evidence": [
+        {
+          "type": "gate",
+          "path": "scripts/rt2-v31-acceptance-gate.mjs"
+        },
+        {
+          "type": "test",
+          "path": "scripts/rt2-v31-acceptance-gate.test.mjs"
+        },
+        {
+          "type": "package-script",
+          "path": "package.json"
+        },
+        {
+          "type": "context",
+          "path": ".planning/phases/71-v31-devplan-acceptance-gate/71-CONTEXT.md"
+        },
+        {
+          "type": "plan",
+          "path": ".planning/phases/71-v31-devplan-acceptance-gate/71-01-PLAN.md"
+        },
+        {
+          "type": "validation",
+          "path": ".planning/phases/71-v31-devplan-acceptance-gate/71-VALIDATION.md"
+        },
+        {
+          "type": "verification",
+          "path": ".planning/phases/71-v31-devplan-acceptance-gate/71-VERIFICATION.md"
+        },
+        {
+          "type": "summary",
+          "path": ".planning/phases/71-v31-devplan-acceptance-gate/71-01-SUMMARY.md"
+        },
+        {
+          "type": "roadmap",
+          "path": ".planning/ROADMAP.md"
+        },
+        {
+          "type": "requirements",
+          "path": ".planning/REQUIREMENTS.md"
+        }
+      ],
+      "gaps": [],
+      "requirements": [
+        "GATE-01",
+        "GATE-02"
+      ],
+      "engineParity": false,
+      "id": "v31-acceptance-gate",
+      "axis": "v3.1 acceptance score delta",
+      "status": "complete",
+      "weight": 4,
+      "ownerPhase": "71"
+    }
+  ],
+  "runDir": ".planning/devplan-alignment-runs/2026-05-01T12-25-44-045Z"
+}

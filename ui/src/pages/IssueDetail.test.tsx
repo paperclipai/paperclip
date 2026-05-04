@@ -118,9 +118,9 @@ vi.mock("@/lib/router", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP", status: "active" }],
+    companies: [{ id: "company-1", name: "RealTycoon2", issuePrefix: "PAP", status: "active" }],
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "PAP", status: "active" },
+    selectedCompany: { id: "company-1", name: "RealTycoon2", issuePrefix: "PAP", status: "active" },
     selectionSource: "manual",
     loading: false,
     error: null,

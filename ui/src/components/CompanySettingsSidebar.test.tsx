@@ -30,7 +30,7 @@ vi.mock("@/lib/router", () => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", name: "RealTycoon2" },
   }),
 }));
 
@@ -102,7 +102,7 @@ describe("CompanySettingsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Paperclip");
+    expect(container.textContent).toContain("RealTycoon2");
     expect(container.textContent).toContain("회사 설정");
     expect(container.textContent).toContain("일반");
     expect(container.textContent).toContain("접근 권한");

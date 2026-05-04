@@ -972,7 +972,7 @@ export function CompanySettings() {
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="text"
-                      placeholder="/Users/paperclip/workspace"
+                      placeholder="/Users/rt2/workspace"
                       value={environmentForm.sshRemoteWorkspacePath}
                       onChange={(e) =>
                         setEnvironmentForm((current) => ({ ...current, sshRemoteWorkspacePath: e.target.value }))}
@@ -1357,7 +1357,7 @@ When you submit the join request, use:
 
 Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
 
-Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
+Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "rt2-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
 
 Then after you've connected to RealTycoon2 (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
 

@@ -141,6 +141,9 @@ export {
   rt2BindingModes,
   rt2EnterpriseConnectorEvidence,
 } from "./rt2_enterprise.js";
+export { rt2V33WorkEntities } from "./rt2_v33_work_entities.js";
+export { rt2V33WorkEntitiesArchive } from "./rt2_v33_work_entities.js";
+export { rt2V33WorkProjectorState } from "./rt2_v33_work_projector_state.js";
 export {
   rt2FederationPartners,
   rt2FederationEvidenceContracts,
@@ -159,3 +162,4 @@ export {
   type Rt2ContradictionCandidateStatus,
   type Rt2ContradictionResolutionDecision,
 } from "./rt2_v33_contradiction_review.js";
+export * from "./rt2_v33_phase_controls.js";

@@ -17,14 +17,18 @@ export type Rt2DomainEventType =
   | "rt2.execution.failed"
   | "rt2.execution.cancelled"
   | "rt2.execution.stale_cleaned"
-  | "rt2.execution.retried";
+  | "rt2.execution.retried"
+  | "rt2.work.created"
+  | "rt2.work.state_changed"
+  | "rt2.work.archived";
 
 export type Rt2DomainEventEntityType =
   | "task"
   | "todo"
   | "participant"
   | "deliverable"
-  | "execution";
+  | "execution"
+  | "work";
 
 export interface Rt2DomainEventPayload {
   taskIssueId?: string;
@@ -34,6 +38,8 @@ export interface Rt2DomainEventPayload {
   deliverableWorkProductId?: string | null;
   executionAttemptId?: string;
   mutation?: string;
+  previousState?: string;
+  newState?: string;
   [key: string]: unknown;
 }
 
