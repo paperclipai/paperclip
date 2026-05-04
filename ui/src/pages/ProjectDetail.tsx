@@ -479,6 +479,7 @@ export function ProjectDetail() {
       pauseReason: project?.pauseReason ?? null,
       windowStart: new Date(),
       windowEnd: new Date(),
+      unpricedRunCount: 0,
     } satisfies BudgetPolicySummary;
   }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
 

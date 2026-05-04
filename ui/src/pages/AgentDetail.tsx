@@ -735,6 +735,7 @@ export function AgentDetail() {
       pauseReason: agent?.pauseReason ?? null,
       windowStart: new Date(),
       windowEnd: new Date(),
+      unpricedRunCount: 0,
     } satisfies BudgetPolicySummary;
   }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
   const mobileLiveRun = useMemo(
