@@ -557,7 +557,7 @@ Success criteria:
 | 77. v3.2 Acceptance Gate | v3.2 | 0/0 | Complete | 2026-05-01 |
 | 78. Multica Runtime Alignment | v3.3 | 1/1 | Planned | — |
 | 79. RT2 Event/Projector Alignment | v3.3 | 1/1 | Planned | — |
-| 80. Work Lifecycle Integration | v3.3 | 0/0 | Planned | — |
+| 80. Work Lifecycle Integration | v3.3 | 1/1 | Planned | — |
 | 81. wikiLLM/Graphify Knowledge Projection | v3.3 | 0/0 | Planned | — |
 | 82. Paperclip Residue Cleanup | v3.3 | 0/0 | Planned | — |
 | 83. v3.3 Acceptance Gate | v3.3 | 0/0 | Planned | — |
