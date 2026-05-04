@@ -1,4 +1,4 @@
-import { date, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 
@@ -7,7 +7,7 @@ export const rt2WorkBoardCards = pgTable(
   {
     issueId: uuid("issue_id").primaryKey().references(() => issues.id, { onDelete: "cascade" }),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    dueDate: date("due_date"),
+    dueDate: timestamp("due_date", { withTimezone: true }),
     qualityStatus: text("quality_status").notNull().default("none"),
     priceGold: integer("price_gold"),
     detailNotes: text("detail_notes"),
