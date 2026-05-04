@@ -1,6 +1,8 @@
 import type { Db } from "@paperclipai/db";
 import type { BuilderTool, BuilderToolRunContext, BuilderToolRunResult } from "./types.js";
 import { buildCoreReadOnlyTools } from "./tools/core-read.js";
+import { buildCoreMutationTools } from "./tools/core-mutation.js";
+import { getPluginBuilderTools } from "./plugin-bridge.js";
 
 /**
  * Builder tool registry.
@@ -59,6 +61,12 @@ export function _resetBuilderToolExtensions(): void {
 export function getBuilderToolCatalog(db: Db): Map<string, BuilderTool> {
   const map = new Map<string, BuilderTool>();
   for (const tool of buildCoreReadOnlyTools(db)) {
+    map.set(namespacedName(tool), tool);
+  }
+  for (const tool of buildCoreMutationTools()) {
+    map.set(namespacedName(tool), tool);
+  }
+  for (const tool of getPluginBuilderTools(db)) {
     map.set(namespacedName(tool), tool);
   }
   for (const [key, tool] of _extensions) {

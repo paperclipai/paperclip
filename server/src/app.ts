@@ -226,6 +226,10 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  // Bridge plugin-contributed builder tools (those declaring
+  // `surfaces: ["builder"]`) into the Builder tool catalog.
+  const { setBuilderPluginBridge } = await import("./services/builder/plugin-bridge.js");
+  setBuilderPluginBridge(toolDispatcher);
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,

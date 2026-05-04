@@ -105,6 +105,7 @@ export const pluginToolDeclarationSchema = z.object({
   displayName: z.string().min(1),
   description: z.string().min(1),
   parametersSchema: jsonSchemaSchema,
+  surfaces: z.array(z.enum(["agent", "builder"])).optional(),
 });
 
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;

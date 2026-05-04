@@ -17,6 +17,7 @@ description: "Paperclip heartbeat behavior evals"
 
 prompts:
   - file://prompts/heartbeat-system.txt
+  - file://prompts/builder-system.txt
 
 providers:
   - id: openrouter:anthropic/claude-sonnet-4-20250514

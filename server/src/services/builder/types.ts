@@ -2,6 +2,8 @@ import type {
   BuilderMessage,
   BuilderToolDescriptor,
 } from "@paperclipai/shared";
+import type { Db } from "@paperclipai/db";
+import type { BuilderProposalStore } from "./proposal-store.js";
 
 /**
  * Internal types shared across the Builder module.
@@ -22,7 +24,13 @@ export interface BuilderActor {
 export interface BuilderToolRunContext {
   companyId: string;
   sessionId: string;
+  /** Id of the assistant message that emitted this tool call. */
+  messageId: string;
   actor: BuilderActor;
+  /** DB handle for tools that need to call core services directly. */
+  db: Db;
+  /** Proposal store, for mutation tools that record a deferred change. */
+  proposalStore: BuilderProposalStore;
 }
 
 /** Successful tool invocation result. */

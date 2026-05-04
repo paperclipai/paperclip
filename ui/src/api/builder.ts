@@ -1,4 +1,5 @@
 import type {
+  BuilderProposal,
   BuilderProviderSettings,
   BuilderSession,
   BuilderSessionDetail,
@@ -52,5 +53,35 @@ export const builderApi = {
     api.put<{ settings: BuilderProviderSettings }>(
       `/companies/${companyId}/builder/settings`,
       data,
+    ),
+
+  listProposals: (
+    companyId: string,
+    filter?: { sessionId?: string; status?: BuilderProposal["status"] },
+  ) => {
+    const params = new URLSearchParams();
+    if (filter?.sessionId) params.set("sessionId", filter.sessionId);
+    if (filter?.status) params.set("status", filter.status);
+    const qs = params.toString();
+    return api.get<{ proposals: BuilderProposal[] }>(
+      `/companies/${companyId}/builder/proposals${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  getProposal: (companyId: string, proposalId: string) =>
+    api.get<{ proposal: BuilderProposal }>(
+      `/companies/${companyId}/builder/proposals/${proposalId}`,
+    ),
+
+  applyProposal: (companyId: string, proposalId: string) =>
+    api.post<{ proposal: BuilderProposal }>(
+      `/companies/${companyId}/builder/proposals/${proposalId}/apply`,
+      {},
+    ),
+
+  rejectProposal: (companyId: string, proposalId: string) =>
+    api.post<{ proposal: BuilderProposal }>(
+      `/companies/${companyId}/builder/proposals/${proposalId}/reject`,
+      {},
     ),
 };

@@ -12,6 +12,8 @@ import {
   safeRunTool,
 } from "./tool-registry.js";
 import { builderSessionStore } from "./session-store.js";
+import { builderProposalStore } from "./proposal-store.js";
+import { recordBuilderCost } from "./cost-bridge.js";
 import type { PersistedBuilderMessage } from "./session-store.js";
 
 /**
@@ -87,10 +89,13 @@ export async function runBuilderTurn(opts: {
   store?: ReturnType<typeof builderSessionStore>;
   /** Optional injected tool catalog (test-only). Defaults to the registry. */
   toolCatalog?: ReturnType<typeof getBuilderToolCatalog>;
+  /** Optional injected proposal store (test-only). */
+  proposalStore?: ReturnType<typeof builderProposalStore>;
 }) {
   const { db, provider, providerConfig, sessionId, companyId, actor, signal } = opts;
   const store = opts.store ?? builderSessionStore(db);
   const catalog = opts.toolCatalog ?? getBuilderToolCatalog(db);
+  const proposalStore = opts.proposalStore ?? builderProposalStore(db);
 
   const providerTools = Array.from(catalog.values()).map((tool) => ({
     name: tool.name,
@@ -118,6 +123,18 @@ export async function runBuilderTurn(opts: {
     usage.inputTokens += response.usage.inputTokens;
     usage.outputTokens += response.usage.outputTokens;
     usage.costCents += response.usage.costCents ?? 0;
+
+    // Record this turn's spend so it rolls up via the existing budget
+    // hard-stop logic. Best-effort — failures are logged but do not break
+    // the chat loop. Skipped automatically when cost is zero.
+    await recordBuilderCost(db, {
+      companyId,
+      provider: providerConfig.providerType,
+      model: providerConfig.model,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      costCents: response.usage.costCents ?? 0,
+    });
 
     const assistantMessage = await store.appendMessage(sessionId, companyId, {
       role: "assistant",
@@ -168,7 +185,10 @@ export async function runBuilderTurn(opts: {
       const result = await safeRunTool(tool, call.arguments, {
         companyId,
         sessionId,
+        messageId: assistantMessage.id,
         actor,
+        db,
+        proposalStore,
       });
 
       const toolMessage = await store.appendMessage(sessionId, companyId, {
@@ -179,6 +199,8 @@ export async function runBuilderTurn(opts: {
             name: tool.name,
             ok: result.ok,
             result: result.ok ? result.result : { error: result.error },
+            ...(result.ok && result.proposalId ? { proposalId: result.proposalId } : {}),
+            ...(result.ok && result.activityId ? { activityId: result.activityId } : {}),
           },
         },
         inputTokens: 0,

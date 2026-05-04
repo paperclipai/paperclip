@@ -45,6 +45,10 @@ export interface BuilderToolResult {
   ok: boolean;
   /** Result payload (model-visible). For errors, contains `{error: string}`. */
   result: unknown;
+  /** Set when the tool created a deferred mutation. */
+  proposalId?: string;
+  /** Set when the tool performed an immediate mutation that produced an activity row. */
+  activityId?: string;
 }
 
 export interface BuilderMessageContent {

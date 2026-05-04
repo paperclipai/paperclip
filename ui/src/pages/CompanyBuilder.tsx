@@ -41,11 +41,22 @@ function formatRoleLabel(role: BuilderMessage["role"]): string {
   }
 }
 
-function MessageBubble({ message }: { message: BuilderMessage }) {
+function MessageBubble({
+  message,
+  onApplyProposal,
+  onRejectProposal,
+  proposalActionPending,
+}: {
+  message: BuilderMessage;
+  onApplyProposal?: (proposalId: string) => void;
+  onRejectProposal?: (proposalId: string) => void;
+  proposalActionPending?: string | null;
+}) {
   const text = message.content.text ?? "";
   const toolCalls = message.content.toolCalls ?? [];
   const toolResult = message.content.toolResult;
   const isUser = message.role === "user";
+  const proposalId = toolResult?.proposalId;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -78,6 +89,27 @@ function MessageBubble({ message }: { message: BuilderMessage }) {
             <pre className="whitespace-pre-wrap text-[11px] leading-snug">
               {JSON.stringify(toolResult.result, null, 2).slice(0, 800)}
             </pre>
+            {proposalId && onApplyProposal && onRejectProposal && (
+              <div className="mt-2 flex items-center gap-2 border-t border-border/40 pt-2">
+                <span className="text-[11px] uppercase opacity-60">Proposal</span>
+                <button
+                  type="button"
+                  className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground disabled:opacity-50"
+                  disabled={proposalActionPending === proposalId}
+                  onClick={() => onApplyProposal(proposalId)}
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-border px-2 py-0.5 text-[11px] disabled:opacity-50"
+                  disabled={proposalActionPending === proposalId}
+                  onClick={() => onRejectProposal(proposalId)}
+                >
+                  Reject
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -227,6 +259,7 @@ function ChatPanel({
   refresh: () => void;
 }) {
   const [input, setInput] = useState("");
+  const [proposalActionPending, setProposalActionPending] = useState<string | null>(null);
   const toast = useToastActions();
   const queryClient = useQueryClient();
   const mutation = useMutation({
@@ -248,6 +281,34 @@ function ChatPanel({
     },
   });
 
+  const decideProposal = async (
+    proposalId: string,
+    action: "apply" | "reject",
+  ) => {
+    setProposalActionPending(proposalId);
+    try {
+      if (action === "apply") {
+        await builderApi.applyProposal(companyId, proposalId);
+        toast.pushToast({ title: "Proposal applied", tone: "success" });
+      } else {
+        await builderApi.rejectProposal(companyId, proposalId);
+        toast.pushToast({ title: "Proposal rejected", tone: "info" });
+      }
+      await queryClient.invalidateQueries({
+        queryKey: [...QUERY_KEY, "session", companyId, session.id],
+      });
+      refresh();
+    } catch (err) {
+      toast.pushToast({
+        title: action === "apply" ? "Failed to apply proposal" : "Failed to reject proposal",
+        body: err instanceof Error ? err.message : String(err),
+        tone: "error",
+      });
+    } finally {
+      setProposalActionPending(null);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 space-y-3 overflow-y-auto pr-2">
@@ -257,7 +318,15 @@ function ChatPanel({
             message="Ask anything about this company. Try: 'list my agents and which routines are paused'"
           />
         ) : (
-          session.messages.map((msg) => <MessageBubble key={msg.id} message={msg} />)
+          session.messages.map((msg) => (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              onApplyProposal={(id) => decideProposal(id, "apply")}
+              onRejectProposal={(id) => decideProposal(id, "reject")}
+              proposalActionPending={proposalActionPending}
+            />
+          ))
         )}
       </div>
       <form

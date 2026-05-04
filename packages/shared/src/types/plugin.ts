@@ -78,6 +78,19 @@ export interface PluginWebhookDeclaration {
  *
  * @see PLUGIN_SPEC.md §11 — Agent Tools
  */
+/**
+ * Surfaces a plugin tool can be exposed on. Defaults to `["agent"]`.
+ *
+ * - `"agent"` — available to agents at runtime via the existing tool dispatcher.
+ * - `"builder"` — also surfaced in the Company AI Builder tool catalog so the
+ *   board operator can ask the Builder to invoke it.
+ *
+ * @see PLUGIN_SPEC.md §11 — Agent Tools
+ * @see doc/plans/2026-05-04-company-ai-builder.md §6.3 — Extension hook
+ */
+export const PLUGIN_TOOL_SURFACES = ["agent", "builder"] as const;
+export type PluginToolSurface = (typeof PLUGIN_TOOL_SURFACES)[number];
+
 export interface PluginToolDeclaration {
   /** Tool name, unique within the plugin. Namespaced by plugin ID at runtime. */
   name: string;
@@ -87,6 +100,11 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  /**
+   * Surfaces the tool is exposed on. Omit (or set to `["agent"]`) for the
+   * default agent-only behaviour.
+   */
+  surfaces?: PluginToolSurface[];
 }
 
 /**

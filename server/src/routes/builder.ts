@@ -1,7 +1,9 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  applyBuilderProposalSchema,
   createBuilderSessionSchema,
+  rejectBuilderProposalSchema,
   sendBuilderMessageSchema,
   updateBuilderProviderSettingsSchema,
 } from "@paperclipai/shared";
@@ -212,6 +214,153 @@ export function builderRoutes(db: Db) {
         details: null,
       });
       res.json({ session: aborted });
+    },
+  );
+
+  // ------------------------------------------------------------------------
+  // SSE streaming
+  // ------------------------------------------------------------------------
+  // POST .../messages/stream — same payload as /messages but writes the
+  // result as a Server-Sent Events stream. Phase 4: provider streaming will
+  // be added; for now we stream a single end-of-turn event so clients can
+  // start using the API now and gain incremental updates later transparently.
+
+  router.post(
+    "/companies/:companyId/builder/sessions/:sessionId/messages/stream",
+    validate(sendBuilderMessageSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const sessionId = req.params.sessionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoardActor(req);
+      const identity = actorIdentity(req);
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+
+      const send = (event: string, data: unknown) => {
+        res.write(`event: ${event}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const ac = new AbortController();
+      req.on("close", () => ac.abort());
+
+      send("start", { sessionId });
+
+      try {
+        const result = await svc.sendMessage({
+          companyId,
+          sessionId,
+          actor: { type: "user", id: identity.userId },
+          text: req.body.text,
+          signal: ac.signal,
+        });
+        if (!result) {
+          send("error", { error: "Session not found" });
+          res.end();
+          return;
+        }
+        send("user_message", result.userMessage);
+        for (const message of result.newMessages) {
+          send("message", message);
+        }
+        send("done", {
+          usage: result.usage,
+          truncated: result.truncated,
+          messageCount: result.newMessages.length,
+        });
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "builder.session.message_sent",
+          entityType: "builder_session",
+          entityId: sessionId,
+          details: {
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            truncated: result.truncated,
+            newMessageCount: result.newMessages.length,
+            stream: true,
+          },
+        });
+      } catch (err) {
+        send("error", {
+          error: err instanceof Error ? err.message : "Builder run failed",
+        });
+      } finally {
+        res.end();
+      }
+    },
+  );
+
+  // ------------------------------------------------------------------------
+  // Proposals (Phases 1 + 2)
+  // ------------------------------------------------------------------------
+
+  router.get("/companies/:companyId/builder/proposals", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoardActor(req);
+    const sessionId =
+      typeof req.query.sessionId === "string" ? (req.query.sessionId as string) : undefined;
+    const status =
+      typeof req.query.status === "string"
+        ? (req.query.status as Parameters<typeof svc.listProposals>[1] extends infer F
+            ? F extends { status?: infer S }
+              ? S
+              : never
+            : never)
+        : undefined;
+    const proposals = await svc.listProposals(companyId, { sessionId, status });
+    res.json({ proposals });
+  });
+
+  router.get(
+    "/companies/:companyId/builder/proposals/:proposalId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const proposalId = req.params.proposalId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoardActor(req);
+      const proposal = await svc.getProposal(companyId, proposalId);
+      if (!proposal) throw notFound("Proposal not found");
+      res.json({ proposal });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/builder/proposals/:proposalId/apply",
+    validate(applyBuilderProposalSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const proposalId = req.params.proposalId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoardActor(req);
+      const identity = actorIdentity(req);
+      const proposal = await svc.applyProposal(companyId, proposalId, identity.userId);
+      res.json({ proposal });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/builder/proposals/:proposalId/reject",
+    validate(rejectBuilderProposalSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const proposalId = req.params.proposalId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoardActor(req);
+      const identity = actorIdentity(req);
+      const proposal = await svc.rejectProposal(companyId, proposalId, identity.userId);
+      res.json({ proposal });
     },
   );
 

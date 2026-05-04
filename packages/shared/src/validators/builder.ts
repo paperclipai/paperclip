@@ -27,3 +27,13 @@ export const updateBuilderProviderSettingsSchema = z
   })
   .strict();
 export type UpdateBuilderProviderSettings = z.infer<typeof updateBuilderProviderSettingsSchema>;
+
+export const applyBuilderProposalSchema = z
+  .object({
+    decisionNote: z.string().trim().max(2000).optional(),
+  })
+  .strict();
+export type ApplyBuilderProposal = z.infer<typeof applyBuilderProposalSchema>;
+
+export const rejectBuilderProposalSchema = applyBuilderProposalSchema;
+export type RejectBuilderProposal = z.infer<typeof rejectBuilderProposalSchema>;

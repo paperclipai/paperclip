@@ -7,6 +7,7 @@ import { getBuilderProvider } from "./provider/openai-compat.js";
 import { runBuilderTurn } from "./runner.js";
 import { builderSessionStore } from "./session-store.js";
 import { builderProviderSettingsStore } from "./settings-store.js";
+import { proposalService } from "./proposal-service.js";
 import {
   getBuilderToolCatalog,
 } from "./tool-registry.js";
@@ -15,6 +16,7 @@ import { unprocessable } from "../../errors.js";
 
 export { registerBuilderTool, _resetBuilderToolExtensions } from "./tool-registry.js";
 export { runBuilderTurn } from "./runner.js";
+export { proposalService } from "./proposal-service.js";
 
 /**
  * Public façade for the Company AI Builder.
@@ -24,6 +26,7 @@ export { runBuilderTurn } from "./runner.js";
 export function builderService(db: Db) {
   const sessions = builderSessionStore(db);
   const settings = builderProviderSettingsStore(db);
+  const proposals = proposalService(db);
 
   return {
     listSessions: (companyId: string) => sessions.listSessions(companyId),
@@ -141,6 +144,12 @@ export function builderService(db: Db) {
       }));
       return { tools: descriptors };
     },
+
+    listProposals: proposals.list,
+    getProposal: proposals.get,
+    pendingProposalCount: proposals.pendingCount,
+    applyProposal: proposals.apply,
+    rejectProposal: proposals.reject,
   };
 }
 
