@@ -56,8 +56,12 @@ import {
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
+import type {
+  AdapterEnvironmentCheck,
+  AdapterEnvironmentTestResult,
+} from "@paperclipai/adapter-utils";
 import { secretService } from "../services/secrets.js";
 import {
   detectAdapterModel,
@@ -160,6 +164,9 @@ export function agentRoutes(
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const environmentsSvc = environmentService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -191,9 +198,13 @@ export function agentRoutes(
    * - SSH environment → builds an SSH execution target from the environment
    *   config so the adapter probes the remote box. No lease is required:
    *   the SSH spec is fully derived from the saved environment config.
-   * - Sandbox / plugin environments → currently fall back to local probing
-   *   with a warning check, since lifting a temporary sandbox lease for an
-   *   ad-hoc test invocation is out of scope for this iteration.
+   * - Sandbox / plugin environments → acquires an ad-hoc lease, realizes the
+   *   workspace, and resolves a sandbox execution target wired to the runtime
+   *   so the adapter probe runs inside the sandbox the same way a heartbeat
+   *   would. The returned `release` callback rolls the lease back when the
+   *   route is done.
+   *
+   * The caller MUST always invoke `release()` (typically in a `finally` block).
    */
   async function resolveAdapterTestExecutionContext(input: {
     companyId: string;
@@ -203,9 +214,17 @@ export function agentRoutes(
     executionTarget: AdapterExecutionTarget | null;
     environmentName: string | null;
     fallbackChecks: AdapterEnvironmentCheck[];
+    release: (status?: "released" | "failed") => Promise<void>;
   }> {
+    const noopRelease = async () => {};
+
     if (!input.environmentId) {
-      return { executionTarget: null, environmentName: null, fallbackChecks: [] };
+      return {
+        executionTarget: null,
+        environmentName: null,
+        fallbackChecks: [],
+        release: noopRelease,
+      };
     }
 
     const environment = await environmentsSvc.getById(input.environmentId);
@@ -217,14 +236,20 @@ export function agentRoutes(
           {
             code: "environment_not_found",
             level: "warn",
-            message: "Selected environment was not found. Falling back to a local probe.",
+            message: "Selected environment was not found. The test did not run.",
           },
         ],
+        release: noopRelease,
       };
     }
 
     if (environment.driver === "local") {
-      return { executionTarget: null, environmentName: environment.name, fallbackChecks: [] };
+      return {
+        executionTarget: null,
+        environmentName: environment.name,
+        fallbackChecks: [],
+        release: noopRelease,
+      };
     }
 
     if (environment.driver === "ssh") {
@@ -241,7 +266,12 @@ export function agentRoutes(
           leaseMetadata: null,
         });
         if (target) {
-          return { executionTarget: target, environmentName: environment.name, fallbackChecks: [] };
+          return {
+            executionTarget: target,
+            environmentName: environment.name,
+            fallbackChecks: [],
+            release: noopRelease,
+          };
         }
         return {
           executionTarget: null,
@@ -251,9 +281,10 @@ export function agentRoutes(
               code: "environment_target_unavailable",
               level: "warn",
               message:
-                `Could not resolve an execution target for environment "${environment.name}". Falling back to a local probe.`,
+                `Could not resolve an execution target for environment "${environment.name}". The test did not run.`,
             },
           ],
+          release: noopRelease,
         };
       } catch (err) {
         return {
@@ -264,27 +295,163 @@ export function agentRoutes(
               code: "environment_target_failed",
               level: "warn",
               message:
-                `Could not connect to environment "${environment.name}" to run the test. Falling back to a local probe.`,
+                `Could not connect to environment "${environment.name}" to run the test.`,
               detail: err instanceof Error ? err.message : String(err),
             },
           ],
+          release: noopRelease,
         };
       }
     }
 
-    // sandbox / plugin / other drivers: not yet supported for ad-hoc adapter tests.
-    return {
-      executionTarget: null,
-      environmentName: environment.name,
-      fallbackChecks: [
-        {
-          code: "environment_driver_not_supported_for_test",
-          level: "warn",
-          message:
-            `Adapter testing inside ${environment.driver} environments is not yet supported. Falling back to a local probe; results may not reflect runs in "${environment.name}".`,
-          hint: "Run a real heartbeat in the environment to verify end-to-end behavior.",
+    // sandbox / plugin / other remote drivers: spin up an ad-hoc lease, realize
+    // the workspace inside the box, and run the same probe SSH uses against
+    // a sandbox execution target wired to the environment runtime.
+    //
+    // We pass `heartbeatRunId: null` because there's no heartbeat run for an
+    // operator-initiated `Test` invocation — the leases table FKs heartbeat
+    // run id to heartbeat_runs.id, and we don't want to manufacture a fake
+    // run row. Cleanup goes through the driver's `releaseRunLease` directly
+    // (by lease record), since the batch helper queries by heartbeatRunId.
+    let leaseRecord: Awaited<ReturnType<typeof environmentRuntime.acquireRunLease>>;
+    try {
+      leaseRecord = await environmentRuntime.acquireRunLease({
+        companyId: input.companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: null,
+        persistedExecutionWorkspace: null,
+      });
+    } catch (err) {
+      return {
+        executionTarget: null,
+        environmentName: environment.name,
+        fallbackChecks: [
+          {
+            code: "environment_lease_acquire_failed",
+            level: "error",
+            message: `Could not acquire a lease for environment "${environment.name}".`,
+            detail: err instanceof Error ? err.message : String(err),
+            hint: "Check the environment's provider credentials and quota.",
+          },
+        ],
+        release: noopRelease,
+      };
+    }
+
+    const driver = environmentRuntime.getDriver(environment.driver);
+    const releaseLease = async (status: "released" | "failed" = "released") => {
+      try {
+        if (driver) {
+          await driver.releaseRunLease({
+            environment,
+            lease: leaseRecord.lease,
+            status,
+          });
+        } else {
+          await environmentsSvc.releaseLease(leaseRecord.lease.id, status);
+        }
+      } catch (err) {
+        // Cleanup failures must not mask the test result.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[adapter-test] Failed to release lease ${leaseRecord.lease.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
+
+    let realizedCwd: string | null = null;
+    try {
+      const realized = await environmentRuntime.realizeWorkspace({
+        environment,
+        lease: leaseRecord.lease,
+        // No host workspace to copy for a Test invocation; sandbox/plugin
+        // realize implementations use the lease metadata's remoteCwd to
+        // create the working directory inside the box.
+        workspace: {},
+      });
+      realizedCwd =
+        typeof realized.cwd === "string" && realized.cwd.trim().length > 0
+          ? realized.cwd.trim()
+          : null;
+    } catch (err) {
+      await releaseLease("failed");
+      return {
+        executionTarget: null,
+        environmentName: environment.name,
+        fallbackChecks: [
+          {
+            code: "environment_workspace_realize_failed",
+            level: "error",
+            message: `Could not realize a workspace inside "${environment.name}".`,
+            detail: err instanceof Error ? err.message : String(err),
+          },
+        ],
+        release: noopRelease,
+      };
+    }
+
+    let target: AdapterExecutionTarget | null;
+    try {
+      // Prefer the cwd the realize step returned; fall back to lease metadata.
+      const leaseMetadataForTarget: Record<string, unknown> | null =
+        realizedCwd
+          ? { ...(leaseRecord.lease.metadata ?? {}), remoteCwd: realizedCwd }
+          : (leaseRecord.lease.metadata as Record<string, unknown> | null) ?? null;
+
+      target = await resolveEnvironmentExecutionTarget({
+        db,
+        companyId: input.companyId,
+        adapterType: input.adapterType,
+        environment: {
+          id: environment.id,
+          driver: environment.driver,
+          config: environment.config ?? null,
         },
-      ],
+        leaseId: leaseRecord.lease.id,
+        leaseMetadata: leaseMetadataForTarget,
+        lease: leaseRecord.lease,
+        environmentRuntime,
+      });
+    } catch (err) {
+      await releaseLease("failed");
+      return {
+        executionTarget: null,
+        environmentName: environment.name,
+        fallbackChecks: [
+          {
+            code: "environment_target_failed",
+            level: "error",
+            message: `Could not resolve a sandbox execution target for "${environment.name}".`,
+            detail: err instanceof Error ? err.message : String(err),
+          },
+        ],
+        release: noopRelease,
+      };
+    }
+
+    if (!target) {
+      await releaseLease("failed");
+      return {
+        executionTarget: null,
+        environmentName: environment.name,
+        fallbackChecks: [
+          {
+            code: "environment_target_unsupported",
+            level: "warn",
+            message:
+              `Adapter "${input.adapterType}" is not allowed in "${environment.name}" environments.`,
+          },
+        ],
+        release: noopRelease,
+      };
+    }
+
+    return {
+      executionTarget: target,
+      environmentName: environment.name,
+      fallbackChecks: [],
+      release: releaseLease,
     };
   }
 
@@ -1250,33 +1417,51 @@ export function agentRoutes(
         normalizedAdapterConfig,
       );
 
-      const { executionTarget, environmentName, fallbackChecks } =
+      const { executionTarget, environmentName, fallbackChecks, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
           adapterType: type,
           environmentId: requestedEnvironmentId,
         });
 
-      const result = await adapter.testEnvironment({
-        companyId,
-        adapterType: type,
-        config: runtimeAdapterConfig,
-        executionTarget,
-        environmentName,
-      });
+      let releaseStatus: "released" | "failed" = "released";
+      try {
+        // If the caller explicitly selected an environment, never fall back to
+        // probing the host when we couldn't resolve that environment's
+        // execution target. Surface the diagnostic checks instead.
+        if (requestedEnvironmentId && !executionTarget && fallbackChecks.length > 0) {
+          const status: AdapterEnvironmentTestResult["status"] = fallbackChecks.some((c) => c.level === "error")
+            ? "fail"
+            : fallbackChecks.some((c) => c.level === "warn")
+              ? "warn"
+              : "pass";
+          if (status === "fail") releaseStatus = "failed";
+          const synthesized: AdapterEnvironmentTestResult = {
+            adapterType: type,
+            status,
+            checks: fallbackChecks,
+            testedAt: new Date().toISOString(),
+          };
+          res.json(synthesized);
+          return;
+        }
 
-      if (fallbackChecks.length > 0) {
-        const checks = [...fallbackChecks, ...result.checks];
-        const status: typeof result.status = checks.some((c) => c.level === "error")
-          ? "fail"
-          : checks.some((c) => c.level === "warn")
-            ? "warn"
-            : result.status;
-        res.json({ ...result, checks, status });
-        return;
+        const result = await adapter.testEnvironment({
+          companyId,
+          adapterType: type,
+          config: runtimeAdapterConfig,
+          executionTarget,
+          environmentName,
+        });
+
+        if (result.status === "fail") releaseStatus = "failed";
+        res.json(result);
+      } catch (err) {
+        releaseStatus = "failed";
+        throw err;
+      } finally {
+        await release(releaseStatus);
       }
-
-      res.json(result);
     },
   );
 
