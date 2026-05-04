@@ -11,6 +11,8 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
+!packages/pricing/data/
+!packages/pricing/data/**
 .paperclip/
 .pnpm-store/
 tmp-*
