@@ -393,6 +393,60 @@ export async function readAdapterExecutionTargetHomeDir(
   return homeDir.length > 0 ? homeDir : null;
 }
 
+export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  installCommand?: string | null;
+  detectCommand?: string | null;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec?: number;
+  graceSec?: number;
+  onLog?: AdapterExecutionTargetShellOptions["onLog"];
+}): Promise<void> {
+  const installCommand = input.installCommand?.trim();
+  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+    return;
+  }
+
+  const detectCommand = input.detectCommand?.trim();
+  if (detectCommand) {
+    const probe = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec,
+        graceSec: input.graceSec,
+      },
+    );
+    if (!probe.timedOut && probe.exitCode === 0) {
+      return;
+    }
+  }
+
+  const result = await runAdapterExecutionTargetShellCommand(
+    input.runId,
+    input.target,
+    installCommand,
+    {
+      cwd: input.cwd,
+      env: input.env,
+      timeoutSec: input.timeoutSec,
+      graceSec: input.graceSec,
+      onLog: input.onLog,
+    },
+  );
+  if (result.timedOut) {
+    throw new Error(`Timed out while installing the adapter runtime command via: ${installCommand}`);
+  }
+  if ((result.exitCode ?? 0) !== 0) {
+    throw new Error(`Failed to install the adapter runtime command via: ${installCommand}`);
+  }
+}
+
 export async function ensureAdapterExecutionTargetFile(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
