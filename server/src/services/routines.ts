@@ -1295,6 +1295,34 @@ export function routineService(
         })
         .where(eq(routines.id, id))
         .returning();
+      const wasArchived = existing.status === "archived";
+      const isNowArchived = nextStatus === "archived";
+      const isNowActive = nextStatus === "active";
+      if (!wasArchived && isNowArchived) {
+        // Archiving: disable all triggers so the scheduler stops firing them.
+        await db
+          .update(routineTriggers)
+          .set({ enabled: false, nextRunAt: null, updatedAt: new Date() })
+          .where(eq(routineTriggers.routineId, id));
+      } else if (wasArchived && isNowActive) {
+        // Unarchiving back to active: re-enable all triggers.
+        // Schedule triggers need nextRunAt recalculated — archiving nulled it out,
+        // and the scheduler filters on isNotNull(nextRunAt) so null = invisible forever.
+        const allTriggers = await db
+          .select()
+          .from(routineTriggers)
+          .where(eq(routineTriggers.routineId, id));
+        for (const t of allTriggers) {
+          const nextRunAt =
+            t.kind === "schedule" && t.cronExpression && t.timezone
+              ? nextCronTickInTimeZone(t.cronExpression, t.timezone, new Date())
+              : undefined;
+          await db
+            .update(routineTriggers)
+            .set({ enabled: true, ...(nextRunAt != null ? { nextRunAt } : {}), updatedAt: new Date() })
+            .where(eq(routineTriggers.id, t.id));
+        }
+      }
       return updated ?? null;
     },
 
