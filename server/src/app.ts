@@ -339,7 +339,17 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
+  // Mark all plugin workers as intentionally stopping when the server receives
+  // a termination signal. This prevents SIGTERM forwarded to child processes
+  // from being logged as crashes (#5131). Signal handlers run synchronously
+  // before child 'close' events are dequeued from the event loop.
+  const onSignal = () => workerManager.beginShutdown();
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+
   process.once("exit", () => {
+    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onSignal);
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
     devWatcher?.close();
     hostServiceCleanup.disposeAll();

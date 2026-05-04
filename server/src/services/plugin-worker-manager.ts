@@ -271,6 +271,13 @@ export interface PluginWorkerHandle {
 
   /** Get diagnostic info about the worker. */
   diagnostics(): WorkerDiagnostics;
+
+  /**
+   * Mark the worker as globally shutting down.
+   * Any process exit that follows will be treated as intentional so that
+   * SIGTERM forwarded from the parent server does not log as a crash.
+   */
+  beginShutdown(): void;
 }
 
 /**
@@ -321,6 +328,12 @@ export interface PluginWorkerManager {
    * Check if a worker is registered and running for a plugin.
    */
   isRunning(pluginId: string): boolean;
+
+  /**
+   * Mark all workers as globally shutting down before SIGTERM is forwarded.
+   * Must be called before stopAll() so worker exits are not logged as crashes.
+   */
+  beginShutdown(): void;
 
   /**
    * Stop all managed workers. Called during server shutdown.
@@ -393,7 +406,11 @@ export function createPluginWorkerHandle(
   const openStreamChannels = new Map<string, string>();
 
   // Shutdown coordination
+  // globalShutdown is set by the manager when the parent server is shutting
+  // down. Any exit that arrives while it's true is treated as intentional so
+  // SIGTERM forwarded from the parent process doesn't log as ERROR (#5131).
   let intentionalStop = false;
+  let globalShutdown = false;
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
@@ -668,7 +685,7 @@ export function createPluginWorkerHandle(
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void {
-    const wasIntentional = intentionalStop;
+    const wasIntentional = intentionalStop || globalShutdown;
 
     // Clean up readline interfaces
     if (readline) {
@@ -1163,6 +1180,10 @@ export function createPluginWorkerHandle(
         nextRestartAt,
       };
     },
+
+    beginShutdown(): void {
+      globalShutdown = true;
+    },
   };
 
   return handle;
@@ -1299,6 +1320,12 @@ export function createPluginWorkerManager(
     isRunning(pluginId: string): boolean {
       const handle = workers.get(pluginId);
       return handle?.status === "running";
+    },
+
+    beginShutdown(): void {
+      for (const handle of workers.values()) {
+        handle.beginShutdown();
+      }
     },
 
     async stopAll(): Promise<void> {
