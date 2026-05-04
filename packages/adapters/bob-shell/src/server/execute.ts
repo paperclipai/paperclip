@@ -382,14 +382,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(promptBundle.rootDir));
-  
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  
-  if (runtimeSessionId && runtimeSessionCwd.length > 0 && path.resolve(runtimeSessionCwd) !== path.resolve(promptBundle.rootDir)) {
+
+  if (runtimeSessionId && runtimeSessionCwd.length > 0 && path.resolve(runtimeSessionCwd) !== path.resolve(cwd)) {
     await onLog(
       "stdout",
-      `[paperclip] Bob Shell session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${promptBundle.rootDir}".\n`,
+      `[paperclip] Bob Shell session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
   if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== promptBundle.bundleKey) {
@@ -398,6 +398,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Bob Shell session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${promptBundle.bundleKey}".\n`,
     );
   }
+
+  // Sync .bob/ workspace config into the actual project cwd so Bob Shell
+  // can find its custom modes, MCP server config, and rule files there.
+  await syncBobWorkspace({
+    cwd,
+    companyId: agent.companyId,
+    agentId: agent.id,
+    agentName: agent.name,
+    agentCapabilities: null,
+    agentInstructions: combinedInstructionsContents ?? undefined,
+    mode,
+    modeConfig,
+    skills: filteredSkills,
+    env,
+    onLog,
+  });
 
   // Status update: session decision (logged to stderr for visibility)
   const sessionStatus = sessionId
@@ -469,7 +485,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({
         adapterType: "bob_shell",
         command: resolvedCommand,
-        cwd: promptBundle.rootDir,
+        cwd,
         commandArgs: args,
         commandNotes,
         env: loggedEnv,
@@ -520,7 +536,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const proc = await runChildProcess(runId, command, args, {
-      cwd: promptBundle.rootDir,
+      cwd,
       env,
       timeoutSec,
       graceSec,
@@ -582,11 +598,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Determine if we should clear the session
   const shouldClearSession = Boolean(sessionId && !currentAttempt.parsed.sessionId);
   
-  return buildBobResult(currentAttempt, { 
+  return buildBobResult(currentAttempt, {
     fallbackSessionId: runtimeSessionId || runtime.sessionId,
     clearSession: shouldClearSession,
     timeoutSec,
-    cwd: promptBundle.rootDir,
+    cwd,
     promptBundleKey: promptBundle.bundleKey,
     workspaceId,
     workspaceRepoUrl,
