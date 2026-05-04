@@ -6981,6 +6981,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,
+        runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
         executionTarget,
         executionTransport: remoteExecution
           ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
