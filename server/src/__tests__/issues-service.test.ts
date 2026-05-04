@@ -460,14 +460,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([grandchildId]);
   });
 
-  it("accepts issue identifiers through getById", async () => {
+  it("accepts issue identifiers with alphanumeric prefixes through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: "PAP",
+      issuePrefix: "PC1A2",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -475,19 +475,19 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: issueId,
       companyId,
       issueNumber: 1064,
-      identifier: "PAP-1064",
+      identifier: "PC1A2-1064",
       title: "Feedback votes error",
       status: "todo",
       priority: "medium",
       createdByUserId: "user-1",
     });
 
-    const issue = await svc.getById("PAP-1064");
+    const issue = await svc.getById("pc1a2-1064");
 
     expect(issue).toEqual(
       expect.objectContaining({
         id: issueId,
-        identifier: "PAP-1064",
+        identifier: "PC1A2-1064",
       }),
     );
   });
