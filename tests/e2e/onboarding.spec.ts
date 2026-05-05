@@ -16,6 +16,8 @@ import { test, expect } from "@playwright/test";
 
 const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
 
+// The default Playwright config creates a fresh PAPERCLIP_HOME per run, so
+// fixed fixtures are safe and assert DEV-136's explicit Trading/TRD path.
 const COMPANY_NAME = "Trading";
 const COMPANY_PREFIX = "TRD";
 const AGENT_NAME = "CEO";
