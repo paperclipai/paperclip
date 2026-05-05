@@ -34,7 +34,7 @@ export function proposalService(db: Db) {
     apply: async (
       companyId: string,
       proposalId: string,
-      decidedByUserId: string,
+      decidedByUserId: string | null,
     ) => {
       const proposal = await store.getById(companyId, proposalId);
       if (!proposal) throw new Error("Proposal not found");
@@ -63,7 +63,7 @@ export function proposalService(db: Db) {
         await logActivity(db, {
           companyId,
           actorType: "user",
-          actorId: decidedByUserId,
+          actorId: decidedByUserId ?? "board",
           action: "builder.proposal.applied",
           entityType: result.entityType ?? "builder_proposal",
           entityId: result.entityId ?? proposalId,
@@ -90,7 +90,7 @@ export function proposalService(db: Db) {
     reject: async (
       companyId: string,
       proposalId: string,
-      decidedByUserId: string,
+      decidedByUserId: string | null,
     ) => {
       const proposal = await store.getById(companyId, proposalId);
       if (!proposal) throw new Error("Proposal not found");
@@ -100,7 +100,7 @@ export function proposalService(db: Db) {
       await logActivity(db, {
         companyId,
         actorType: "user",
-        actorId: decidedByUserId,
+        actorId: decidedByUserId ?? "board",
         action: "builder.proposal.rejected",
         entityType: "builder_proposal",
         entityId: proposalId,

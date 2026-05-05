@@ -11,8 +11,8 @@ import type { BuilderActor } from "./types.js";
 export interface ApplierContext {
   db: Db;
   companyId: string;
-  /** The board user that clicked "Apply". */
-  decidedByUserId: string;
+  /** The board user that clicked "Apply"; null for unauthenticated board sessions. */
+  decidedByUserId: string | null;
   /** The actor that originally produced the proposal. */
   proposer: BuilderActor;
 }

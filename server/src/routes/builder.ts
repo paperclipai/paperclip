@@ -49,7 +49,7 @@ function actorIdentity(req: Request) {
     throw forbidden("Builder is board-only in this release");
   }
   return {
-    userId: req.actor.userId ?? "board",
+    userId: req.actor.userId ?? null,
   };
 }
 

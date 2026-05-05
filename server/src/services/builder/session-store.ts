@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { builderMessages, builderSessions } from "@paperclipai/db";
+import { builderMessages, builderProposals, builderSessions } from "@paperclipai/db";
 import type {
   BuilderMessage,
   BuilderMessageContent,
@@ -9,6 +9,7 @@ import type {
   BuilderSessionDetail,
   BuilderSessionState,
   BuilderProviderType,
+  BuilderProposalStatus,
 } from "@paperclipai/shared";
 
 /**
@@ -21,6 +22,7 @@ import type {
 
 type SessionRow = typeof builderSessions.$inferSelect;
 type MessageRow = typeof builderMessages.$inferSelect;
+type ProposalRow = typeof builderProposals.$inferSelect;
 
 export interface PersistedBuilderMessage extends BuilderMessage {}
 
@@ -41,13 +43,21 @@ function toSession(row: SessionRow): BuilderSession {
   };
 }
 
-function toMessage(row: MessageRow): BuilderMessage {
+function toMessage(row: MessageRow, proposalStatusMap?: Map<string, BuilderProposalStatus>): BuilderMessage {
   const raw = (row.content ?? {}) as Record<string, unknown>;
   const content: BuilderMessageContent = {};
   if (typeof raw.text === "string") content.text = raw.text;
   if (Array.isArray(raw.toolCalls)) content.toolCalls = raw.toolCalls as BuilderMessageContent["toolCalls"];
   if (raw.toolResult && typeof raw.toolResult === "object") {
-    content.toolResult = raw.toolResult as BuilderMessageContent["toolResult"];
+    const toolResult = raw.toolResult as BuilderMessageContent["toolResult"];
+    content.toolResult = toolResult;
+    // Attach proposal status if available
+    if (toolResult?.proposalId && proposalStatusMap) {
+      const status = proposalStatusMap.get(toolResult.proposalId);
+      if (status && content.toolResult) {
+        content.toolResult = { ...content.toolResult, proposalStatus: status };
+      }
+    }
   }
   return {
     id: row.id,
@@ -114,12 +124,27 @@ export function builderSessionStore(db: Db) {
         )
         .then((rows) => rows[0] ?? null);
       if (!session) return null;
+      
       const messages = await db
         .select()
         .from(builderMessages)
         .where(eq(builderMessages.sessionId, sessionId))
         .orderBy(asc(builderMessages.sequence));
-      return { ...toSession(session), messages: messages.map(toMessage) };
+      
+      // Fetch all proposals for this session to include status in toolResults
+      const proposals = await db
+        .select()
+        .from(builderProposals)
+        .where(eq(builderProposals.sessionId, sessionId));
+      
+      const proposalStatusMap = new Map<string, BuilderProposalStatus>(
+        proposals.map((p) => [p.id, p.status as BuilderProposalStatus])
+      );
+      
+      return { 
+        ...toSession(session), 
+        messages: messages.map((msg) => toMessage(msg, proposalStatusMap))
+      };
     },
 
     listMessages: async (sessionId: string): Promise<BuilderMessage[]> => {
@@ -128,7 +153,18 @@ export function builderSessionStore(db: Db) {
         .from(builderMessages)
         .where(eq(builderMessages.sessionId, sessionId))
         .orderBy(asc(builderMessages.sequence));
-      return rows.map(toMessage);
+      
+      // Fetch proposals to include status in toolResults
+      const proposals = await db
+        .select()
+        .from(builderProposals)
+        .where(eq(builderProposals.sessionId, sessionId));
+      
+      const proposalStatusMap = new Map<string, BuilderProposalStatus>(
+        proposals.map((p) => [p.id, p.status as BuilderProposalStatus])
+      );
+      
+      return rows.map((msg) => toMessage(msg, proposalStatusMap));
     },
 
     createSession: async (input: {

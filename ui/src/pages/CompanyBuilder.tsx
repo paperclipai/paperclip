@@ -91,7 +91,7 @@ function MessageBubble({
             <pre className="whitespace-pre-wrap text-[11px] leading-snug">
               {JSON.stringify(toolResult.result, null, 2).slice(0, 800)}
             </pre>
-            {proposalId && onApplyProposal && onRejectProposal && (
+            {proposalId && toolResult.proposalStatus === "pending" && onApplyProposal && onRejectProposal && (
               <div className="mt-2 flex items-center gap-2 border-t border-border/40 pt-2">
                 <span className="text-[11px] uppercase opacity-60">Proposal</span>
                 <button
@@ -110,6 +110,13 @@ function MessageBubble({
                 >
                   Reject
                 </button>
+              </div>
+            )}
+            {proposalId && toolResult.proposalStatus && toolResult.proposalStatus !== "pending" && (
+              <div className="mt-2 border-t border-border/40 pt-2">
+                <span className="text-[11px] uppercase opacity-60">
+                  Proposal {toolResult.proposalStatus}
+                </span>
               </div>
             )}
           </div>

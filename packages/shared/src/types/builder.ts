@@ -47,6 +47,8 @@ export interface BuilderToolResult {
   result: unknown;
   /** Set when the tool created a deferred mutation. */
   proposalId?: string;
+  /** Status of the associated proposal (if proposalId is set). */
+  proposalStatus?: BuilderProposalStatus;
   /** Set when the tool performed an immediate mutation that produced an activity row. */
   activityId?: string;
 }

@@ -3,7 +3,8 @@ import type {
   BuilderActor,
   BuilderProviderConfig,
 } from "./types.js";
-import { getBuilderProvider, warnIfMissingPricing } from "./provider/openai-compat.js";
+import { getBuilderProvider } from "./provider/openai-compat.js";
+import { hasModelPricing } from "@paperclipai/shared";
 import { runBuilderTurn } from "./runner.js";
 import { builderSessionStore } from "./session-store.js";
 import { builderProviderSettingsStore } from "./settings-store.js";
@@ -51,8 +52,12 @@ export function builderService(db: Db) {
           "Builder API key secret is not bound or could not be resolved. Reconfigure provider settings.",
         );
       }
-      // Warn once per session if the model lacks pricing data
-      warnIfMissingPricing(config.model);
+      // Reject session creation if the model lacks pricing data to ensure budget hard-stop works
+      if (!hasModelPricing(config.model)) {
+        throw unprocessable(
+          `Model "${config.model}" is not in the pricing table. Budget hard-stop will not work. Add pricing data or use a supported model.`,
+        );
+      }
       return sessions.createSession({
         companyId: input.companyId,
         createdByUserId: input.createdByUserId,

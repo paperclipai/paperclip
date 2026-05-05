@@ -96,7 +96,7 @@ const createRoutine: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "routine.created",
       entityType: "routine",
       entityId: created.id,
@@ -159,7 +159,7 @@ const updateRoutine: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "routine.updated",
       entityType: "routine",
       entityId: updated.id,
@@ -213,7 +213,7 @@ const createGoal: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "goal.created",
       entityType: "goal",
       entityId: created.id,
@@ -262,7 +262,7 @@ const updateGoal: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "goal.updated",
       entityType: "goal",
       entityId: updated.id,
@@ -322,7 +322,7 @@ const createIssue: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "issue.created",
       entityType: "issue",
       entityId: issueRow.id,
@@ -381,7 +381,7 @@ const updateIssue: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "issue.updated",
       entityType: "issue",
       entityId: result.id,
@@ -502,7 +502,7 @@ const setBudget: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "budget.policy_updated",
       entityType: "budget_policy",
       entityId: (updated as { id?: string }).id ?? String(payload.scopeId),
@@ -560,7 +560,7 @@ const updateCompany: BuilderTool = defineMutationTool({
     await logActivity(ctx.db, {
       companyId: ctx.companyId,
       actorType: "user",
-      actorId: ctx.decidedByUserId,
+      actorId: ctx.decidedByUserId ?? "board",
       action: "company.updated",
       entityType: "company",
       entityId: ctx.companyId,

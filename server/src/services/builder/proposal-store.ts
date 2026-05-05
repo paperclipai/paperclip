@@ -100,7 +100,7 @@ export function builderProposalStore(db: Db) {
 
     markApplied: async (
       proposalId: string,
-      decidedByUserId: string,
+      decidedByUserId: string | null,
       appliedActivityId: string | null,
     ): Promise<BuilderProposal | null> => {
       const [row] = await db
@@ -120,7 +120,7 @@ export function builderProposalStore(db: Db) {
 
     markRejected: async (
       proposalId: string,
-      decidedByUserId: string,
+      decidedByUserId: string | null,
     ): Promise<BuilderProposal | null> => {
       const [row] = await db
         .update(builderProposals)
@@ -137,7 +137,7 @@ export function builderProposalStore(db: Db) {
 
     markFailed: async (
       proposalId: string,
-      decidedByUserId: string,
+      decidedByUserId: string | null,
       failureReason: string,
     ): Promise<BuilderProposal | null> => {
       const [row] = await db

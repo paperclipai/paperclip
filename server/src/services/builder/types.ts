@@ -16,8 +16,8 @@ import type { BuilderProposalStore } from "./proposal-store.js";
 /** Identity of the human/agent that is invoking a Builder turn. */
 export interface BuilderActor {
   type: "user" | "agent";
-  /** stable identifier (board user id or agent id) used for audit trails */
-  id: string;
+  /** stable identifier (board user id or agent id) used for audit trails; null for unauthenticated board sessions */
+  id: string | null;
 }
 
 /** Per-call context handed to a tool's `run()` implementation. */
