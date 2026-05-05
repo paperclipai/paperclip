@@ -7331,18 +7331,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null);
         if (hindsightPluginRow) {
+          // Read most recent recalled memories for this agent across all runs.
+          // The plugin writes recalled-memories async (takes ~15s), so we read
+          // from the most recently-stored run rather than the current run to
+          // avoid a timing race where Fix B always runs before recall completes.
           const recalledValue = await db
             .select({ valueJson: pluginState.valueJson })
             .from(pluginState)
+            .innerJoin(heartbeatRuns, sql`${pluginState.scopeId}::uuid = ${heartbeatRuns.id}`)
             .where(
               and(
                 eq(pluginState.pluginId, hindsightPluginRow.id),
                 eq(pluginState.scopeKind, "run"),
-                eq(pluginState.scopeId, run.id),
                 eq(pluginState.stateKey, "recalled-memories"),
                 eq(pluginState.namespace, "default"),
+                eq(heartbeatRuns.agentId, agent.id),
               ),
             )
+            .orderBy(desc(heartbeatRuns.startedAt))
             .limit(1)
             .then((rows) => rows[0]?.valueJson ?? null);
           if (recalledValue && typeof recalledValue === "string" && recalledValue.trim()) {
