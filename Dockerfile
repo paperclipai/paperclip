@@ -58,7 +58,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-COPY scripts/docker-entrypoint.sh /usr/local/bin/
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
@@ -77,8 +77,8 @@ ENV NODE_ENV=production \
 
 EXPOSE 3100
 
-# Entrypoint runs as root, fixes volume permissions, then drops to node via gosu
-# This ensures Claude Code runs as non-root while volume data is properly owned
+# FIX 1: Point to the actual location in /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
-ENTRYPOINT ["/scripts/docker-entrypoint.sh"]
-CMD ["node", "dist/main.js", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+# FIX 2: Point to the correct path for the server index
+CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
