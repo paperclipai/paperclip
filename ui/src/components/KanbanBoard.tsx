@@ -130,6 +130,7 @@ interface KanbanBoardProps {
   boardCards?: Map<string, Rt2BoardCardMeta>;
   wipLimits?: { todo: number | null; in_progress: number | null; done: number | null };
   wipCounts?: { todo: number; in_progress: number; done: number };
+  templates?: Array<{ id: string; name: string; description: string | null }>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
   onUpdateBoardCard?: (id: string, data: Partial<Pick<Rt2BoardCardMeta, "dueDate" | "qualityStatus" | "priceGold" | "detailNotes">>) => void;
   onAddChecklistItem?: (id: string, title: string) => void;
@@ -137,6 +138,7 @@ interface KanbanBoardProps {
   onReorderChecklist?: (id: string, orderedItemIds: string[]) => void;
   onAddAttachment?: (id: string, data: { label: string; url: string; contentType?: string | null }) => void;
   onCreateTask?: (status?: string) => void;
+  onSelectTemplate?: (templateId: string, lane: string) => void;
 }
 
 /* ── Droppable Column ── */
@@ -158,6 +160,8 @@ function KanbanColumn({
   onCreateTask,
   wipLimit,
   wipCount,
+  templates,
+  onSelectTemplate,
 }: {
   lane: (typeof boardLanes)[number];
   issues: Issue[];
@@ -175,6 +179,8 @@ function KanbanColumn({
   onCreateTask?: (status?: string) => void;
   wipLimit?: number | null;
   wipCount?: number;
+  templates?: Array<{ id: string; name: string; description: string | null }>;
+  onSelectTemplate?: (templateId: string, lane: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: lane.id });
 
@@ -233,6 +239,29 @@ function KanbanColumn({
         {isAtLimit ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-600">
             WIP 제한 ({wipLimit})에 도달했습니다
+          </div>
+        ) : templates && templates.length > 0 ? (
+          <div className="space-y-1">
+            <p className="text-[11px] text-muted-foreground mb-1">템플릿으로 추가:</p>
+            <div className="flex flex-wrap gap-1">
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onSelectTemplate?.(t.id, lane.id)}
+                  className="rounded bg-blue-50 px-2 py-1 text-[11px] text-blue-600 hover:bg-blue-100 border border-blue-200"
+                >
+                  {t.name}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => onCreateTask?.(lane.id)}
+                className="rounded bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted border border-border"
+              >
+                빈 카드
+              </button>
+            </div>
           </div>
         ) : (
           <Button
@@ -588,6 +617,7 @@ export function KanbanBoard({
   boardCards,
   wipLimits,
   wipCounts,
+  templates,
   onUpdateIssue,
   onUpdateBoardCard,
   onAddChecklistItem,
@@ -595,6 +625,7 @@ export function KanbanBoard({
   onReorderChecklist,
   onAddAttachment,
   onCreateTask,
+  onSelectTemplate,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -702,6 +733,8 @@ export function KanbanBoard({
             onCreateTask={onCreateTask}
             wipLimit={wipLimits ? (wipLimits[lane.id as keyof typeof wipLimits] ?? null) : null}
             wipCount={wipCounts ? wipCounts[lane.id as keyof typeof wipCounts] : undefined}
+            templates={templates}
+            onSelectTemplate={onSelectTemplate}
           />
         ))}
       </div>
