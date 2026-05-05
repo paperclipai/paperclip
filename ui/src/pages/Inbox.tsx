@@ -1945,7 +1945,7 @@ export function Inbox() {
             )}
           >
             <CircleDot className="h-3.5 w-3.5" />
-            <span>Needs Board</span>
+            <span>Needs Board Queue</span>
             <span className="font-mono">{needsBoardCount}</span>
           </Link>
           <div className="relative hidden sm:block">

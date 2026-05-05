@@ -1898,67 +1898,20 @@ async function listIssueNeedsBoardProjectionMap(
 }
 
 async function listNeedsBoardIssueIds(dbOrTx: any, companyId: string) {
-  const rows = await dbOrTx
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      status: issues.status,
-      priority: issues.priority,
-      assigneeUserId: issues.assigneeUserId,
-      executionState: issues.executionState,
-      createdAt: issues.createdAt,
-      parentId: issues.parentId,
-    })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
-        notInArray(issues.status, ["done", "cancelled"]),
-      ),
-    );
-
-  const projections = await listIssueNeedsBoardProjectionMap(dbOrTx, companyId, rows);
-  return [...projections.entries()]
-    .filter(([, projection]) => projection.needsBoardActionable)
-    .map(([issueId]) => issueId);
+  const projections = await listCanonicalNeedsBoardProjectionMap(dbOrTx, companyId);
+  return listNeedsBoardIssueIdsFromProjections(projections, (projection) => projection.needsBoardActionable);
 }
 
-async function listCanonicalNeedsBoardIssueIds(dbOrTx: any, companyId: string) {
-  const rows = await dbOrTx
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      status: issues.status,
-      priority: issues.priority,
-      assigneeUserId: issues.assigneeUserId,
-      executionState: issues.executionState,
-      createdAt: issues.createdAt,
-      parentId: issues.parentId,
-    })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
-        notInArray(issues.status, ["done", "cancelled"]),
-      ),
-    );
-
-  const projections = await listIssueNeedsBoardProjectionMap(dbOrTx, companyId, rows);
-  return [...projections.entries()]
-    .filter(([, projection]) => projection.needsBoard)
-    .map(([issueId]) => issueId);
-}
-
-async function listIssueNeedsBoardSourceRowsByIds(
-  dbOrTx: any,
-  companyId: string,
-  issueIds: string[],
+function listNeedsBoardIssueIdsFromProjections(
+  projections: Map<string, IssueNeedsBoardProjection>,
+  predicate: (projection: IssueNeedsBoardProjection) => boolean,
 ) {
-  if (issueIds.length === 0) return [];
+  return [...projections.entries()]
+    .filter(([, projection]) => predicate(projection))
+    .map(([issueId]) => issueId);
+}
+
+async function listOpenNeedsBoardSourceRows(dbOrTx: any, companyId: string) {
   return dbOrTx
     .select({
       id: issues.id,
@@ -1972,7 +1925,39 @@ async function listIssueNeedsBoardSourceRowsByIds(
       parentId: issues.parentId,
     })
     .from(issues)
-    .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    );
+}
+
+async function listCanonicalNeedsBoardProjectionMap(dbOrTx: any, companyId: string) {
+  const rows = await listOpenNeedsBoardSourceRows(dbOrTx, companyId);
+  return listIssueNeedsBoardProjectionMap(dbOrTx, companyId, rows);
+}
+
+function projectNeedsBoardProjectionsForRows(
+  projections: Map<string, IssueNeedsBoardProjection>,
+  issueRows: IssueNeedsBoardSourceRow[],
+) {
+  const projected = new Map<string, IssueNeedsBoardProjection>();
+  for (const row of issueRows) {
+    projected.set(row.id, projections.get(row.id) ?? emptyIssueNeedsBoardProjection());
+  }
+  return projected;
+}
+
+async function listNeedsBoardProjectionSubset(
+  dbOrTx: any,
+  companyId: string,
+  issueRows: IssueNeedsBoardSourceRow[],
+) {
+  if (issueRows.length === 0) return new Map<string, IssueNeedsBoardProjection>();
+  const projections = await listCanonicalNeedsBoardProjectionMap(dbOrTx, companyId);
+  return projectNeedsBoardProjectionsForRows(projections, issueRows);
 }
 
 async function userCommentStatsForIssues(
@@ -2687,6 +2672,13 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const queueSortMode = filters?.needsBoard === true;
+      let canonicalNeedsBoardProjectionPromise: Promise<Map<string, IssueNeedsBoardProjection>> | null = null;
+      const getCanonicalNeedsBoardProjections = () => {
+        if (!canonicalNeedsBoardProjectionPromise) {
+          canonicalNeedsBoardProjectionPromise = listCanonicalNeedsBoardProjectionMap(db, companyId);
+        }
+        return canonicalNeedsBoardProjectionPromise;
+      };
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -2785,9 +2777,13 @@ export function issueService(db: Db) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
       if (filters?.needsBoard !== undefined) {
-        const needsBoardIssueIds = filters.needsBoard
-          ? await listNeedsBoardIssueIds(db, companyId)
-          : await listCanonicalNeedsBoardIssueIds(db, companyId);
+        const needsBoardProjectionMap = await getCanonicalNeedsBoardProjections();
+        const needsBoardIssueIds = listNeedsBoardIssueIdsFromProjections(
+          needsBoardProjectionMap,
+          filters.needsBoard
+            ? (projection) => projection.needsBoardActionable
+            : (projection) => projection.needsBoard,
+        );
         if (filters.needsBoard) {
           if (needsBoardIssueIds.length === 0) return [];
           conditions.push(inArray(issues.id, needsBoardIssueIds));
@@ -2838,7 +2834,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap, needsBoardSourceRows] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, blockedByMap, canonicalNeedsBoardProjections] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -2849,15 +2845,14 @@ export function issueService(db: Db) {
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
-        listIssueNeedsBoardSourceRowsByIds(db, companyId, issueIds),
+        getCanonicalNeedsBoardProjections(),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
-      const [blockerAttentionByIssueId, productivityReviewByIssueId, needsBoardByIssueId] =
+      const [blockerAttentionByIssueId, productivityReviewByIssueId] =
         await Promise.all([
           listIssueBlockerAttentionMap(db, companyId, withRuns),
           listIssueProductivityReviewMap(db, companyId, issueIds),
-          listIssueNeedsBoardProjectionMap(db, companyId, needsBoardSourceRows),
         ]);
 
       if (!contextUserId) {
@@ -2868,7 +2863,7 @@ export function issueService(db: Db) {
             activity?.latestCommentAt ?? null,
             activity?.latestLogAt ?? null,
           ) ?? row.updatedAt;
-          const needsBoardProjection = needsBoardByIssueId.get(row.id) ?? emptyIssueNeedsBoardProjection();
+          const needsBoardProjection = canonicalNeedsBoardProjections.get(row.id) ?? emptyIssueNeedsBoardProjection();
           return {
             ...row,
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
@@ -2896,7 +2891,7 @@ export function issueService(db: Db) {
           activity?.latestCommentAt ?? null,
           activity?.latestLogAt ?? null,
         ) ?? row.updatedAt;
-        const needsBoardProjection = needsBoardByIssueId.get(row.id) ?? emptyIssueNeedsBoardProjection();
+        const needsBoardProjection = canonicalNeedsBoardProjections.get(row.id) ?? emptyIssueNeedsBoardProjection();
         return {
           ...row,
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
@@ -3077,7 +3072,7 @@ export function issueService(db: Db) {
       issueRows: IssueNeedsBoardSourceRow[],
       dbOrTx: any = db,
     ) => {
-      return listIssueNeedsBoardProjectionMap(dbOrTx, companyId, issueRows);
+      return listNeedsBoardProjectionSubset(dbOrTx, companyId, issueRows);
     },
 
     countNeedsBoard: async (companyId: string, dbOrTx: any = db) => {

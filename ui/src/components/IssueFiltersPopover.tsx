@@ -171,7 +171,7 @@ export function IssueFiltersPopover({
                 }`}
                 onClick={() => onChange({ needsBoardOnly: !state.needsBoardOnly })}
               >
-                Needs Board
+                Needs Board Queue
               </button>
             </div>
           </div>

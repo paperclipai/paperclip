@@ -170,7 +170,8 @@ export function applyIssueFilters(
     });
   }
   if (state.needsBoardOnly) {
-    result = result.filter((issue) => issue.needsBoard === true);
+    // Match the canonical Needs Board queue contract used by /issues?needsBoard=true.
+    result = result.filter((issue) => issue.needsBoardActionable === true);
   }
   return result;
 }

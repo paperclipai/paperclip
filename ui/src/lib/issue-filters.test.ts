@@ -97,10 +97,11 @@ describe("issue filters", () => {
     })).toBe(1);
   });
 
-  it("filters issues to board-owned waits when needsBoardOnly is enabled", () => {
+  it("filters issues to actionable needs-board queue items when needsBoardOnly is enabled", () => {
     const issues = [
-      makeIssue({ id: "needs-board", needsBoard: true }),
-      makeIssue({ id: "not-needs-board", needsBoard: false }),
+      makeIssue({ id: "needs-board-ancestor", needsBoard: true, needsBoardActionable: false }),
+      makeIssue({ id: "needs-board-leaf", needsBoard: true, needsBoardActionable: true }),
+      makeIssue({ id: "not-needs-board", needsBoard: false, needsBoardActionable: false }),
     ];
 
     const filtered = applyIssueFilters(issues, {
@@ -108,7 +109,7 @@ describe("issue filters", () => {
       needsBoardOnly: true,
     });
 
-    expect(filtered.map((issue) => issue.id)).toEqual(["needs-board"]);
+    expect(filtered.map((issue) => issue.id)).toEqual(["needs-board-leaf"]);
   });
 
   it("counts the needs-board filter as an active filter group", () => {

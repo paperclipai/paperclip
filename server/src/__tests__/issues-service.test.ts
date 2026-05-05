@@ -3187,6 +3187,81 @@ describeEmbeddedPostgres("issueService needsBoard projections", () => {
     expect(await svc.countNeedsBoard(companyId)).toBe(1);
   });
 
+  it("keeps needsBoardActionable canonical for paginated rows and single-issue projection slices", async () => {
+    const companyId = randomUUID();
+    const ancestorBoardIssueId = randomUUID();
+    const leafBoardIssueId = randomUUID();
+    const ancestorCreatedAt = new Date("2026-02-10T00:00:00.000Z");
+    const leafCreatedAt = new Date("2026-02-11T00:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: ancestorBoardIssueId,
+        companyId,
+        identifier: "PAP-410",
+        title: "Ancestor board wait",
+        status: "in_review",
+        priority: "critical",
+        assigneeUserId: "local-board",
+        createdAt: ancestorCreatedAt,
+      },
+      {
+        id: leafBoardIssueId,
+        companyId,
+        identifier: "PAP-411",
+        title: "Leaf board wait",
+        status: "in_review",
+        priority: "low",
+        assigneeUserId: "local-board",
+        createdAt: leafCreatedAt,
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: ancestorBoardIssueId,
+      relatedIssueId: leafBoardIssueId,
+      type: "blocks",
+    });
+
+    const firstPage = await svc.list(companyId, { limit: 1, offset: 0 });
+    expect(firstPage).toHaveLength(1);
+    expect(firstPage[0].id).toBe(ancestorBoardIssueId);
+    expect(firstPage[0].needsBoard).toBe(true);
+    expect(firstPage[0].needsBoardActionable).toBe(false);
+
+    const secondPage = await svc.list(companyId, { limit: 1, offset: 1 });
+    expect(secondPage).toHaveLength(1);
+    expect(secondPage[0].id).toBe(leafBoardIssueId);
+    expect(secondPage[0].needsBoard).toBe(true);
+    expect(secondPage[0].needsBoardActionable).toBe(true);
+
+    const singleIssueProjection = await svc.listNeedsBoardProjections(companyId, [{
+      id: ancestorBoardIssueId,
+      identifier: "PAP-410",
+      title: "Ancestor board wait",
+      status: "in_review",
+      priority: "critical",
+      assigneeUserId: "local-board",
+      executionState: null,
+      createdAt: ancestorCreatedAt,
+      parentId: null,
+    }]);
+    expect(singleIssueProjection.get(ancestorBoardIssueId)?.needsBoard).toBe(true);
+    expect(singleIssueProjection.get(ancestorBoardIssueId)?.needsBoardActionable).toBe(false);
+
+    const queueRows = await svc.list(companyId, { needsBoard: true });
+    expect(queueRows.map((issue) => issue.id)).toEqual([leafBoardIssueId]);
+    expect(await svc.countNeedsBoard(companyId)).toBe(1);
+  });
+
   it("keeps needsBoard impact fields empty when no blocked descendants exist", async () => {
     const companyId = randomUUID();
     const boardIssueId = randomUUID();

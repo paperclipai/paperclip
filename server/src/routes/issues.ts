@@ -1307,11 +1307,7 @@ export function issueRoutes(
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
-        (
-          typeof svc.listNeedsBoardProjections === "function"
-            ? svc.listNeedsBoardProjections(issue.companyId, [issue])
-            : Promise.resolve(new Map())
-        ).then((map) => map.get(issue.id) ?? {
+        svc.listNeedsBoardProjections(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? {
           needsBoard: false,
           needsBoardActionable: false,
           needsBoardReasons: [],
@@ -1425,11 +1421,7 @@ export function issueRoutes(
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
-      (
-        typeof svc.listNeedsBoardProjections === "function"
-          ? svc.listNeedsBoardProjections(issue.companyId, [issue])
-          : Promise.resolve(new Map())
-      ).then((map) => map.get(issue.id) ?? {
+      svc.listNeedsBoardProjections(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? {
         needsBoard: false,
         needsBoardActionable: false,
         needsBoardReasons: [],
