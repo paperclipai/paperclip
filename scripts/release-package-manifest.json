@@ -42,7 +42,7 @@
     {
         "dir": "packages/adapters/hermes-profile",
         "name": "@paperclipai/adapter-hermes-profile",
-        "publishFromCi": true
+        "publishFromCi": false
     },
     {
         "dir": "packages/adapters/openclaw-gateway",
