@@ -1029,6 +1029,8 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
+      hideAntecedentGated: req.query.hideAntecedentGated === "false" ? false : true,
+      taskSetId: req.query.taskSetId as string | undefined,
       q: req.query.q as string | undefined,
       limit,
       offset,
@@ -4115,6 +4117,53 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  // Antecedent routes
+  router.get("/issues/:id/antecedents", async (req, res) => {
+    const issueId = req.params.id as string;
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const antecedents = await svc.listAntecedents(issue.companyId, issueId);
+    res.json(antecedents);
+  });
+
+  router.post("/issues/:id/antecedents", async (req, res) => {
+    const issueId = req.params.id as string;
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const { antecedentIssueId } = req.body;
+    if (!antecedentIssueId) {
+      res.status(400).json({ error: "antecedentIssueId is required" });
+      return;
+    }
+    const result = await svc.addAntecedent(issue.companyId, issueId, antecedentIssueId);
+    res.status(201).json(result);
+  });
+
+  router.delete("/issues/:id/antecedents/:antecedentId", async (req, res) => {
+    const issueId = req.params.id as string;
+    const antecedentId = req.params.antecedentId as string;
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const removed = await svc.removeAntecedent(issue.companyId, issueId, antecedentId);
+    if (!removed) {
+      res.status(404).json({ error: "Antecedent not found" });
+      return;
+    }
+    res.status(204).send();
   });
 
   return router;

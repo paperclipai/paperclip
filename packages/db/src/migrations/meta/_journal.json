@@ -547,6 +547,13 @@
       "when": 1777933347806,
       "tag": "0077_unusual_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1746474600000,
+      "tag": "0078_issue_antecedents_task_sets",
+      "breakpoints": true
     }
   ]
 }

@@ -13,6 +13,7 @@ import {
   goals,
   heartbeatRuns,
   executionWorkspaces,
+  issueAntecedents,
   issueApprovals,
   issueAttachments,
   issueInboxArchives,
@@ -26,6 +27,8 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  taskSetMembers,
+  taskSets,
 } from "@paperclipai/db";
 import type {
   IssueBlockerAttention,
@@ -62,7 +65,7 @@ import {
 } from "./issue-tree-control.js";
 import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
-const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "failed", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -91,6 +94,9 @@ function applyStatusSideEffects(
   }
   if (status === "cancelled") {
     patch.cancelledAt = new Date();
+  }
+  if (status === "failed") {
+    patch.completedAt = new Date();
   }
   return patch;
 }
@@ -133,6 +139,8 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
+  hideAntecedentGated?: boolean;
+  taskSetId?: string;
   q?: string;
   limit?: number;
   offset?: number;
@@ -2244,6 +2252,30 @@ export function issueService(db: Db) {
       }
       conditions.push(isNull(issues.hiddenAt));
 
+      // Antecedent gating: hide issues with unresolved antecedents (default true)
+      const hideAntecedentGated = filters?.hideAntecedentGated !== false;
+      if (hideAntecedentGated) {
+        conditions.push(sql<boolean>`
+          NOT EXISTS (
+            SELECT 1
+            FROM issue_antecedents ia
+            JOIN issues a ON a.id = ia.antecedent_issue_id
+            WHERE ia.issue_id = ${issues.id}
+              AND a.status NOT IN ('done', 'failed', 'cancelled')
+          )
+        `);
+      }
+      if (filters?.taskSetId) {
+        conditions.push(sql<boolean>`
+          EXISTS (
+            SELECT 1
+            FROM task_set_members tsm
+            WHERE tsm.issue_id = ${issues.id}
+              AND tsm.task_set_id = ${filters.taskSetId}
+          )
+        `);
+      }
+
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
         CASE
@@ -4127,6 +4159,68 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    addAntecedent: async (companyId: string, issueId: string, antecedentIssueId: string) => {
+      // Validate both issues exist in the company
+      const [issue, antecedent] = await Promise.all([
+        db.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).then((r) => r[0] ?? null),
+        db.select({ id: issues.id }).from(issues).where(and(eq(issues.id, antecedentIssueId), eq(issues.companyId, companyId))).then((r) => r[0] ?? null),
+      ]);
+      if (!issue) throw notFound("Issue not found");
+      if (!antecedent) throw notFound("Antecedent issue not found");
+      if (issueId === antecedentIssueId) throw unprocessable("An issue cannot be its own antecedent");
+
+      // Cycle check via recursive CTE
+      const cycleCheck = await db.execute(sql`
+        WITH RECURSIVE ancestors(id) AS (
+          SELECT antecedent_issue_id
+          FROM issue_antecedents
+          WHERE issue_id = ${antecedentIssueId}
+          UNION
+          SELECT ia.antecedent_issue_id
+          FROM issue_antecedents ia
+          JOIN ancestors a ON ia.issue_id = a.id
+        )
+        SELECT 1 FROM ancestors WHERE id = ${issueId} LIMIT 1
+      `);
+      if (cycleCheck.rows.length > 0) {
+        throw unprocessable("Adding this antecedent would create a cycle");
+      }
+
+      await db.insert(issueAntecedents).values({ issueId, antecedentIssueId }).onConflictDoNothing();
+      return { issueId, antecedentIssueId };
+    },
+
+    removeAntecedent: async (companyId: string, issueId: string, antecedentIssueId: string) => {
+      const issue = await db.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .then((r) => r[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const deleted = await db.delete(issueAntecedents)
+        .where(and(eq(issueAntecedents.issueId, issueId), eq(issueAntecedents.antecedentIssueId, antecedentIssueId)))
+        .returning({ issueId: issueAntecedents.issueId })
+        .then((r) => r[0] ?? null);
+      return Boolean(deleted);
+    },
+
+    listAntecedents: async (companyId: string, issueId: string) => {
+      const issue = await db.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .then((r) => r[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      return db.select({
+        antecedentIssueId: issueAntecedents.antecedentIssueId,
+        title: issues.title,
+        status: issues.status,
+        identifier: issues.identifier,
+        createdAt: issueAntecedents.createdAt,
+      })
+        .from(issueAntecedents)
+        .innerJoin(issues, eq(issues.id, issueAntecedents.antecedentIssueId))
+        .where(eq(issueAntecedents.issueId, issueId));
     },
   };
 }
