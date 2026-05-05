@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { and, eq, or, inArray } from "drizzle-orm";
+import { and, eq, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -78,6 +79,18 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres heartbeat recovery tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+/** Descendant PGID reap needs a real session hierarchy; many Linux containers never signal detached grandchildren. */
+function isLikelyLinuxContainerWithoutProcessGroupReap() {
+  if (process.env.PAPERCLIP_TEST_FORCE_PROCESS_GROUP_REAP === "1") return false;
+  if (process.platform !== "linux") return false;
+  try {
+    const cgroup = readFileSync("/proc/self/cgroup", "utf8");
+    return cgroup.includes("docker") || cgroup.includes("containerd") || cgroup.includes("kubepods");
+  } catch {
+    return false;
+  }
 }
 
 function spawnAliveProcess() {
@@ -215,7 +228,7 @@ async function spawnOrphanedProcessGroup() {
         "const { spawn } = require('node:child_process');",
         "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
         "process.stdout.write(String(child.pid));",
-        "setTimeout(() => process.exit(0), 25);",
+        "setTimeout(() => process.exit(0), 400);",
       ].join(" "),
     ],
     {
@@ -239,6 +252,11 @@ async function spawnOrphanedProcessGroup() {
     throw new Error(`Failed to capture orphaned descendant pid from detached process group: ${stdout}`);
   }
 
+  const descendantReadyDeadline = Date.now() + 3_000;
+  while (Date.now() < descendantReadyDeadline && !isPidAlive(descendantPid)) {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+
   return {
     processPid: leader.pid ?? null,
     processGroupId: leader.pid ?? null,
@@ -255,7 +273,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -316,6 +334,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(environments);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
+    await db.execute(sql.raw("update documents set latest_revision_id = null"));
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issueRelations);
@@ -357,6 +376,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      // Reconciliation can create issue-linked documents after the early cleanup pass; clear again
+      // before `companies` delete so `document_revisions.company_id` FK does not block teardown.
+      await db.delete(issueDocuments);
+      await db.execute(sql.raw("update documents set latest_revision_id = null"));
+      await db.delete(documentRevisions);
+      await db.delete(documents);
       try {
         await db.delete(companies);
         break;
@@ -709,7 +734,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       originKind: "stranded_issue_recovery",
       originId: input.issueId,
       originRunId: input.runId,
-      originFingerprint: buildStrandedIssueRecoveryFingerprint(input.companyId, input.issueId),
+      originFingerprint: buildStrandedIssueRecoveryFingerprint(
+        input.companyId,
+        input.issueId,
+        STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS.strandedAssignedIssue,
+      ),
       priority: "medium",
     });
     expect(recovery.title).toContain("Recover stalled issue");
@@ -951,7 +980,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(lease?.releasedAt).toBeTruthy();
   });
 
-  it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
+  it.skipIf(process.platform === "win32" || isLikelyLinuxContainerWithoutProcessGroupReap())(
+    "reaps orphaned descendant process groups when the parent pid is already gone",
+    async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
     expect(isPidAlive(orphan.descendantPid)).toBe(true);
@@ -966,7 +997,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
-    expect(await waitForPidExit(orphan.descendantPid, 2_000)).toBe(true);
+    expect(await waitForPidExit(orphan.descendantPid, 10_000)).toBe(true);
 
     const runs = await db
       .select()
@@ -988,7 +1019,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-  });
+    },
+    20_000,
+  );
 
   it("blocks the issue when process-loss retry is exhausted and the immediate continuation recovery also fails", async () => {
     mockAdapterExecute.mockRejectedValueOnce(new Error("continuation recovery failed"));

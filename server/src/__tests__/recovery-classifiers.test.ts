@@ -8,6 +8,7 @@ import {
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
   buildRunLivenessContinuationIdempotencyKey,
+  STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS,
   buildStrandedIssueRecoveryFingerprint,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
@@ -153,9 +154,13 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
   });
 
-  it("uses a stable stranded-issue recovery fingerprint (no per-run segment)", () => {
-    expect(buildStrandedIssueRecoveryFingerprint(companyId, issueId)).toBe(
-      "stranded_issue_recovery:company-1:issue-1",
-    );
+  it("uses a stable stranded-issue recovery fingerprint (source + invariant; no per-run segment)", () => {
+    expect(
+      buildStrandedIssueRecoveryFingerprint(
+        companyId,
+        issueId,
+        STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS.strandedAssignedIssue,
+      ),
+    ).toBe("stranded_issue_recovery:company-1:issue-1:stranded_assigned_issue");
   });
 });

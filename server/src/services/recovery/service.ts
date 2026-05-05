@@ -34,10 +34,12 @@ import { issueService } from "../issues.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   RECOVERY_ORIGIN_KINDS,
+  STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS,
   buildIssueGraphLivenessLeafKey,
   buildStrandedIssueRecoveryFingerprint,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
+  type StrandedIssueRecoveryInvariantKey,
 } from "./origins.js";
 import {
   classifyIssueGraphLiveness,
@@ -1239,7 +1241,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row;
   }
 
-  async function findOpenStrandedIssueRecoveryIssue(companyId: string, sourceIssueId: string) {
+  async function findOpenStrandedIssueRecoveryIssue(
+    companyId: string,
+    sourceIssueId: string,
+    recoveryInvariantKey: StrandedIssueRecoveryInvariantKey,
+  ) {
+    const originFingerprint = buildStrandedIssueRecoveryFingerprint(
+      companyId,
+      sourceIssueId,
+      recoveryInvariantKey,
+    );
     return db
       .select()
       .from(issues)
@@ -1248,6 +1259,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.companyId, companyId),
           eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
+          eq(issues.originFingerprint, originFingerprint),
           isNull(issues.hiddenAt),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
@@ -1257,9 +1269,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function findOpenStrandedIssueRecoveryIssueAfterCreateConflict(companyId: string, sourceIssueId: string) {
+  async function findOpenStrandedIssueRecoveryIssueAfterCreateConflict(
+    companyId: string,
+    sourceIssueId: string,
+    recoveryInvariantKey: StrandedIssueRecoveryInvariantKey,
+  ) {
     for (let attempt = 0; attempt < STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS; attempt++) {
-      const row = await findOpenStrandedIssueRecoveryIssue(companyId, sourceIssueId);
+      const row = await findOpenStrandedIssueRecoveryIssue(companyId, sourceIssueId, recoveryInvariantKey);
       if (row) return row;
       if (attempt < STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS - 1) {
         await new Promise((resolve) =>
@@ -1382,10 +1398,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     previousStatus: "todo" | "in_progress";
+    recoveryInvariantKey: StrandedIssueRecoveryInvariantKey;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
-    const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+    const existing = await findOpenStrandedIssueRecoveryIssue(
+      input.issue.companyId,
+      input.issue.id,
+      input.recoveryInvariantKey,
+    );
     if (existing) {
       await enqueueStrandedRecoveryAssigneeWakeIfEligible({
         companyId: input.issue.companyId,
@@ -1419,7 +1440,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
         originId: input.issue.id,
         originRunId: input.latestRun?.id ?? null,
-        originFingerprint: buildStrandedIssueRecoveryFingerprint(input.issue.companyId, input.issue.id),
+        originFingerprint: buildStrandedIssueRecoveryFingerprint(
+          input.issue.companyId,
+          input.issue.id,
+          input.recoveryInvariantKey,
+        ),
         billingCode: input.issue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.issue.id,
       });
@@ -1428,6 +1453,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const raced = await findOpenStrandedIssueRecoveryIssueAfterCreateConflict(
         input.issue.companyId,
         input.issue.id,
+        input.recoveryInvariantKey,
       );
       if (!raced) {
         logger.warn(
@@ -1585,6 +1611,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue: input.issue,
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
+      recoveryInvariantKey: STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS.strandedAssignedIssue,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue

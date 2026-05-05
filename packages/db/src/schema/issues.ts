@@ -124,7 +124,7 @@ export const issues = pgTable(
           and ${table.status} not in ('done', 'cancelled')`,
       ),
     activeStrandedIssueRecoveryIdx: uniqueIndex("issues_active_stranded_issue_recovery_uq")
-      .on(table.companyId, table.originKind, table.originId)
+      .on(table.companyId, table.originKind, table.originId, table.originFingerprint)
       .where(
         sql`${table.originKind} = 'stranded_issue_recovery'
           and ${table.originId} is not null
