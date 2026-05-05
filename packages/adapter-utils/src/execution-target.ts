@@ -230,9 +230,10 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   target: AdapterExecutionTarget | null | undefined,
   cwd: string,
   env: NodeJS.ProcessEnv,
+  options: { installCommand?: string | null } = {},
 ) {
   if (target?.kind === "remote" && target.transport === "sandbox") {
-    await ensureSandboxCommandResolvable(command, target);
+    await ensureSandboxCommandResolvable(command, target, options.installCommand?.trim() || null);
     return;
   }
   await ensureCommandResolvable(command, cwd, env, {
@@ -240,17 +241,10 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   });
 }
 
-async function ensureSandboxCommandResolvable(
+async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
-): Promise<void> {
-  // Probe whether the binary is resolvable inside the sandbox. We previously
-  // short-circuited this for sandbox targets, which let the caller report a
-  // success message even when the CLI was missing from the image. Now we run
-  // a real `command -v` through the same runner the hello probe will use, so
-  // the first step honestly reflects whether the binary is on PATH. The
-  // sandbox provider is responsible for sourcing login profiles (e2b mirrors
-  // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
+): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
   const result = await runner.execute({
@@ -259,14 +253,67 @@ async function ensureSandboxCommandResolvable(
     cwd: target.remoteCwd,
     timeoutMs: target.timeoutMs ?? 15_000,
   });
-  if (result.timedOut) {
+  return {
+    resolved: !result.timedOut && (result.exitCode ?? 1) === 0,
+    timedOut: result.timedOut,
+    stderr: result.stderr.trim(),
+  };
+}
+
+async function ensureSandboxCommandResolvable(
+  command: string,
+  target: AdapterSandboxExecutionTarget,
+  installCommand: string | null,
+): Promise<void> {
+  // Probe whether the binary is resolvable inside the sandbox. We previously
+  // short-circuited this for sandbox targets, which let the caller report a
+  // success message even when the CLI was missing from the image. Now we run
+  // a real `command -v` through the same runner the hello probe will use, so
+  // the first step honestly reflects whether the binary is on PATH. The
+  // sandbox provider is responsible for sourcing login profiles (e2b mirrors
+  // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
+  let probe = await probeSandboxCommandResolvable(command, target);
+  if (probe.resolved) return;
+  if (probe.timedOut) {
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
   }
-  if ((result.exitCode ?? 1) === 0) return;
-  const stderr = result.stderr.trim();
-  const detail = stderr.length > 0 ? ` (${stderr})` : "";
+
+  // If the caller supplied an install command, attempt the install once via
+  // the sandbox runner (which the sandbox provider wraps in a login shell)
+  // and re-probe before reporting failure. This lets fresh sandbox leases
+  // bring up the CLI before the resolvability gate, mirroring the test path.
+  let installFailureDetail: string | null = null;
+  if (installCommand) {
+    const runner = requireSandboxRunner(target);
+    try {
+      const installResult = await runner.execute({
+        command: "sh",
+        args: ["-lc", installCommand],
+        cwd: target.remoteCwd,
+        timeoutMs: target.timeoutMs ?? 300_000,
+      });
+      if (installResult.timedOut) {
+        installFailureDetail = `install command timed out: ${installCommand}`;
+      } else if ((installResult.exitCode ?? 0) !== 0) {
+        const tail = (text: string) =>
+          text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-2).join(" | ").slice(0, 240);
+        const reason = tail(installResult.stderr || installResult.stdout) || `exit ${installResult.exitCode ?? "?"}`;
+        installFailureDetail = `install command exited ${installResult.exitCode ?? "?"}: ${reason}`;
+      }
+    } catch (err) {
+      installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    probe = await probeSandboxCommandResolvable(command, target);
+    if (probe.resolved) return;
+    if (probe.timedOut) {
+      throw new Error(`Timed out checking command "${command}" on sandbox target.`);
+    }
+  }
+
+  const probeStderr = probe.stderr.length > 0 ? ` probe stderr: ${probe.stderr}` : "";
+  const installDetail = installFailureDetail ? `; ${installFailureDetail}` : "";
   throw new Error(
-    `Command "${command}" is not installed or not on PATH in the sandbox environment${detail}.`,
+    `Command "${command}" is not installed or not on PATH in the sandbox environment${installDetail}.${probeStderr}`,
   );
 }
 
@@ -409,6 +456,111 @@ export async function runAdapterExecutionTargetShellCommand(
   );
 }
 
+export interface AdapterSandboxInstallCommandCheck {
+  code: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  detail?: string;
+  hint?: string;
+}
+
+// Best-effort run of an adapter-supplied install command on a sandbox target
+// before the resolvability + hello probe. Returns null for non-sandbox
+// targets so callers can no-op. Returns a structured check otherwise — never
+// throws — so the rest of the test still runs and reports the post-install
+// state honestly. Caller pushes the check into its result array; the test
+// report shows whether install was attempted and what came back.
+export async function maybeRunSandboxInstallCommand(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  adapterKey: string;
+  installCommand: string;
+  /** When provided, skip the install if `command -v <detectCommand>` succeeds. */
+  detectCommand?: string | null;
+  env?: Record<string, string>;
+  timeoutSec?: number;
+}): Promise<AdapterSandboxInstallCommandCheck | null> {
+  const { target, adapterKey, installCommand } = input;
+  if (!target || target.kind !== "remote" || target.transport !== "sandbox") {
+    return null;
+  }
+  const trimmed = installCommand.trim();
+  if (trimmed.length === 0) return null;
+
+  const code = `${adapterKey}_install_command_run`;
+
+  // Skip install when the binary is already on PATH. Avoids running
+  // network-dependent installers (e.g. `curl ... | bash`) on every test
+  // probe when the CLI is preinstalled on the lease/template.
+  const detectCommand = input.detectCommand?.trim();
+  if (detectCommand) {
+    try {
+      const probe = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        target,
+        `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+        {
+          cwd: target.remoteCwd,
+          env: input.env ?? {},
+          timeoutSec: 30,
+          graceSec: 5,
+        },
+      );
+      if (!probe.timedOut && probe.exitCode === 0) {
+        return {
+          code,
+          level: "info",
+          message: `${detectCommand} already on PATH; skipped install.`,
+        };
+      }
+    } catch {
+      // Fall through to actually running the install — failure to probe
+      // is not a reason to skip the install gate.
+    }
+  }
+
+  let result;
+  try {
+    result = await runAdapterExecutionTargetShellCommand(input.runId, target, trimmed, {
+      cwd: target.remoteCwd,
+      env: input.env ?? {},
+      timeoutSec: input.timeoutSec ?? 240,
+      graceSec: 10,
+    });
+  } catch (err) {
+    return {
+      code,
+      level: "warn",
+      message: "Install command threw before completion.",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const tail = (text: string) =>
+    text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-3).join(" | ").slice(0, 480);
+  if (result.timedOut) {
+    return {
+      code,
+      level: "warn",
+      message: `Install command timed out: ${trimmed}`,
+      detail: tail(result.stderr || result.stdout),
+    };
+  }
+  if ((result.exitCode ?? 1) === 0) {
+    return {
+      code,
+      level: "info",
+      message: `Install command ran: ${trimmed}`,
+      ...(tail(result.stdout) ? { detail: tail(result.stdout) } : {}),
+    };
+  }
+  return {
+    code,
+    level: "warn",
+    message: `Install command exited ${result.exitCode}: ${trimmed}`,
+    detail: tail(result.stderr || result.stdout),
+  };
+}
+
 export async function readAdapterExecutionTargetHomeDir(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -470,12 +622,43 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
       onLog: input.onLog,
     },
   );
+
+  // A failed or timed-out install is not necessarily fatal: the CLI may already
+  // be on PATH from a previous lease's install, the template image, or another
+  // path entry. Re-run the detect probe (when one is configured) so a transient
+  // install failure does not abort the agent run when the binary is reachable.
+  const installFailed = result.timedOut || (result.exitCode ?? 0) !== 0;
+  if (!installFailed) {
+    return;
+  }
+  if (detectCommand) {
+    const recheck = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec,
+        graceSec: input.graceSec,
+      },
+    );
+    if (!recheck.timedOut && recheck.exitCode === 0) {
+      if (input.onLog) {
+        const reason = result.timedOut ? "timed out" : `exited ${result.exitCode ?? "?"}`;
+        await input.onLog(
+          "stderr",
+          `[paperclip] Install command ${reason} (${installCommand}) but ${detectCommand} is on PATH; continuing.\n`,
+        );
+      }
+      return;
+    }
+  }
+
   if (result.timedOut) {
     throw new Error(`Timed out while installing the adapter runtime command via: ${installCommand}`);
   }
-  if ((result.exitCode ?? 0) !== 0) {
-    throw new Error(`Failed to install the adapter runtime command via: ${installCommand}`);
-  }
+  throw new Error(`Failed to install the adapter runtime command via: ${installCommand}`);
 }
 
 export async function ensureAdapterExecutionTargetFile(
@@ -666,6 +849,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
   installCommand?: string | null;
+  /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
+  detectCommand?: string | null;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -707,6 +892,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     installCommand: input.installCommand,
+    detectCommand: input.detectCommand,
   });
   return {
     target,

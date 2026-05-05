@@ -54,6 +54,7 @@ import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -261,7 +262,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     graceSec,
     onLog,
   });
-  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, { installCommand: SANDBOX_INSTALL_COMMAND });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
@@ -430,6 +431,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           target: executionTarget,
           adapterKey: "claude",
           workspaceLocalDir: cwd,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
           assets: [
             {
               key: "skills",
