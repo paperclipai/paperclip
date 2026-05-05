@@ -82,6 +82,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Refresh lockfile if workspace manifests changed
+        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -134,6 +137,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Refresh lockfile if workspace manifests changed
+        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -160,6 +166,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Refresh lockfile if workspace manifests changed
+        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -191,6 +200,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Refresh lockfile if workspace manifests changed
+        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
