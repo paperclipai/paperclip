@@ -45,10 +45,11 @@ surfaces Coordinator-side bugs immediately instead of hiding them.
 1. Read task from prompt (what, why, file paths, done criteria)
 2. Grep existing code before writing new — extend, never duplicate
 3. PF2e rules ref: `$PAPERCLIP_PF2E_REF/packs/pf2e/`
+4. **Scope discipline**: only modify files directly required by the task. Do not make drive-by improvements to unrelated files, reformat code outside the task scope, or touch CLAUDE.md / ROADMAP.md / docs unless the task explicitly asks for it.
 
 ## Restrictions
 
-- No `cargo` commands (Architect only)
+- No `cargo` commands
 - No Paperclip API, no `curl`, no network. No skills, no API access.
 - No task management, no subtasks, no status updates (Coordinator handles pipeline)
 - Code and data changes only
