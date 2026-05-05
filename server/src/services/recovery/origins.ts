@@ -1,3 +1,5 @@
+import { AGENT_DECLARABLE_ORIGIN_KINDS } from "@paperclipai/shared";
+
 export const RECOVERY_ORIGIN_KINDS = {
   issueGraphLivenessEscalation: "harness_liveness_escalation",
   issueProductivityReview: "issue_productivity_review",
@@ -20,6 +22,16 @@ export type RecoveryKeyPrefix = typeof RECOVERY_KEY_PREFIXES[keyof typeof RECOVE
 
 export function isStrandedIssueRecoveryOriginKind(originKind: string | null | undefined) {
   return originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+}
+
+export function isAgentDeclarableOriginKind(originKind: string | null | undefined) {
+  if (!originKind) return false;
+  if (AGENT_DECLARABLE_ORIGIN_KINDS.includes(originKind as any)) return true;
+  return (
+    originKind.startsWith("skill:") ||
+    originKind.startsWith("intent:") ||
+    originKind.startsWith("plugin:")
+  );
 }
 
 export function buildIssueGraphLivenessIncidentKey(input: {
