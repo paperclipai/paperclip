@@ -150,6 +150,11 @@ const updateRoutine: BuilderTool = defineMutationTool({
     return `Update routine ${String(payload.routineId)} (${fields})`;
   },
   async apply(payload, ctx) {
+    // Verify ownership before updating to prevent cross-company IDOR
+    const existing = await routineService(ctx.db).get(String(payload.routineId));
+    if (!existing || existing.companyId !== ctx.companyId) {
+      throw new Error("Routine not found");
+    }
     const updated = await routineService(ctx.db).update(
       String(payload.routineId),
       payload.patch as Record<string, unknown>,
@@ -254,6 +259,11 @@ const updateGoal: BuilderTool = defineMutationTool({
     return `Update goal ${String(payload.goalId)} (${fields})`;
   },
   async apply(payload, ctx) {
+    // Verify ownership before updating to prevent cross-company IDOR
+    const existing = await goalService(ctx.db).getById(String(payload.goalId));
+    if (!existing || existing.companyId !== ctx.companyId) {
+      throw new Error("Goal not found");
+    }
     const updated = await goalService(ctx.db).update(
       String(payload.goalId),
       payload.patch as Record<string, unknown>,
@@ -372,6 +382,11 @@ const updateIssue: BuilderTool = defineMutationTool({
     return `Update issue ${String(payload.issueId)} (${fields})`;
   },
   async apply(payload, ctx) {
+    // Verify ownership before updating to prevent cross-company IDOR
+    const existing = await issueService(ctx.db).getById(String(payload.issueId));
+    if (!existing || existing.companyId !== ctx.companyId) {
+      throw new Error("Issue not found");
+    }
     const result = (await issueService(ctx.db).update(
       String(payload.issueId),
       payload.patch as Parameters<ReturnType<typeof issueService>["update"]>[1],
