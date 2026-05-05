@@ -137,22 +137,8 @@ export async function runBuilderTurn(opts: {
       costCents: response.usage.costCents ?? 0,
     });
 
-    const assistantMessage = await store.appendMessage(sessionId, companyId, {
-      role: "assistant",
-      content: {
-        text: response.text,
-        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}),
-      },
-      inputTokens: response.usage.inputTokens,
-      outputTokens: response.usage.outputTokens,
-      costCents: response.usage.costCents ?? 0,
-    });
-    newMessages.push(assistantMessage);
-
-    if (response.finishReason === "stop" || response.toolCalls.length === 0) {
-      break;
-    }
-
+    // Truncate tool calls if over limit to prevent transcript mismatch
+    const calls = response.toolCalls.slice(0, BUILDER_MAX_TOOL_CALLS_PER_TURN);
     if (response.toolCalls.length > BUILDER_MAX_TOOL_CALLS_PER_TURN) {
       logger.warn(
         { sessionId, count: response.toolCalls.length },
@@ -161,7 +147,22 @@ export async function runBuilderTurn(opts: {
       truncated = true;
     }
 
-    const calls = response.toolCalls.slice(0, BUILDER_MAX_TOOL_CALLS_PER_TURN);
+    const assistantMessage = await store.appendMessage(sessionId, companyId, {
+      role: "assistant",
+      content: {
+        text: response.text,
+        ...(calls.length > 0 ? { toolCalls: calls } : {}),
+      },
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      costCents: response.usage.costCents ?? 0,
+    });
+    newMessages.push(assistantMessage);
+
+    if (response.finishReason === "stop" || calls.length === 0) {
+      break;
+    }
+
     for (const call of calls) {
       const tool = resolveBuilderTool(catalog, call.name);
       if (!tool) {
