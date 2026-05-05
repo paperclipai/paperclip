@@ -70,7 +70,10 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: Record<string, unknown> = {}) {
+async function createApp(
+  db: Record<string, unknown> = {},
+  actorOverrides: Partial<{ companyIds: string[]; source: string }> = {},
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -81,8 +84,8 @@ async function createApp(db: Record<string, unknown> = {}) {
     (req as any).actor = {
       type: "board",
       userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
+      companyIds: actorOverrides.companyIds ?? ["company-1"],
+      source: actorOverrides.source ?? "local_implicit",
       isInstanceAdmin: false,
     };
     next();
@@ -523,5 +526,406 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(4);
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects runs stats requests missing `since`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("since");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("returns grouped run stats and top recovery sources", async () => {
+    const groupedRows = [
+      { key: "process_lost", count: 2 },
+      { key: "restart_during_run", count: 1 },
+    ];
+    const sourceIssues = [{ identifier: "SUP-1756", count: 2 }, { identifier: "SUP-1757", count: 1 }];
+
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(Promise.resolve(groupedRows)),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnValue(Promise.resolve(sourceIssues)),
+        })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&until=2026-04-14T00:00:00.000Z&groupBy=failureReason",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.groups).toEqual(groupedRows);
+    expect(res.body.topRecoverySources).toEqual([
+      { identifier: "SUP-1756", count: 2 },
+      { identifier: "SUP-1757", count: 1 },
+    ]);
+  });
+
+  it("returns grouped run stats by agentId", async () => {
+    const groupedRows = [
+      { key: "agent-1", count: 2 },
+      { key: "agent-2", count: 1 },
+    ];
+
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(Promise.resolve(groupedRows)),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&groupBy=agentId",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.groups).toEqual(groupedRows);
+  });
+
+  it("returns grouped run stats by day", async () => {
+    const groupedRows = [
+      { key: "2026-04-13", count: 5 },
+      { key: "2026-04-12", count: 1 },
+    ];
+
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(Promise.resolve(groupedRows)),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&groupBy=day",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(6);
+    expect(res.body.groups).toEqual(groupedRows);
+  });
+
+  it("rejects runs stats requests with malformed `since`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=not-a-timestamp"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("since");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with non-ISO `since`", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("ISO");
+  });
+
+  it("rejects runs stats requests with timezone-less `since`", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("ISO");
+  });
+
+  it("rejects runs stats requests with malformed `until`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&until=tomorrow"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("until");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with `since` later than `until`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-04-14T00:00:00.000Z&until=2026-04-12T00:00:00.000Z",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("since");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("forbids cross-company access for runs stats", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db, { companyIds: ["company-2"], source: "jwt" }),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+    );
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with invalid `groupBy`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&groupBy=week"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("groupBy");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects runs stats requests with invalid `status`", async () => {
+    const db = { select: vi.fn() };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&status=running"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("status");
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("accepts runs stats requests with valid `status` filter", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z&status=failed"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(1);
+  });
+
+  it("accepts runs stats requests with ISO `since` that has non-millisecond precision", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.12Z"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(1);
+  });
+
+  it("rejects runs stats requests with an oversized time window", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/runs/stats?since=2026-01-01T00:00:00.000Z&until=2026-04-12T00:00:00.000Z",
+        ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("window");
+  });
+
+  it("rate limits runs stats requests", async () => {
+    const db = {
+      select: vi.fn().mockImplementation((args) => {
+        if (args && typeof args === "object" && "identifier" in args) {
+          return {
+            from: vi.fn().mockReturnThis(),
+            where: vi.fn().mockReturnThis(),
+            innerJoin: vi.fn().mockReturnThis(),
+            groupBy: vi.fn().mockReturnThis(),
+            orderBy: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue([]),
+          };
+        }
+        return {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        };
+      }),
+    };
+
+    const app = await createApp(db);
+    for (let index = 0; index < 30; index += 1) {
+      const res = await requestApp(
+        app,
+        (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    }
+
+    const rateLimitedRes = await requestApp(
+      app,
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+    );
+
+    expect(rateLimitedRes.status, JSON.stringify(rateLimitedRes.body)).toBe(429);
+    expect(rateLimitedRes.body.error).toContain("Rate limit");
+  });
+
+  it("omits groups when groupBy is not provided", async () => {
+    const db = {
+      select: vi.fn()
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(Promise.resolve([{ count: 1 }])),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          groupBy: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/runs/stats?since=2026-04-12T00:00:00.000Z"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body).not.toHaveProperty("groups");
+    expect(res.body.topRecoverySources).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -101,6 +102,8 @@ import { recoveryService } from "../services/recovery/service.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const RUNS_STATS_MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
+const RUNS_STATS_FAILURE_STATUSES = ["failed", "timed_out", "cancelled"];
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -113,6 +116,39 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function parseIsoTimestamp(value: string | undefined): Date | null {
+  if (!value) return null;
+  if (!value.includes("T")) return null;
+  if (!/(Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function createRouteRateLimiter(maxAttempts: number, windowMs: number) {
+  const attempts = new Map<string, number[]>();
+  let lastCleanupAt = 0;
+  return {
+    check(key: string): boolean {
+      const now = Date.now();
+      if (now - lastCleanupAt >= windowMs) {
+        const windowStart = now - windowMs;
+        for (const [existingKey, existingAttempts] of attempts.entries()) {
+          const recentExisting = existingAttempts.filter((ts) => ts > windowStart);
+          if (recentExisting.length === 0) attempts.delete(existingKey);
+          else attempts.set(existingKey, recentExisting);
+        }
+        lastCleanupAt = now;
+      }
+      const windowStart = now - windowMs;
+      const recent = (attempts.get(key) ?? []).filter((ts) => ts > windowStart);
+      if (recent.length >= maxAttempts) return false;
+      recent.push(now);
+      attempts.set(key, recent);
+      return true;
+    },
+  };
 }
 
 export function agentRoutes(
@@ -178,6 +214,7 @@ export function agentRoutes(
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const runsStatsRateLimiter = createRouteRateLimiter(30, 60_000);
 
   async function assertAgentEnvironmentSelection(
     companyId: string,
@@ -3030,6 +3067,130 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
     res.json(runs);
+  });
+
+  router.get("/companies/:companyId/runs/stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const sinceRaw = typeof req.query.since === "string" ? req.query.since : "";
+    const since = parseIsoTimestamp(sinceRaw);
+    if (!since) {
+      res.status(400).json({ error: "`since` is required and must be an ISO timestamp" });
+      return;
+    }
+    const untilRaw = typeof req.query.until === "string" ? req.query.until : undefined;
+    const until = untilRaw ? parseIsoTimestamp(untilRaw) : new Date();
+    if (!until) {
+      res.status(400).json({ error: "`until` must be an ISO timestamp when provided" });
+      return;
+    }
+    if (since.getTime() > until.getTime()) {
+      res.status(400).json({ error: "`since` must be less than or equal to `until`" });
+      return;
+    }
+    if (until.getTime() - since.getTime() > RUNS_STATS_MAX_WINDOW_MS) {
+      res.status(400).json({ error: "`since`/`until` window must be 31 days or less" });
+      return;
+    }
+
+    const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+    const status = statusRaw && RUNS_STATS_FAILURE_STATUSES.includes(statusRaw)
+      ? statusRaw
+      : undefined;
+    if (statusRaw && !status) {
+      res.status(400).json({
+        error: `\`status\` must be one of: ${RUNS_STATS_FAILURE_STATUSES.join(", ")}`,
+      });
+      return;
+    }
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const groupByRaw = typeof req.query.groupBy === "string" ? req.query.groupBy : undefined;
+    const groupBy = groupByRaw && ["agentId", "failureReason", "day"].includes(groupByRaw)
+      ? groupByRaw
+      : undefined;
+    if (groupByRaw && !groupBy) {
+      res.status(400).json({ error: "`groupBy` must be one of: agentId, failureReason, day" });
+      return;
+    }
+
+    const actorId = req.actor.type === "agent" ? req.actor.agentId : req.actor.userId ?? "board";
+    const rateLimitKey = `${companyId}:${req.actor.type}:${actorId}`;
+    if (!runsStatsRateLimiter.check(rateLimitKey)) {
+      res.status(429).json({ error: "Rate limit exceeded" });
+      return;
+    }
+
+    const whereClauses = [
+      eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.createdAt} >= ${since}`,
+      sql`${heartbeatRuns.createdAt} <= ${until}`,
+      inArray(heartbeatRuns.status, status ? [status] : RUNS_STATS_FAILURE_STATUSES),
+      ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
+    ];
+
+    let groups: Array<{ key: string; count: number }> | undefined;
+    let total = 0;
+    if (groupBy) {
+      const groupKeyExpr = groupBy === "agentId"
+        ? heartbeatRuns.agentId
+        : groupBy === "failureReason"
+          ? sql<string>`coalesce(${heartbeatRuns.errorCode}, 'none')`
+          : sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+      const groupedRows = await db
+        .select({
+          key: groupKeyExpr,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .where(and(...whereClauses))
+        .groupBy(groupKeyExpr)
+        .orderBy(desc(sql`count(*)`));
+      groups = groupedRows.map((row) => ({ key: row.key, count: Number(row.count ?? 0) }));
+      total = groups.reduce((sum, row) => sum + row.count, 0);
+    } else {
+      const [totalRow] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .where(and(...whereClauses));
+      total = Number(totalRow?.count ?? 0);
+    }
+
+    const sourceRuns = alias(heartbeatRuns, "source_runs");
+    const topRecoverySourceRows = await db
+      .select({
+        identifier: issuesTable.identifier,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(sourceRuns, eq(heartbeatRuns.retryOfRunId, sourceRuns.id))
+      .innerJoin(
+        issuesTable,
+        and(
+          eq(issuesTable.companyId, companyId),
+          sql`${sourceRuns.contextSnapshot} ->> 'issueId' = cast(${issuesTable.id} as text)`,
+        ),
+      )
+      .where(and(...whereClauses, sql`${heartbeatRuns.retryOfRunId} is not null`))
+      .groupBy(issuesTable.identifier)
+      .orderBy(desc(sql`count(*)`))
+      .limit(5);
+    const topRecoverySources = topRecoverySourceRows.map((row) => ({
+      identifier: row.identifier,
+      count: Number(row.count ?? 0),
+    }));
+
+    res.json({
+      window: {
+        since: since.toISOString(),
+        until: until.toISOString(),
+      },
+      total,
+      ...(groups ? { groups } : {}),
+      topRecoverySources,
+    });
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
