@@ -1276,8 +1276,6 @@ function parseIssueAssigneeAdapterOverrides(
  * and benefit from robust session resume, instead of relying solely on the
  * simpler `agentRuntimeState.sessionId` fallback.
  */
-const HEARTBEAT_TASK_KEY = "__heartbeat__";
-
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -1293,32 +1291,20 @@ function deriveTaskKey(
   );
 }
 
-/**
- * Extended task key derivation that falls back to a stable synthetic key
- * for timer/heartbeat wakes. This ensures timer wakes can resume their
- * previous session via `agentTaskSessions` instead of starting fresh.
- *
- * The synthetic key is only used when:
- * - No explicit task/issue key exists in the context
- * - The wake source is "timer" (scheduled heartbeat)
- */
 export function deriveTaskKeyWithHeartbeatFallback(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  const explicit = deriveTaskKey(contextSnapshot, payload);
-  if (explicit) return explicit;
-
-  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
-
-  return null;
+  return deriveTaskKey(contextSnapshot, payload);
 }
 
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return true;
+
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  if (wakeSource === "timer") return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
