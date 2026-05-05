@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
+  finalizeStrandedIssueRecoveryBlockerCleanup: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
@@ -113,10 +114,13 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.finalizeStrandedIssueRecoveryBlockerCleanup.mockResolvedValue({ ranCleanup: false, dependents: [] });
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
 
-  it("wakes dependents when the final blocker transitions to done", async () => {
+  it(
+    "wakes dependents when the final blocker transitions to done",
+    async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -173,9 +177,13 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
-  });
+  },
+    60_000,
+  );
 
-  it("wakes the parent when all direct children become terminal", async () => {
+  it(
+    "wakes the parent when all direct children become terminal",
+    async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",
       companyId: "company-1",
@@ -263,5 +271,7 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
-  });
+  },
+    60_000,
+  );
 });

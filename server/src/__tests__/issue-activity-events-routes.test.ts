@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
+  finalizeStrandedIssueRecoveryBlockerCleanup: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
 
@@ -166,6 +167,7 @@ describe("issue activity event routes", () => {
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.finalizeStrandedIssueRecoveryBlockerCleanup.mockResolvedValue({ ranCleanup: false, dependents: [] });
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);

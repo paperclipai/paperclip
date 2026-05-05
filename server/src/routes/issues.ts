@@ -2321,6 +2321,11 @@ export function issueRoutes(
       return;
     }
 
+    const strandedIssueRecoveryBlockerResolution = await svc.finalizeStrandedIssueRecoveryBlockerCleanup({
+      existing,
+      updated: issue,
+    });
+
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
@@ -2804,7 +2809,9 @@ export function issueRoutes(
 
       const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
-        const dependents = await svc.listWakeableBlockedDependents(issue.id);
+        const dependents = strandedIssueRecoveryBlockerResolution.ranCleanup
+          ? strandedIssueRecoveryBlockerResolution.dependents
+          : await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           addWakeup(dependent.assigneeAgentId, {
             source: "automation",

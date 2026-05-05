@@ -1290,6 +1290,10 @@ export function buildHostServices(
           actorAgentId,
           actorUserId,
         })) as Issue;
+        await issues.finalizeStrandedIssueRecoveryBlockerCleanup({
+          existing,
+          updated,
+        });
         await logPluginActivity({
           companyId,
           action: "issue.updated",

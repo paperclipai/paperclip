@@ -2055,6 +2055,49 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("cleaves stranded_issue_recovery blocker edges after terminal cleanup (finalize hook)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceId = randomUUID();
+    const recoveryId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceId,
+        companyId,
+        title: "Source stranded parent",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: recoveryId,
+        companyId,
+        title: "Stranded recovery",
+        status: "todo",
+        priority: "medium",
+        originKind: "stranded_issue_recovery",
+        originId: sourceId,
+      },
+    ]);
+
+    await svc.update(sourceId, { blockedByIssueIds: [recoveryId] });
+    expect((await svc.getRelationSummaries(sourceId)).blockedBy.map((relation) => relation.id)).toEqual([recoveryId]);
+
+    const existing = await db.select().from(issues).where(eq(issues.id, recoveryId)).then((rows) => rows[0]!);
+    await svc.update(recoveryId, { status: "done" });
+    const updated = await db.select().from(issues).where(eq(issues.id, recoveryId)).then((rows) => rows[0]!);
+
+    const resolution = await svc.finalizeStrandedIssueRecoveryBlockerCleanup({ existing, updated });
+    expect(resolution.ranCleanup).toBe(true);
+
+    expect((await svc.getRelationSummaries(sourceId)).blockedBy.map((relation) => relation.id)).toEqual([]);
+  });
+
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
