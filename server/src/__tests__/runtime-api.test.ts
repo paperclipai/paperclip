@@ -17,6 +17,26 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("prefers a loopback allowedHostname over external ones when bindHost is wildcard", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        allowedHostnames: ["host.paperclip.internal", "localhost", "192.168.68.57"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+      }),
+    ).toBe("http://localhost:3100");
+  });
+
+  it("falls back to first allowedHostname when no loopback entry is present and bindHost is wildcard", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        allowedHostnames: ["host.paperclip.internal", "192.168.68.57"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+      }),
+    ).toBe("http://host.paperclip.internal:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({

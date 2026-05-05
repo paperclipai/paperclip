@@ -61,14 +61,16 @@ export function choosePrimaryRuntimeApiUrl(input: {
     }
   }
 
-  const allowedHostname = input.allowedHostnames
-    .map((value) => value.trim())
-    .find(Boolean);
+  const bindHost = normalizeHost(input.bindHost);
+  const names = input.allowedHostnames.map((value) => value.trim()).filter(Boolean);
+  // When bound to all interfaces, prefer a loopback hostname so local-process
+  // agents always get a URL they can reach without external DNS resolution.
+  const allowedHostname =
+    (isWildcardHost(bindHost) ? names.find((h) => isLoopbackHost(h)) : undefined) ?? names[0];
   if (allowedHostname) {
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }
