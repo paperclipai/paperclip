@@ -18,7 +18,7 @@
 - [planned] **v3.3** - RT2 Engine Convergence (Phase 78-83 complete) ([archive](milestones/v3.3-ROADMAP.md))
 - [shipped] **v3.4 RT2 Integration & API Alignment** - Phase 84-88 complete, 2026-05-04 ([archive](milestones/v3.4-ROADMAP.md), [requirements](milestones/v3.4-REQUIREMENTS.md), [audit](milestones/v3.4-MILESTONE-AUDIT.md))
 
-- [planned] **v3.5 Trello Advanced Parity** - Phase 89-92 in progress
+- [shipped] **v3.5 Trello Advanced Parity** - Phase 89-92 complete, 2026-05-05
 
 ## 완료됨
 
@@ -588,7 +588,10 @@ Success criteria:
 | 86. Work Entity Migration | v3.4 | 1/1 | Complete | 2026-05-04 |
 | 87. RT2 Schema Validation | v3.4 | 1/1 | Complete | 2026-05-04 |
 | 88. v3.4 Acceptance Gate | v3.4 | 0/0 | Complete | 2026-05-04 |
-| 89. Trello Field Extension Parity | v3.5 | 1/1 | Planning | — |
+| 89. Trello Field Extension Parity | v3.5 | 1/1 | Complete | 2026-05-05 |
+| 90. Custom Field and Calendar View | v3.5 | 2/2 | Complete | 2026-05-05 |
+| 91. Trello Automation Power-up Parity 2 | v3.5 | 1/1 | Complete | 2026-05-05 |
+| 92. v3.5 Acceptance Gate | v3.5 | 0/0 | Complete | 2026-05-05 |
 
 ## Archive
 
