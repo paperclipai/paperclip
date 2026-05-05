@@ -2180,6 +2180,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /** Change 2: when provided, the dispatcher waits for this promise before enabling new dispatches. */
+  pluginReadyPromise?: Promise<unknown>;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -2204,6 +2206,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // Change 1: SIGTERM drain — set to true when the process is shutting down; blocks new dispatches.
+  let isDraining = false;
+  // Change 2: Startup health gate — set to true once plugin activation completes;
+  // blocks dispatch until all plugins are active to prevent tool calls with no worker.
+  let isStartupReady = !options.pluginReadyPromise;
+  if (options.pluginReadyPromise) {
+    options.pluginReadyPromise.then(() => {
+      isStartupReady = true;
+      logger.info("heartbeat dispatcher marked startup-ready: plugin ready promise resolved");
+    }).catch(() => {
+      isStartupReady = true;
+      logger.warn("plugin ready promise rejected; enabling heartbeat dispatch anyway");
+    });
+  }
+  // Listeners waiting for drain to complete (used by drain() below).
+  const drainResolvers: Array<() => void> = [];
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -5957,6 +5975,77 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  // Change 5: Stagger post-restart dispatch to spread the Anthropic API burst across a wider window.
+  // Jitter is proportional to agent count: each agent slot adds up to 30s / totalAgents of random delay.
+  // This directly prevents the 97-second synchronised burst pattern from the 1-2 May incident.
+  async function resumeQueuedRunsWithJitter(opts: { maxJitterMs?: number } = {}) {
+    const maxJitterMs = opts.maxJitterMs ?? 30_000;
+    const queuedRuns = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"));
+
+    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+    const totalAgents = agentIds.length;
+    if (totalAgents === 0) return;
+
+    const jitterPerAgent = totalAgents > 1 ? maxJitterMs / totalAgents : 0;
+
+    for (let i = 0; i < agentIds.length; i++) {
+      const agentId = agentIds[i]!;
+      const jitterMs = Math.floor(Math.random() * jitterPerAgent * (i + 1));
+      if (jitterMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, jitterMs));
+      }
+      await startNextQueuedRunForAgent(agentId);
+    }
+  }
+
+  // Change 1: Drain — stop accepting new dispatches and wait for all in-flight runs to complete.
+  // Called by the SIGTERM handler so the process exits cleanly after existing runs finish.
+  async function drain(opts: { timeoutMs?: number } = {}) {
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    isDraining = true;
+    logger.info({ activeRuns: activeRunExecutions.size, timeoutMs }, "server drain started");
+
+    if (activeRunExecutions.size === 0) {
+      logger.info("server drain complete: no active runs");
+      return { drained: true, timedOut: false };
+    }
+
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        drainResolvers.push(resolve);
+      }),
+      new Promise<void>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, timeoutMs);
+      }),
+    ]);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+
+    if (timedOut) {
+      logger.warn(
+        { remainingRuns: activeRunExecutions.size, timeoutMs },
+        "server drain timed out: exiting with active runs still in flight",
+      );
+    } else {
+      logger.info("server drain complete: all active runs finished");
+    }
+    return { drained: !timedOut, timedOut };
+  }
+
+  // Change 2: Mark the server as startup-ready after plugin activation completes.
+  // Call this from server/src/index.ts once the plugin loader has resolved.
+  function setStartupReady() {
+    isStartupReady = true;
+    logger.info("heartbeat dispatcher marked startup-ready");
+  }
+
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues();
   }
@@ -6060,6 +6149,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
+    // Change 1: refuse new dispatches during SIGTERM drain.
+    if (isDraining) {
+      logger.debug({ agentId }, "dispatch skipped: server is draining");
+      return [];
+    }
+    // Change 2: refuse new dispatches until plugin activation completes.
+    if (!isStartupReady) {
+      logger.debug({ agentId }, "dispatch skipped: server not yet startup-ready");
+      return [];
+    }
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -7427,6 +7526,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
+          if (isDraining && activeRunExecutions.size === 0) {
+            for (const resolve of drainResolvers) resolve();
+            drainResolvers.length = 0;
+          }
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
@@ -9014,6 +9117,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     promoteDueScheduledRetries,
 
     resumeQueuedRuns,
+    resumeQueuedRunsWithJitter,
+    drain,
+    setStartupReady,
 
     scheduleBoundedRetry: async (
       runId: string,
