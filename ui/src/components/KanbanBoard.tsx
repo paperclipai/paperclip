@@ -128,6 +128,8 @@ interface KanbanBoardProps {
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   boardCards?: Map<string, Rt2BoardCardMeta>;
+  wipLimits?: { todo: number | null; in_progress: number | null; done: number | null };
+  wipCounts?: { todo: number; in_progress: number; done: number };
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
   onUpdateBoardCard?: (id: string, data: Partial<Pick<Rt2BoardCardMeta, "dueDate" | "qualityStatus" | "priceGold" | "detailNotes">>) => void;
   onAddChecklistItem?: (id: string, title: string) => void;
@@ -154,6 +156,8 @@ function KanbanColumn({
   onReorderChecklist,
   onAddAttachment,
   onCreateTask,
+  wipLimit,
+  wipCount,
 }: {
   lane: (typeof boardLanes)[number];
   issues: Issue[];
@@ -169,19 +173,25 @@ function KanbanColumn({
   onReorderChecklist?: KanbanBoardProps["onReorderChecklist"];
   onAddAttachment?: KanbanBoardProps["onAddAttachment"];
   onCreateTask?: (status?: string) => void;
+  wipLimit?: number | null;
+  wipCount?: number;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: lane.id });
 
   const isEmpty = issues.length === 0;
+  const isAtLimit = wipLimit !== null && wipLimit !== undefined && wipCount !== undefined && wipCount >= wipLimit;
+  const wipDisplay = wipLimit !== null && wipLimit !== undefined
+    ? `${wipCount ?? issues.length}/${wipLimit}`
+    : String(issues.length);
 
   return (
-    <section className="flex min-w-[21rem] w-[21rem] shrink-0 flex-col rounded-md border border-border bg-muted/30" aria-label={`${lane.label} list`}>
-      <div className="border-b border-border px-3 py-2">
+    <section className={`flex min-w-[21rem] w-[21rem] shrink-0 flex-col rounded-md border border-border bg-muted/30 ${isAtLimit ? "border-amber-500/50" : ""}`} aria-label={`${lane.label} list`}>
+      <div className={`border-b border-border px-3 py-2 ${isAtLimit ? "bg-amber-50" : ""}`}>
         <div className="flex items-center gap-2">
           <StatusIcon status={lane.id} />
           <span className="text-sm font-semibold text-foreground">{lane.label}</span>
-          <span className="ml-auto rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground tabular-nums">
-            {issues.length}
+          <span className={`ml-auto rounded-full px-2 py-0.5 text-[11px] tabular-nums ${isAtLimit ? "bg-amber-100 text-amber-700" : "bg-background text-muted-foreground"}`}>
+            {wipDisplay}
           </span>
         </div>
         <p className="mt-1 text-[11px] text-muted-foreground">{lane.description}</p>
@@ -219,16 +229,22 @@ function KanbanColumn({
           </div>
         ) : null}
       </div>
-      <div className="border-t border-border p-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start text-xs text-muted-foreground"
-          onClick={() => onCreateTask?.(lane.id)}
-        >
-          + {lane.label} 카드 추가
-        </Button>
+<div className="border-t border-border p-2">
+        {isAtLimit ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-600">
+            WIP 제한 ({wipLimit})에 도달했습니다
+          </div>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start text-xs text-muted-foreground"
+            onClick={() => onCreateTask?.(lane.id)}
+          >
+            + {lane.label} 카드 추가
+          </Button>
+        )}
       </div>
       {totalCount > 0 ? (
         <div className="sr-only">{lane.label} list contains {issues.length} of {totalCount} tasks.</div>
@@ -570,6 +586,8 @@ export function KanbanBoard({
   agents,
   liveIssueIds,
   boardCards,
+  wipLimits,
+  wipCounts,
   onUpdateIssue,
   onUpdateBoardCard,
   onAddChecklistItem,
@@ -664,7 +682,7 @@ export function KanbanBoard({
           새 작업
         </Button>
       </div>
-      <div className="grid gap-3 xl:grid-cols-3">
+<div className="grid gap-3 xl:grid-cols-3">
         {boardLanes.map((lane) => (
           <KanbanColumn
             key={lane.id}
@@ -682,6 +700,8 @@ export function KanbanBoard({
             onReorderChecklist={onReorderChecklist}
             onAddAttachment={onAddAttachment}
             onCreateTask={onCreateTask}
+            wipLimit={wipLimits ? (wipLimits[lane.id as keyof typeof wipLimits] ?? null) : null}
+            wipCount={wipCounts ? wipCounts[lane.id as keyof typeof wipCounts] : undefined}
           />
         ))}
       </div>
