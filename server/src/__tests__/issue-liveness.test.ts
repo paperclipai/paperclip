@@ -77,16 +77,18 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
-  it("does not use free-form executive role or name matching for recovery ownership", () => {
+  it("does not use agent name or title for recovery ownership", () => {
+    // Asserts the resolver does not read free-form fields like agent.name or
+    // agent.title when picking a recovery owner. agent.role IS load-bearing for
+    // the fallback rungs (mirrors resolveStaleRunOwnerAgentId), so this test
+    // uses a non-executive operator with the misleading title "CEO" to confirm
+    // the title is ignored.
     const rootAgentId = "root-agent";
-    const spoofedExecutiveId = "spoofed-executive";
+    const ctoAgentId = "real-cto";
 
     const findings = classifyIssueGraphLiveness({
       issues: [
-        issue({
-          assigneeAgentId: null,
-          createdByAgentId: null,
-        }),
+        issue({ assigneeAgentId: null, createdByAgentId: null }),
         issue({
           id: blockerId,
           identifier: "PAP-1704",
@@ -99,16 +101,16 @@ describe("issue graph liveness classifier", () => {
       relations: blocks,
       agents: [
         agent({
-          id: spoofedExecutiveId,
-          name: "Chief Executive Recovery",
-          role: "cto",
-          title: "CEO",
-          reportsTo: rootAgentId,
-        }),
-        agent({
           id: rootAgentId,
           name: "Root Operator",
           role: "operator",
+          title: "CEO", // misleading title; should be ignored
+          reportsTo: null,
+        }),
+        agent({
+          id: ctoAgentId,
+          name: "Real CTO",
+          role: "cto",
           title: null,
           reportsTo: null,
         }),
@@ -116,16 +118,86 @@ describe("issue graph liveness classifier", () => {
     });
 
     expect(findings).toHaveLength(1);
-    expect(findings[0]?.recommendedOwnerAgentId).toBe(rootAgentId);
-    expect(findings[0]?.recommendedOwnerCandidates[0]).toMatchObject({
-      agentId: rootAgentId,
-      reason: "root_agent",
-      sourceIssueId: blockerId,
+    // The operator has no reportsTo and a misleading "CEO" title, but role is
+    // "operator" — so it is excluded from both fallback rungs. The real CTO
+    // (role=cto, no reportsTo) is the only valid candidate.
+    expect(findings[0]?.recommendedOwnerAgentId).toBe(ctoAgentId);
+    expect(findings[0]?.recommendedOwnerCandidateAgentIds).toEqual([ctoAgentId]);
+  });
+
+  it("restricts root_agent and ordered_invokable_fallback rungs to executive roles", () => {
+    // Without this filter, escalations route to whichever invokable agent has
+    // the lowest UUID (e.g. process-adapter scripts that ignore issue context).
+    // Mirrors resolveStaleRunOwnerAgentId / resolveStrandedIssueRecoveryOwnerAgentId
+    // in services/recovery/service.ts.
+    const ceoId = "00000000-ceo";
+    const ctoId = "11111111-cto";
+    const processAgentId = "22222222-process"; // non-executive, would-be UUID winner
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ assigneeAgentId: null, createdByAgentId: null }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Missing unblock work",
+          status: "todo",
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent({ id: ceoId, name: "CEO", role: "ceo", reportsTo: null }),
+        agent({ id: ctoId, name: "CTO", role: "cto", reportsTo: ceoId }),
+        agent({ id: processAgentId, name: "Script", role: "general", reportsTo: null }),
+      ],
     });
-    expect(findings[0]?.recommendedOwnerCandidateAgentIds).toEqual([
-      rootAgentId,
-      spoofedExecutiveId,
-    ]);
+
+    expect(findings).toHaveLength(1);
+    const candidates = findings[0]?.recommendedOwnerCandidates ?? [];
+    const candidateAgentIds = candidates.map((c) => c.agentId);
+    expect(candidateAgentIds).not.toContain(processAgentId);
+    expect(candidateAgentIds).toContain(ceoId); // root_agent rung (no reportsTo + executive)
+    expect(candidateAgentIds).toContain(ctoId); // ordered_invokable_fallback rung
+    expect(findings[0]?.recommendedOwnerAgentId).toBe(ceoId); // root_agent first
+  });
+
+  it("preserves non-executive ownership via chain-based reasons (assignee_reporting_chain)", () => {
+    // The role filter only affects fallback rungs. Chain-based candidates that
+    // surface a non-executive manager (e.g. devops lead) via reportsTo
+    // traversal must still be selectable.
+    const ceoId = "ceo-1";
+    const opsLeadId = "ops-lead";
+    const opsEngineerId = "ops-engineer";
+    const blockerAssigneeId = "blocker-agent";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ assigneeAgentId: opsEngineerId, createdByAgentId: null }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: blockerAssigneeId,
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent({ id: ceoId, name: "CEO", role: "ceo", reportsTo: null }),
+        agent({ id: opsLeadId, name: "Ops Lead", role: "devops", reportsTo: ceoId }),
+        agent({ id: opsEngineerId, name: "Ops Engineer", role: "devops", reportsTo: opsLeadId }),
+        agent({ id: blockerAssigneeId, name: "Blocker", role: "general", reportsTo: opsLeadId }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    const candidates = findings[0]?.recommendedOwnerCandidates ?? [];
+    // The ops lead (non-executive devops role) is reachable via the
+    // assignee_reporting_chain — confirms chain-based reasons are unaffected
+    // by the role filter on the fallback rungs.
+    expect(candidates.some((c) => c.agentId === opsLeadId && c.reason === "assignee_reporting_chain")).toBe(true);
   });
 
   it("does not flag a live blocked chain with an active assignee and wake path", () => {
