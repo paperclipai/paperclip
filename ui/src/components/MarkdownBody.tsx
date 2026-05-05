@@ -11,6 +11,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
+import { isLocalFilePath } from "../lib/company-routes";
 import { StatusIcon } from "./StatusIcon";
 
 interface MarkdownBodyProps {
@@ -404,6 +405,17 @@ export function MarkdownBody({
           >
             {linkChildren}
           </a>
+        );
+      }
+      if (href && !isExternalHttpUrl(href) && isLocalFilePath(href)) {
+        return (
+          <span
+            className="font-mono text-xs text-muted-foreground"
+            title={href}
+            style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+          >
+            {linkChildren}
+          </span>
         );
       }
       const isGitHubLink = isGitHubUrl(href);

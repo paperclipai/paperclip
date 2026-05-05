@@ -366,6 +366,50 @@ describe("MarkdownBody", () => {
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
   });
 
+  it("renders multi-line fenced code blocks with softBreaks enabled", () => {
+    const html = renderMarkdown("```js\nconst x = 1;\nconst y = 2;\nconst z = x + y;\n```");
+
+    expect(html).toContain("<pre");
+    expect(html).toContain("<code");
+    expect(html).toContain("const x = 1;\nconst y = 2;\nconst z = x + y;\n");
+    expect(html).not.toContain("<br/>");
+  });
+
+  it("renders fenced code blocks preceded by text without a blank line", () => {
+    const html = renderMarkdown("Here is the fix:\n```ts\nawait db.query();\n```");
+
+    expect(html).toContain("<p");
+    expect(html).toContain("Here is the fix:");
+    expect(html).toContain("<pre");
+    expect(html).toContain("await db.query();");
+  });
+
+  it("renders fenced code blocks without a language tag", () => {
+    const html = renderMarkdown("```\nplain preformatted text\nline two\n```");
+
+    expect(html).toContain("<pre");
+    expect(html).toContain("<code");
+    expect(html).toContain("plain preformatted text\nline two\n");
+    expect(html).not.toContain("<br/>");
+  });
+
+  it("preserves content between text paragraphs and fenced code blocks", () => {
+    const html = renderMarkdown("Before code\n\n```python\nprint('hello')\n```\n\nAfter code");
+
+    expect(html).toContain("Before code");
+    expect(html).toContain("print(&#x27;hello&#x27;)");
+    expect(html).toContain("After code");
+    expect(html).toContain("<pre");
+  });
+
+  it("does not inject break tags inside fenced code block content", () => {
+    const html = renderMarkdown("Comment text\n\n```\nline 1\nline 2\nline 3\n```");
+
+    const preMatch = html.match(/<pre[^>]*>[\s\S]*?<\/pre>/);
+    expect(preMatch).not.toBeNull();
+    expect(preMatch![0]).not.toContain("<br");
+  });
+
   it("renders a copy button alongside fenced code blocks", () => {
     const html = renderMarkdown("```ts\nconst a = 1;\n```");
 
@@ -380,7 +424,6 @@ describe("MarkdownBody", () => {
 
     expect(html).not.toContain("paperclip-markdown-codeblock-copy");
   });
-
   it("renders internal issue links and bare identifiers as inline issue refs", () => {
     const html = renderMarkdown(`See PAP-42 and [linked task](${buildIssueReferenceHref("PAP-77")}) for follow-up.`, [
       { identifier: "PAP-42", status: "done" },

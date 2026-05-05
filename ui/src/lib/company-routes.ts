@@ -53,11 +53,29 @@ export function isBoardPathWithoutPrefix(pathname: string): boolean {
   return BOARD_ROUTE_ROOTS.has(root.toLowerCase());
 }
 
+export function isLocalFilePath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 0) return false;
+  const first = segments[0]!;
+  // Windows-style paths that got normalized (e.g. C:/Users/...)
+  if (/^[a-zA-Z]:$/.test(first)) return true;
+  // Unambiguous filesystem roots (long names that won't clash with company prefixes)
+  const unambiguousRoots = /^(users|home|volumes|private|applications|library|system|proc|boot|media|snap|nix)$/i;
+  if (unambiguousRoots.test(first)) return true;
+  // Short filesystem roots that could be company prefixes — require 3+ segments to confirm
+  const ambiguousRoots = /^(tmp|var|etc|opt|usr|mnt|dev|sys|run|srv|root)$/i;
+  if (ambiguousRoots.test(first) && segments.length >= 3) return true;
+  return false;
+}
+
 export function extractCompanyPrefixFromPath(pathname: string): string | null {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return null;
   const first = segments[0]!.toLowerCase();
   if (GLOBAL_ROUTE_ROOTS.has(first) || BOARD_ROUTE_ROOTS.has(first)) {
+    return null;
+  }
+  if (isLocalFilePath(pathname)) {
     return null;
   }
   return normalizeCompanyPrefix(segments[0]!);

@@ -19,6 +19,8 @@ type MarkdownParentNode = {
 
 type MarkdownTreeNode = MarkdownTextNode | MarkdownBreakNode | (MarkdownNode & { children?: MarkdownTreeNode[] });
 
+const SKIP_NODE_TYPES = new Set(["code", "inlineCode", "html", "yaml", "toml"]);
+
 function isParentNode(value: unknown): value is MarkdownParentNode {
   return typeof value === "object" && value !== null && Array.isArray((value as MarkdownNode).children);
 }
@@ -42,6 +44,7 @@ function buildSoftBreakReplacement(value: string): Array<MarkdownTextNode | Mark
 
 function transformNode(node: MarkdownTreeNode) {
   if (!isParentNode(node)) return;
+  if (typeof (node as MarkdownNode).type === "string" && SKIP_NODE_TYPES.has((node as MarkdownNode).type as string)) return;
 
   for (let index = 0; index < node.children.length; index += 1) {
     const child = node.children[index];
