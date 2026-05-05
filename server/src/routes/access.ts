@@ -3403,6 +3403,9 @@ export function accessRoutes(
               }
             )
           : null;
+      const humanRoleToGrant = extractInviteHumanRole(invite);
+      const isAutoApprove = requestType === "human" && humanRoleToGrant !== null;
+
       const created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
@@ -3416,6 +3419,21 @@ export function accessRoutes(
                     isNull(invites.revokedAt)
                   )
                 );
+              
+              if (isAutoApprove && existingHumanJoinRequest.status === "pending_approval") {
+                const updated = await tx
+                  .update(joinRequests)
+                  .set({
+                    status: "approved",
+                    approvedByUserId: invite.invitedByUserId ?? "local-board",
+                    approvedAt: new Date(),
+                    updatedAt: new Date()
+                  })
+                  .where(eq(joinRequests.id, existingHumanJoinRequest.id))
+                  .returning()
+                  .then((rows) => rows[0]);
+                return updated ?? existingHumanJoinRequest;
+              }
               return existingHumanJoinRequest;
             })
           : await db.transaction(async (tx) => {
@@ -3429,9 +3447,6 @@ export function accessRoutes(
                     isNull(invites.revokedAt)
                   )
                 );
-
-              const humanRoleToGrant = extractInviteHumanRole(invite);
-              const isAutoApprove = requestType === "human" && humanRoleToGrant !== null;
 
               const row = await tx
                 .insert(joinRequests)
