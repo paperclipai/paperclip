@@ -103,6 +103,7 @@ function project(overrides: Partial<Project> = {}): Project {
     targetDate: null,
     color: "#14b8a6",
     env: null,
+    requireOutputContracts: false,
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
