@@ -24,7 +24,14 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
-import { clampIssueListLimit, ISSUE_LIST_MAX_LIMIT, issueService } from "../services/issues.ts";
+import {
+  clampIssueListLimit,
+  extractExecutiveHoldMarker,
+  findActiveExecutiveHold,
+  ISSUE_LIST_MAX_LIMIT,
+  issueService,
+  parseExecutiveHoldMarkerTimestamp,
+} from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -35,6 +42,97 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+});
+
+describe("executive hold marker parsing", () => {
+  it("parses strict ISO-8601 with Z", () => {
+    const date = parseExecutiveHoldMarkerTimestamp("2026-05-07T03:00:00Z");
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("parses loose `YYYY-MM-DD HH:MM UTC` form", () => {
+    const date = parseExecutiveHoldMarkerTimestamp("2026-05-07 03:00 UTC");
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("returns null for unparseable strings", () => {
+    expect(parseExecutiveHoldMarkerTimestamp("tomorrow")).toBeNull();
+    expect(parseExecutiveHoldMarkerTimestamp("")).toBeNull();
+  });
+
+  it("extracts strict ISO timestamp from a comment body", () => {
+    const date = extractExecutiveHoldMarker(
+      "Pausing this — do not retry before 2026-05-07T03:00:00Z, see thread.",
+    );
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("extracts loose timestamp from a comment body", () => {
+    const date = extractExecutiveHoldMarker(
+      "Hold this until tomorrow. Do not retry before 2026-05-07 03:00 UTC.",
+    );
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("returns null when body has no marker", () => {
+    expect(extractExecutiveHoldMarker("Just a regular comment.")).toBeNull();
+    expect(extractExecutiveHoldMarker(null)).toBeNull();
+  });
+
+  it("treats newest matching executive comment as authoritative", () => {
+    const now = new Date("2026-05-06T00:00:00Z");
+    const hold = findActiveExecutiveHold(
+      [
+        {
+          id: "old",
+          body: "do not retry before 2026-05-04T00:00:00Z",
+          createdAt: new Date("2026-05-03T00:00:00Z"),
+          authorRole: "ceo",
+        },
+        {
+          id: "new",
+          body: "do not retry before 2026-05-07 03:00 UTC",
+          createdAt: new Date("2026-05-05T23:00:00Z"),
+          authorRole: "cto",
+        },
+      ],
+      now,
+    );
+    expect(hold).toMatchObject({ commentId: "new" });
+    expect(hold?.until.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("ignores hold markers from non-executive authors", () => {
+    const now = new Date("2026-05-06T00:00:00Z");
+    const hold = findActiveExecutiveHold(
+      [
+        {
+          id: "engineer-comment",
+          body: "do not retry before 2026-05-07T03:00:00Z",
+          createdAt: new Date("2026-05-05T23:00:00Z"),
+          authorRole: "engineer",
+        },
+      ],
+      now,
+    );
+    expect(hold).toBeNull();
+  });
+
+  it("releases the hold when the newest match has an expired timestamp", () => {
+    const now = new Date("2026-05-08T00:00:00Z");
+    const hold = findActiveExecutiveHold(
+      [
+        {
+          id: "expired",
+          body: "do not retry before 2026-05-07T03:00:00Z",
+          createdAt: new Date("2026-05-05T23:00:00Z"),
+          authorRole: "ceo",
+        },
+      ],
+      now,
+    );
+    expect(hold).toBeNull();
   });
 });
 
@@ -2171,6 +2269,204 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
       }),
     ]);
+  });
+
+  describe("listWakeableBlockedDependents executive hold suppression (BLO-3496)", () => {
+    async function setupBlockedDependentWithExecutive(opts: {
+      ctoRole?: string;
+    } = {}) {
+      const companyId = randomUUID();
+      const assigneeAgentId = randomUUID();
+      const ctoAgentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values([
+        {
+          id: assigneeAgentId,
+          companyId,
+          name: "CodexCoder",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: ctoAgentId,
+          companyId,
+          name: "CTO",
+          role: opts.ctoRole ?? "cto",
+          status: "active",
+          adapterType: "claude_k8s",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      const blockerId = randomUUID();
+      const blockedIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Recovery", status: "done", priority: "critical" },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: "Source under hold",
+          status: "blocked",
+          priority: "critical",
+          assigneeAgentId,
+        },
+      ]);
+      await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
+
+      return { companyId, ctoAgentId, assigneeAgentId, blockerId, blockedIssueId };
+    }
+
+    async function insertComment(opts: {
+      companyId: string;
+      issueId: string;
+      authorAgentId: string | null;
+      body: string;
+      createdAt: Date;
+    }) {
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId: opts.companyId,
+        issueId: opts.issueId,
+        authorAgentId: opts.authorAgentId,
+        body: opts.body,
+        createdAt: opts.createdAt,
+        updatedAt: opts.createdAt,
+      });
+    }
+
+    it("suppresses the wake when an executive `do not retry before <future ts>` hold is active (strict ISO)", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Pausing — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([]);
+
+      const after = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, ctx.blockedIssueId))
+        .then((rows) => rows[0]);
+      expect(after?.status).toBe("blocked");
+    });
+
+    it("suppresses the wake for the loose `YYYY-MM-DD HH:MM UTC` form too", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const yyyy = future.getUTCFullYear();
+      const mm = String(future.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(future.getUTCDate()).padStart(2, "0");
+      const hh = String(future.getUTCHours()).padStart(2, "0");
+      const minute = String(future.getUTCMinutes()).padStart(2, "0");
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold this — do not retry before ${yyyy}-${mm}-${dd} ${hh}:${minute} UTC.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([]);
+    });
+
+    it("does NOT suppress when the executive hold timestamp is in the past", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold expired — do not retry before ${past}.`,
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress when the hold marker is from a non-executive author", async () => {
+      const ctx = await setupBlockedDependentWithExecutive({ ctoRole: "engineer" });
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Trying to hold — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress when there is no hold marker at all", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: "Just a status update from the CTO, no hold marker here.",
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("uses the newest matching executive comment when multiple holds are present", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const oldFuture = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const newPast = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Initial hold — do not retry before ${oldFuture}.`,
+        createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Override — do not retry before ${newPast}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
   });
 
   it("reports dependency readiness for blocked issue chains", async () => {

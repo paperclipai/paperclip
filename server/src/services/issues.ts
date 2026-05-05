@@ -47,6 +47,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1660,6 +1661,59 @@ async function blockedByMapForIssues(
   return map;
 }
 
+export const EXECUTIVE_AGENT_ROLES_FOR_HOLDS = new Set(["ceo", "cto"]);
+
+const EXECUTIVE_HOLD_MARKER_REGEX =
+  /do\s+not\s+retry\s+before\s+(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?(?:\s+(?:UTC|GMT))?)/i;
+
+export function parseExecutiveHoldMarkerTimestamp(raw: string): Date | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const direct = /Z$|[+-]\d{2}:?\d{2}$/.test(trimmed) ? new Date(trimmed) : null;
+  if (direct && !Number.isNaN(direct.getTime())) return direct;
+  const looseMatch = trimmed.match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)\s*(?:UTC|GMT)?$/i,
+  );
+  if (looseMatch) {
+    const time = looseMatch[2].length === 5 ? `${looseMatch[2]}:00` : looseMatch[2];
+    const date = new Date(`${looseMatch[1]}T${time}Z`);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const date = new Date(`${trimmed}T00:00:00Z`);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return null;
+}
+
+export function extractExecutiveHoldMarker(body: string | null | undefined): Date | null {
+  if (!body) return null;
+  const match = body.match(EXECUTIVE_HOLD_MARKER_REGEX);
+  if (!match) return null;
+  return parseExecutiveHoldMarkerTimestamp(match[1]);
+}
+
+export function findActiveExecutiveHold(
+  comments: Array<{
+    id: string;
+    body: string | null;
+    createdAt: Date;
+    authorRole: string | null;
+  }>,
+  now: Date = new Date(),
+): { until: Date; commentId: string } | null {
+  const sorted = [...comments].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  for (const comment of sorted) {
+    if (!comment.authorRole || !EXECUTIVE_AGENT_ROLES_FOR_HOLDS.has(comment.authorRole)) continue;
+    const until = extractExecutiveHoldMarker(comment.body);
+    if (!until) continue;
+    return until.getTime() > now.getTime()
+      ? { until, commentId: comment.id }
+      : null;
+  }
+  return null;
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -2593,7 +2647,7 @@ export function issueService(db: Db) {
         blockersByIssueId.set(row.issueId, list);
       }
 
-      return candidates
+      const wakeable = candidates
         .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
@@ -2603,7 +2657,55 @@ export function issueService(db: Db) {
             allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
           };
         })
-        .filter((candidate) => candidate.allBlockersDone)
+        .filter((candidate) => candidate.allBlockersDone);
+
+      const blockedCandidateIds = wakeable
+        .filter((candidate) => candidate.status === "blocked")
+        .map((candidate) => candidate.id);
+
+      const suppressedIssueIds = new Set<string>();
+      if (blockedCandidateIds.length > 0) {
+        const commentRows = await db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            createdAt: issueComments.createdAt,
+            authorRole: agents.role,
+          })
+          .from(issueComments)
+          .leftJoin(agents, eq(agents.id, issueComments.authorAgentId))
+          .where(
+            and(
+              eq(issueComments.companyId, blockerIssue.companyId),
+              inArray(issueComments.issueId, blockedCandidateIds),
+            ),
+          )
+          .orderBy(desc(issueComments.createdAt));
+
+        const commentsByIssueId = new Map<string, typeof commentRows>();
+        for (const row of commentRows) {
+          const list = commentsByIssueId.get(row.issueId) ?? [];
+          list.push(row);
+          commentsByIssueId.set(row.issueId, list);
+        }
+
+        const now = new Date();
+        for (const issueId of blockedCandidateIds) {
+          const candidateComments = commentsByIssueId.get(issueId) ?? [];
+          const hold = findActiveExecutiveHold(candidateComments, now);
+          if (hold) {
+            suppressedIssueIds.add(issueId);
+            logger.debug(
+              { issueId, until: hold.until.toISOString(), holdCommentId: hold.commentId },
+              `blockers_resolved_sweep: suppressed for issue=${issueId} until=${hold.until.toISOString()} hold_comment=${hold.commentId}`,
+            );
+          }
+        }
+      }
+
+      return wakeable
+        .filter((candidate) => !suppressedIssueIds.has(candidate.id))
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
