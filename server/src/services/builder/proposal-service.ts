@@ -61,11 +61,13 @@ export function proposalService(db: Db) {
       try {
         // Wrap tool.apply() and markApplied() in a transaction to prevent orphaned entities
         let result: any;
+        let wonRace = true;
         const applied = await db.transaction(async (tx) => {
-          // Tool appliers use ctx.db which is the outer db, not tx
-          // This means the entity creation is part of the transaction scope
+          // Pass tx as the db connection so entity creation is transactional
           result = await tool.apply(proposal.payload, { ...ctx, db: tx as any });
-          const applied = await store.markApplied(proposalId, decidedByUserId, null);
+          // Use transaction-aware proposal store to ensure atomicity
+          const txStore = builderProposalStore(tx as any);
+          const applied = await txStore.markApplied(proposalId, decidedByUserId, null);
           if (!applied) {
             // Signal conflict so tx rolls back and the entity creation is undone.
             throw Object.assign(new Error("concurrent-apply"), { concurrent: true });
@@ -74,29 +76,33 @@ export function proposalService(db: Db) {
         }).catch(async (err: any) => {
           if (err.concurrent) {
             // Concurrent race — transaction rolled back, re-fetch the current proposal
+            wonRace = false;
+            result = null; // Clear stale result from rolled-back apply
             return store.getById(companyId, proposalId);
           }
           throw err; // Re-throw non-concurrent errors
         });
         
-        // Best-effort activity log — never fail the apply because of logging
-        await logActivity(db, {
-          companyId,
-          actorType: "user",
-          actorId: decidedByUserId ?? "board",
-          action: "builder.proposal.applied",
-          entityType: result.entityType ?? "builder_proposal",
-          entityId: result.entityId ?? proposalId,
-          details: {
-            proposalId,
-            kind: proposal.kind,
-            sessionId: proposal.sessionId,
-            summary: result.summary,
-            ...(result.details ?? {}),
-          },
-        }).catch((logErr) =>
-          logger.warn({ logErr, proposalId }, "builder apply: activity log failed"),
-        );
+        // Best-effort activity log — only log if we won the race (result is valid)
+        if (wonRace && result) {
+          await logActivity(db, {
+            companyId,
+            actorType: "user",
+            actorId: decidedByUserId ?? "board",
+            action: "builder.proposal.applied",
+            entityType: result.entityType ?? "builder_proposal",
+            entityId: result.entityId ?? proposalId,
+            details: {
+              proposalId,
+              kind: proposal.kind,
+              sessionId: proposal.sessionId,
+              summary: result.summary,
+              ...(result.details ?? {}),
+            },
+          }).catch((logErr) =>
+            logger.warn({ logErr, proposalId }, "builder apply: activity log failed"),
+          );
+        }
         return applied;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "Apply failed";
