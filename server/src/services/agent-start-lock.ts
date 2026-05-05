@@ -83,3 +83,9 @@ export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T
     }
   }
 }
+
+/** Reset circuit-breaker state between tests. */
+export function _resetCircuitBreakerForTesting(): void {
+  lockTimeoutEvents.length = 0;
+  gracefulRestartScheduled = false;
+}
