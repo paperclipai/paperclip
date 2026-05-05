@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { and, eq, or, inArray, sql } from "drizzle-orm";
+import { and, eq, ne, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -1072,6 +1072,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
+    // reapOrphanedRuns ends with void executeRun(...); wait until the continuation attempt is terminal.
+    await waitForValue(async () => {
+      const rows = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), ne(heartbeatRuns.id, runId)));
+      const continuation = rows[0] ?? null;
+      return continuation &&
+        continuation.status !== "queued" &&
+        continuation.status !== "running"
+        ? continuation
+        : null;
+    }, 30_000);
+
     const runs = await db
       .select()
       .from(heartbeatRuns)
@@ -1088,7 +1102,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
         return issue?.status === "blocked" ? issue : null;
-      })
+      }),
+      20_000,
     );
     expect(blockedIssue?.status).toBe("blocked");
     expect(blockedIssue?.executionRunId).toBeNull();
@@ -1119,11 +1134,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await waitForValue(async () => {
       const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
       return rows.length > 0 ? rows : null;
-    });
+    }, 20_000);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
-  });
+  }, 60_000);
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
     const sourceIssueId = randomUUID();
