@@ -81,6 +81,12 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
+  classifyWakeReasonFromContext,
+  isRoutineTerminalSyntheticContinuationWake,
+  resumeIntentFromIssueWakeContext,
+  ROUTINE_TERMINAL_SYNTHETIC_CONTINUATION_WAKE_REASONS,
+} from "../lib/routine-terminal-continuation.js";
+import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
@@ -6013,8 +6019,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
+    const resumeIntent = resumeIntentFromIssueWakeContext(context);
     const wakeReason = readNonEmptyString(context.wakeReason);
+    const classifiedWakeReason = classifyWakeReasonFromContext(context);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
     if (
@@ -6064,13 +6071,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const routineTerminalMissingResume =
         issue.originKind === "routine_execution" && !resumeIntent;
       if (routineTerminalMissingResume) {
+        const syntheticWake = isRoutineTerminalSyntheticContinuationWake(classifiedWakeReason);
         return {
           stale: true,
           errorCode: "routine_terminal_requires_resume_intent",
           reason:
             `Cancelled because routine_execution issue is ${issue.status} and the queued wake lacks explicit resume intent ` +
-            "(context.resumeIntent / context.followUpRequested from resume: true); comment-only wakes must not revive routine output",
-          details: { issueId, currentStatus: issue.status, originKind: issue.originKind },
+            "(context.resume / context.resumeIntent / context.followUpRequested from structured resume: true); comment-only wakes must not revive routine output",
+          details: {
+            issueId,
+            currentStatus: issue.status,
+            originKind: issue.originKind,
+            classifiedWakeReason: classifiedWakeReason ?? null,
+            routineTerminalSyntheticContinuationWake: syntheticWake,
+            routineTerminalGuardOutcome: syntheticWake
+              ? "rejected_synthetic_continuation_without_resume"
+              : "rejected_routine_terminal_without_resume",
+          },
         };
       }
       if (!resumeIntent && !wakeCommentId) {
@@ -8253,11 +8270,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        const deferredResumeIntent =
-          deferredContextSeed.resume === true ||
-          deferredContextSeed.resumeIntent === true ||
-          deferredContextSeed.followUpRequested === true;
+        const deferredWakeReason = classifyWakeReasonFromContext(deferredContextSeed);
+        const deferredResumeIntent = resumeIntentFromIssueWakeContext(deferredContextSeed);
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         let shouldReopenDeferredCommentWake =
@@ -8280,13 +8294,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           !shouldReopenDeferredCommentWake &&
           !deferredResumeIntent
         ) {
+          const wakeTag =
+            deferredWakeReason && ROUTINE_TERMINAL_SYNTHETIC_CONTINUATION_WAKE_REASONS.has(deferredWakeReason)
+              ? `[routine_terminal_guard:synthetic_continuation:${deferredWakeReason}]`
+              : "[routine_terminal_guard:terminal_routine]";
           await tx
             .update(agentWakeupRequests)
             .set({
               status: "failed",
               finishedAt: new Date(),
-              error:
-                "Deferred wake not promoted: terminal routine_execution issue has no audited comment/user reopen and no explicit resume metadata",
+              error: `${wakeTag} Deferred wake not promoted: terminal routine_execution issue has no audited comment/user reopen and no explicit resume metadata (requires context.resume / resumeIntent from structured resume: true)`,
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));

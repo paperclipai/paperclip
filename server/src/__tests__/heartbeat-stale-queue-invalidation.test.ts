@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -465,6 +465,76 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["issue_children_completed"],
+    ["issue_reopened_via_comment"],
+    ["issue_continuation_needed"],
+  ] as const)(
+    "cancels queued runs for routine_execution done issues on synthetic continuation wake %s without resume intent",
+    async (wakeReason) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Routine synthetic wake",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: randomUUID(),
+      });
+
+      const { runId, wakeupRequestId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason,
+        contextExtras: {
+          wakeCommentId: randomUUID(),
+        },
+      });
+
+      await heartbeat.resumeQueuedRuns();
+
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "cancelled";
+      });
+
+      const [run, events, wakeup] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, runId))
+          .orderBy(asc(heartbeatRunEvents.seq)),
+        db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(run?.status).toBe("cancelled");
+      expect(run?.errorCode).toBe("routine_terminal_requires_resume_intent");
+      expect(wakeup?.status).toBe("skipped");
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const staleLifecycle = events.find((row) => row.eventType === "lifecycle");
+      const detail = staleLifecycle?.payload as Record<string, unknown> | undefined;
+      expect(detail?.routineTerminalSyntheticContinuationWake).toBe(true);
+      expect(detail?.routineTerminalGuardOutcome).toBe("rejected_synthetic_continuation_without_resume");
+    },
+  );
 
   it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
