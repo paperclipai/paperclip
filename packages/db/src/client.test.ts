@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
+  backfillAllMigrationHistory,
   inspectMigrations,
 } from "./client.js";
 import {
@@ -43,6 +44,50 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it(
+    "backfills migration history for an existing non-empty database without running migrations",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`DROP TABLE "company_logos"`);
+        await sql.unsafe(`DROP SCHEMA "drizzle" CASCADE`);
+      } finally {
+        await sql.end();
+      }
+
+      const initialState = await inspectMigrations(connectionString);
+      expect(initialState).toMatchObject({
+        status: "needsMigrations",
+        reason: "no-migration-journal-non-empty-db",
+      });
+
+      const result = await backfillAllMigrationHistory(connectionString);
+      expect(result.backfilledMigrations.length).toBeGreaterThan(0);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN ('company_logos', 'companies')
+            ORDER BY table_name
+          `,
+        );
+        expect(rows.map((row) => row.table_name)).toEqual(["companies"]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
@@ -89,6 +134,53 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           "company_logos",
           "execution_workspaces",
         ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "backfills a mixed journal without losing hash-only applied migrations",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const richMagnetoHash = await migrationHash("0030_rich_magneto.sql");
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${richMagnetoHash}'`,
+        );
+        await sql.unsafe(`DROP TABLE "company_logos"`);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0030_rich_magneto.sql"],
+        reason: "pending-migrations",
+      });
+
+      const result = await backfillAllMigrationHistory(connectionString);
+      expect(result.backfilledMigrations).toEqual(["0030_rich_magneto.sql"]);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'company_logos'
+          `,
+        );
+        expect(rows).toHaveLength(0);
       } finally {
         await verifySql.end();
       }

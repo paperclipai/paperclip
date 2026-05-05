@@ -111,6 +111,7 @@ export const queryKeys = {
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   instanceMemoryHealth: () => ["instance-memory", "health"] as const,
+  memoryDashboard: () => ["memory", "dashboard"] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>

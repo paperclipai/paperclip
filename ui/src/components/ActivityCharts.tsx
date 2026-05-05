@@ -58,7 +58,9 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
 
 /* ---- Chart Components ---- */
 
-export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
+type RunChartPoint = { status: string; createdAt: Date | string };
+
+export function RunActivityChart({ runs }: { runs: RunChartPoint[] }) {
   const days = getLast14Days();
 
   const grouped = new Map<string, { succeeded: number; failed: number; other: number }>();
@@ -224,7 +226,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   );
 }
 
-export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
+export function SuccessRateChart({ runs }: { runs: RunChartPoint[] }) {
   const days = getLast14Days();
   const grouped = new Map<string, { succeeded: number; total: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, total: 0 });

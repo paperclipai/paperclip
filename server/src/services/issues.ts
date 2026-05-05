@@ -78,6 +78,7 @@ export interface IssueFilters {
   originId?: string;
   includeRoutineExecutions?: boolean;
   q?: string;
+  lean?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -638,7 +639,7 @@ export function issueService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, filters?: IssueFilters) => {
+    list: async (companyId: string, filters?: IssueFilters): Promise<any[]> => {
       const conditions = [eq(issues.companyId, companyId)];
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
@@ -727,6 +728,22 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
+      if (filters?.lean) {
+        return db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            priority: issues.priority,
+            assigneeAgentId: issues.assigneeAgentId,
+            parentId: issues.parentId,
+            updatedAt: issues.updatedAt,
+          })
+          .from(issues)
+          .where(and(...conditions))
+          .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
+      }
       const rows = await db
         .select()
         .from(issues)

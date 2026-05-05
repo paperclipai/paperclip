@@ -5,7 +5,7 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
-  it("refreshes touched inbox queries for issue activity", () => {
+  it("refreshes touched inbox queries for issue comments without refreshing all issues", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
       invalidateQueries: (input: unknown) => {
@@ -20,18 +20,82 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       {
         entityType: "issue",
         entityId: "issue-1",
+        action: "issue.comment_added",
         details: null,
       },
     );
 
-    expect(invalidations).toContainEqual({
-      queryKey: queryKeys.issues.listMineByMe("company-1"),
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
+    });
+  });
+
+  it("patches cached issue detail and list rows for issue updates", () => {
+    const invalidations: unknown[] = [];
+    const detailKey = queryKeys.issues.detail("issue-1");
+    const listKey = queryKeys.issues.list("company-1");
+    const detailIssue = {
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-759",
+      title: "Old title",
+      status: "todo",
+    };
+    const listIssue = { ...detailIssue };
+    const cache = new Map<string, unknown>([
+      [JSON.stringify(detailKey), detailIssue],
+      [JSON.stringify(listKey), [listIssue]],
+    ]);
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      setQueryData: (key: unknown, updater: (current: unknown) => unknown) => {
+        cache.set(JSON.stringify(key), updater(cache.get(JSON.stringify(key))));
+      },
+      setQueriesData: (_filters: unknown, updater: (current: unknown) => unknown) => {
+        cache.set(JSON.stringify(listKey), updater(cache.get(JSON.stringify(listKey))));
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.updated",
+        details: {
+          identifier: "PAP-759",
+          title: "New title",
+          status: "in_progress",
+          _previous: { title: "Old title", status: "todo" },
+        },
+      },
+    );
+
+    expect(cache.get(JSON.stringify(detailKey))).toMatchObject({
+      title: "New title",
+      status: "in_progress",
+    });
+    expect(cache.get(JSON.stringify(listKey))).toMatchObject([
+      {
+        title: "New title",
+        status: "in_progress",
+      },
+    ]);
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
     });
   });
 });

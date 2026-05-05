@@ -26,13 +26,31 @@ export interface LiveRunForIssue {
   issueId?: string | null;
 }
 
+export interface CompactHeartbeatRun {
+  id: string;
+  status: string;
+  createdAt: string;
+  agentId: string;
+  issueId: string | null;
+}
+
 export const heartbeatsApi = {
-  list: (companyId: string, agentId?: string, limit?: number) => {
+  list: (companyId: string, agentId?: string, limit?: number, opts?: { after?: string; compact?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
+    if (opts?.after) searchParams.set("after", opts.after);
+    if (opts?.compact) searchParams.set("compact", "1");
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`);
+  },
+  listCompact: (companyId: string, limit = 100, agentId?: string, after?: string) => {
+    const searchParams = new URLSearchParams();
+    searchParams.set("limit", String(limit));
+    searchParams.set("compact", "1");
+    if (agentId) searchParams.set("agentId", agentId);
+    if (after) searchParams.set("after", after);
+    return api.get<CompactHeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs?${searchParams.toString()}`);
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
   events: (runId: string, afterSeq = 0, limit = 200) =>

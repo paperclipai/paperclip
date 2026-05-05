@@ -7,6 +7,17 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  limit?: number;
+}
+
+function truncateDescription(details: Record<string, unknown> | null) {
+  if (!details || typeof details.description !== "string" || details.description.length <= 200) {
+    return details;
+  }
+  return {
+    ...details,
+    description: details.description.slice(0, 200),
+  };
 }
 
 export function activityService(db: Db) {
@@ -45,7 +56,13 @@ export function activityService(db: Db) {
           ),
         )
         .orderBy(desc(activityLog.createdAt))
-        .then((rows) => rows.map((r) => r.activityLog));
+        .limit(filters.limit ?? 200)
+        .then((rows) =>
+          rows.map((r) => ({
+            ...r.activityLog,
+            details: truncateDescription(r.activityLog.details as Record<string, unknown> | null),
+          })),
+        );
     },
 
     forIssue: (issueId: string) =>

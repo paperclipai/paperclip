@@ -14,6 +14,40 @@ export interface MemoryHealthResponse {
   generatedAt: string;
 }
 
+export interface MemoryDashboardResponse {
+  generatedAt: string;
+  source: { dbPath: string; healthUrl: string };
+  writesPerAgentPerDay: {
+    day: string;
+    total: number;
+    actors: { actorId: string; count: number }[];
+  }[];
+  recall: {
+    windowHours: number;
+    totalSearches: number;
+    hitSearches: number;
+    hitRate: number | null;
+    latencyMs: { p50: number | null; p95: number | null };
+  };
+  topRecalledMemoryKeys: {
+    available: boolean;
+    reason: string | null;
+    rows: { key: string; count: number }[];
+  };
+  health: {
+    pill: "green" | "yellow" | "red";
+    reason: string | null;
+    last: {
+      createdAt: string;
+      latencyMs: number;
+      status: string;
+      components: Record<string, unknown>;
+      error: string | null;
+    } | null;
+  };
+}
+
 export const instanceMemoryApi = {
   health: () => api.get<MemoryHealthResponse>("/instance/memory/health"),
+  dashboard: () => api.get<MemoryDashboardResponse>("/memory/dashboard"),
 };

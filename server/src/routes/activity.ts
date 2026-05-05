@@ -29,6 +29,14 @@ export function activityRoutes(db: Db) {
     return issueSvc.getById(rawId);
   }
 
+  function parseActivityLimit(raw: unknown) {
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (value == null || value === "") return 200;
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 200;
+    return Math.min(parsed, 200);
+  }
+
   router.get("/companies/:companyId/activity", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -38,6 +46,7 @@ export function activityRoutes(db: Db) {
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
+      limit: parseActivityLimit(req.query.limit),
     };
     const result = await svc.list(filters);
     res.json(result);

@@ -112,9 +112,9 @@ export function ActiveWorkWidget({ companyId }: ActiveWorkWidgetProps) {
   });
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
+    queryKey: [...queryKeys.issues.list(companyId), "active-work-lean"],
     queryFn: () =>
-      issuesApi.list(companyId, { status: "in_progress,todo,blocked" }),
+      issuesApi.list(companyId, { status: "in_progress,todo,blocked", lean: true }),
     enabled: !!companyId,
     refetchInterval: 30_000,
   });

@@ -26,6 +26,7 @@ import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { Chat } from "./pages/Chat";
 import { ChatThread } from "./pages/ChatThread";
+import { MemoryDashboard } from "./pages/MemoryDashboard";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanySkills } from "./pages/CompanySkills";
 import { CompanyExport } from "./pages/CompanyExport";
@@ -169,6 +170,7 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<Activity />} />
+      <Route path="memory" element={<MemoryDashboard />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -349,6 +351,7 @@ export function App() {
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="chat" element={<UnprefixedBoardRedirect />} />
           <Route path="chat/:threadId" element={<UnprefixedBoardRedirect />} />
+          <Route path="memory" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>

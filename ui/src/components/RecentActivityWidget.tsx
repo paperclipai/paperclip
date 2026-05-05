@@ -61,7 +61,7 @@ interface RecentActivityWidgetProps {
 export function RecentActivityWidget({ companyId }: RecentActivityWidgetProps) {
   const { data: events } = useQuery({
     queryKey: queryKeys.activity(companyId),
-    queryFn: () => activityApi.list(companyId),
+    queryFn: () => activityApi.list(companyId, { limit: 50 }),
     enabled: !!companyId,
     refetchInterval: 30_000,
   });

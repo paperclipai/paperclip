@@ -15,26 +15,31 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type IssueLean = Pick<
+  Issue,
+  "id" | "identifier" | "title" | "status" | "priority" | "assigneeAgentId" | "parentId" | "updatedAt"
+>;
+
+export interface IssueListFilters {
+  status?: string;
+  projectId?: string;
+  assigneeAgentId?: string;
+  participantAgentId?: string;
+  assigneeUserId?: string;
+  touchedByUserId?: string;
+  inboxArchivedByUserId?: string;
+  unreadForUserId?: string;
+  labelId?: string;
+  executionWorkspaceId?: string;
+  originKind?: string;
+  originId?: string;
+  includeRoutineExecutions?: boolean;
+  q?: string;
+  lean?: boolean;
+}
+
 export const issuesApi = {
-  list: (
-    companyId: string,
-    filters?: {
-      status?: string;
-      projectId?: string;
-      assigneeAgentId?: string;
-      participantAgentId?: string;
-      assigneeUserId?: string;
-      touchedByUserId?: string;
-      inboxArchivedByUserId?: string;
-      unreadForUserId?: string;
-      labelId?: string;
-      executionWorkspaceId?: string;
-      originKind?: string;
-      originId?: string;
-      includeRoutineExecutions?: boolean;
-      q?: string;
-    },
-  ) => {
+  list: (companyId: string, filters?: IssueListFilters) => {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
@@ -50,9 +55,12 @@ export const issuesApi = {
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
+    if (filters?.lean) params.set("lean", "1");
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
+  listLean: (companyId: string, filters?: IssueListFilters) =>
+    issuesApi.list(companyId, { ...filters, lean: true }) as Promise<IssueLean[]>,
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),

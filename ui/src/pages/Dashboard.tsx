@@ -112,8 +112,8 @@ export function Dashboard() {
   });
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "lean"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { lean: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -124,8 +124,8 @@ export function Dashboard() {
   });
 
   const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "compact"],
+    queryFn: () => heartbeatsApi.listCompact(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -156,6 +156,10 @@ export function Dashboard() {
     : 0;
   const agentWorkload = (data as { agentWorkload?: AgentWorkload } | undefined)?.agentWorkload
     ?? buildAgentWorkloadFallback(agents, issues);
+  const issueChartPoints = (issues ?? []).map((issue) => ({
+    ...issue,
+    createdAt: issue.createdAt ?? issue.updatedAt,
+  }));
 
   return (
     <div className="space-y-6">
@@ -269,10 +273,10 @@ export function Dashboard() {
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
             <ChartCard title="Issues by Priority" subtitle="Last 14 days">
-              <PriorityChart issues={issues ?? []} />
+              <PriorityChart issues={issueChartPoints} />
             </ChartCard>
             <ChartCard title="Issues by Status" subtitle="Last 14 days">
-              <IssueStatusChart issues={issues ?? []} />
+              <IssueStatusChart issues={issueChartPoints} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
               <SuccessRateChart runs={runs ?? []} />

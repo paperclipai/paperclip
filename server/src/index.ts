@@ -14,6 +14,7 @@ import {
   getPostgresDataDirectory,
   inspectMigrations,
   applyPendingMigrations,
+  backfillAllMigrationHistory,
   createEmbeddedPostgresLogBuffer,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
@@ -123,6 +124,25 @@ export async function startServer(): Promise<StartedServer> {
   ): Promise<MigrationSummary> {
     const autoApply = opts?.autoApply === true;
     let state = await inspectMigrations(connectionString);
+    if (process.env.MIGRATIONS_BACKFILL_ALL === "true") {
+      if (state.status === "upToDate") return "already applied";
+      if (state.tableCount === 0) {
+        throw new Error(
+          `${label} is empty; refusing MIGRATIONS_BACKFILL_ALL because it would mark migrations as applied without creating schema.`,
+        );
+      }
+
+      logger.warn(
+        { pendingMigrations: state.pendingMigrations },
+        `${label} is backfilling migration history without executing migrations because MIGRATIONS_BACKFILL_ALL=true`,
+      );
+      await backfillAllMigrationHistory(connectionString);
+      state = await inspectMigrations(connectionString);
+      if (state.status === "upToDate") return "already applied";
+      throw new Error(
+        `${label} migration history backfill did not clear pending migrations: ${formatPendingMigrationSummary(state.pendingMigrations)}`,
+      );
+    }
     if (state.status === "needsMigrations" && state.reason === "pending-migrations") {
       const repair = await reconcilePendingMigrationHistory(connectionString);
       if (repair.repairedMigrations.length > 0) {

@@ -159,6 +159,7 @@ export async function createApp(
   api.use(chatRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use("/instance/memory", instanceMemoryRoutes());
+  api.use("/memory", instanceMemoryRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);

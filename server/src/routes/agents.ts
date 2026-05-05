@@ -2099,8 +2099,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const limit = limitParam ? Math.max(1, Math.min(500, parseInt(limitParam, 10) || 100)) : 100;
+    const after = typeof req.query.after === "string" ? req.query.after : null;
+    const compact = req.query.compact === "1" || req.query.compact === "true";
+    const runs = await heartbeat.list(companyId, agentId, limit, { after, compact });
     res.json(runs);
   });
 

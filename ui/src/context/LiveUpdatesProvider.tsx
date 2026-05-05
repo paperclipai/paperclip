@@ -26,6 +26,34 @@ type LiveUpdatesSocketLike = {
   close: (code?: number, reason?: string) => void;
 };
 
+const ISSUE_PATCH_KEYS = new Set<keyof Issue>([
+  "projectId",
+  "projectWorkspaceId",
+  "goalId",
+  "parentId",
+  "title",
+  "description",
+  "status",
+  "priority",
+  "assigneeAgentId",
+  "assigneeUserId",
+  "checkoutRunId",
+  "executionRunId",
+  "executionAgentNameKey",
+  "executionLockedAt",
+  "requestDepth",
+  "billingCode",
+  "assigneeAdapterOverrides",
+  "executionWorkspaceId",
+  "executionWorkspacePreference",
+  "executionWorkspaceSettings",
+  "startedAt",
+  "completedAt",
+  "cancelledAt",
+  "hiddenAt",
+  "labelIds",
+]);
+
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -200,6 +228,50 @@ function buildIssueRefsForPayload(entityId: string, details: Record<string, unkn
   const identifier = readString(details?.identifier) ?? readString(details?.issueIdentifier);
   if (identifier) refs.add(identifier);
   return refs;
+}
+
+function issueMatchesRefs(issue: Issue, refs: Set<string>): boolean {
+  return refs.has(issue.id) || (!!issue.identifier && refs.has(issue.identifier));
+}
+
+function buildIssuePatch(details: Record<string, unknown> | null): Partial<Issue> | null {
+  if (!details) return null;
+  const patch: Partial<Issue> = {};
+
+  for (const [key, value] of Object.entries(details)) {
+    if (!ISSUE_PATCH_KEYS.has(key as keyof Issue)) continue;
+    (patch as Record<string, unknown>)[key] = value;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function applyIssuePatchToCachedQueries(
+  queryClient: QueryClient,
+  companyId: string,
+  refs: Set<string>,
+  patch: Partial<Issue>,
+) {
+  for (const ref of refs) {
+    queryClient.setQueryData<Issue | undefined>(queryKeys.issues.detail(ref), (current) => {
+      if (!current || !issueMatchesRefs(current, refs)) return current;
+      return { ...current, ...patch };
+    });
+  }
+
+  queryClient.setQueriesData<Issue[]>(
+    { queryKey: ["issues", companyId] },
+    (current) => {
+      if (!Array.isArray(current)) return current;
+      let changed = false;
+      const next = current.map((issue) => {
+        if (!issueMatchesRefs(issue, refs)) return issue;
+        changed = true;
+        return { ...issue, ...patch };
+      });
+      return changed ? next : current;
+    },
+  );
 }
 
 function overlaps(a: Set<string>, b: Set<string>): boolean {
@@ -487,26 +559,84 @@ function invalidateActivityQueries(
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
+  const action = readString(payload.action);
+  const details = readRecord(payload.details);
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     if (entityId) {
-      const details = readRecord(payload.details);
       const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
-      for (const ref of issueRefs) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
+      const refSet = new Set(issueRefs);
+      const patch = action === "issue.updated" ? buildIssuePatch(details) : null;
+
+      if (patch) {
+        applyIssuePatchToCachedQueries(queryClient, companyId, refSet, patch);
       }
+
+      for (const ref of issueRefs) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
+
+        if (!patch) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+        }
+
+        if (action === "issue.comment_added") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+        }
+
+        if (action === "issue.attachment_added" || action === "issue.attachment_removed") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref) });
+        }
+
+        if (
+          action === "issue.document_created" ||
+          action === "issue.document_updated" ||
+          action === "issue.document_restored" ||
+          action === "issue.document_deleted"
+        ) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref) });
+        }
+
+        if (
+          action === "issue.work_product_created" ||
+          action === "issue.work_product_updated" ||
+          action === "issue.work_product_deleted"
+        ) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(ref) });
+        }
+
+        if (action === "issue.approval_linked" || action === "issue.approval_unlinked") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(ref) });
+        }
+
+        if (
+          action === "issue.checked_out" ||
+          action === "issue.released" ||
+          details?.interruptedRunId
+        ) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
+        }
+
+        if (
+          action === "issue.read_marked" ||
+          action === "issue.read_unmarked" ||
+          action === "issue.inbox_archived" ||
+          action === "issue.inbox_unarchived"
+        ) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+        }
+      }
+    }
+
+    if (action === "issue.created" || action === "issue.deleted") {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     }
     return;
   }

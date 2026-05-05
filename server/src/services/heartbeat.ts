@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -256,6 +256,14 @@ const heartbeatRunListColumns = {
   contextSnapshot: heartbeatRuns.contextSnapshot,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+const compactHeartbeatRunListColumns = {
+  id: heartbeatRuns.id,
+  status: heartbeatRuns.status,
+  createdAt: heartbeatRuns.createdAt,
+  agentId: heartbeatRuns.agentId,
+  issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -3807,15 +3815,38 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      opts?: { after?: string | null; compact?: boolean },
+    ) => {
+      const conditions = [eq(heartbeatRuns.companyId, companyId)];
+      if (agentId) conditions.push(eq(heartbeatRuns.agentId, agentId));
+      if (opts?.after) {
+        const cursor = await db
+          .select({ createdAt: heartbeatRuns.createdAt })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, opts.after)))
+          .then((rows) => rows[0] ?? null);
+        if (cursor) {
+          conditions.push(lt(heartbeatRuns.createdAt, cursor.createdAt));
+        }
+      }
+
+      if (opts?.compact) {
+        return db
+          .select(compactHeartbeatRunListColumns)
+          .from(heartbeatRuns)
+          .where(and(...conditions))
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(limit ?? 100);
+      }
+
       const query = db
         .select(heartbeatRunListColumns)
         .from(heartbeatRuns)
-        .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
-        )
+        .where(and(...conditions))
         .orderBy(desc(heartbeatRuns.createdAt));
 
       const rows = limit ? await query.limit(limit) : await query;
