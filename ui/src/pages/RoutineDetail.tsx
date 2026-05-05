@@ -702,36 +702,44 @@ export function RoutineDetail() {
     <div className="max-w-2xl space-y-6">
       {/* Header: editable title + actions */}
       <div className="flex items-start gap-4">
-        <textarea
-          ref={titleInputRef}
-          className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-          placeholder="Routine title"
-          rows={1}
-          value={editDraft.title}
-          onChange={(event) => {
-            setEditDraft((current) => ({ ...current, title: event.target.value }));
-            autoResizeTextarea(event.target);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              descriptionEditorRef.current?.focus();
-              return;
-            }
-            if (event.key === "Tab" && !event.shiftKey) {
-              event.preventDefault();
-              if (editDraft.assigneeAgentId) {
-                if (editDraft.projectId) {
-                  descriptionEditorRef.current?.focus();
-                } else {
-                  projectSelectorRef.current?.focus();
-                }
-              } else {
-                assigneeSelectorRef.current?.focus();
+        <div className="min-w-0 flex-1 space-y-2">
+          <textarea
+            ref={titleInputRef}
+            className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+            placeholder="Routine title"
+            rows={1}
+            value={editDraft.title}
+            onChange={(event) => {
+              setEditDraft((current) => ({ ...current, title: event.target.value }));
+              autoResizeTextarea(event.target);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                descriptionEditorRef.current?.focus();
+                return;
               }
-            }
-          }}
-        />
+              if (event.key === "Tab" && !event.shiftKey) {
+                event.preventDefault();
+                if (editDraft.assigneeAgentId) {
+                  if (editDraft.projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
+                } else {
+                  assigneeSelectorRef.current?.focus();
+                }
+              }
+            }}
+          />
+          {routine.managedByPlugin ? (
+            <Badge variant="outline" className="gap-1 text-xs text-muted-foreground">
+              Managed by {routine.managedByPlugin.pluginDisplayName}
+              <span className="font-mono text-[10px]">{routine.managedByPlugin.resourceKey}</span>
+            </Badge>
+          ) : null}
+        </div>
         <div className="flex shrink-0 items-center gap-3 pt-1">
           <RunButton
             onClick={() => {

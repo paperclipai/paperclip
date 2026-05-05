@@ -58,6 +58,19 @@ export interface Routine {
   lastEnqueuedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  managedByPlugin?: RoutineManagedByPlugin | null;
+}
+
+export interface RoutineManagedByPlugin {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  pluginDisplayName: string;
+  resourceKind: "routine";
+  resourceKey: string;
+  defaultsJson: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface RoutineTrigger {

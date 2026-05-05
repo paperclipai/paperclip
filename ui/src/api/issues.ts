@@ -43,6 +43,7 @@ export const issuesApi = {
       workspaceId?: string;
       executionWorkspaceId?: string;
       originKind?: string;
+      originKindPrefix?: string;
       originId?: string;
       descendantOf?: string;
       includeRoutineExecutions?: boolean;
@@ -66,6 +67,7 @@ export const issuesApi = {
     if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");

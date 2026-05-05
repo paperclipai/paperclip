@@ -65,6 +65,7 @@ export { companySkills } from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
+export { pluginManagedResources } from "./plugin_managed_resources.js";
 export { pluginState } from "./plugin_state.js";
 export { pluginEntities } from "./plugin_entities.js";
 export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js";
