@@ -1,4 +1,13 @@
-import type { IssueOriginKind, RoutineVariableType } from "../constants.js";
+import type {
+  IssueOriginKind,
+  IssuePriority,
+  RoutineCatchUpPolicy,
+  RoutineConcurrencyPolicy,
+  RoutineStatus,
+  RoutineTriggerKind,
+  RoutineTriggerSigningMode,
+  RoutineVariableType,
+} from "../constants.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -50,6 +59,8 @@ export interface Routine {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;
@@ -71,6 +82,58 @@ export interface RoutineManagedByPlugin {
   defaultsJson: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface RoutineRevisionSnapshotRoutineV1 {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  goalId: string | null;
+  parentIssueId: string | null;
+  title: string;
+  description: string | null;
+  assigneeAgentId: string | null;
+  priority: IssuePriority;
+  status: RoutineStatus;
+  concurrencyPolicy: RoutineConcurrencyPolicy;
+  catchUpPolicy: RoutineCatchUpPolicy;
+  variables: RoutineVariable[];
+}
+
+export interface RoutineRevisionSnapshotTriggerV1 {
+  id: string;
+  kind: RoutineTriggerKind;
+  label: string | null;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string | null;
+  publicId: string | null;
+  signingMode: RoutineTriggerSigningMode | null;
+  replayWindowSec: number | null;
+}
+
+export interface RoutineRevisionSnapshotV1 {
+  version: 1;
+  routine: RoutineRevisionSnapshotRoutineV1;
+  triggers: RoutineRevisionSnapshotTriggerV1[];
+}
+
+export type RoutineRevisionSnapshot = RoutineRevisionSnapshotV1;
+
+export interface RoutineRevision {
+  id: string;
+  companyId: string;
+  routineId: string;
+  revisionNumber: number;
+  title: string;
+  description: string | null;
+  snapshot: RoutineRevisionSnapshot;
+  changeSummary: string | null;
+  restoredFromRevisionId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  createdAt: Date;
 }
 
 export interface RoutineTrigger {
