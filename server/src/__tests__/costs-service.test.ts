@@ -178,12 +178,12 @@ beforeEach(() => {
   mockIssueService.getById.mockResolvedValue({
     id: "issue-1",
     companyId: "company-1",
-    identifier: "PAP-1",
+    identifier: "PC1A2-1",
   });
   mockIssueService.getByIdentifier.mockResolvedValue({
     id: "issue-1",
     companyId: "company-1",
-    identifier: "PAP-1",
+    identifier: "PC1A2-1",
   });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
 });
@@ -227,10 +227,10 @@ describe("cost routes", () => {
 
   it("returns issue subtree cost summaries for issue refs", async () => {
     const app = await createApp();
-    const res = await request(app).get("/api/issues/PAP-1/cost-summary");
+    const res = await request(app).get("/api/issues/pc1a2-1/cost-summary");
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1");
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1");
     expect(mockCostService.issueTreeSummary).toHaveBeenCalledWith("company-1", "issue-1");
     expect(res.body).toEqual({
       issueId: "issue-1",
