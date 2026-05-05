@@ -364,7 +364,84 @@ export function rt2TaskRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const actorUserId = assertBoardActor(req);
-    res.status(201).json(await boardSvc.addAttachment(companyId, req.params.issueId as string, actorUserId, req.body));
+res.status(201).json(await boardSvc.addAttachment(companyId, req.params.issueId as string, actorUserId, req.body));
+  });
+
+  // Custom field routes
+  router.get("/companies/:companyId/rt2/work-board/custom-fields", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await boardSvc.getCustomFieldDefinitions(companyId));
+  });
+
+  router.post("/companies/:companyId/rt2/work-board/custom-fields", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    const { name, fieldType } = req.body;
+    res.status(201).json(await boardSvc.createCustomField(companyId, actorUserId, { name, fieldType }));
+  });
+
+  router.patch("/rt2/custom-fields/:fieldId", async (req, res) => {
+    const actorUserId = assertBoardActor(req);
+    const { fieldId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    res.json(await boardSvc.updateCustomField(companyId, fieldId, req.body));
+  });
+
+  router.delete("/rt2/custom-fields/:fieldId", async (req, res) => {
+    const actorUserId = assertBoardActor(req);
+    const { fieldId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    await boardSvc.deleteCustomField(companyId, fieldId);
+    res.status(204).send();
+  });
+
+  router.get("/rt2/custom-fields/:fieldId/options", async (req, res) => {
+    const { fieldId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    res.json(await boardSvc.getCustomFieldOptions(companyId, fieldId));
+  });
+
+  router.post("/rt2/custom-fields/:fieldId/options", async (req, res) => {
+    const actorUserId = assertBoardActor(req);
+    const { fieldId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    res.status(201).json(await boardSvc.createCustomFieldOption(companyId, fieldId, req.body));
+  });
+
+  router.delete("/rt2/custom-field-options/:optionId", async (req, res) => {
+    const actorUserId = assertBoardActor(req);
+    const { optionId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    await boardSvc.deleteCustomFieldOption(companyId, optionId);
+    res.status(204).send();
+  });
+
+  router.get("/companies/:companyId/rt2/work-board/cards/:issueId/custom-field-values", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const { issueId } = req.params;
+    const result = await boardSvc.getCardCustomFieldValues(companyId, [issueId]);
+    res.json(result.get(issueId) ?? []);
+  });
+
+  router.patch("/companies/:companyId/rt2/work-board/cards/:issueId/custom-field-values/:fieldId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    const { issueId, fieldId } = req.params;
+    res.json(await boardSvc.upsertCardCustomFieldValue(companyId, issueId, actorUserId, { fieldId, ...req.body }));
   });
 
   router.get("/companies/:companyId/rt2/capture-drafts", async (req, res) => {
