@@ -1,6 +1,11 @@
 import pc from "picocolors";
 import type { Command } from "commander";
-import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
+import {
+  getStoredBoardCredential,
+  loginBoardCli,
+  removeStoredBoardCredential,
+  resolveBoardAuthStorePath,
+} from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
@@ -76,13 +81,29 @@ export function resolveCommandContext(
   const api = new PaperclipApiClient({
     apiBase,
     apiKey,
-    recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
+    recoverAuth: explicitApiKey || !storedBoardCredential
       ? undefined
       : async ({ error }) => {
+          if (!shouldRecoverBoardAuth(error)) {
+            return null;
+          }
+          const staleCredential = isStaleBoardCredentialError(error);
+          if (staleCredential) {
+            removeStoredBoardCredential(apiBase);
+          }
           const requestedAccess = error.message.includes("Instance admin required")
             ? "instance_admin_required"
             : "board";
-          if (!shouldRecoverBoardAuth(error)) {
+          if (!canAttemptInteractiveBoardAuth()) {
+            if (staleCredential) {
+              throw new Error(
+                [
+                  `Removed stale board credential for ${apiBase} from ${resolveBoardAuthStorePath()}.`,
+                  "The current Paperclip instance rejected the cached token.",
+                  "Run `paperclipai auth login` in an interactive terminal if board access is needed.",
+                ].join("\n"),
+              );
+            }
             return null;
           }
           const login = await loginBoardCli({
@@ -104,9 +125,14 @@ export function resolveCommandContext(
 }
 
 function shouldRecoverBoardAuth(error: ApiRequestError): boolean {
+  if (isStaleBoardCredentialError(error)) return true;
+  return error.status === 403 && error.message.includes("Instance admin required");
+}
+
+function isStaleBoardCredentialError(error: ApiRequestError): boolean {
   if (error.status === 401) return true;
   if (error.status !== 403) return false;
-  return error.message.includes("Board access required") || error.message.includes("Instance admin required");
+  return error.message.includes("Board access required");
 }
 
 function canAttemptInteractiveBoardAuth(): boolean {

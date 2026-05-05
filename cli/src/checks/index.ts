@@ -8,6 +8,7 @@ export interface CheckResult {
 }
 
 export { agentJwtSecretCheck } from "./agent-jwt-secret-check.js";
+export { boardAuthCheck } from "./board-auth-check.js";
 export { configCheck } from "./config-check.js";
 export { deploymentAuthCheck } from "./deployment-auth-check.js";
 export { databaseCheck } from "./database-check.js";
