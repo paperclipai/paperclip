@@ -16,6 +16,7 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -46,6 +47,17 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const DEFAULT_STRANDED_RECOVERY_COOLDOWN_MS = 600_000;
+const MIN_STRANDED_RECOVERY_COOLDOWN_MS = 60_000;
+
+function readStrandedRecoveryCooldownMs(): number {
+  const raw = process.env.STRANDED_RECOVERY_COOLDOWN_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_STRANDED_RECOVERY_COOLDOWN_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_STRANDED_RECOVERY_COOLDOWN_MS;
+  if (parsed === 0) return 0;
+  return Math.max(MIN_STRANDED_RECOVERY_COOLDOWN_MS, parsed);
+}
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -331,6 +343,46 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function wasAssigneeRecentlyActive(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    cooldownMs: number,
+  ) {
+    if (cooldownMs <= 0) return false;
+    const cutoff = new Date(Date.now() - cooldownMs);
+    const [recentComment, recentSucceededRun] = await Promise.all([
+      db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.authorAgentId, agentId),
+            gt(issueComments.createdAt, cutoff),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "succeeded"),
+            gt(heartbeatRuns.finishedAt, cutoff),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return Boolean(recentComment || recentSucceededRun);
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -1597,9 +1649,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       escalated: 0,
+      cooldownSkipped: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+
+    const strandedRecoveryCooldownMs = readStrandedRecoveryCooldownMs();
 
     for (const issue of candidates) {
       const agentId = issue.assigneeAgentId;
@@ -1668,6 +1723,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (
+            await wasAssigneeRecentlyActive(
+              issue.companyId,
+              issue.id,
+              agentId,
+              strandedRecoveryCooldownMs,
+            )
+          ) {
+            result.cooldownSkipped += 1;
+            result.skipped += 1;
+            continue;
+          }
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -1723,6 +1790,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
+          if (
+            await wasAssigneeRecentlyActive(
+              issue.companyId,
+              issue.id,
+              agentId,
+              strandedRecoveryCooldownMs,
+            )
+          ) {
+            result.cooldownSkipped += 1;
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
@@ -1762,6 +1841,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (
+          await wasAssigneeRecentlyActive(
+            issue.companyId,
+            issue.id,
+            agentId,
+            strandedRecoveryCooldownMs,
+          )
+        ) {
+          result.cooldownSkipped += 1;
+          result.skipped += 1;
+          continue;
+        }
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,
