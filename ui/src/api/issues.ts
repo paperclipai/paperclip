@@ -46,6 +46,7 @@ export const issuesApi = {
       originKindPrefix?: string;
       originId?: string;
       descendantOf?: string;
+      needsBoard?: boolean;
       includeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       q?: string;
@@ -70,6 +71,7 @@ export const issuesApi = {
     if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+    if (filters?.needsBoard === true) params.set("needsBoard", "true");
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.q) params.set("q", filters.q);

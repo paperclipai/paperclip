@@ -178,6 +178,53 @@ export interface SuccessfulRunHandoffState {
   createdAt: Date | string | null;
 }
 
+export type IssueNeedsBoardReasonKind =
+  | "pending_approval"
+  | "pending_request_confirmation"
+  | "board_assignee_in_review"
+  | "board_execution_stage";
+
+export type IssueNeedsBoardActionType = "issue" | "approval" | "interaction";
+
+export interface IssueNeedsBoardAction {
+  type: IssueNeedsBoardActionType;
+  id: string;
+  href: string;
+}
+
+export interface IssueNeedsBoardReason {
+  kind: IssueNeedsBoardReasonKind;
+  label: string;
+  action: IssueNeedsBoardAction;
+  approvalId?: string;
+  interactionId?: string;
+  stageType?: IssueExecutionStageType | null;
+  userId?: string | null;
+}
+
+export interface IssueNeedsBoardImpactIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  href: string;
+}
+
+export interface IssueNeedsBoardParentLink {
+  id: string;
+  identifier: string | null;
+  title: string;
+  href: string;
+}
+
+export interface IssueNeedsBoardUnblockImpact {
+  directBlockedCount: number;
+  transitiveBlockedCount: number;
+  highestPriorityBlockedIssue: IssueNeedsBoardImpactIssue | null;
+  blockedParentLink: IssueNeedsBoardParentLink | null;
+}
+
 export interface IssueRelation {
   id: string;
   companyId: string;
@@ -341,6 +388,10 @@ export interface Issue {
   blockerAttention?: IssueBlockerAttention;
   productivityReview?: IssueProductivityReview | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  needsBoard?: boolean;
+  needsBoardActionable?: boolean;
+  needsBoardReasons?: IssueNeedsBoardReason[];
+  needsBoardUnblockImpact?: IssueNeedsBoardUnblockImpact | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;

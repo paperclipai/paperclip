@@ -237,7 +237,7 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-2 gap-1 sm:gap-2 lg:grid-cols-3 xl:grid-cols-5">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
@@ -260,6 +260,19 @@ export function Dashboard() {
                 <span>
                   {data.tasks.open} open{", "}
                   {data.tasks.blocked} blocked
+                </span>
+              }
+            />
+            <MetricCard
+              icon={ShieldCheck}
+              value={data.tasks.needsBoard ?? 0}
+              label="Needs Board"
+              to="/issues?needsBoard=true"
+              description={
+                <span>
+                  {(data.tasks.needsBoard ?? 0) > 0
+                    ? "Actionable board-owned waits"
+                    : "No open board-owned waits"}
                 </span>
               }
             />

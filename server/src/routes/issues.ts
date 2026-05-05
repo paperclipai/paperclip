@@ -1135,6 +1135,19 @@ export function issueRoutes(
     const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
       ? Number.parseInt(rawOffset, 10)
       : null;
+    const rawNeedsBoard = req.query.needsBoard as string | undefined;
+    let needsBoard: boolean | undefined;
+    if (rawNeedsBoard !== undefined) {
+      const normalizedNeedsBoard = rawNeedsBoard.trim().toLowerCase();
+      if (["1", "true", "yes", "on"].includes(normalizedNeedsBoard)) {
+        needsBoard = true;
+      } else if (["0", "false", "no", "off"].includes(normalizedNeedsBoard)) {
+        needsBoard = false;
+      } else {
+        res.status(400).json({ error: "needsBoard must be a boolean value" });
+        return;
+      }
+    }
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -1187,6 +1200,7 @@ export function issueRoutes(
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       q: req.query.q as string | undefined,
+      needsBoard,
       limit,
       offset,
     });
@@ -1280,6 +1294,7 @@ export function issueRoutes(
       relations,
       blockerAttention,
       productivityReview,
+      needsBoardProjection,
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
@@ -1292,6 +1307,16 @@ export function issueRoutes(
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+        (
+          typeof svc.listNeedsBoardProjections === "function"
+            ? svc.listNeedsBoardProjections(issue.companyId, [issue])
+            : Promise.resolve(new Map())
+        ).then((map) => map.get(issue.id) ?? {
+          needsBoard: false,
+          needsBoardActionable: false,
+          needsBoardReasons: [],
+          needsBoardUnblockImpact: null,
+        }),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
@@ -1306,6 +1331,10 @@ export function issueRoutes(
         status: issue.status,
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
+        needsBoard: needsBoardProjection.needsBoard,
+        needsBoardActionable: needsBoardProjection.needsBoardActionable,
+        needsBoardReasons: needsBoardProjection.needsBoardReasons,
+        needsBoardUnblockImpact: needsBoardProjection.needsBoardUnblockImpact,
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
@@ -1385,6 +1414,7 @@ export function issueRoutes(
       relations,
       blockerAttention,
       productivityReview,
+      needsBoardProjection,
       referenceSummary,
       successfulRunHandoffStates,
     ] = await Promise.all([
@@ -1395,6 +1425,16 @@ export function issueRoutes(
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+      (
+        typeof svc.listNeedsBoardProjections === "function"
+          ? svc.listNeedsBoardProjections(issue.companyId, [issue])
+          : Promise.resolve(new Map())
+      ).then((map) => map.get(issue.id) ?? {
+        needsBoard: false,
+        needsBoardActionable: false,
+        needsBoardReasons: [],
+        needsBoardUnblockImpact: null,
+      }),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
     ]);
@@ -1412,6 +1452,10 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      needsBoard: needsBoardProjection.needsBoard,
+      needsBoardActionable: needsBoardProjection.needsBoardActionable,
+      needsBoardReasons: needsBoardProjection.needsBoardReasons,
+      needsBoardUnblockImpact: needsBoardProjection.needsBoardUnblockImpact,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
       relatedWork: referenceSummary,

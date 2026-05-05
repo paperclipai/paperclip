@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+import { issueService } from "./issues.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -24,6 +25,7 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
 
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
+  const issuesSvc = issueService(db);
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -46,11 +48,14 @@ export function dashboardService(db: Db) {
         .where(eq(issues.companyId, companyId))
         .groupBy(issues.status);
 
-      const pendingApprovals = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(approvals)
-        .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
-        .then((rows) => Number(rows[0]?.count ?? 0));
+      const [pendingApprovals, needsBoardCount] = await Promise.all([
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(approvals)
+          .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+          .then((rows) => Number(rows[0]?.count ?? 0)),
+        issuesSvc.countNeedsBoard(companyId),
+      ]);
 
       const agentCounts: Record<string, number> = {
         active: 0,
@@ -142,7 +147,10 @@ export function dashboardService(db: Db) {
           paused: agentCounts.paused,
           error: agentCounts.error,
         },
-        tasks: taskCounts,
+        tasks: {
+          ...taskCounts,
+          needsBoard: needsBoardCount,
+        },
         costs: {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,

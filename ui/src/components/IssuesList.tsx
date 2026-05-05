@@ -3,7 +3,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
@@ -49,6 +49,7 @@ import {
   issueActivityText,
   issueTrailingColumns,
 } from "./IssueColumns";
+import { NeedsBoardReasonPill } from "./NeedsBoardReasonPill";
 import { StatusIcon } from "./StatusIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
@@ -65,6 +66,7 @@ import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
+import { timeAgo } from "../lib/timeAgo";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
@@ -109,7 +111,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 
 /* ── View state ── */
 
-export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type IssueSortField = "server" | "status" | "priority" | "title" | "created" | "updated" | "workflow";
 
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
@@ -150,6 +152,7 @@ function saveViewState(key: string, state: IssueViewState) {
 function getInitialViewState(
   key: string,
   initialAssignees?: string[],
+  initialNeedsBoardOnly?: boolean,
   defaultSortField?: IssueSortField,
 ): IssueViewState {
   const hasStored = hasStoredViewState(key);
@@ -157,11 +160,28 @@ function getInitialViewState(
   const base = !hasStored && defaultSortField
     ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
     : stored;
-  if (!initialAssignees) return base;
-  return {
+  const withAssignees = !initialAssignees ? base : {
     ...base,
     assignees: initialAssignees,
     statuses: [],
+  };
+  if (initialNeedsBoardOnly === undefined) return withAssignees;
+  return {
+    ...withAssignees,
+    needsBoardOnly: initialNeedsBoardOnly,
+    viewMode: "list",
+    sortField:
+      initialNeedsBoardOnly && withAssignees.sortField === "updated"
+        ? "server"
+        : !initialNeedsBoardOnly && withAssignees.sortField === "server"
+          ? "updated"
+          : withAssignees.sortField,
+    sortDir:
+      initialNeedsBoardOnly && withAssignees.sortField === "updated"
+        ? "asc"
+        : !initialNeedsBoardOnly && withAssignees.sortField === "server"
+          ? "desc"
+          : withAssignees.sortDir,
   };
 }
 
@@ -169,9 +189,10 @@ function getInitialWorkspaceViewState(
   key: string,
   initialAssignees?: string[],
   initialWorkspaces?: string[],
+  initialNeedsBoardOnly?: boolean,
   defaultSortField?: IssueSortField,
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
+  const stored = getInitialViewState(key, initialAssignees, initialNeedsBoardOnly, defaultSortField);
   if (!initialWorkspaces) return stored;
   return {
     ...stored,
@@ -216,6 +237,7 @@ function saveIssueColumns(key: string, columns: InboxIssueColumn[]) {
 }
 
 function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
+  if (state.sortField === "server") return [...issues];
   if (state.sortField === "workflow") {
     const ordered = workflowSort(issues);
     return state.sortDir === "desc" ? [...ordered].reverse() : ordered;
@@ -357,6 +379,7 @@ interface IssuesListProps {
   issueLinkState?: unknown;
   initialAssignees?: string[];
   initialWorkspaces?: string[];
+  initialNeedsBoardOnly?: boolean;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -377,6 +400,7 @@ interface IssuesListProps {
   issueBadgeById?: Map<string, string>;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
+  onNeedsBoardFilterChange?: (needsBoardOnly: boolean) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -569,6 +593,7 @@ export function IssuesList({
   issueLinkState,
   initialAssignees,
   initialWorkspaces,
+  initialNeedsBoardOnly,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -584,11 +609,13 @@ export function IssuesList({
   issueBadgeById,
   onLoadMoreIssues,
   onSearchChange,
+  onNeedsBoardFilterChange,
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
+  const navigate = useNavigate();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -610,9 +637,16 @@ export function IssuesList({
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
+  const initialNeedsBoardOnlyKey = initialNeedsBoardOnly ? "needs-board" : "all-issues";
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(
+      scopedKey,
+      initialAssignees,
+      initialWorkspaces,
+      initialNeedsBoardOnly,
+      defaultSortField,
+    ),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -629,14 +663,34 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
+  const prevViewStateContextKey = useRef(
+    `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialNeedsBoardOnlyKey}`,
+  );
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
+    const nextContextKey =
+      `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialNeedsBoardOnlyKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(
+        getInitialWorkspaceViewState(
+          scopedKey,
+          initialAssignees,
+          initialWorkspaces,
+          initialNeedsBoardOnly,
+          defaultSortField,
+        ),
+      );
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
+  }, [
+    scopedKey,
+    initialAssignees,
+    initialAssigneesKey,
+    initialNeedsBoardOnly,
+    initialNeedsBoardOnlyKey,
+    initialWorkspaces,
+    initialWorkspacesKey,
+    defaultSortField,
+  ]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -653,6 +707,26 @@ export function IssuesList({
       return next;
     });
   }, [scopedKey]);
+  const updateFilterState = useCallback((patch: Partial<IssueFilterState>) => {
+    const nextPatch: Partial<IssueViewState> = { ...patch };
+
+    if (patch.needsBoardOnly !== undefined && patch.needsBoardOnly !== viewState.needsBoardOnly) {
+      onNeedsBoardFilterChange?.(patch.needsBoardOnly);
+      nextPatch.viewMode = "list";
+
+      if (patch.needsBoardOnly) {
+        if (viewState.sortField === "updated") {
+          nextPatch.sortField = "server";
+          nextPatch.sortDir = "asc";
+        }
+      } else if (viewState.sortField === "server") {
+        nextPatch.sortField = "updated";
+        nextPatch.sortDir = "desc";
+      }
+    }
+
+    updateView(nextPatch);
+  }, [onNeedsBoardFilterChange, updateView, viewState.needsBoardOnly, viewState.sortField]);
 
   // Prune stale IDs from collapsedParents whenever the issue list changes.
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
@@ -666,10 +740,18 @@ export function IssuesList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issues]);
 
+  const requestFilters = useMemo<IssueListRequestFilters | undefined>(() => {
+    if (!searchFilters && !viewState.needsBoardOnly) return searchFilters;
+    return {
+      ...(searchFilters ?? {}),
+      needsBoard: searchFilters?.needsBoard ?? (viewState.needsBoardOnly ? true : undefined),
+    };
+  }, [searchFilters, viewState.needsBoardOnly]);
+
   const { data: searchedIssues = [] } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
-      searchFilters ?? {},
+      requestFilters ?? {},
       ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
@@ -678,7 +760,7 @@ export function IssuesList({
         q: normalizedIssueSearch,
         projectId,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
-        ...searchFilters,
+        ...requestFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
       }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
@@ -692,13 +774,13 @@ export function IssuesList({
         status,
         normalizedIssueSearch,
         projectId ?? "__all-projects__",
-        searchFilters ?? {},
+        requestFilters ?? {},
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
       ],
       queryFn: () =>
         issuesApi.list(selectedCompanyId!, {
-          ...searchFilters,
+          ...requestFilters,
           ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
           projectId,
           status,
@@ -1002,6 +1084,7 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const isNeedsBoardQueue = viewState.needsBoardOnly;
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -1268,9 +1351,13 @@ export function IssuesList({
               <List className="h-3.5 w-3.5" />
             </button>
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"} ${isNeedsBoardQueue ? "cursor-not-allowed opacity-50" : ""}`}
+              onClick={() => {
+                if (isNeedsBoardQueue) return;
+                updateView({ viewMode: "board" });
+              }}
+              title={isNeedsBoardQueue ? "Needs Board uses the queue list view" : "Board view"}
+              disabled={isNeedsBoardQueue}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1300,7 +1387,7 @@ export function IssuesList({
 
           <IssueFiltersPopover
             state={viewState}
-            onChange={updateView}
+            onChange={updateFilterState}
             activeFilterCount={activeFilterCount}
             agents={agents}
             creators={creatorOptions}
@@ -1323,6 +1410,7 @@ export function IssuesList({
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
+                    ["server", "Queue"],
                     ["workflow", "Workflow"],
                     ["status", "Status"],
                     ["priority", "Priority"],
@@ -1336,6 +1424,10 @@ export function IssuesList({
                         viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
                       }`}
                       onClick={() => {
+                        if (field === "server") {
+                          updateView({ sortField: field, sortDir: "asc" });
+                          return;
+                        }
                         if (viewState.sortField === field) {
                           updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
                         } else {
@@ -1548,6 +1640,69 @@ export function IssuesList({
                       {firstVisibleBlockerDisplayLabel}
                     </button>
                   ) : null;
+                  const needsBoardImpact = issue.needsBoardUnblockImpact ?? null;
+                  const blockedIssue = needsBoardImpact?.highestPriorityBlockedIssue ?? null;
+                  const blockedParentLink = needsBoardImpact?.blockedParentLink ?? null;
+                  const rowSecondaryMeta = isNeedsBoardQueue ? (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground">
+                        {issueFilterLabel(issue.priority)}
+                      </span>
+                      <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                        Updated {timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}
+                      </span>
+                      {(issue.needsBoardReasons ?? []).map((reason) => (
+                        <NeedsBoardReasonPill
+                          key={`${reason.kind}:${reason.action.id}`}
+                          reason={reason}
+                          onClick={() => navigate(reason.action.href)}
+                        />
+                      ))}
+                      {needsBoardImpact ? (
+                        <>
+                          <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                            {needsBoardImpact.directBlockedCount} direct blocked
+                          </span>
+                          <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                            {needsBoardImpact.transitiveBlockedCount} total blocked
+                          </span>
+                        </>
+                      ) : null}
+                      {blockedIssue ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-accent"
+                          title={blockedIssue.title}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            navigate(blockedIssue.href);
+                          }}
+                        >
+                          Impact: {blockedIssue.identifier ?? blockedIssue.title}
+                        </button>
+                      ) : null}
+                      {blockedParentLink ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-accent"
+                          title={blockedParentLink.title}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            navigate(blockedParentLink.href);
+                          }}
+                        >
+                          Parent: {blockedParentLink.identifier ?? blockedParentLink.title}
+                        </button>
+                      ) : null}
+                      {!needsBoardImpact || needsBoardImpact.transitiveBlockedCount === 0 ? (
+                        <span className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                          No blocked descendants
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : checklistDependencyChips;
 
                   return (
                     <div
@@ -1567,11 +1722,16 @@ export function IssuesList({
                         issueLinkState={issueLinkState}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
-                        checklistDependencyChips={checklistDependencyChips}
+                        checklistDependencyChips={rowSecondaryMeta}
                         checklistRowId={checklistRowId}
                         titleClassName={doneRowTitleClass}
                         titleSuffix={(
                           <>
+                            {!isNeedsBoardQueue && issue.needsBoard ? (
+                              <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                                Needs board
+                              </span>
+                            ) : null}
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
                                 ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
@@ -1644,7 +1804,11 @@ export function IssuesList({
                             />
                           </>
                         )}
-                        mobileMeta={issueActivityText(issue).toLowerCase()}
+                        mobileMeta={
+                          isNeedsBoardQueue
+                            ? `${issueFilterLabel(issue.priority)} · updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`
+                            : issueActivityText(issue).toLowerCase()
+                        }
                         desktopTrailing={(
                           visibleTrailingIssueColumns.length > 0 ? (
                             <InboxIssueTrailingColumns
