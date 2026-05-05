@@ -77,7 +77,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
-import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
@@ -904,6 +903,27 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
   );
 }
 
+async function copyTextWithFallback(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.select();
+    const success = document.execCommand("copy");
+    if (!success) throw new Error("execCommand copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -918,7 +938,7 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
+          void copyTextWithFallback(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
           });
@@ -1258,7 +1278,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
                 .filter((p): p is { type: "text"; text: string } => p.type === "text")
                 .map((p) => p.text)
                 .join("\n\n");
-              void navigator.clipboard.writeText(text).then(() => {
+              void copyTextWithFallback(text).then(() => {
                 setCopied(true);
                 setTimeout(() => setCopied(false), 2000);
               });
@@ -1441,7 +1461,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                   title="Copy message"
                   aria-label="Copy message"
                   onClick={() => {
-                    void navigator.clipboard.writeText(copyText).then(() => {
+                    void copyTextWithFallback(copyText).then(() => {
                       setCopied(true);
                       setTimeout(() => setCopied(false), 2000);
                     });
@@ -1485,7 +1505,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       onClick={() => {
-                        void navigator.clipboard.writeText(copyText);
+                        void copyTextWithFallback(copyText);
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
@@ -2133,7 +2153,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         },
       });
       queueViewportRestore(viewportSnapshot);
-      await appendPromise;
+      appendPromise;
       if (draftKey) clearDraft(draftKey);
       setComposerAttachments([]);
       setReassignTarget(effectiveSuggestedAssigneeValue);
@@ -2282,7 +2302,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        "relative rounded-md border border-border/70 bg-background/95 p-3.75 shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-backdrop-filter:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
       onDragEnterCapture={handleFileDragEnter}
@@ -2833,7 +2853,7 @@ export function IssueChatThread({
           <div
             ref={composerViewportAnchorRef}
             data-testid="issue-chat-composer-dock"
-            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-linear-to-t from-background via-background/95 to-background/0 pt-6"
           >
             <IssueChatComposer
               ref={composerRef}
