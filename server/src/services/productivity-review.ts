@@ -825,15 +825,24 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .limit(MAX_CANDIDATE_ISSUES);
     if (openReviews.length === 0) return 0;
 
+    const sourceIssueIds = [
+      ...new Set(openReviews.map((review) => review.originId).filter((id): id is string => Boolean(id))),
+    ];
+    const sourceIssues = sourceIssueIds.length > 0
+      ? await db
+        .select()
+        .from(issues)
+        .where(inArray(issues.id, sourceIssueIds))
+      : [];
+    const sourceIssueByKey = new Map(
+      sourceIssues.map((issue) => [`${issue.companyId}:${issue.id}`, issue]),
+    );
+
     const prefixCache = new Map<string, string>();
     let resolved = 0;
     for (const review of openReviews) {
       const sourceIssue = review.originId
-        ? await db
-          .select()
-          .from(issues)
-          .where(and(eq(issues.companyId, review.companyId), eq(issues.id, review.originId)))
-          .then((rows) => rows[0] ?? null)
+        ? sourceIssueByKey.get(`${review.companyId}:${review.originId}`) ?? null
         : null;
       if (isActionableSourceIssue(sourceIssue)) continue;
 
