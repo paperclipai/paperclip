@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { safeSymlink, type AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -46,7 +46,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await safeSymlink(source, target);
     return;
   }
 
@@ -61,7 +61,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === source) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await safeSymlink(source, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

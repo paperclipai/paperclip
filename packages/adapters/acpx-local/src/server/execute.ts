@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { safeSymlink, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -173,13 +173,13 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(resolvedSource, target);
+    await safeSymlink(resolvedSource, target);
     return;
   }
 
   if (!existing.isSymbolicLink()) {
     await fs.rm(target, { recursive: true, force: true });
-    await fs.symlink(resolvedSource, target);
+    await safeSymlink(resolvedSource, target);
     return;
   }
 
@@ -190,7 +190,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === resolvedSource) return;
 
   await fs.unlink(target);
-  await fs.symlink(resolvedSource, target);
+  await safeSymlink(resolvedSource, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

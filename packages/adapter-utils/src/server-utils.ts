@@ -4,6 +4,7 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { safeSymlink } from "./safe-symlink.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -1502,8 +1503,7 @@ export function writePaperclipSkillSyncPreference(
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = safeSymlink,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, safeSymlink, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -247,7 +247,7 @@ export async function ensureCodexSkillsInjected(
           if (linkSkill) {
             await linkSkill(entry.source, target);
           } else {
-            await fs.symlink(entry.source, target);
+            await safeSymlink(entry.source, target);
           }
           await onLog(
             "stdout",
