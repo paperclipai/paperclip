@@ -1,6 +1,17 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+export const ISSUE_EXPECTED_OUTPUT_VALUES = [
+  "published_report",
+  "github_issue",
+  "github_pr",
+  "eval_result",
+  "audit_brief",
+  "decision_memo",
+  "project_manifest",
+] as const;
+export type IssueExpectedOutput = (typeof ISSUE_EXPECTED_OUTPUT_VALUES)[number];
+
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
 

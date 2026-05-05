@@ -300,6 +300,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
+    requireOutputContracts: overrides.requireOutputContracts ?? false,
   };
 }
 

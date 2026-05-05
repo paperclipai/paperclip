@@ -825,6 +825,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             targetDate: null,
             color: declaration.color ?? null,
             env: null,
+            requireOutputContracts: false,
             pauseReason: null,
             pausedAt: null,
             executionWorkspacePolicy: null,

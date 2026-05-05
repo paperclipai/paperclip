@@ -284,6 +284,7 @@ const storybookProject: Project = {
   pauseReason: null,
   pausedAt: null,
   executionWorkspacePolicy: null,
+  requireOutputContracts: false,
   codebase: {
     workspaceId: "workspace-board-ui",
     repoUrl: "https://github.com/paperclipai/paperclip",

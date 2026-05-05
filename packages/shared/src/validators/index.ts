@@ -118,6 +118,7 @@ export {
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
+  agentMetadataSchema,
   updateAgentPermissionsSchema,
   type CreateAgent,
   type CreateAgentHire,
@@ -150,6 +151,8 @@ export {
 export {
   createIssueSchema,
   createChildIssueSchema,
+  parseIssueExpectedOutputContract,
+  ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT,
   createIssueLabelSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,

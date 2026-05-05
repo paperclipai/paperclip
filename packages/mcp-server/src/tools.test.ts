@@ -87,6 +87,38 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("rejects unsupported Expected output values before create issue requests", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    const response = await tool.execute({
+      title: "Route output",
+      description: "Expected output: issue_update\n\nUnsupported.",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("Unsupported Expected output");
+    expect(response.content[0]?.text).toContain("github_pr");
+    expect(response.content[0]?.text).toContain("project_manifest");
+  });
+
+  it("rejects unsupported Expected output values before update issue requests", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipUpdateIssue");
+    const response = await tool.execute({
+      issueId: "PAP-1135",
+      description: "Expected output: issue_update\n\nUnsupported.",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("Unsupported Expected output");
+    expect(response.content[0]?.text).toContain("github_pr");
+    expect(response.content[0]?.text).toContain("project_manifest");
+  });
+
   it("defaults issue document format to markdown", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ key: "plan", latestRevisionNumber: 2 }),
