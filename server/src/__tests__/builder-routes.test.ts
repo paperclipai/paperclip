@@ -18,6 +18,10 @@ const mockBuilderService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
   vi.doMock("../services/builder/index.js", () => ({
@@ -25,6 +29,9 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/activity-log.js", () => ({
     logActivity: mockLogActivity,
+  }));
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
   }));
 }
 
@@ -49,10 +56,16 @@ describe("builder routes", () => {
     vi.resetModules();
     vi.doUnmock("../services/builder/index.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      autoRestartDevServerWhenIdle: false,
+      builderEnabled: true,
+    });
     mockBuilderService.listSessions.mockResolvedValue([]);
     mockBuilderService.getSettings.mockResolvedValue(null);
     mockBuilderService.getToolCatalog.mockReturnValue({ tools: [] });
