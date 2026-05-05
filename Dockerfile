@@ -71,6 +71,8 @@ EXPOSE 3100
 
 # Entrypoint runs as root, fixes volume permissions, then drops to node via gosu
 # This ensures Claude Code runs as non-root while volume data is properly owned
+# Restore volume persistence for Railway/Docker
+VOLUME ["/paperclip"]
 
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+ENTRYPOINT ["/scripts/docker-entrypoint.sh"]
+CMD ["node", "dist/main.js", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
