@@ -5785,14 +5785,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
-      }
+      return {
+        stale: true,
+        errorCode: "issue_terminal_status",
+        reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
