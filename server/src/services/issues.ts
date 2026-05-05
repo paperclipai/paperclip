@@ -3374,7 +3374,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      resume: boolean | undefined = undefined,
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -3399,6 +3405,30 @@ export function issueService(db: Db) {
       }
 
       await clearExecutionRunIfTerminal(id);
+
+      const checkoutTarget = await db
+        .select({ status: issues.status, originKind: issues.originKind })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!checkoutTarget) throw notFound("Issue not found");
+
+      const isTerminalStatus =
+        checkoutTarget.status === "done" || checkoutTarget.status === "cancelled";
+      if (
+        isTerminalStatus &&
+        checkoutTarget.originKind === "routine_execution" &&
+        resume !== true
+      ) {
+        throw unprocessable(
+          "Terminal routine_execution issues cannot be checked out unless the request sets resume: true",
+          {
+            issueId: id,
+            status: checkoutTarget.status,
+            originKind: checkoutTarget.originKind,
+          },
+        );
+      }
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
