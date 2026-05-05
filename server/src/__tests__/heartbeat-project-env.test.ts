@@ -3,6 +3,7 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
+  partitionMentionedSkillIds,
   resolveExecutionRunAdapterConfig,
 } from "../services/heartbeat.ts";
 
@@ -81,6 +82,22 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `Duplicate mention [/release-changelog](${releaseHref})`,
       ]),
     ).toEqual(["skill-1", "skill-2"]);
+  });
+});
+
+describe("partitionMentionedSkillIds", () => {
+  it("separates UUID skill ids from slug mentions", () => {
+    const uuid = "123e4567-e89b-12d3-a456-426614174000";
+    expect(
+      partitionMentionedSkillIds([
+        uuid,
+        "paperclip-create-agent",
+        " Paperclip-Create-Agent ",
+      ]),
+    ).toEqual({
+      uuidSkillIds: [uuid],
+      slugSkillIds: ["paperclip-create-agent"],
+    });
   });
 });
 

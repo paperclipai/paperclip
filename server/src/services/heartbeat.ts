@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   isEnvironmentDriverSupportedForAdapter,
+  isUuidLike,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -291,6 +292,22 @@ export function extractMentionedSkillIdsFromSources(
   return [...mentionedIds];
 }
 
+export function partitionMentionedSkillIds(mentionedSkillIds: string[]): {
+  uuidSkillIds: string[];
+  slugSkillIds: string[];
+} {
+  const uuidSkillIds = mentionedSkillIds.filter((skillId) => isUuidLike(skillId));
+  const slugSkillIds = Array.from(
+    new Set(
+      mentionedSkillIds
+        .filter((skillId) => !isUuidLike(skillId))
+        .map((skillId) => skillId.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  return { uuidSkillIds, slugSkillIds };
+}
+
 export function applyRunScopedMentionedSkillKeys(
   config: Record<string, unknown>,
   skillKeys: string[],
@@ -364,21 +381,35 @@ async function resolveRunScopedMentionedSkillKeys(input: {
   ]);
   if (mentionedSkillIds.length === 0) return [];
 
+  const { uuidSkillIds: mentionedUuidSkillIds, slugSkillIds: mentionedSlugSkillIds } =
+    partitionMentionedSkillIds(mentionedSkillIds);
   const skillRows = await input.db
     .select({
       id: companySkillsTable.id,
+      slug: companySkillsTable.slug,
       key: companySkillsTable.key,
     })
     .from(companySkillsTable)
     .where(
       and(
         eq(companySkillsTable.companyId, input.companyId),
-        inArray(companySkillsTable.id, mentionedSkillIds),
+        or(
+          mentionedUuidSkillIds.length > 0
+            ? inArray(companySkillsTable.id, mentionedUuidSkillIds)
+            : sql`false`,
+          mentionedSlugSkillIds.length > 0
+            ? inArray(companySkillsTable.slug, mentionedSlugSkillIds)
+            : sql`false`,
+        ),
       ),
     );
   const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
+  const skillKeyBySlug = new Map(skillRows.map((row) => [row.slug, row.key]));
   return mentionedSkillIds
-    .map((skillId) => skillKeyById.get(skillId) ?? null)
+    .map((skillId) => {
+      if (isUuidLike(skillId)) return skillKeyById.get(skillId) ?? null;
+      return skillKeyBySlug.get(skillId.trim().toLowerCase()) ?? null;
+    })
     .filter((skillKey): skillKey is string => Boolean(skillKey));
 }
 
