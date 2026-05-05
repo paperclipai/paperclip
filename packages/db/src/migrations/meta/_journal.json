@@ -544,8 +544,15 @@
     {
       "idx": 77,
       "version": "7",
-      "when": 1777996928406,
-      "tag": "0077_parched_young_avengers",
+      "when": 1777933347806,
+      "tag": "0077_unusual_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1778001241820,
+      "tag": "0078_nosy_abomination",
       "breakpoints": true
     }
   ]
