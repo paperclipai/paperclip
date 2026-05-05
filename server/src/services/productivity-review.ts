@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -776,6 +777,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
           sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${issueThreadInteractions}
+            WHERE ${issueThreadInteractions.issueId} = ${issues.id}
+              AND ${issueThreadInteractions.kind} = 'request_confirmation'
+              AND ${issueThreadInteractions.status} = 'pending'
+          )`,
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))

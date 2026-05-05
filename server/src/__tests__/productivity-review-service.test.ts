@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -535,6 +536,69 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  it("skips in_progress issues with a pending request_confirmation interaction", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date("2026-04-28T00:00:00.000Z"),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Proceed with destructive migration?" },
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(0);
+  });
+
+  it("does not skip in_progress issues whose request_confirmation interaction is resolved", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date("2026-04-28T00:00:00.000Z"),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      kind: "request_confirmation",
+      status: "resolved",
+      resolvedAt: new Date("2026-04-28T06:00:00.000Z"),
+      payload: { version: 1, prompt: "Proceed with destructive migration?" },
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(1);
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
