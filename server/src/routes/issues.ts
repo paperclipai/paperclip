@@ -93,7 +93,7 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
-const OUTPUT_CONTRACT_EXECUTION_STATUSES = new Set(["todo", "in_progress", "in_review", "blocked"]);
+const OUTPUT_CONTRACT_EXECUTION_STATUSES = new Set(["todo", "in_progress", "in_review"]);
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -127,7 +127,7 @@ function withExpectedOutput<T extends { description?: string | null }>(issue: T)
 function readRequiresOutputContract(value: unknown) {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return record.requiresOutputContract === true || record.requireOutputContracts === true;
+  return record.requiresOutputContract === true;
 }
 
 async function assertExpectedOutputContractForIssue(input: {
@@ -135,7 +135,6 @@ async function assertExpectedOutputContractForIssue(input: {
   companyId: string;
   projectId: string | null | undefined;
   assigneeAgentId: string | null | undefined;
-  status: string | null | undefined;
   description: string | null | undefined;
   requirePolicyCheck: boolean;
 }) {
@@ -1922,7 +1921,6 @@ export function issueRoutes(
       companyId,
       projectId: req.body.projectId ?? null,
       assigneeAgentId: req.body.assigneeAgentId ?? null,
-      status: req.body.status ?? "backlog",
       description: req.body.description ?? null,
       requirePolicyCheck:
         Boolean(req.body.assigneeAgentId) ||
@@ -2027,7 +2025,6 @@ export function issueRoutes(
       companyId: parent.companyId,
       projectId: req.body.projectId ?? parent.projectId ?? null,
       assigneeAgentId: req.body.assigneeAgentId ?? null,
-      status: req.body.status ?? "backlog",
       description: req.body.description ?? null,
       requirePolicyCheck:
         Boolean(req.body.assigneeAgentId) ||
@@ -2184,7 +2181,6 @@ export function issueRoutes(
       companyId: existing.companyId,
       projectId: updateFields.projectId === undefined ? existing.projectId : updateFields.projectId,
       assigneeAgentId: requestedAssigneeAgentId,
-      status: finalStatus,
       description: updateFields.description === undefined ? existing.description : updateFields.description,
       requirePolicyCheck: requiresOutputContractPolicyCheck,
     });
@@ -3043,7 +3039,6 @@ export function issueRoutes(
       companyId: issue.companyId,
       projectId: issue.projectId,
       assigneeAgentId: req.body.agentId,
-      status: "in_progress",
       description: issue.description,
       requirePolicyCheck: true,
     });

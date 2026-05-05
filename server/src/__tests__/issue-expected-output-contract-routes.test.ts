@@ -333,6 +333,45 @@ describe("issue Expected output contract routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("ignores the company/project policy key when it appears in agent metadata", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent({
+      metadata: { requireOutputContracts: true },
+    }));
+    const created = makeIssue({
+      description: "No output contract.",
+      assigneeAgentId: agentId,
+    });
+    mockIssueService.create.mockResolvedValue(created);
+
+    const res = await withApi({}, (api) => api.post(`/api/companies/${companyId}/issues`).send({
+        title: "Implement the change",
+        description: "No output contract.",
+        status: "todo",
+        assigneeAgentId: agentId,
+      }));
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalled();
+  });
+
+  it("allows blocked issue creation without Expected output under company policy", async () => {
+    mockCompanyService.getById.mockResolvedValue(makeCompany({ requireOutputContracts: true }));
+    const created = makeIssue({
+      description: "Blocked on dependency.",
+      status: "blocked",
+    });
+    mockIssueService.create.mockResolvedValue(created);
+
+    const res = await withApi({}, (api) => api.post(`/api/companies/${companyId}/issues`).send({
+        title: "Blocked issue",
+        description: "Blocked on dependency.",
+        status: "blocked",
+      }));
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalled();
+  });
+
   it("rejects checkout before execution when a required issue is missing Expected output", async () => {
     const existing = makeIssue({
       description: "No output contract.",
