@@ -118,7 +118,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Globe,
   },
   picoclaw_local: {
-    label: "PicoClaw (local)",
+    label: "PicoClaw",
     description: "Run PicoClaw as a local agent",
     icon: Terminal,
   },
