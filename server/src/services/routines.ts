@@ -945,7 +945,11 @@ export function routineService(
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
-            originFingerprint: dispatchFingerprint,
+            // always_enqueue must bypass the open-execution uniqueness constraint.
+            // Using the run ID as originFingerprint guarantees uniqueness per dispatch.
+            originFingerprint: input.routine.concurrencyPolicy === "always_enqueue"
+              ? createdRun.id
+              : dispatchFingerprint,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
