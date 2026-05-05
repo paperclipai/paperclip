@@ -43,6 +43,7 @@ import {
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { checkVestigialIssue } from "./vestigial.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -1598,6 +1599,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       escalated: 0,
       skipped: 0,
+      vestigialSuppressed: 0,
       issueIds: [] as string[],
     };
 
@@ -1621,6 +1623,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
+        continue;
+      }
+
+      const vestigialResult = await checkVestigialIssue(db, issue);
+      if (vestigialResult) {
+        result.vestigialSuppressed = (result.vestigialSuppressed ?? 0) + 1;
+        result.issueIds.push(issue.id);
         continue;
       }
 
