@@ -232,11 +232,42 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   env: NodeJS.ProcessEnv,
 ) {
   if (target?.kind === "remote" && target.transport === "sandbox") {
+    await ensureSandboxCommandResolvable(command, target);
     return;
   }
   await ensureCommandResolvable(command, cwd, env, {
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+}
+
+async function ensureSandboxCommandResolvable(
+  command: string,
+  target: AdapterSandboxExecutionTarget,
+): Promise<void> {
+  // Probe whether the binary is resolvable inside the sandbox. We previously
+  // short-circuited this for sandbox targets, which let the caller report a
+  // success message even when the CLI was missing from the image. Now we run
+  // a real `command -v` through the same runner the hello probe will use, so
+  // the first step honestly reflects whether the binary is on PATH. The
+  // sandbox provider is responsible for sourcing login profiles (e2b mirrors
+  // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
+  const runner = requireSandboxRunner(target);
+  const probeScript = `command -v ${shellQuote(command)}`;
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c", probeScript],
+    cwd: target.remoteCwd,
+    timeoutMs: target.timeoutMs ?? 15_000,
+  });
+  if (result.timedOut) {
+    throw new Error(`Timed out checking command "${command}" on sandbox target.`);
+  }
+  if ((result.exitCode ?? 1) === 0) return;
+  const stderr = result.stderr.trim();
+  const detail = stderr.length > 0 ? ` (${stderr})` : "";
+  throw new Error(
+    `Command "${command}" is not installed or not on PATH in the sandbox environment${detail}.`,
+  );
 }
 
 export async function resolveAdapterExecutionTargetCommandForLogs(

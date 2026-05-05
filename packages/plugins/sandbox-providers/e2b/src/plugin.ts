@@ -148,8 +148,48 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function buildCommandLine(command: string, args: string[] = []) {
-  return `exec ${[command, ...args].map(shellQuote).join(" ")}`;
+function isValidShellEnvKey(value: string) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+// Mirror SSH's buildSshSpawnTarget: source the user's login profiles (and nvm)
+// before exec so commands run with the same PATH the user sees in an
+// interactive shell. e2b's `sandbox.commands.run` otherwise spawns a
+// non-login, non-interactive shell whose PATH does not include npm-globals,
+// nvm shims, or anything else the template installs via .profile/.bashrc —
+// which makes the hello probe fail with `exec: <cli>: not found` even when
+// the binary is on disk.
+function buildLoginShellScript(input: {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}): string {
+  const env = input.env ?? {};
+  for (const key of Object.keys(env)) {
+    if (!isValidShellEnvKey(key)) {
+      throw new Error(`Invalid sandbox environment variable key: ${key}`);
+    }
+  }
+  const envArgs = Object.entries(env)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  const commandParts = [shellQuote(input.command), ...input.args.map(shellQuote)].join(" ");
+  const execLine = envArgs.length > 0
+    ? `exec env ${envArgs.join(" ")} ${commandParts}`
+    : `exec ${commandParts}`;
+  return [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    // .bash_profile typically sources .bashrc itself; only source .bashrc
+    // directly when no .bash_profile exists to avoid re-running idempotency-
+    // sensitive setup (nvm, PATH prepends) twice on templates that wire
+    // .bash_profile -> .bashrc.
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
+    execLine,
+  ].join(" && ");
 }
 
 async function killSandboxBestEffort(sandbox: Sandbox, reason: string): Promise<void> {
@@ -351,7 +391,11 @@ const plugin = definePlugin({
 
     const config = parseDriverConfig(params.config);
     const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
-    const baseCommand = buildCommandLine(params.command, params.args);
+    const baseCommand = buildLoginShellScript({
+      command: params.command,
+      args: params.args ?? [],
+      env: params.env,
+    });
     const timeoutMs = params.timeoutMs ?? config.timeoutMs;
 
     // For commands with stdin, stage the payload to a temp file inside the
@@ -379,9 +423,11 @@ const plugin = definePlugin({
       : baseCommand;
 
     try {
+      // Env is interpolated into the script via `exec env KEY=val …` after
+      // profile sourcing so user-configured env wins over anything profiles
+      // export. No need to pass `envs:` separately.
       const result = await sandbox.commands.run(command, {
         cwd: params.cwd,
-        envs: params.env,
         timeoutMs,
       }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
         exitCode: number;
