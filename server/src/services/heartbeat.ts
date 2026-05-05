@@ -127,6 +127,7 @@ import {
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import { recoveryService } from "./recovery/service.js";
+import { checkVestigialIssue } from "./recovery/vestigial.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
@@ -4650,6 +4651,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+
+    if (issueId) {
+      const issueRecord = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (issueRecord) {
+        const vestigialDetection = await checkVestigialIssue(db, issueRecord);
+        if (vestigialDetection) {
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "vestigial_issue_detected",
+            stream: "system",
+            level: "warn",
+            message: `Vestigial issue suppressed before retry: ${vestigialDetection.reason}`,
+            payload: { issueId, ...vestigialDetection.details },
+          });
+          await issuesSvc.update(issueId, { status: "cancelled" });
+          return {
+            outcome: "not_scheduled" as const,
+            reason: `Vestigial issue: ${vestigialDetection.reason}`,
+            errorCode: "issue_cancelled" as const,
+            issueId,
+          };
+        }
+      }
+    }
+
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {

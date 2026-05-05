@@ -24,6 +24,9 @@ import {
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  projects,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -344,6 +347,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     await db.delete(agentWakeupRequests);
     await db.delete(budgetPolicies);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
       try {
@@ -354,6 +359,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
+    await db.delete(projects);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
       try {
@@ -2357,5 +2363,230 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("skips in_progress stranded issue recovery when assignee has an enabled future routine", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Nightly agent sweep",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      nextRunAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("in_progress");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("creates recovery for in_progress stranded issue when assignee routine trigger is disabled or past", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Expired routine",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: false,
+      nextRunAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("blocked");
+  });
+
+  it("creates recovery for in_progress stranded issue when assignee has no routines", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("blocked");
+  });
+
+
+  it("cancels vestigial issue with cancelled parent even when assignee has an enabled future routine", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Create a cancelled parent and link the stranded issue to it
+    const parentIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Cancelled parent",
+      status: "cancelled",
+      priority: "medium",
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+    });
+    await db.update(issues).set({ parentId: parentIssueId }).where(eq(issues.id, issueId));
+
+    // Give the assignee an enabled future routine
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Daily agent sweep",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      nextRunAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    // Dead work must be cancelled even when the agent has a live routine
+    expect(result.vestigialSuppressed).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("cancelled");
+  });
+
+  it("cancels vestigial issue superseded by a done issue", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Create a done issue that supersedes the stranded one
+    const supersederIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: supersederIssueId,
+      companyId,
+      title: "Superseding done issue",
+      status: "done",
+      priority: "medium",
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+    });
+    await db.update(issues).set({ supersededById: supersederIssueId }).where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.vestigialSuppressed).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("cancelled");
+  });
+
+  it("cancels vestigial issue when a duplicate with the same origin fingerprint is done", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Create a project to scope the fingerprint dedup, then set it on the stranded issue
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Dedup scope project",
+      status: "in_progress",
+    });
+    const fingerprint = "fingerprint-dupe-test";
+    await db.update(issues)
+      .set({ originFingerprint: fingerprint, projectId })
+      .where(eq(issues.id, issueId));
+
+    // Insert a done issue in the same (companyId, projectId) scope with the same fingerprint
+    const dupeIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: dupeIssueId,
+      companyId,
+      title: "Already done duplicate",
+      status: "done",
+      priority: "medium",
+      originFingerprint: fingerprint,
+      projectId,
+      issueNumber: 98,
+      identifier: `${issuePrefix}-98`,
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.vestigialSuppressed).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("cancelled");
   });
 });
