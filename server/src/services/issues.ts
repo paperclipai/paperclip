@@ -5589,15 +5589,25 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        const anchorCreatedAt =
+          anchor.createdAt instanceof Date
+            ? anchor.createdAt.toISOString()
+            : String(anchor.createdAt);
         conditions.push(
           order === "asc"
             ? or(
-                gt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+                gt(issueComments.createdAt, new Date(anchorCreatedAt)),
+                and(
+                  eq(issueComments.createdAt, new Date(anchorCreatedAt)),
+                  gt(issueComments.id, anchor.id),
+                ),
               )!
             : or(
-                lt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+                lt(issueComments.createdAt, new Date(anchorCreatedAt)),
+                and(
+                  eq(issueComments.createdAt, new Date(anchorCreatedAt)),
+                  lt(issueComments.id, anchor.id),
+                ),
               )!,
         );
       }
