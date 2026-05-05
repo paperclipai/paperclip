@@ -221,8 +221,10 @@ export function builderRoutes(db: Db) {
       assertBoardActor(req);
       const aborted = await svc.abortSession(companyId, sessionId);
       if (!aborted) throw notFound("Session not found");
+      res.json({ session: aborted });
+      // Best-effort activity log — never fail the abort because of logging
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      logActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -232,8 +234,9 @@ export function builderRoutes(db: Db) {
         entityType: "builder_session",
         entityId: sessionId,
         details: null,
-      });
-      res.json({ session: aborted });
+      }).catch((logErr) =>
+        logger.warn({ logErr, sessionId }, "builder abort: activity log failed"),
+      );
     },
   );
 
