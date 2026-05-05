@@ -1273,6 +1273,15 @@ function didAutomaticRecoveryFail(
   );
 }
 
+function didAutomaticRecoveryAttempt(
+  latestRun: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
+) {
+  if (!latestRun) return false;
+  const latestContext = parseObject(latestRun.contextSnapshot);
+  return readNonEmptyString(latestContext.retryReason) === expectedRetryReason;
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -8375,10 +8384,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const issueNeedsImmediateRecovery =
-        (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        (
+          (
+            issue.status === "todo" &&
+            (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled")
+          ) ||
+          (
+            issue.status === "in_progress" &&
+            isHeartbeatRunTerminalStatus(run.status)
+          )
+        );
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
@@ -8413,10 +8430,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const expectedRetryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
-        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+        (issue.status === "todo"
+          ? didAutomaticRecoveryFail(run, expectedRetryReason)
+          : didAutomaticRecoveryAttempt(run, expectedRetryReason));
       if (shouldBlockImmediately) {
         const comment = buildImmediateExecutionPathRecoveryComment({
           status: issue.status as "todo" | "in_progress",
@@ -8430,7 +8450,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
+      const retryReason = expectedRetryReason;
       const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
       const recoverySource =
         issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
