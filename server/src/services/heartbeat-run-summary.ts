@@ -99,10 +99,24 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  return (
+  const summary = (
     readCommentText(resultJson.summary)
     ?? readCommentText(resultJson.result)
     ?? readCommentText(resultJson.message)
     ?? null
   );
+  if (!summary) {
+    return null;
+  }
+
+  return [
+    "当前结论：IN_PROGRESS。本轮 heartbeat run 已完成，下面附上运行摘要。",
+    "当前执行 owner：当前 issue assignee。",
+    "当前 gate：issue follow-up / run summary review。",
+    "下一步动作：根据下面的运行摘要继续处理当前 issue；如需继续执行，再显式更新 issue 状态并重新触发。",
+    "完成后回到：当前 issue assignee。",
+    "",
+    "**运行摘要**",
+    summary,
+  ].join("\n");
 }

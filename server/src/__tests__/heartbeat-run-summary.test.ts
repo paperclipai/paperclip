@@ -45,19 +45,24 @@ describe("summarizeHeartbeatRunResultJson", () => {
 });
 
 describe("buildHeartbeatRunIssueComment", () => {
-  it("uses the final summary text for issue comments on successful runs", () => {
+  it("wraps the final summary text in the structured machine-authored comment format", () => {
     const comment = buildHeartbeatRunIssueComment({
       summary: "## Summary\n\n- fixed deploy config\n- posted issue update",
     });
 
+    expect(comment).toContain("当前结论：IN_PROGRESS");
+    expect(comment).toContain("当前执行 owner：");
+    expect(comment).toContain("当前 gate：");
+    expect(comment).toContain("下一步动作：");
+    expect(comment).toContain("完成后回到：");
+    expect(comment).toContain("**运行摘要**");
     expect(comment).toContain("## Summary");
     expect(comment).toContain("- fixed deploy config");
-    expect(comment).not.toContain("Run summary");
   });
 
   it("falls back to result or message when summary is missing", () => {
-    expect(buildHeartbeatRunIssueComment({ result: "done" })).toBe("done");
-    expect(buildHeartbeatRunIssueComment({ message: "completed" })).toBe("completed");
+    expect(buildHeartbeatRunIssueComment({ result: "done" })).toContain("done");
+    expect(buildHeartbeatRunIssueComment({ message: "completed" })).toContain("completed");
   });
 
   it("returns null when there is no usable final text", () => {
@@ -77,7 +82,7 @@ describe("mergeHeartbeatRunResultJson", () => {
       stderr: "",
       summary: "## Summary\n\n1. first thing\n2. second thing",
     });
-    expect(buildHeartbeatRunIssueComment(merged)).toBe("## Summary\n\n1. first thing\n2. second thing");
+    expect(buildHeartbeatRunIssueComment(merged)).toContain("## Summary\n\n1. first thing\n2. second thing");
   });
 
   it("creates a result payload when only a summary exists", () => {
