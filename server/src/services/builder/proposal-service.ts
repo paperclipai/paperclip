@@ -60,6 +60,8 @@ export function proposalService(db: Db) {
 
       try {
         const result = await tool.apply(proposal.payload, ctx);
+        const applied = await store.markApplied(proposalId, decidedByUserId, null);
+        // Best-effort activity log — never fail the apply because of logging
         await logActivity(db, {
           companyId,
           actorType: "user",
@@ -74,8 +76,10 @@ export function proposalService(db: Db) {
             summary: result.summary,
             ...(result.details ?? {}),
           },
-        });
-        return store.markApplied(proposalId, decidedByUserId, null);
+        }).catch((logErr) =>
+          logger.warn({ logErr, proposalId }, "builder apply: activity log failed"),
+        );
+        return applied;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "Apply failed";
         logger.warn(

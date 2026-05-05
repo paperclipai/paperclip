@@ -560,6 +560,19 @@ const setBudget: BuilderTool = defineMutationTool({
     )}¢`;
   },
   async apply(payload, ctx) {
+    // Verify scopeId ownership for agent/project budgets to prevent cross-company IDOR
+    if (payload.scopeType === "agent") {
+      const agent = await agentService(ctx.db).getById(String(payload.scopeId));
+      if (!agent || agent.companyId !== ctx.companyId) {
+        throw new Error("Agent not found");
+      }
+    }
+    if (payload.scopeType === "project") {
+      const project = await projectService(ctx.db).getById(String(payload.scopeId));
+      if (!project || project.companyId !== ctx.companyId) {
+        throw new Error("Project not found");
+      }
+    }
     const updated = await budgetService(ctx.db).upsertPolicy(
       ctx.companyId,
       {
