@@ -684,6 +684,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return `${value.slice(value.length - maxChars)}\n[truncated earlier evidence]`;
   }
 
+  /**
+   * Run logs are NDJSON (anchor + stream lines). Secret scanners match decoded transcript text;
+   * wire-form JSON escaping prevents reliable matches across the full raw tail.
+   */
+  function extractRunLogStreamChunksForEvidence(rawTail: string): string {
+    const chunks: string[] = [];
+    for (const line of rawTail.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let row: unknown;
+      try {
+        row = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (!row || typeof row !== "object") continue;
+      const rec = row as { kind?: unknown; stream?: unknown; chunk?: unknown };
+      if (rec.kind === "run_bound") continue;
+      if (typeof rec.chunk !== "string" || !rec.chunk) continue;
+      if (
+        rec.stream !== undefined &&
+        rec.stream !== "stdout" &&
+        rec.stream !== "stderr" &&
+        rec.stream !== "system"
+      ) {
+        continue;
+      }
+      chunks.push(rec.chunk);
+    }
+    return chunks.join("\n");
+  }
+
   async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
     if (!run.logStore || !run.logRef || !run.logBytes) return "";
     try {
@@ -788,7 +820,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : Promise.resolve([]),
     ]);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const safeTail = truncateEvidenceText(redactWatchdogEvidenceText(tail, currentUserRedactionOptions));
+    const decodedChunks = extractRunLogStreamChunksForEvidence(tail);
+    const redactionSource = decodedChunks.trim().length > 0 ? decodedChunks : tail;
+    const safeTail = truncateEvidenceText(
+      redactWatchdogEvidenceText(redactionSource, currentUserRedactionOptions),
+    );
     const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
     return {
       safeTail,
