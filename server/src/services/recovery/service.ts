@@ -1791,11 +1791,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         // Startup recovery: this in_progress issue has no live execution path (no run, checkout, or execution
         // run ID) — the 1-2 May incident produced 59 issues in this state after SIGTERM without drain.
         // Reset to todo so the assigned agent picks it up on the next heartbeat rather than leaving it stranded.
-        const reset = await issuesSvc.update(issue.id, {
-          status: "todo",
-          comment: "Startup recovery: reset to `todo` — issue was `in_progress` with no live execution path, likely orphaned by a previous unclean shutdown.",
-        });
+        const reset = await issuesSvc.update(issue.id, { status: "todo" });
         if (reset) {
+          await issuesSvc.addComment(
+            issue.id,
+            "Startup recovery: reset to `todo` — issue was `in_progress` with no live execution path, likely orphaned by a previous unclean shutdown.",
+            {},
+          );
           result.inProgressResetToTodo += 1;
           result.issueIds.push(issue.id);
         } else {
