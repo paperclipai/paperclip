@@ -5785,12 +5785,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      return {
-        stale: true,
-        errorCode: "issue_terminal_status",
-        reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-        details: { issueId, currentStatus: issue.status },
-      };
+      // Promoted deferred wakes were legitimately queued while the issue was active;
+      // they deliver the comment without reopening the issue, so let them through.
+      if (!context.promotedFromDeferredWake) {
+        return {
+          stale: true,
+          errorCode: "issue_terminal_status",
+          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+          details: { issueId, currentStatus: issue.status },
+        };
+      }
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -7938,7 +7942,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           continue;
         }
 
-        const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
+        const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed, promotedFromDeferredWake: true };
         if (activePauseHold) {
           promotedContextSeed.treeHoldInteraction = true;
           promotedContextSeed.activeTreeHold = {
