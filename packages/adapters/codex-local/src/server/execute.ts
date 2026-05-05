@@ -45,6 +45,7 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -374,6 +375,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           target: executionTarget,
           adapterKey: "codex",
           workspaceLocalDir: cwd,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
           assets: [
             {
               key: "home",

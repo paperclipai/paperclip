@@ -11,6 +11,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -18,6 +19,7 @@ import {
 import path from "node:path";
 import os from "node:os";
 import { parseCodexJsonl } from "./parse.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -104,6 +106,15 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "codex",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({

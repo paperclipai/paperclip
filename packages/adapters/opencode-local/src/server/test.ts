@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
@@ -19,6 +20,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -136,6 +138,15 @@ export async function testEnvironment(
         detail: command,
       });
     } else {
+      const installCheck = await maybeRunSandboxInstallCommand({
+        runId,
+        target,
+        adapterKey: "opencode",
+        installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+        env,
+      });
+      if (installCheck) checks.push(installCheck);
       try {
         await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
         checks.push({
