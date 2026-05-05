@@ -10,6 +10,9 @@ import {
   rt2WorkBoardAttachments,
   rt2WorkBoardCards,
   rt2WorkBoardChecklistItems,
+  rt2WorkBoardCustomFields,
+  rt2WorkBoardCustomFieldOptions,
+  rt2WorkBoardCardCustomFieldValues,
 } from "@paperclipai/db";
 import {
   buildOneLinerTaskDescription,
@@ -31,6 +34,9 @@ import {
   type UpdateRt2BoardChecklistItem,
   type Rt2BoardCardLabel,
   type Rt2BoardCardMember,
+  type Rt2CustomFieldDefinition,
+  type Rt2CustomFieldValue,
+  type Rt2CustomFieldType,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { issueService } from "./issues.js";
@@ -44,6 +50,9 @@ type CardRow = typeof rt2WorkBoardCards.$inferSelect;
 type CaptureRow = typeof rt2CaptureDrafts.$inferSelect;
 type CaptureRevisionRow = typeof rt2CaptureDraftRevisions.$inferSelect;
 type CaptureSourceRow = typeof rt2CaptureSources.$inferSelect;
+type CustomFieldRow = typeof rt2WorkBoardCustomFields.$inferSelect;
+type CustomFieldOptionRow = typeof rt2WorkBoardCustomFieldOptions.$inferSelect;
+type CustomFieldValueRow = typeof rt2WorkBoardCardCustomFieldValues.$inferSelect;
 
 const CAPTURE_SOURCE_LABELS = {
   web: "Web",
@@ -1120,6 +1129,169 @@ export function rt2WorkBoardService(db: Db) {
         .where(eq(rt2CaptureDrafts.id, row.id))
         .returning();
       return toCaptureDraft(updated, latest);
+    },
+
+    getCustomFieldDefinitions: async (companyId: string): Promise<Rt2CustomFieldDefinition[]> => {
+      const fieldRows = await db
+        .select()
+        .from(rt2WorkBoardCustomFields)
+        .where(eq(rt2WorkBoardCustomFields.companyId, companyId))
+        .orderBy(rt2WorkBoardCustomFields.position);
+      const optionRows = await db
+        .select()
+        .from(rt2WorkBoardCustomFieldOptions)
+        .where(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId))
+        .orderBy(rt2WorkBoardCustomFieldOptions.position);
+      const optionsByField = new Map<string, { id: string; label: string; position: number }[]>();
+      for (const row of optionRows) {
+        const bucket = optionsByField.get(row.fieldId) ?? [];
+        bucket.push({ id: row.id, label: row.label, position: row.position });
+        optionsByField.set(row.fieldId, bucket);
+      }
+      return fieldRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        fieldType: row.fieldType as Rt2CustomFieldType,
+        position: row.position,
+        options: optionsByField.get(row.id) ?? [],
+      }));
+    },
+
+    createCustomField: async (companyId: string, actorUserId: string, input: { name: string; fieldType: Rt2CustomFieldType }) => {
+      const [{ nextPosition }] = await db
+        .select({ nextPosition: sql<number>`coalesce(max(${rt2WorkBoardCustomFields.position}), -1) + 1` })
+        .from(rt2WorkBoardCustomFields)
+        .where(eq(rt2WorkBoardCustomFields.companyId, companyId));
+      const [row] = await db
+        .insert(rt2WorkBoardCustomFields)
+        .values({ companyId, name: input.name, fieldType: input.fieldType, position: nextPosition, createdByUserId: actorUserId })
+        .returning();
+      return { id: row.id, name: row.name, fieldType: row.fieldType as Rt2CustomFieldType, position: row.position, options: [] };
+    },
+
+    updateCustomField: async (companyId: string, fieldId: string, input: { name?: string; fieldType?: Rt2CustomFieldType; position?: number }) => {
+      const [row] = await db
+        .update(rt2WorkBoardCustomFields)
+        .set({ name: input.name, fieldType: input.fieldType, position: input.position, updatedAt: new Date() })
+        .where(and(eq(rt2WorkBoardCustomFields.companyId, companyId), eq(rt2WorkBoardCustomFields.id, fieldId)))
+        .returning();
+      if (!row) throw notFound("Custom field not found");
+      const optionRows = await db
+        .select()
+        .from(rt2WorkBoardCustomFieldOptions)
+        .where(and(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId), eq(rt2WorkBoardCustomFieldOptions.fieldId, fieldId)))
+        .orderBy(rt2WorkBoardCustomFieldOptions.position);
+      return {
+        id: row.id,
+        name: row.name,
+        fieldType: row.fieldType as Rt2CustomFieldType,
+        position: row.position,
+        options: optionRows.map((o) => ({ id: o.id, label: o.label, position: o.position })),
+      };
+    },
+
+    deleteCustomField: async (companyId: string, fieldId: string) => {
+      await db
+        .delete(rt2WorkBoardCustomFieldOptions)
+        .where(and(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId), eq(rt2WorkBoardCustomFieldOptions.fieldId, fieldId)));
+      await db
+        .delete(rt2WorkBoardCardCustomFieldValues)
+        .where(and(eq(rt2WorkBoardCardCustomFieldValues.companyId, companyId), eq(rt2WorkBoardCardCustomFieldValues.fieldId, fieldId)));
+      await db
+        .delete(rt2WorkBoardCustomFields)
+        .where(and(eq(rt2WorkBoardCustomFields.companyId, companyId), eq(rt2WorkBoardCustomFields.id, fieldId)));
+    },
+
+    getCustomFieldOptions: async (companyId: string, fieldId: string) => {
+      const rows = await db
+        .select()
+        .from(rt2WorkBoardCustomFieldOptions)
+        .where(and(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId), eq(rt2WorkBoardCustomFieldOptions.fieldId, fieldId)))
+        .orderBy(rt2WorkBoardCustomFieldOptions.position);
+      return rows.map((row) => ({ id: row.id, label: row.label, position: row.position }));
+    },
+
+    createCustomFieldOption: async (companyId: string, fieldId: string, input: { label: string }) => {
+      const [{ nextPosition }] = await db
+        .select({ nextPosition: sql<number>`coalesce(max(${rt2WorkBoardCustomFieldOptions.position}), -1) + 1` })
+        .from(rt2WorkBoardCustomFieldOptions)
+        .where(and(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId), eq(rt2WorkBoardCustomFieldOptions.fieldId, fieldId)));
+      const [row] = await db
+        .insert(rt2WorkBoardCustomFieldOptions)
+        .values({ companyId, fieldId, label: input.label, position: nextPosition })
+        .returning();
+      return { id: row.id, label: row.label, position: row.position };
+    },
+
+    deleteCustomFieldOption: async (companyId: string, optionId: string) => {
+      await db
+        .delete(rt2WorkBoardCustomFieldOptions)
+        .where(and(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId), eq(rt2WorkBoardCustomFieldOptions.id, optionId)));
+    },
+
+    getCardCustomFieldValues: async (companyId: string, issueIds: string[]): Promise<Map<string, Rt2CustomFieldValue[]>> => {
+      if (issueIds.length === 0) return new Map();
+      const valueRows = await db
+        .select()
+        .from(rt2WorkBoardCardCustomFieldValues)
+        .where(and(eq(rt2WorkBoardCardCustomFieldValues.companyId, companyId), inArray(rt2WorkBoardCardCustomFieldValues.issueId, issueIds)));
+      const fieldRows = await db
+        .select()
+        .from(rt2WorkBoardCustomFields)
+        .where(eq(rt2WorkBoardCustomFields.companyId, companyId));
+      const optionRows = await db
+        .select()
+        .from(rt2WorkBoardCustomFieldOptions)
+        .where(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId));
+      const fieldById = new Map(fieldRows.map((f) => [f.id, f]));
+      const optionsByFieldId = new Map<string, Map<string, string>>();
+      for (const o of optionRows) {
+        const bucket = optionsByFieldId.get(o.fieldId) ?? new Map();
+        bucket.set(o.id, o.label);
+        optionsByFieldId.set(o.fieldId, bucket);
+      }
+      const result = new Map<string, Rt2CustomFieldValue[]>();
+      for (const row of valueRows) {
+        const field = fieldById.get(row.fieldId);
+        if (!field) continue;
+        const bucket = result.get(row.issueId) ?? [];
+        const optionLabels = optionsByFieldId.get(row.fieldId);
+        bucket.push({
+          fieldId: row.fieldId,
+          fieldName: field.name,
+          fieldType: field.fieldType as Rt2CustomFieldType,
+          textValue: row.textValue ?? null,
+          numberValue: row.numberValue ?? null,
+          dateValue: row.dateValue ? new Date(row.dateValue).toISOString() : null,
+          optionId: row.optionId ?? null,
+          optionLabel: row.optionId ? (optionLabels?.get(row.optionId) ?? null) : null,
+        });
+        result.set(row.issueId, bucket);
+      }
+      return result;
+    },
+
+    upsertCardCustomFieldValue: async (companyId: string, issueId: string, actorUserId: string, input: { fieldId: string; textValue?: string | null; numberValue?: number | null; dateValue?: string | null; optionId?: string | null }) => {
+      await ensureCard(companyId, issueId, actorUserId);
+      const [row] = await db
+        .insert(rt2WorkBoardCardCustomFieldValues)
+        .values({ companyId, issueId, fieldId: input.fieldId, textValue: input.textValue ?? null, numberValue: input.numberValue ?? null, dateValue: input.dateValue ? new Date(input.dateValue) : null, optionId: input.optionId ?? null })
+        .onConflictDoUpdate({
+          target: [rt2WorkBoardCardCustomFieldValues.companyId, rt2WorkBoardCardCustomFieldValues.issueId, rt2WorkBoardCardCustomFieldValues.fieldId],
+          set: { textValue: input.textValue ?? null, numberValue: input.numberValue ?? null, dateValue: input.dateValue ? new Date(input.dateValue) : null, optionId: input.optionId ?? null, updatedAt: new Date() },
+        })
+        .returning();
+      const field = await db.select().from(rt2WorkBoardCustomFields).where(and(eq(rt2WorkBoardCustomFields.companyId, companyId), eq(rt2WorkBoardCustomFields.id, input.fieldId))).then((r) => r[0]);
+      return {
+        fieldId: row.fieldId,
+        fieldName: field?.name ?? "",
+        fieldType: (field?.fieldType ?? "text") as Rt2CustomFieldType,
+        textValue: row.textValue ?? null,
+        numberValue: row.numberValue ?? null,
+        dateValue: row.dateValue ? new Date(row.dateValue).toISOString() : null,
+        optionId: row.optionId ?? null,
+        optionLabel: null,
+      };
     },
   };
 }
