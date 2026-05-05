@@ -2123,12 +2123,24 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const issueId = randomUUID();
+    const assigneeAgentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
 
@@ -2174,6 +2186,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Recovery issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId,
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: {
