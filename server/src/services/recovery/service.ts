@@ -1350,16 +1350,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const [claimed] = await db
       .update(issues)
-      .set({ status: "blocked", updatedAt: new Date() })
+      .set({
+        status: "blocked",
+        updatedAt: new Date(),
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+      })
       .where(and(eq(issues.id, input.issue.id), eq(issues.status, input.previousStatus)))
-      .returning({ id: issues.id });
+      .returning();
     if (!claimed) return null;
 
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
       blockedByIssueIds: blockerIds,
     });
-    if (!updated) return null;
 
     const retryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot)?.retryReason) ?? "unknown";
     const interventionLine = [
@@ -1395,7 +1402,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     });
 
-    return updated;
+    return updated ?? claimed;
   }
 
   async function reconcileStrandedAssignedIssues() {
