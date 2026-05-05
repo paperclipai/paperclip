@@ -614,6 +614,8 @@ export async function startServer(): Promise<StartedServer> {
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
+    postDoneCleanupEnabled: config.postDoneCleanupEnabled,
+    postDoneCleanupAllowedRoots: config.postDoneCleanupAllowedRoots,
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
