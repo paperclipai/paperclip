@@ -52,9 +52,13 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
-/** Post-23505 re-read attempts when another writer wins the partial unique index (bounded wall time ~ O(n²) ms with base delay). */
+/**
+ * Post-23505 re-read attempts when another writer wins the partial unique index.
+ * Linear backoff: sum delays = BASE * (1+2+…+(MAX-1)) — keep BASE modest but not trivial so
+ * post-commit reads that briefly trail the primary (replica or pool lag) can observe the winner row.
+ */
 const STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS = 12;
-const STRANDED_RECOVERY_RACE_READ_BASE_DELAY_MS = 2;
+const STRANDED_RECOVERY_RACE_READ_BASE_DELAY_MS = 8;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
