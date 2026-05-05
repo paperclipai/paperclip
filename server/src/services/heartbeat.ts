@@ -140,6 +140,7 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
+import { checkVestigialIssue } from "./recovery/vestigial.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -5174,6 +5175,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const maxTurnContinuationIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
       : null;
+
+    if (issueId) {
+      const issueForVestigialCheck = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (issueForVestigialCheck) {
+        const vestigialResult = await checkVestigialIssue(db, issueForVestigialCheck, run);
+        if (vestigialResult) {
+          return { outcome: "not_scheduled" as const, errorCode: "issue_cancelled" };
+        }
+      }
+    }
 
     type ScheduledRetryTransactionResult =
       | {
