@@ -106,6 +106,7 @@ export interface CompanyDocumentListItem extends IssueDocumentSummary {
     identifier: string | null;
     title: string;
     status: IssueStatus;
+    originKind: IssueOriginKind;
     projectId: string | null;
     project: IssueAncestorProject | null;
   };

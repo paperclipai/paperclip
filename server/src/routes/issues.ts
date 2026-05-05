@@ -1291,11 +1291,15 @@ export function issueRoutes(
       updatedAfter = parsed;
     }
 
+    const includeAutoRaw = req.query.includeAutoOrigins as string | undefined;
+    const includeAutoOrigins = includeAutoRaw === "true" || includeAutoRaw === "1";
+
     const docs = await documentsSvc.listCompanyDocuments(companyId, {
       projectId: req.query.projectId as string | undefined,
       q: req.query.q as string | undefined,
       updatedAfter,
       limit: parsedLimit ?? undefined,
+      includeAutoOrigins,
     });
     res.json(docs);
   });
@@ -1333,6 +1337,30 @@ export function issueRoutes(
       return;
     }
     res.json(doc);
+  });
+
+  router.get("/issues/:id/documents/:key/download", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const doc = await documentsSvc.getIssueDocumentByKey(issue.id, keyParsed.data);
+    if (!doc) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    const safeFilename = `${doc.key.replace(/[^a-zA-Z0-9._-]/g, "_")}.md`;
+    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
+    res.send(doc.body);
   });
 
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {

@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, ilike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues, projects } from "@paperclipai/db";
-import type { CompanyDocumentListItem, IssueStatus } from "@paperclipai/shared";
+import type { CompanyDocumentListItem, IssueOriginKind, IssueStatus } from "@paperclipai/shared";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
@@ -194,6 +194,7 @@ export function documentService(db: Db) {
         q?: string;
         updatedAfter?: Date;
         limit?: number;
+        includeAutoOrigins?: boolean;
       } = {},
     ): Promise<CompanyDocumentListItem[]> => {
       const limit = Math.min(
@@ -202,6 +203,9 @@ export function documentService(db: Db) {
       );
 
       const conditions = [eq(issueDocuments.companyId, companyId)];
+      if (!filters.includeAutoOrigins) {
+        conditions.push(eq(issues.originKind, "manual"));
+      }
       if (filters.projectId) {
         conditions.push(eq(issues.projectId, filters.projectId));
       }
@@ -237,6 +241,7 @@ export function documentService(db: Db) {
           issueIdentifier: issues.identifier,
           issueTitle: issues.title,
           issueStatus: issues.status,
+          issueOriginKind: issues.originKind,
           issueProjectId: issues.projectId,
           projectName: projects.name,
           projectStatus: projects.status,
@@ -271,6 +276,7 @@ export function documentService(db: Db) {
           identifier: row.issueIdentifier,
           title: row.issueTitle,
           status: row.issueStatus as IssueStatus,
+          originKind: row.issueOriginKind as IssueOriginKind,
           projectId: row.issueProjectId,
           project: row.issueProjectId && row.projectName !== null
             ? {

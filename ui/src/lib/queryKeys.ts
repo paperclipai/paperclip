@@ -33,7 +33,13 @@ export const queryKeys = {
   documents: {
     listForCompany: (
       companyId: string,
-      filters?: { projectId?: string; q?: string; updatedAfter?: string; limit?: number },
+      filters?: {
+        projectId?: string;
+        q?: string;
+        updatedAfter?: string;
+        limit?: number;
+        includeAutoOrigins?: boolean;
+      },
     ) =>
       [
         "documents",
@@ -42,6 +48,7 @@ export const queryKeys = {
         filters?.q ?? "",
         filters?.updatedAfter ?? "",
         filters?.limit ?? "__no-limit__",
+        filters?.includeAutoOrigins ? "include-auto" : "manual-only",
       ] as const,
   },
   issues: {
