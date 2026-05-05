@@ -34,9 +34,12 @@ import { issueService } from "../issues.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   RECOVERY_ORIGIN_KINDS,
+  STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS,
   buildIssueGraphLivenessLeafKey,
+  buildStrandedIssueRecoveryFingerprint,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
+  type StrandedIssueRecoveryInvariantKey,
 } from "./origins.js";
 import {
   classifyIssueGraphLiveness,
@@ -51,6 +54,9 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+/** Post-23505 re-read attempts when another writer wins the partial unique index (bounded wall time ~ O(n²) ms with base delay). */
+const STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS = 12;
+const STRANDED_RECOVERY_RACE_READ_BASE_DELAY_MS = 2;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -678,6 +684,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return `${value.slice(value.length - maxChars)}\n[truncated earlier evidence]`;
   }
 
+  /**
+   * Run logs are NDJSON (anchor + stream lines). Secret scanners match decoded transcript text;
+   * wire-form JSON escaping prevents reliable matches across the full raw tail.
+   */
+  function extractRunLogStreamChunksForEvidence(rawTail: string): string {
+    const chunks: string[] = [];
+    for (const line of rawTail.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let row: unknown;
+      try {
+        row = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (!row || typeof row !== "object") continue;
+      const rec = row as { kind?: unknown; stream?: unknown; chunk?: unknown };
+      if (rec.kind === "run_bound") continue;
+      if (typeof rec.chunk !== "string" || !rec.chunk) continue;
+      if (
+        rec.stream !== undefined &&
+        rec.stream !== "stdout" &&
+        rec.stream !== "stderr" &&
+        rec.stream !== "system"
+      ) {
+        continue;
+      }
+      chunks.push(rec.chunk);
+    }
+    return chunks.join("\n");
+  }
+
   async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
     if (!run.logStore || !run.logRef || !run.logBytes) return "";
     try {
@@ -782,7 +820,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : Promise.resolve([]),
     ]);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const safeTail = truncateEvidenceText(redactWatchdogEvidenceText(tail, currentUserRedactionOptions));
+    const decodedChunks = extractRunLogStreamChunksForEvidence(tail);
+    const redactionSource = decodedChunks.trim().length > 0 ? decodedChunks : tail;
+    const safeTail = truncateEvidenceText(
+      redactWatchdogEvidenceText(redactionSource, currentUserRedactionOptions),
+    );
     const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
     return {
       safeTail,
@@ -1235,7 +1277,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row;
   }
 
-  async function findOpenStrandedIssueRecoveryIssue(companyId: string, sourceIssueId: string) {
+  async function findOpenStrandedIssueRecoveryIssue(
+    companyId: string,
+    sourceIssueId: string,
+    recoveryInvariantKey: StrandedIssueRecoveryInvariantKey,
+  ) {
+    const originFingerprint = buildStrandedIssueRecoveryFingerprint(
+      companyId,
+      sourceIssueId,
+      recoveryInvariantKey,
+    );
     return db
       .select()
       .from(issues)
@@ -1244,6 +1295,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.companyId, companyId),
           eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
+          eq(issues.originFingerprint, originFingerprint),
           isNull(issues.hiddenAt),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
@@ -1251,6 +1303,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function findOpenStrandedIssueRecoveryIssueAfterCreateConflict(
+    companyId: string,
+    sourceIssueId: string,
+    recoveryInvariantKey: StrandedIssueRecoveryInvariantKey,
+  ) {
+    for (let attempt = 0; attempt < STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS; attempt++) {
+      const row = await findOpenStrandedIssueRecoveryIssue(companyId, sourceIssueId, recoveryInvariantKey);
+      if (row) return row;
+      if (attempt < STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, STRANDED_RECOVERY_RACE_READ_BASE_DELAY_MS * (attempt + 1)),
+        );
+      }
+    }
+    return null;
+  }
+
+  async function enqueueStrandedRecoveryAssigneeWakeIfEligible(input: {
+    companyId: string;
+    sourceIssueId: string;
+    recoveryIssue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+  }) {
+    const ownerAgentId = input.recoveryIssue.assigneeAgentId;
+    if (!ownerAgentId) return;
+
+    if (await hasQueuedIssueWake(input.companyId, input.recoveryIssue.id)) return;
+    if (await hasActiveRunForIssueId(input.companyId, input.recoveryIssue.id)) return;
+
+    await deps.enqueueWakeup(ownerAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId: input.recoveryIssue.id,
+        sourceIssueId: input.sourceIssueId,
+        strandedRunId: input.latestRun?.id ?? null,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: input.recoveryIssue.id,
+        taskId: input.recoveryIssue.id,
+        wakeReason: "issue_assigned",
+        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+        sourceIssueId: input.sourceIssueId,
+        strandedRunId: input.latestRun?.id ?? null,
+      },
+    });
   }
 
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
@@ -1331,11 +1434,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     previousStatus: "todo" | "in_progress";
+    recoveryInvariantKey: StrandedIssueRecoveryInvariantKey;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
-    const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-    if (existing) return existing;
+    const existing = await findOpenStrandedIssueRecoveryIssue(
+      input.issue.companyId,
+      input.issue.id,
+      input.recoveryInvariantKey,
+    );
+    if (existing) {
+      await enqueueStrandedRecoveryAssigneeWakeIfEligible({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        recoveryIssue: existing,
+        latestRun: input.latestRun,
+      });
+      return existing;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
@@ -1360,41 +1476,46 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
         originId: input.issue.id,
         originRunId: input.latestRun?.id ?? null,
-        originFingerprint: [
-          STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+        originFingerprint: buildStrandedIssueRecoveryFingerprint(
           input.issue.companyId,
           input.issue.id,
-          input.latestRun?.id ?? "no-run",
-        ].join(":"),
+          input.recoveryInvariantKey,
+        ),
         billingCode: input.issue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.issue.id,
       });
     } catch (error) {
       if (!isUniqueStrandedIssueRecoveryConflict(error)) throw error;
-      const raced = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-      if (!raced) throw error;
+      const raced = await findOpenStrandedIssueRecoveryIssueAfterCreateConflict(
+        input.issue.companyId,
+        input.issue.id,
+        input.recoveryInvariantKey,
+      );
+      if (!raced) {
+        logger.warn(
+          {
+            companyId: input.issue.companyId,
+            sourceIssueId: input.issue.id,
+            source: "recovery.ensure_stranded_issue_recovery_issue",
+          },
+          "stranded_issue_recovery unique index conflict but no active recovery row visible after bounded re-reads",
+        );
+        throw error;
+      }
+      await enqueueStrandedRecoveryAssigneeWakeIfEligible({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        recoveryIssue: raced,
+        latestRun: input.latestRun,
+      });
       return raced;
     }
 
-    await deps.enqueueWakeup(ownerAgentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: {
-        issueId: recovery.id,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-      },
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: {
-        issueId: recovery.id,
-        taskId: recovery.id,
-        wakeReason: "issue_assigned",
-        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-      },
+    await enqueueStrandedRecoveryAssigneeWakeIfEligible({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      recoveryIssue: recovery,
+      latestRun: input.latestRun,
     });
 
     return recovery;
@@ -1526,6 +1647,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue: input.issue,
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
+      recoveryInvariantKey: STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS.strandedAssignedIssue,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue

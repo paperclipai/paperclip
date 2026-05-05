@@ -8,6 +8,7 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipa
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { redactHttpUrlForLogs } from "../redaction.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
@@ -264,7 +265,10 @@ export function setupLiveEventsWebSocketServer(
         });
       })
       .catch((err) => {
-        logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
+        logger.error(
+          { err, path: redactHttpUrlForLogs(req.url ?? "") },
+          "failed websocket upgrade authorization",
+        );
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       });
   });

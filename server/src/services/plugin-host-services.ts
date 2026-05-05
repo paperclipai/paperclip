@@ -1285,19 +1285,26 @@ export function buildHostServices(
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }
-        const updated = (await issues.update(params.issueId, {
+        const updatedRow = await issues.update(params.issueId, {
           ...(patch as any),
           actorAgentId,
           actorUserId,
-        })) as Issue;
+        });
+        if (!updatedRow) {
+          throw new Error("Issue not found");
+        }
+        await issues.finalizeStrandedIssueRecoveryBlockerCleanup({
+          existing,
+          updated: updatedRow,
+        });
         await logPluginActivity({
           companyId,
           action: "issue.updated",
           entityType: "issue",
-          entityId: updated.id,
+          entityId: updatedRow.id,
           actor: { actorAgentId, actorUserId, actorRunId },
           details: {
-            identifier: updated.identifier,
+            identifier: updatedRow.identifier,
             patch,
             _previous: {
               status: existing.status,
@@ -1306,7 +1313,7 @@ export function buildHostServices(
             },
           },
         });
-        return updated;
+        return updatedRow as Issue;
       },
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);

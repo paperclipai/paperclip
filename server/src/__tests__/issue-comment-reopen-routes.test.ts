@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   getDependencyReadiness: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
+  finalizeStrandedIssueRecoveryBlockerCleanup: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
 
@@ -216,6 +217,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
+    mockIssueService.finalizeStrandedIssueRecoveryBlockerCleanup.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.hasPermission.mockReset();
@@ -282,6 +284,7 @@ describe.sequential("issue comment reopen routes", () => {
       isDependencyReady: true,
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.finalizeStrandedIssueRecoveryBlockerCleanup.mockResolvedValue({ ranCleanup: false, dependents: [] });
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);

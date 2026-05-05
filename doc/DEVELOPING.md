@@ -355,7 +355,7 @@ pnpm paperclipai worktree reseed \
 
 | Option | Description |
 |---|---|
-| `--start-point <ref>` | Remote ref to base the new branch on (e.g. `origin/main`) |
+| `--start-point <ref>` | Remote ref to base the new branch on (e.g. `origin/master` for this repo) |
 | `--instance <id>` | Explicit isolated instance id |
 | `--home <path>` | Home root for worktree instances (default: `~/.paperclip-worktrees`) |
 | `--from-config <path>` | Source config.json to seed from |
@@ -371,7 +371,7 @@ Examples:
 
 ```sh
 pnpm paperclipai worktree:make paperclip-pr-432
-pnpm paperclipai worktree:make my-feature --start-point origin/main
+pnpm paperclipai worktree:make my-feature --start-point origin/master
 pnpm paperclipai worktree:make experiment --no-seed
 ```
 

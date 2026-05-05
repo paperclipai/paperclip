@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
+  finalizeStrandedIssueRecoveryBlockerCleanup: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -187,6 +188,7 @@ describe("issue workspace command authorization", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.finalizeStrandedIssueRecoveryBlockerCleanup.mockResolvedValue({ ranCleanup: false, dependents: [] });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.update.mockResolvedValue(makeIssue());
     mockAccessService.canUser.mockResolvedValue(true);

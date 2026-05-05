@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   checkout: vi.fn(),
   addComment: vi.fn(),
+  finalizeStrandedIssueRecoveryBlockerCleanup: vi.fn(async () => ({ ranCleanup: false, dependents: [] })),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({

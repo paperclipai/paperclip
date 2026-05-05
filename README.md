@@ -337,6 +337,8 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 
 ## Development
 
+From a fresh clone, run `pnpm install` once at the repo root, then:
+
 ```bash
 pnpm dev              # Full dev (API + UI, watch mode)
 pnpm dev:once         # Full dev without file watching
@@ -353,6 +355,8 @@ pnpm db:migrate       # Apply migrations
 `pnpm test` does not run Playwright. Browser suites stay separate and are typically run only when working on those flows or in CI.
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+
+If you own or delegate **Documentation Implementation** work (shipping-adjacent docs for engineers and operators), see [docs/guides/agent-developer/documentation-implementation-lane.md](docs/guides/agent-developer/documentation-implementation-lane.md) for lane scope, CEngO-style assignment handoffs, and how **git-tracked docs** differ from **per-agent runtime instructions** on a Paperclip instance.
 
 <br/>
 

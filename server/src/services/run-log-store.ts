@@ -27,8 +27,31 @@ export interface RunLogFinalizeSummary {
   compressed: boolean;
 }
 
+/** First NDJSON line written when a run log file is opened; correlates file contents to a heartbeat run. */
+export type RunLogRunBoundAnchor = {
+  kind: "run_bound";
+  ts: string;
+  companyId: string;
+  agentId: string;
+  runId: string;
+  issueId: string | null;
+  wakeReason: string | null;
+};
+
+export interface RunLogBeginResult {
+  handle: RunLogHandle;
+  /** Byte length of the opening anchor line including trailing newline (for progress / logBytes accounting). */
+  initialBytes: number;
+}
+
 export interface RunLogStore {
-  begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
+  begin(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    issueId?: string | null;
+    wakeReason?: string | null;
+  }): Promise<RunLogBeginResult>;
   append(
     handle: RunLogHandle,
     event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string },
@@ -50,7 +73,7 @@ function resolveWithin(basePath: string, relativePath: string) {
   return resolved;
 }
 
-function createLocalFileRunLogStore(basePath: string): RunLogStore {
+export function createLocalFileRunLogStore(basePath: string): RunLogStore {
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -101,9 +124,21 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       await ensureDir(relDir);
 
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      const ts = new Date().toISOString();
+      const anchor: RunLogRunBoundAnchor = {
+        kind: "run_bound",
+        ts,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.runId,
+        issueId: input.issueId ?? null,
+        wakeReason: input.wakeReason ?? null,
+      };
+      const persisted = `${JSON.stringify(anchor)}\n`;
+      await fs.writeFile(absPath, persisted, "utf8");
+      const initialBytes = Buffer.byteLength(persisted, "utf8");
 
-      return { store: "local_file", logRef: relPath };
+      return { handle: { store: "local_file", logRef: relPath }, initialBytes };
     },
 
     async append(handle, event) {

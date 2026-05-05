@@ -165,8 +165,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     if (opts.logChunk) {
       const store = getRunLogStore();
-      const handle = await store.begin({ companyId, agentId: coderId, runId });
-      const logBytes = await store.append(handle, {
+      const { handle, initialBytes } = await store.begin({ companyId, agentId: coderId, runId });
+      const appendedBytes = await store.append(handle, {
         stream: "stdout",
         chunk: opts.logChunk,
         ts: startedAt.toISOString(),
@@ -176,7 +176,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         .set({
           logStore: handle.store,
           logRef: handle.logRef,
-          logBytes,
+          logBytes: initialBytes + appendedBytes,
         })
         .where(eq(heartbeatRuns.id, runId));
     }

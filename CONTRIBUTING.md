@@ -4,6 +4,13 @@ Thanks for wanting to contribute!
 
 We really appreciate both small fixes and thoughtful larger changes.
 
+## Local development
+
+- **Prerequisites:** Node.js 20+ and pnpm 9+ (see `package.json` `engines` and `packageManager`).
+- **Install:** from a clone of this repo, run `pnpm install` at the repository root before any other `pnpm` scripts.
+- **Canonical guide:** [doc/DEVELOPING.md](doc/DEVELOPING.md) documents CLI commands, dev server flows, tests, the database, and worktrees — use it instead of guessing flags or entrypoints.
+- **First local run:** `pnpm paperclipai run` auto-onboards when needed, runs health checks, and starts the server. For iterative work, use `pnpm dev` (details in DEVELOPING).
+
 ## Two Paths to Get Your Pull Request Accepted
 
 ### Path 1: Small, Focused Changes (Fastest way to get merged)

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactHttpUrlForLogs,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -130,5 +136,25 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("redacts sensitive query params from URLs for logs (live-events WS upgrade)", () => {
+    const secret = "pc_live_agent_api_key_material";
+    const raw = `/api/companies/acme/events/ws?token=${encodeURIComponent(secret)}&debug=1`;
+    const safe = redactHttpUrlForLogs(raw);
+
+    expect(safe).toContain("/api/companies/acme/events/ws");
+    expect(safe).toContain(`token=${REDACTED_EVENT_VALUE}`);
+    expect(safe).toContain("debug=1");
+    expect(safe).not.toContain(secret);
+  });
+
+  it("redacts jwt-like values in non-sensitive URL query keys", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const raw = `/api/companies/acme/events/ws?state=${encodeURIComponent(jwt)}`;
+    const safe = redactHttpUrlForLogs(raw);
+
+    expect(safe).not.toContain(jwt);
+    expect(safe).toContain(REDACTED_EVENT_VALUE);
   });
 });

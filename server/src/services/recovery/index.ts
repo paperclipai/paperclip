@@ -2,8 +2,10 @@ export {
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   RECOVERY_REASON_KINDS,
+  STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
+  buildStrandedIssueRecoveryFingerprint,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -11,6 +13,7 @@ export type {
   RecoveryKeyPrefix,
   RecoveryOriginKind,
   RecoveryReasonKind,
+  StrandedIssueRecoveryInvariantKey,
 } from "./origins.js";
 export {
   classifyIssueGraphLiveness,

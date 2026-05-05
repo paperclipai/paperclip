@@ -60,7 +60,18 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
-import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
+import { isStrandedIssueRecoveryOriginKind, parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
+
+/**
+ * Blocker issues that are already terminal should not appear in immediate `blockedBy` summaries:
+ * `done` blockers are resolved for dependency purposes, and terminal `stranded_issue_recovery` rows must
+ * not ghost-block the source when stale `issue_relations` rows remain (GST-655 / GST-660).
+ */
+function shouldSurfaceImmediateBlockedBySummary(blocker: { status: string; originKind: string | null }) {
+  if (blocker.status === "done") return false;
+  if (blocker.status === "cancelled" && isStrandedIssueRecoveryOriginKind(blocker.originKind)) return false;
+  return true;
+}
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -831,6 +842,7 @@ type IssueRelationSummaryRow = {
   identifier: string | null;
   title: string;
   status: string;
+  originKind?: string | null;
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -1610,28 +1622,32 @@ async function blockedByMapForIssues(
   }
 
   for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    const rows = await dbOrTx
-      .select({
-        currentIssueId: issueRelations.relatedIssueId,
-        relatedId: issues.id,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        priority: issues.priority,
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-      })
-      .from(issueRelations)
-      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-      .where(
-        and(
-          eq(issueRelations.companyId, companyId),
-          eq(issueRelations.type, "blocks"),
-          inArray(issueRelations.relatedIssueId, issueIdChunk),
-        ),
-      );
+      const rows = await dbOrTx
+        .select({
+          currentIssueId: issueRelations.relatedIssueId,
+          relatedId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          originKind: issues.originKind,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, issueIdChunk),
+          ),
+        );
 
     for (const row of rows) {
+      if (!shouldSurfaceImmediateBlockedBySummary({ status: row.status, originKind: row.originKind })) {
+        continue;
+      }
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
       blockedBy.push({
@@ -1653,9 +1669,85 @@ async function blockedByMapForIssues(
   return map;
 }
 
+export type WakeableBlockedDependent = {
+  id: string;
+  assigneeAgentId: string;
+  blockerIssueIds: string[];
+};
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+
+  async function listWakeableBlockedDependentsForBlocker(
+    dbReader: typeof db,
+    blockerIssueId: string,
+  ): Promise<WakeableBlockedDependent[]> {
+    const blockerIssue = await dbReader
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    if (!blockerIssue) return [];
+
+    const candidates = await dbReader
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, blockerIssue.companyId),
+          eq(issueRelations.type, "blocks"),
+          eq(issueRelations.issueId, blockerIssueId),
+        ),
+      );
+    if (candidates.length === 0) return [];
+
+    const candidateIds = candidates.map((candidate) => candidate.id);
+    const blockerRows = await dbReader
+      .select({
+        issueId: issueRelations.relatedIssueId,
+        blockerIssueId: issueRelations.issueId,
+        blockerStatus: issues.status,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, blockerIssue.companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, candidateIds),
+        ),
+      );
+
+    const blockersByIssueId = new Map<string, Array<{ blockerIssueId: string; blockerStatus: string }>>();
+    for (const row of blockerRows) {
+      const list = blockersByIssueId.get(row.issueId) ?? [];
+      list.push({ blockerIssueId: row.blockerIssueId, blockerStatus: row.blockerStatus });
+      blockersByIssueId.set(row.issueId, list);
+    }
+
+    return candidates
+      .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+      .map((candidate) => {
+        const blockers = blockersByIssueId.get(candidate.id) ?? [];
+        return {
+          ...candidate,
+          blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
+          allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
+        };
+      })
+      .filter((candidate) => candidate.allBlockersDone)
+      .map((candidate) => ({
+        id: candidate.id,
+        assigneeAgentId: candidate.assigneeAgentId!,
+        blockerIssueIds: candidate.blockerIssueIds,
+      }));
+  }
 
   async function getIssueByUuid(id: string) {
     const row = await db
@@ -1849,6 +1941,7 @@ export function issueService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -1885,6 +1978,9 @@ export function issueService(db: Db) {
     ]);
 
     for (const row of blockedByRows) {
+      if (!shouldSurfaceImmediateBlockedBySummary({ status: row.status, originKind: row.originKind ?? null })) {
+        continue;
+      }
       empty.get(row.currentIssueId)?.blockedBy.push(summarizeIssueRelationRow(row));
     }
     for (const row of blockingRows) {
@@ -2500,71 +2596,64 @@ export function issueService(db: Db) {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
     },
 
-    listWakeableBlockedDependents: async (blockerIssueId: string) => {
-      const blockerIssue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
-        .from(issues)
-        .where(eq(issues.id, blockerIssueId))
-        .then((rows) => rows[0] ?? null);
-      if (!blockerIssue) return [];
+    listWakeableBlockedDependents: (blockerIssueId: string) => listWakeableBlockedDependentsForBlocker(db, blockerIssueId),
 
-      const candidates = await db
-        .select({
-          id: issues.id,
-          assigneeAgentId: issues.assigneeAgentId,
-          status: issues.status,
-        })
-        .from(issueRelations)
-        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
-        .where(
-          and(
-            eq(issueRelations.companyId, blockerIssue.companyId),
-            eq(issueRelations.type, "blocks"),
-            eq(issueRelations.issueId, blockerIssueId),
-          ),
-        );
-      if (candidates.length === 0) return [];
-
-      const candidateIds = candidates.map((candidate) => candidate.id);
-      const blockerRows = await db
-        .select({
-          issueId: issueRelations.relatedIssueId,
-          blockerIssueId: issueRelations.issueId,
-          blockerStatus: issues.status,
-        })
-        .from(issueRelations)
-        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-        .where(
-          and(
-            eq(issueRelations.companyId, blockerIssue.companyId),
-            eq(issueRelations.type, "blocks"),
-            inArray(issueRelations.relatedIssueId, candidateIds),
-          ),
-        );
-
-      const blockersByIssueId = new Map<string, Array<{ blockerIssueId: string; blockerStatus: string }>>();
-      for (const row of blockerRows) {
-        const list = blockersByIssueId.get(row.issueId) ?? [];
-        list.push({ blockerIssueId: row.blockerIssueId, blockerStatus: row.blockerStatus });
-        blockersByIssueId.set(row.issueId, list);
+    /**
+     * When a `stranded_issue_recovery` issue becomes terminal, remove its first-class blocker edge from the
+     * source issue (`originId`) so `blockedBy` cannot outlive the recovery row. Computes dependency wakes
+     * **before** removing the edge (call from HTTP handlers after `update()` and before `issue_blockers_resolved`
+     * scheduling, or from automation paths that bypass the issues route).
+     */
+    finalizeStrandedIssueRecoveryBlockerCleanup: async (input: {
+      existing: typeof issues.$inferSelect;
+      updated: typeof issues.$inferSelect;
+    }): Promise<{ ranCleanup: boolean; dependents: WakeableBlockedDependent[] }> => {
+      const { existing, updated } = input;
+      const ranCleanup =
+        !["done", "cancelled"].includes(existing.status) &&
+        ["done", "cancelled"].includes(updated.status) &&
+        isStrandedIssueRecoveryOriginKind(updated.originKind) &&
+        typeof updated.originId === "string" &&
+        updated.originId.length > 0 &&
+        isUuidLike(updated.originId);
+      if (!ranCleanup) {
+        return { ranCleanup: false, dependents: [] };
       }
 
-      return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
-        .map((candidate) => {
-          const blockers = blockersByIssueId.get(candidate.id) ?? [];
-          return {
-            ...candidate,
-            blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
-          };
-        })
-        .filter((candidate) => candidate.allBlockersDone)
-        .map((candidate) => ({
-          id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
-          blockerIssueIds: candidate.blockerIssueIds,
-        }));
+      const dependents = await listWakeableBlockedDependentsForBlocker(db, updated.id);
+
+      await db.transaction(async (tx) => {
+        const sourceIssueId = updated.originId as string;
+        const sourceIssue = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, updated.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!sourceIssue) return;
+
+        const currentBlockerIds = await tx
+          .select({ blockerIssueId: issueRelations.issueId })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, updated.companyId),
+              eq(issueRelations.relatedIssueId, sourceIssueId),
+              eq(issueRelations.type, "blocks"),
+            ),
+          )
+          .then((rows) => rows.map((row) => row.blockerIssueId));
+        if (!currentBlockerIds.includes(updated.id)) return;
+
+        await syncBlockedByIssueIds(
+          sourceIssueId,
+          updated.companyId,
+          currentBlockerIds.filter((blockerId) => blockerId !== updated.id),
+          { agentId: null, userId: null },
+          tx,
+        );
+      });
+
+      return { ranCleanup: true, dependents };
     },
 
     getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
@@ -2972,11 +3061,12 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextStatus = issueData.status !== undefined ? issueData.status : existing.status;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
+      if (nextStatus === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (patch.status === "in_progress") {
