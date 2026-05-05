@@ -6,9 +6,11 @@ import {
   agents,
   companies,
   companySkills,
+  costEvents,
   createDb,
   documents,
   documentRevisions,
+  financeEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -49,6 +51,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(companySkills);
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -227,5 +231,47 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes finance and cost rows before deleting company heartbeat runs", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+    const costEventId = randomUUID();
+
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "tokens",
+      model: "gpt-5",
+      inputTokens: 10,
+      outputTokens: 5,
+      costCents: 3,
+      occurredAt: new Date("2026-05-04T12:00:00Z"),
+    });
+
+    await db.insert(financeEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      costEventId,
+      eventKind: "llm_usage",
+      direction: "debit",
+      biller: "openai",
+      provider: "openai",
+      model: "gpt-5",
+      amountCents: 3,
+      occurredAt: new Date("2026-05-04T12:00:00Z"),
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(costEvents).where(eq(costEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
   });
 });
