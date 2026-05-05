@@ -53,9 +53,6 @@ type CaptureSourceRow = typeof rt2CaptureSources.$inferSelect;
 type CustomFieldRow = typeof rt2WorkBoardCustomFields.$inferSelect;
 type CustomFieldOptionRow = typeof rt2WorkBoardCustomFieldOptions.$inferSelect;
 type CustomFieldValueRow = typeof rt2WorkBoardCardCustomFieldValues.$inferSelect;
-type CustomFieldRow = typeof rt2WorkBoardCustomFields.$inferSelect;
-type CustomFieldOptionRow = typeof rt2WorkBoardCustomFieldOptions.$inferSelect;
-type CustomFieldValueRow = typeof rt2WorkBoardCardCustomFieldValues.$inferSelect;
 
 const CAPTURE_SOURCE_LABELS = {
   web: "Web",
@@ -611,7 +608,7 @@ export function rt2WorkBoardService(db: Db) {
           goalId: issues.goalId,
         }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueIssueIds))),
       ]);
-      const customFieldValuesMap = await getCardCustomFieldValues(companyId, uniqueIssueIds);
+      const customFieldValuesMap = await self.getCardCustomFieldValues(companyId, uniqueIssueIds);
 
       const cardsByIssue = new Map(cardRows.map((row) => [row.issueId, row]));
       const checklistByIssue = new Map<string, ReturnType<typeof toChecklist>[]>();
