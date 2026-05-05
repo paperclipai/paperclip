@@ -29,6 +29,15 @@ export default defineConfig(({ mode }) => ({
       "/api": {
         target: "http://localhost:3100",
         ws: true,
+        configure: (proxy) => {
+          const devToken = process.env.PAPERCLIP_DEV_AUTH_TOKEN;
+          if (!devToken) return;
+          proxy.on("proxyReq", (proxyReq, req) => {
+            if (!req.headers.authorization) {
+              proxyReq.setHeader("Authorization", `Bearer ${devToken}`);
+            }
+          });
+        },
       },
     },
   },

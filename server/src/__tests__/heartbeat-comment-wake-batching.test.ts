@@ -625,7 +625,7 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes after the active run closes the issue", async () => {
+  it("does not reopen a finished issue when the deferred comment wake is promoted", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -775,7 +775,7 @@ describe("heartbeat comment wake batching", () => {
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
       }, 90_000);
 
-      const reopenedIssue = await db
+      const issueAfterPromotion = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
@@ -784,10 +784,10 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(reopenedIssue).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
+      expect(issueAfterPromotion).toMatchObject({
+        status: "done",
       });
+      expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -799,7 +799,7 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Reopen after deferred comment",
-            status: "in_progress",
+            status: "done",
             priority: "medium",
           },
         },
