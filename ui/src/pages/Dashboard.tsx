@@ -24,6 +24,7 @@ import { CapacityPanel } from "../components/CapacityPanel";
 import { ActiveWorkWidget } from "../components/ActiveWorkWidget";
 import { AwaitingBoardWidget } from "../components/AwaitingBoardWidget";
 import { RecentActivityWidget } from "../components/RecentActivityWidget";
+import { MemoryHealthWidget } from "../components/MemoryHealthWidget";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, AgentWorkload, Issue } from "@paperclipai/shared";
@@ -186,6 +187,8 @@ export function Dashboard() {
       <ActiveWorkWidget companyId={selectedCompanyId!} />
 
       <RecentActivityWidget companyId={selectedCompanyId!} />
+
+      <MemoryHealthWidget />
 
       {data && (
         <>
