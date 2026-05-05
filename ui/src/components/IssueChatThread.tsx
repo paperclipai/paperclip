@@ -1220,8 +1220,9 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
       </div>
 
       {pending ? (
-        <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
-          Sending...
+        <div className={cn("mt-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
+          <Loader2 className="h-3 w-3 animate-spin" />
+          <span>Sending...</span>
         </div>
       ) : (
         <div

@@ -2506,6 +2506,16 @@ export function IssueDetail() {
             </Link>
           )}
 
+          {issue.originThreadId && issue.createdByAgentId && (
+            <Link
+              to={`/agents/${agents?.find((a: { id: string }) => a.id === issue.createdByAgentId)?.urlKey ?? issue.createdByAgentId}/chat`}
+              className="inline-flex items-center gap-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shrink-0 hover:bg-cyan-500/20 transition-colors"
+            >
+              <MessageSquare className="h-3 w-3" />
+              From Chat
+            </Link>
+          )}
+
           {issue.projectId ? (
             <Link
               to={`/projects/${issue.projectId}`}

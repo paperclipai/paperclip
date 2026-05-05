@@ -69,6 +69,10 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 5;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
+export const AGENT_THREAD_STATUSES = ["active", "archived"] as const;
+export type AgentThreadStatus = (typeof AGENT_THREAD_STATUSES)[number];
+export const AGENT_THREAD_MESSAGE_ROLES = ["user", "assistant", "system"] as const;
+export type AgentThreadMessageRole = (typeof AGENT_THREAD_MESSAGE_ROLES)[number];
 export const AGENT_ICON_NAMES = [
   "bot",
   "cpu",

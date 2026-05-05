@@ -39,6 +39,7 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { AgentChatTab } from "../components/AgentChatTab";
 import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
@@ -226,9 +227,10 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "chat" | "instructions" | "configuration" | "skills" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
+  if (value === "chat") return "chat";
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
@@ -633,7 +635,8 @@ export function AgentDetail() {
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
-  const shouldLoadHeartbeats = needsDashboardData || needsRunData;
+  const needsChatData = activeView === "chat";
+  const shouldLoadHeartbeats = needsDashboardData || needsRunData || needsChatData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
@@ -741,17 +744,19 @@ export function AgentDetail() {
       return;
     }
     const canonicalTab =
-      activeView === "instructions"
-        ? "instructions"
-        : activeView === "configuration"
-          ? "configuration"
-          : activeView === "skills"
-            ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+      activeView === "chat"
+        ? "chat"
+        : activeView === "instructions"
+          ? "instructions"
+          : activeView === "configuration"
+            ? "configuration"
+            : activeView === "skills"
+              ? "skills"
+              : activeView === "runs"
+                ? "runs"
+                : activeView === "budget"
+                  ? "budget"
+                : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -1010,6 +1015,7 @@ export function AgentDetail() {
           <PageTabBar
             items={[
               { value: "dashboard", label: "Dashboard" },
+              { value: "chat", label: "Chat" },
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
               { value: "configuration", label: "Configuration" },
@@ -1096,6 +1102,14 @@ export function AgentDetail() {
           runtimeState={runtimeState}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
+        />
+      )}
+
+      {activeView === "chat" && resolvedCompanyId && (
+        <AgentChatTab
+          agentId={agent.id}
+          companyId={resolvedCompanyId}
+          runs={heartbeats ?? []}
         />
       )}
 

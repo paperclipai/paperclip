@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -15,6 +15,44 @@ import {
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
+
+// Simple .env parser for dev-runner (doesn't require dotenv package)
+function loadEnvFile(filePath: string): void {
+  if (!existsSync(filePath)) return;
+
+  const contents = readFileSync(filePath, "utf-8");
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+
+    const [, key, rawValue] = match;
+    let value = rawValue.trim();
+
+    // Remove inline comments
+    if (value.includes("#")) {
+      const parts = value.split("#");
+      value = parts[0]!.trim();
+    }
+
+    // Remove quotes
+    if ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+
+    // Only set if not already defined
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+// Load .env from project root and server directory
+loadEnvFile(path.join(repoRoot, ".env"));
+loadEnvFile(path.join(repoRoot, "server", ".env"));
 
 // Keep these values local so the dev runner can boot from the server package's
 // tsx context without requiring workspace package resolution first.

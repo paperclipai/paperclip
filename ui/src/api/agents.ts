@@ -1,6 +1,9 @@
 import type {
   Agent,
   AgentDetail,
+  AgentThread,
+  AgentThreadMessage,
+  AgentThreadReadState,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
@@ -57,6 +60,21 @@ export interface OrgNode {
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
+}
+
+export interface AgentThreadMessagesResponse {
+  thread: AgentThread | null;
+  messages: AgentThreadMessage[];
+}
+
+export interface AgentThreadMessageCreateResponse {
+  thread: AgentThread;
+  message: AgentThreadMessage;
+}
+
+export interface AgentThreadReadResponse {
+  thread: AgentThread;
+  readState: AgentThreadReadState;
 }
 
 export interface AgentPermissionUpdate {
@@ -208,6 +226,17 @@ export const agentsApi = {
     },
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  thread: (id: string, companyId?: string) =>
+    api.get<AgentThread>(agentPath(id, companyId, "/thread")),
+  threadMessages: (id: string, companyId?: string) =>
+    api.get<AgentThreadMessagesResponse>(agentPath(id, companyId, "/thread/messages")),
+  postThreadMessage: (id: string, body: string, companyId?: string) =>
+    api.post<AgentThreadMessageCreateResponse>(agentPath(id, companyId, "/thread/messages"), { body }),
+  markThreadRead: (
+    id: string,
+    data: { lastReadMessageId?: string | null },
+    companyId?: string,
+  ) => api.post<AgentThreadReadResponse>(agentPath(id, companyId, "/thread/read"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>

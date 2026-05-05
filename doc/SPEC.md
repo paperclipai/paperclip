@@ -257,7 +257,7 @@ All agent communication flows through the **task system**.
 - **Coordination** = commenting on tasks
 - **Status updates** = updating task status and fields
 
-There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
+There is no general-purpose messaging or chat system. Tasks are still the primary communication channel for work. Explicit exception: `agent thread` is a direct board-to-agent communication surface that can spawn visible work, but is not itself a task. This preserves work-context audit trails without turning Bizbox into a general chat app.
 
 ### Implications
 

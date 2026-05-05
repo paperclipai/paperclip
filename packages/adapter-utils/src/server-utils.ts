@@ -265,6 +265,12 @@ type PaperclipWakeIssue = {
   priority: string | null;
 };
 
+type PaperclipWakeThread = {
+  id: string | null;
+  agentId: string | null;
+  agentName: string | null;
+};
+
 type PaperclipWakeExecutionPrincipal = {
   type: "agent" | "user" | null;
   agentId: string | null;
@@ -284,6 +290,17 @@ type PaperclipWakeExecutionStage = {
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  createdAt: string | null;
+  authorType: string | null;
+  authorId: string | null;
+};
+
+type PaperclipWakeThreadMessage = {
+  id: string | null;
+  threadId: string | null;
+  role: string | null;
   body: string;
   bodyTruncated: boolean;
   createdAt: string | null;
@@ -328,6 +345,7 @@ type PaperclipWakeBlockerSummary = {
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  thread: PaperclipWakeThread | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   unresolvedBlockerIssueIds: string[];
@@ -340,6 +358,9 @@ type PaperclipWakePayload = {
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
+  threadMessageIds: string[];
+  latestThreadMessageId: string | null;
+  threadMessages: PaperclipWakeThreadMessage[];
   requestedCount: number;
   includedCount: number;
   missingCount: number;
@@ -364,6 +385,19 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   };
 }
 
+function normalizePaperclipWakeThread(value: unknown): PaperclipWakeThread | null {
+  const thread = parseObject(value);
+  const id = asString(thread.id, "").trim() || null;
+  const agentId = asString(thread.agentId, "").trim() || null;
+  const agentName = asString(thread.agentName, "").trim() || null;
+  if (!id && !agentId && !agentName) return null;
+  return {
+    id,
+    agentId,
+    agentName,
+  };
+}
+
 function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | null {
   const comment = parseObject(value);
   const author = parseObject(comment.author);
@@ -375,6 +409,23 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     body,
     bodyTruncated: asBoolean(comment.bodyTruncated, false),
     createdAt: asString(comment.createdAt, "").trim() || null,
+    authorType: asString(author.type, "").trim() || null,
+    authorId: asString(author.id, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeThreadMessage(value: unknown): PaperclipWakeThreadMessage | null {
+  const message = parseObject(value);
+  const author = parseObject(message.author);
+  const body = asString(message.body, "");
+  if (!body.trim()) return null;
+  return {
+    id: asString(message.id, "").trim() || null,
+    threadId: asString(message.threadId, "").trim() || null,
+    role: asString(message.role, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(message.bodyTruncated, false),
+    createdAt: asString(message.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
   };
@@ -481,10 +532,21 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
 
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
+  const threadMessages = Array.isArray(payload.threadMessages)
+    ? payload.threadMessages
+        .map((entry) => normalizePaperclipWakeThreadMessage(entry))
+        .filter((entry): entry is PaperclipWakeThreadMessage => Boolean(entry))
+    : [];
   const comments = Array.isArray(payload.comments)
     ? payload.comments
         .map((entry) => normalizePaperclipWakeComment(entry))
         .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
+    : [];
+  const threadMessageWindow = parseObject(payload.threadMessageWindow);
+  const threadMessageIds = Array.isArray(payload.threadMessageIds)
+    ? payload.threadMessageIds
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
     : [];
   const commentWindow = parseObject(payload.commentWindow);
   const commentIds = Array.isArray(payload.commentIds)
@@ -511,13 +573,30 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
     : [];
 
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const thread = normalizePaperclipWakeThread(payload.thread);
+  const issue = normalizePaperclipWakeIssue(payload.issue);
+
+  if (
+    comments.length === 0 &&
+    commentIds.length === 0 &&
+    threadMessages.length === 0 &&
+    threadMessageIds.length === 0 &&
+    childIssueSummaries.length === 0 &&
+    unresolvedBlockerIssueIds.length === 0 &&
+    unresolvedBlockerSummaries.length === 0 &&
+    !executionStage &&
+    !continuationSummary &&
+    !livenessContinuation &&
+    !issue &&
+    !thread
+  ) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
-    issue: normalizePaperclipWakeIssue(payload.issue),
+    issue,
+    thread,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     unresolvedBlockerIssueIds,
@@ -530,9 +609,21 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
-    requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
-    includedCount: asNumber(commentWindow.includedCount, comments.length),
-    missingCount: asNumber(commentWindow.missingCount, 0),
+    threadMessageIds,
+    latestThreadMessageId: asString(payload.latestThreadMessageId, "").trim() || null,
+    threadMessages,
+    requestedCount: asNumber(
+      commentWindow.requestedCount,
+      asNumber(threadMessageWindow.requestedCount, comments.length || commentIds.length || threadMessages.length || threadMessageIds.length),
+    ),
+    includedCount: asNumber(
+      commentWindow.includedCount,
+      asNumber(threadMessageWindow.includedCount, comments.length || threadMessages.length),
+    ),
+    missingCount: asNumber(
+      commentWindow.missingCount,
+      asNumber(threadMessageWindow.missingCount, 0),
+    ),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
@@ -551,6 +642,60 @@ export function renderPaperclipWakePrompt(
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
+  if (normalized.thread && !normalized.issue) {
+    const lines = resumedSession
+      ? [
+        "## Paperclip Agent Thread Resume Delta",
+        "",
+        "You are resuming direct conversation in agent thread.",
+        "This heartbeat is scoped to direct conversation with agent thread, not issue execution.",
+        "Respond directly in agent thread before any other generic work.",
+        "If user request creates actionable work, create normal visible issues and still answer in thread.",
+        "Do not treat this like issue execution unless visible work is created.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+        `- thread: ${normalized.thread.agentName ?? normalized.thread.agentId ?? normalized.thread.id ?? "unknown"}`,
+        `- pending messages: ${normalized.includedCount}/${normalized.requestedCount}`,
+        `- latest message id: ${normalized.latestThreadMessageId ?? "unknown"}`,
+        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        "",
+      ]
+      : [
+        "## Paperclip Agent Thread Wake",
+        "",
+        "This heartbeat is scoped to direct conversation with agent thread, not issue execution.",
+        "Respond directly in agent thread before any other generic work.",
+        "If user request creates actionable work, create normal visible issues and still answer in thread.",
+        "Do not treat this like issue execution unless visible work is created.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+        `- thread: ${normalized.thread.agentName ?? normalized.thread.agentId ?? normalized.thread.id ?? "unknown"}`,
+        `- pending messages: ${normalized.includedCount}/${normalized.requestedCount}`,
+        `- latest message id: ${normalized.latestThreadMessageId ?? "unknown"}`,
+        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        "",
+      ];
+
+    if (normalized.threadMessages.length > 0) {
+      lines.push("New thread messages in order:");
+    }
+
+    for (const [index, message] of normalized.threadMessages.entries()) {
+      const authorLabel = message.authorId
+        ? `${message.authorType ?? "unknown"} ${message.authorId}`
+        : message.authorType ?? message.role ?? "unknown";
+      lines.push(
+        `${index + 1}. message ${message.id ?? "unknown"} at ${message.createdAt ?? "unknown"} by ${authorLabel}`,
+        message.body,
+      );
+      if (message.bodyTruncated) {
+        lines.push("[thread message body truncated]");
+      }
+      lines.push("");
+    }
+
+    return lines.join("\n").trim();
+  }
   const executionStage = normalized.executionStage;
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";

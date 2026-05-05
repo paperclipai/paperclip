@@ -15,6 +15,8 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
+      agentThreadId: "thread-1",
+      agentThreadMessageId: "message-1",
       paperclipWake: {
         comments: [
           {
@@ -36,6 +38,8 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
+      agentThreadId: "thread-1",
+      agentThreadMessageId: "message-1",
     });
   });
 

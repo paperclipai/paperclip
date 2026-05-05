@@ -16,6 +16,8 @@ import {
 } from "@paperclipai/shared";
 import {
   agents,
+  agentThreadMessages,
+  agentThreads,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -80,6 +82,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { agentThreadService } from "./agent-threads.js";
 import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
@@ -834,6 +837,8 @@ export function summarizeHeartbeatRunContextSnapshot(
     "wakeReason",
     "wakeSource",
     "wakeTriggerDetail",
+    "agentThreadId",
+    "agentThreadMessageId",
   ] as const;
 
   for (const key of allowedKeys) {
@@ -1493,7 +1498,7 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
-async function buildPaperclipWakePayload(input: {
+export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
@@ -1518,6 +1523,8 @@ async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const agentThreadId = readNonEmptyString(input.contextSnapshot.agentThreadId);
+  const agentThreadMessageId = readNonEmptyString(input.contextSnapshot.agentThreadMessageId);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -1534,7 +1541,29 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  const threadSummary =
+    agentThreadId
+      ? await input.db
+          .select({
+            id: agentThreads.id,
+            agentId: agentThreads.agentId,
+            agentName: agents.name,
+          })
+          .from(agentThreads)
+          .innerJoin(agents, eq(agents.id, agentThreads.agentId))
+          .where(and(eq(agentThreads.id, agentThreadId), eq(agentThreads.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+  if (
+    commentIds.length === 0 &&
+    Object.keys(executionStage).length === 0 &&
+    !issueSummary &&
+    !threadSummary &&
+    !agentThreadMessageId
+  ) {
+    return null;
+  }
 
   const commentRows =
     commentIds.length === 0
@@ -1600,6 +1629,72 @@ async function buildPaperclipWakePayload(input: {
     });
   }
 
+  const threadMessageIds = agentThreadMessageId ? [agentThreadMessageId] : [];
+  const threadMessageRows =
+    threadMessageIds.length === 0
+      ? []
+      : await input.db
+          .select({
+            id: agentThreadMessages.id,
+            threadId: agentThreadMessages.threadId,
+            body: agentThreadMessages.body,
+            role: agentThreadMessages.role,
+            authorAgentId: agentThreadMessages.authorAgentId,
+            authorUserId: agentThreadMessages.authorUserId,
+            createdAt: agentThreadMessages.createdAt,
+          })
+          .from(agentThreadMessages)
+          .where(
+            and(
+              eq(agentThreadMessages.companyId, input.companyId),
+              inArray(agentThreadMessages.id, threadMessageIds),
+            ),
+          );
+
+  const threadMessagesById = new Map(threadMessageRows.map((message) => [message.id, message]));
+  const threadMessages: Array<Record<string, unknown>> = [];
+  let missingThreadMessageCount = 0;
+
+  for (const threadMessageId of threadMessageIds) {
+    const row = threadMessagesById.get(threadMessageId);
+    if (!row) {
+      missingThreadMessageCount += 1;
+      continue;
+    }
+
+    threadMessages.push({
+      id: row.id,
+      threadId: row.threadId,
+      role: row.role,
+      body: row.body,
+      bodyTruncated: false,
+      createdAt: row.createdAt.toISOString(),
+      author: row.authorAgentId
+        ? { type: "agent", id: row.authorAgentId }
+        : row.authorUserId
+          ? { type: "user", id: row.authorUserId }
+          : { type: row.role ?? "system", id: null },
+    });
+  }
+
+  if (
+    threadMessages.length === 0 &&
+    threadMessageIds.length > 0 &&
+    typeof input.contextSnapshot.agentThreadMessageBody === "string" &&
+    input.contextSnapshot.agentThreadMessageBody.trim().length > 0
+  ) {
+    threadMessages.push({
+      id: agentThreadMessageId,
+      threadId: agentThreadId,
+      role: "user",
+      body: input.contextSnapshot.agentThreadMessageBody,
+      bodyTruncated: false,
+      createdAt: null,
+      author: { type: "user", id: null },
+    });
+    missingThreadMessageCount = 0;
+  }
+
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
@@ -1609,6 +1704,13 @@ async function buildPaperclipWakePayload(input: {
           title: issueSummary.title,
           status: issueSummary.status,
           priority: issueSummary.priority,
+        }
+      : null,
+    thread: threadSummary
+      ? {
+          id: threadSummary.id,
+          agentId: threadSummary.agentId,
+          agentName: threadSummary.agentName,
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -1652,13 +1754,21 @@ async function buildPaperclipWakePayload(input: {
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
+    threadMessageIds,
+    latestThreadMessageId: threadMessageIds[threadMessageIds.length - 1] ?? null,
+    threadMessages,
+    threadMessageWindow: {
+      requestedCount: threadMessageIds.length,
+      includedCount: threadMessages.length,
+      missingCount: missingThreadMessageCount,
+    },
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
     truncated,
-    fallbackFetchNeeded: truncated || missingCommentCount > 0,
+    fallbackFetchNeeded: truncated || missingCommentCount > 0 || missingThreadMessageCount > 0,
   };
 }
 
@@ -1843,6 +1953,7 @@ export function heartbeatService(db: Db) {
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const agentThreadsSvc = agentThreadService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -5782,6 +5893,44 @@ export function heartbeatService(db: Db) {
               "stderr",
               `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+        }
+        if (outcome === "succeeded") {
+          const agentThreadId = readNonEmptyString(
+            (livenessRun.contextSnapshot as Record<string, unknown> | null | undefined)?.agentThreadId,
+          );
+          if (agentThreadId) {
+            try {
+              const existingThreadMessage = await db
+                .select({ id: agentThreadMessages.id })
+                .from(agentThreadMessages)
+                .where(
+                  and(
+                    eq(agentThreadMessages.companyId, livenessRun.companyId),
+                    eq(agentThreadMessages.threadId, agentThreadId),
+                    eq(agentThreadMessages.producingHeartbeatRunId, livenessRun.id),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+              if (!existingThreadMessage) {
+                const threadMessage = buildHeartbeatRunIssueComment(persistedResultJson);
+                if (threadMessage) {
+                  await agentThreadsSvc.postAssistantMessage({
+                    companyId: livenessRun.companyId,
+                    threadId: agentThreadId,
+                    authorAgentId: agent.id,
+                    body: threadMessage,
+                    producingHeartbeatRunId: livenessRun.id,
+                  });
+                }
+              }
+            } catch (err) {
+              await onLog(
+                "stderr",
+                `[paperclip] Failed to post agent-thread reply: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+            }
           }
         }
         if (outcome === "failed" && livenessRun.errorCode === "codex_transient_upstream") {

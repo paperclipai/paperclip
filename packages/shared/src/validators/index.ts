@@ -135,6 +135,12 @@ export {
   type TestOpenClawConnection,
   type UpdateAgentPermissions,
 } from "./agent.js";
+export {
+  postAgentThreadMessageSchema,
+  markAgentThreadReadSchema,
+  type PostAgentThreadMessage,
+  type MarkAgentThreadRead,
+} from "./agent-thread.js";
 
 export {
   createProjectSchema,

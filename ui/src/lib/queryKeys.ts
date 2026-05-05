@@ -29,6 +29,9 @@ export const queryKeys = {
       ["agents", companyId, "adapter-models", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
+    thread: (agentId: string, companyId: string) => ["agents", companyId, agentId, "thread"] as const,
+    threadMessages: (agentId: string, companyId: string) =>
+      ["agents", companyId, agentId, "thread-messages"] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,

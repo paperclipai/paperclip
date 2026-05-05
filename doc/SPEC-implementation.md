@@ -35,7 +35,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Full visibility to board and all agents in same company |
-| Communication | Tasks + comments only (no separate chat system) |
+| Communication | Tasks + comments for work; `agent thread` for direct board-to-agent communication |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | No automatic reassignment; work recovery stays manual/explicit |
 | Agent adapters | Built-in `process` and `http` adapters |
@@ -62,6 +62,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Goal hierarchy linked to company mission
 - Agent lifecycle with org structure and adapter configuration
 - Task lifecycle with parent/child hierarchy and comments
+- Agent-thread lifecycle with one active thread per `(company, agent)` plus archived history
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
 - Heartbeat invocation, status tracking, and cancellation
@@ -226,7 +227,46 @@ Invariants:
 - `author_user_id` uuid fk `users.id` null
 - `body` text not null
 
-## 7.8 `heartbeat_runs`
+## 7.8 `agent_threads`
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null
+- `agent_id` uuid fk `agents.id` not null
+- `status` enum: `active | archived`
+- `archived_at` timestamptz null
+- `last_activity_at` timestamptz not null
+
+Invariants:
+
+- at most one active thread per `(company_id, agent_id)`
+- thread is communication channel, not work item
+- stale active thread archives lazily after 12 hours of thread inactivity on next open/send
+
+## 7.9 `agent_thread_messages`
+
+- `id` uuid pk
+- `thread_id` uuid fk `agent_threads.id` not null
+- `company_id` uuid fk `companies.id` not null
+- `role` enum: `user | assistant | system`
+- `author_user_id` uuid fk `users.id` null
+- `author_agent_id` uuid fk `agents.id` null
+- `producing_heartbeat_run_id` uuid fk `heartbeat_runs.id` null
+- `body` text not null
+
+Invariant: assistant-visible replies are stored here even when a linked heartbeat run exists.
+
+## 7.10 `agent_thread_reads`
+
+- `id` uuid pk
+- `thread_id` uuid fk `agent_threads.id` not null
+- `company_id` uuid fk `companies.id` not null
+- `user_id` uuid fk `users.id` not null
+- `last_read_message_id` uuid fk `agent_thread_messages.id` null
+- `last_read_at` timestamptz not null
+
+Invariant: unread/read state is tracked per user, per thread.
+
+## 7.11 `heartbeat_runs`
 
 - `id` uuid pk
 - `company_id` uuid fk not null
@@ -239,7 +279,7 @@ Invariants:
 - `external_run_id` text null
 - `context_snapshot` jsonb null
 
-## 7.9 `cost_events`
+## 7.12 `cost_events`
 
 - `id` uuid pk
 - `company_id` uuid fk not null

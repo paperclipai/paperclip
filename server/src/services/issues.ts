@@ -717,6 +717,8 @@ const issueListSelect = {
   originKind: issues.originKind,
   originId: issues.originId,
   originRunId: issues.originRunId,
+  originThreadId: issues.originThreadId,
+  originThreadMessageId: issues.originThreadMessageId,
   originFingerprint: issues.originFingerprint,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,

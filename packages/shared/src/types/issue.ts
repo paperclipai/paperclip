@@ -220,6 +220,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  originThreadId?: string | null;
+  originThreadMessageId?: string | null;
   originFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;

@@ -394,6 +394,42 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  it("renders agent-thread wake prompts as conversation scope, not issue scope", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "agent_thread_message",
+      thread: {
+        id: "thread-1",
+        agentId: "agent-1",
+        agentName: "CTO",
+      },
+      threadMessageIds: ["message-1"],
+      latestThreadMessageId: "message-1",
+      threadMessages: [
+        {
+          id: "message-1",
+          threadId: "thread-1",
+          role: "user",
+          body: "make 3 follow-up issues",
+          createdAt: "2026-05-04T09:00:00.000Z",
+          author: { type: "user", id: "user-1" },
+        },
+      ],
+      threadMessageWindow: {
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("## Paperclip Agent Thread Wake");
+    expect(prompt).toContain("This heartbeat is scoped to direct conversation with agent thread");
+    expect(prompt).toContain("Respond directly in agent thread");
+    expect(prompt).toContain("Do not treat this like issue execution unless visible work is created.");
+    expect(prompt).toContain("CTO");
+    expect(prompt).toContain("make 3 follow-up issues");
+  });
 });
 
 describe("appendWithByteCap", () => {

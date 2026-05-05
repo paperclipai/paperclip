@@ -30,7 +30,7 @@ interface ActiveAgentsPanelProps {
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: MIN_DASHBOARD_RUNS }),
   });
 
   const runs = liveRuns ?? [];

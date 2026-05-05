@@ -67,6 +67,7 @@ export type {
   OpenClawConnectionState,
   OpenClawConnectionTestResult,
 } from "./agent.js";
+export type { AgentThread, AgentThreadMessage, AgentThreadReadState } from "./agent-thread.js";
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
