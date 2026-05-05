@@ -167,7 +167,7 @@ export interface IssueRelation {
   companyId: string;
   issueId: string;
   relatedIssueId: string;
-  type: "blocks";
+  type: "blocks" | "superseded_by";
   relatedIssue: IssueRelationIssueSummary;
 }
 
