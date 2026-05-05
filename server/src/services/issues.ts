@@ -2257,17 +2257,28 @@ export function issueService(db: Db) {
         END
       `;
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+      const defaultOrderBy = filters?.projectId
+        ? [desc(issues.createdAt), desc(issues.issueNumber)]
+        : [
+            asc(priorityOrder),
+            desc(canonicalLastActivityAt),
+            desc(issues.updatedAt),
+            desc(issues.id),
+          ];
+      const orderBy = hasSearch
+        ? [
+            asc(searchOrder),
+            asc(priorityOrder),
+            desc(canonicalLastActivityAt),
+            desc(issues.updatedAt),
+            desc(issues.id),
+          ]
+        : defaultOrderBy;
       const baseQuery = db
         .select(issueListSelect)
         .from(issues)
         .where(and(...conditions))
-        .orderBy(
-          hasSearch ? asc(searchOrder) : asc(priorityOrder),
-          asc(priorityOrder),
-          desc(canonicalLastActivityAt),
-          desc(issues.updatedAt),
-          desc(issues.id),
-        );
+        .orderBy(...orderBy);
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));

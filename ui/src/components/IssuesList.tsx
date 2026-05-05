@@ -120,9 +120,9 @@ export type IssueViewState = IssueFilterState & {
   collapsedParents: string[];
 };
 
-const defaultViewState: IssueViewState = {
+export const defaultViewState: IssueViewState = {
   ...defaultIssueFilterState,
-  sortField: "updated",
+  sortField: "created",
   sortDir: "desc",
   groupBy: "none",
   viewMode: "list",
@@ -214,7 +214,14 @@ function saveIssueColumns(key: string, columns: InboxIssueColumn[]) {
   }
 }
 
-function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
+function tieBreakIssues(a: Issue, b: Issue): number {
+  if (a.issueNumber != null && b.issueNumber != null) return b.issueNumber - a.issueNumber;
+  if (a.issueNumber != null) return -1;
+  if (b.issueNumber != null) return 1;
+  return (b.identifier ?? "").localeCompare(a.identifier ?? "");
+}
+
+export function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   if (state.sortField === "workflow") {
     const ordered = workflowSort(issues);
     return state.sortDir === "desc" ? [...ordered].reverse() : ordered;
@@ -222,20 +229,28 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   const sorted = [...issues];
   const dir = state.sortDir === "asc" ? 1 : -1;
   sorted.sort((a, b) => {
+    let result = 0;
     switch (state.sortField) {
       case "status":
-        return dir * (issueStatusOrder.indexOf(a.status) - issueStatusOrder.indexOf(b.status));
+        result = issueStatusOrder.indexOf(a.status) - issueStatusOrder.indexOf(b.status);
+        break;
       case "priority":
-        return dir * (issuePriorityOrder.indexOf(a.priority) - issuePriorityOrder.indexOf(b.priority));
+        result = issuePriorityOrder.indexOf(a.priority) - issuePriorityOrder.indexOf(b.priority);
+        break;
       case "title":
-        return dir * a.title.localeCompare(b.title);
+        result = a.title.localeCompare(b.title);
+        break;
       case "created":
-        return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        result = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        break;
       case "updated":
-        return dir * (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+        result = new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+        break;
       default:
-        return 0;
+        result = 0;
     }
+    if (result !== 0) return dir * result;
+    return tieBreakIssues(a, b);
   });
   return sorted;
 }
