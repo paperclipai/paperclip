@@ -444,6 +444,67 @@ res.status(201).json(await boardSvc.addAttachment(companyId, req.params.issueId 
     res.json(await boardSvc.upsertCardCustomFieldValue(companyId, issueId, actorUserId, { fieldId, ...req.body }));
   });
 
+  // WIP limit routes
+  router.get("/companies/:companyId/rt2/work-board/lane-settings/:projectId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const projectId = req.params.projectId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await boardSvc.getLaneSettings(companyId, projectId));
+  });
+
+  router.patch("/companies/:companyId/rt2/work-board/lane-settings/:projectId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const projectId = req.params.projectId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    const updates = req.body as Array<{ lane: string; wipLimit: number | null }>;
+    for (const update of updates) {
+      await boardSvc.updateLaneWipLimit(companyId, projectId, update.lane, update.wipLimit);
+    }
+    res.json(await boardSvc.getLaneSettings(companyId, projectId));
+  });
+
+  // Card template routes
+  router.get("/companies/:companyId/rt2/work-board/templates/:projectId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const projectId = req.params.projectId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await boardSvc.getCardTemplates(companyId, projectId));
+  });
+
+  router.post("/companies/:companyId/rt2/work-board/templates/:projectId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const projectId = req.params.projectId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    res.status(201).json(await boardSvc.createCardTemplate(companyId, actorUserId, projectId, req.body));
+  });
+
+  router.patch("/rt2/work-board/templates/:templateId", async (req, res) => {
+    const { templateId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    res.json(await boardSvc.updateCardTemplate(companyId, templateId, req.body));
+  });
+
+  router.delete("/rt2/work-board/templates/:templateId", async (req, res) => {
+    const { templateId } = req.params;
+    const companyId = String(req.query.companyId ?? "");
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    await boardSvc.deleteCardTemplate(companyId, templateId);
+    res.status(204).send();
+  });
+
+  router.post("/companies/:companyId/rt2/work-board/cards/:issueId/apply-template/:templateId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const { issueId, templateId } = req.params;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    res.json(await boardSvc.applyTemplateToCard(companyId, issueId, actorUserId, templateId));
+  });
+
   router.get("/companies/:companyId/rt2/capture-drafts", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

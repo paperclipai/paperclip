@@ -142,7 +142,7 @@ export interface Rt2BoardCardMember {
   avatarUrl?: string | null;
 }
 
-export type Rt2CustomFieldType = "text" | "number" | "date" | "dropdown";
+export type Rt2CustomFieldType = "text" | "number" | "date" | "dropdown" | "formula";
 
 export interface Rt2CustomFieldOption {
   id: string;

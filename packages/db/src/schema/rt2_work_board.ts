@@ -1,6 +1,7 @@
 import { index, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
+import { projects } from "./projects.js";
 
 export const rt2WorkBoardCustomFields = pgTable(
   "rt2_work_board_custom_fields",
@@ -9,6 +10,7 @@ export const rt2WorkBoardCustomFields = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     fieldType: text("field_type").notNull().default("text"),
+    formulaExpression: text("formula_expression"),
     position: integer("position").notNull().default(0),
     createdByUserId: text("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -180,20 +182,53 @@ export const rt2CaptureDrafts = pgTable(
   }),
 );
 
-export const rt2CaptureDraftRevisions = pgTable(
-  "rt2_capture_draft_revisions",
+export const rt2WorkBoardLaneSettings = pgTable(
+  "rt2_work_board_lane_settings",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    draftId: uuid("draft_id").notNull().references(() => rt2CaptureDrafts.id, { onDelete: "cascade" }),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    revisionNumber: integer("revision_number").notNull(),
-    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
-    changeSummary: text("change_summary"),
-    createdByUserId: text("created_by_user_id"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    lane: text("lane").notNull(),
+    wipLimit: integer("wip_limit"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    draftRevisionUq: uniqueIndex("rt2_capture_draft_revisions_draft_revision_uq").on(table.draftId, table.revisionNumber),
-    companyDraftIdx: index("rt2_capture_draft_revisions_company_draft_idx").on(table.companyId, table.draftId),
+    companyProjectLaneUq: uniqueIndex("rt2_work_board_lane_settings_company_project_lane_uq").on(table.companyId, table.projectId, table.lane),
+  }),
+);
+
+export const rt2WorkBoardCardTemplates = pgTable(
+  "rt2_work_board_card_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    dueDateOffset: integer("due_date_offset"),
+    position: integer("position").notNull().default(0),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyProjectIdx: index("rt2_work_board_card_templates_company_project_idx").on(table.companyId, table.projectId),
+  }),
+);
+
+export const rt2WorkBoardCardTemplateFieldValues = pgTable(
+  "rt2_work_board_card_template_field_values",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    templateId: uuid("template_id").notNull().references(() => rt2WorkBoardCardTemplates.id, { onDelete: "cascade" }),
+    fieldId: uuid("field_id").notNull().references(() => rt2WorkBoardCustomFields.id, { onDelete: "cascade" }),
+    textValue: text("text_value"),
+    numberValue: real("number_value"),
+    dateValue: timestamp("date_value", { withTimezone: true }),
+    optionId: uuid("option_id").references(() => rt2WorkBoardCustomFieldOptions.id, { onDelete: "set null" }),
+  },
+  (table) => ({
+    templateFieldUq: uniqueIndex("rt2_work_board_card_template_field_values_template_field_uq").on(table.templateId, table.fieldId),
   }),
 );

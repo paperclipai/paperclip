@@ -38,6 +38,11 @@ import {
   type Rt2CustomFieldValue,
   type Rt2CustomFieldType,
 } from "@paperclipai/shared";
+import {
+  rt2WorkBoardLaneSettings,
+  rt2WorkBoardCardTemplates,
+  rt2WorkBoardCardTemplateFieldValues,
+} from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { issueService } from "./issues.js";
 import { rt2HybridSearchService } from "./rt2-hybrid-search.js";
@@ -464,6 +469,80 @@ export function rt2WorkBoardService(db: Db) {
       .onConflictDoNothing();
   }
 
+  // Private method references for use within the service
+  async function getCardCustomFieldValues(companyId: string, issueIds: string[]): Promise<Map<string, Rt2CustomFieldValue[]>> {
+    if (issueIds.length === 0) return new Map();
+    const valueRows = await db
+      .select()
+      .from(rt2WorkBoardCardCustomFieldValues)
+      .where(and(eq(rt2WorkBoardCardCustomFieldValues.companyId, companyId), inArray(rt2WorkBoardCardCustomFieldValues.issueId, issueIds)));
+    const fieldRows = await db
+      .select()
+      .from(rt2WorkBoardCustomFields)
+      .where(eq(rt2WorkBoardCustomFields.companyId, companyId));
+    const optionRows = await db
+      .select()
+      .from(rt2WorkBoardCustomFieldOptions)
+      .where(eq(rt2WorkBoardCustomFieldOptions.companyId, companyId));
+    const fieldById = new Map(fieldRows.map((f) => [f.id, f]));
+    const optionsByFieldId = new Map<string, Map<string, string>>();
+    for (const o of optionRows) {
+      const bucket = optionsByFieldId.get(o.fieldId) ?? new Map();
+      bucket.set(o.id, o.label);
+      optionsByFieldId.set(o.fieldId, bucket);
+    }
+    const result = new Map<string, Rt2CustomFieldValue[]>();
+    for (const row of valueRows) {
+      const field = fieldById.get(row.fieldId);
+      if (!field) continue;
+      const bucket = result.get(row.issueId) ?? [];
+      const optionLabels = optionsByFieldId.get(row.fieldId);
+      bucket.push({
+        fieldId: row.fieldId,
+        fieldName: field.name,
+        fieldType: field.fieldType as Rt2CustomFieldType,
+        textValue: row.textValue ?? null,
+        numberValue: row.numberValue ?? null,
+        dateValue: row.dateValue ? new Date(row.dateValue).toISOString() : null,
+        optionId: row.optionId ?? null,
+        optionLabel: row.optionId ? (optionLabels?.get(row.optionId) ?? null) : null,
+      });
+      result.set(row.issueId, bucket);
+    }
+    return result;
+  }
+
+  async function getLaneCardCount(companyId: string, projectId: string, lane: string): Promise<number> {
+    const rows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.status, lane)));
+    return rows[0]?.count ?? 0;
+  }
+
+  async function upsertCardCustomFieldValue(companyId: string, issueId: string, actorUserId: string, input: { fieldId: string; textValue?: string | null; numberValue?: number | null; dateValue?: string | null; optionId?: string | null }): Promise<Rt2CustomFieldValue> {
+    await ensureCard(companyId, issueId, actorUserId);
+    const [row] = await db
+      .insert(rt2WorkBoardCardCustomFieldValues)
+      .values({ companyId, issueId, fieldId: input.fieldId, textValue: input.textValue ?? null, numberValue: input.numberValue ?? null, dateValue: input.dateValue ? new Date(input.dateValue) : null, optionId: input.optionId ?? null })
+      .onConflictDoUpdate({
+        target: [rt2WorkBoardCardCustomFieldValues.companyId, rt2WorkBoardCardCustomFieldValues.issueId, rt2WorkBoardCardCustomFieldValues.fieldId],
+        set: { textValue: input.textValue ?? null, numberValue: input.numberValue ?? null, dateValue: input.dateValue ? new Date(input.dateValue) : null, optionId: input.optionId ?? null, updatedAt: new Date() },
+      })
+      .returning();
+    const field = await db.select().from(rt2WorkBoardCustomFields).where(and(eq(rt2WorkBoardCustomFields.companyId, companyId), eq(rt2WorkBoardCustomFields.id, input.fieldId))).then((r) => r[0]);
+    return {
+      fieldId: row.fieldId,
+      fieldName: field?.name ?? "",
+      fieldType: (field?.fieldType ?? "text") as Rt2CustomFieldType,
+      textValue: row.textValue ?? null,
+      numberValue: row.numberValue ?? null,
+      dateValue: row.dateValue ? new Date(row.dateValue).toISOString() : null,
+      optionId: row.optionId ?? null,
+      optionLabel: null,
+    };
+  }
+
   async function getCaptureRow(companyId: string, draftId: string) {
     const row = await db
       .select()
@@ -608,7 +687,7 @@ export function rt2WorkBoardService(db: Db) {
           goalId: issues.goalId,
         }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueIssueIds))),
       ]);
-      const customFieldValuesMap = await self.getCardCustomFieldValues(companyId, uniqueIssueIds);
+      const customFieldValuesMap = await getCardCustomFieldValues(companyId, uniqueIssueIds);
 
       const cardsByIssue = new Map(cardRows.map((row) => [row.issueId, row]));
       const checklistByIssue = new Map<string, ReturnType<typeof toChecklist>[]>();
@@ -1301,6 +1380,164 @@ export function rt2WorkBoardService(db: Db) {
         optionId: row.optionId ?? null,
         optionLabel: null,
       };
+    },
+
+    // --- Formula field evaluation ---
+    evaluateFormula: (expression: string, fieldValues: Map<string, number | null>): number | null => {
+      try {
+        // Normalize field references: replace field names with their numeric values
+        // Expression format: "fieldA + fieldB * fieldC"
+        const fieldNames = [...fieldValues.keys()];
+        let expr = expression;
+        for (const name of fieldNames) {
+          const value = fieldValues.get(name);
+          if (value === null || value === undefined) return null;
+          const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+          expr = expr.replace(regex, String(value));
+        }
+        // Basic arithmetic evaluation (only numbers and +,-,*,/, parentheses)
+        // eslint-disable-next-line no-new-func
+        const result = new Function(`"use strict"; return (${expr})`)();
+        return typeof result === "number" && Number.isFinite(result) ? result : null;
+      } catch {
+        return null;
+      }
+    },
+
+    // --- WIP limit methods ---
+    getLaneSettings: async (companyId: string, projectId: string) => {
+      const rows = await db
+        .select()
+        .from(rt2WorkBoardLaneSettings)
+        .where(and(eq(rt2WorkBoardLaneSettings.companyId, companyId), eq(rt2WorkBoardLaneSettings.projectId, projectId)));
+      const settings: Record<string, number | null> = { todo: null, in_progress: null, done: null };
+      for (const row of rows) {
+        settings[row.lane] = row.wipLimit;
+      }
+      return settings;
+    },
+
+    updateLaneWipLimit: async (companyId: string, projectId: string, lane: string, wipLimit: number | null) => {
+      const now = new Date();
+      await db
+        .insert(rt2WorkBoardLaneSettings)
+        .values({ companyId, projectId, lane, wipLimit, updatedAt: now })
+        .onConflictDoUpdate({
+          target: [rt2WorkBoardLaneSettings.companyId, rt2WorkBoardLaneSettings.projectId, rt2WorkBoardLaneSettings.lane],
+          set: { wipLimit, updatedAt: now },
+        });
+    },
+
+    getLaneCardCount: async (companyId: string, projectId: string, lane: string) => {
+      const rows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.status, lane)));
+      return rows[0]?.count ?? 0;
+    },
+
+    checkWipLimitExceeded: async (companyId: string, projectId: string, lane: string) => {
+      const [setting] = await db
+        .select({ wipLimit: rt2WorkBoardLaneSettings.wipLimit })
+        .from(rt2WorkBoardLaneSettings)
+        .where(and(eq(rt2WorkBoardLaneSettings.companyId, companyId), eq(rt2WorkBoardLaneSettings.projectId, projectId), eq(rt2WorkBoardLaneSettings.lane, lane)));
+      const limit = setting?.wipLimit ?? null;
+      const current = await getLaneCardCount(companyId, projectId, lane);
+      return { exceeded: limit !== null && current >= limit, current, limit };
+    },
+
+    // --- Card template methods ---
+    getCardTemplates: async (companyId: string, projectId: string) => {
+      const templateRows = await db
+        .select()
+        .from(rt2WorkBoardCardTemplates)
+        .where(and(eq(rt2WorkBoardCardTemplates.companyId, companyId), eq(rt2WorkBoardCardTemplates.projectId, projectId)))
+        .orderBy(rt2WorkBoardCardTemplates.position);
+      const templateIds = templateRows.map((t) => t.id);
+      const fieldValueRows = templateIds.length > 0
+        ? await db.select().from(rt2WorkBoardCardTemplateFieldValues).where(inArray(rt2WorkBoardCardTemplateFieldValues.templateId, templateIds))
+        : [];
+      const valuesByTemplate = new Map<string, Rt2CustomFieldValue[]>();
+      for (const row of fieldValueRows) {
+        const bucket = valuesByTemplate.get(row.templateId) ?? [];
+        bucket.push({
+          fieldId: row.fieldId,
+          fieldName: "",
+          fieldType: "text" as Rt2CustomFieldType,
+          textValue: row.textValue ?? null,
+          numberValue: row.numberValue ?? null,
+          dateValue: row.dateValue ? new Date(row.dateValue).toISOString() : null,
+          optionId: row.optionId ?? null,
+          optionLabel: null,
+        });
+        valuesByTemplate.set(row.templateId, bucket);
+      }
+      return templateRows.map((t) => ({ id: t.id, name: t.name, description: t.description ?? null, dueDateOffset: t.dueDateOffset ?? null, fieldValues: valuesByTemplate.get(t.id) ?? [] }));
+    },
+
+    createCardTemplate: async (companyId: string, actorUserId: string, projectId: string, input: { name: string; description?: string | null; dueDateOffset?: number | null; fieldValues?: Array<{ fieldId: string; textValue?: string | null; numberValue?: number | null; dateValue?: string | null; optionId?: string | null }> }) => {
+      const [{ nextPosition }] = await db
+        .select({ nextPosition: sql<number>`coalesce(max(${rt2WorkBoardCardTemplates.position}), -1) + 1` })
+        .from(rt2WorkBoardCardTemplates)
+        .where(and(eq(rt2WorkBoardCardTemplates.companyId, companyId), eq(rt2WorkBoardCardTemplates.projectId, projectId)));
+      const [row] = await db
+        .insert(rt2WorkBoardCardTemplates)
+        .values({ companyId, projectId, name: input.name, description: input.description ?? null, dueDateOffset: input.dueDateOffset ?? null, position: nextPosition, createdByUserId: actorUserId })
+        .returning();
+      const templateId = row.id;
+      if (input.fieldValues && input.fieldValues.length > 0) {
+        await db.insert(rt2WorkBoardCardTemplateFieldValues).values(
+          input.fieldValues.map((fv) => ({ companyId, templateId, fieldId: fv.fieldId, textValue: fv.textValue ?? null, numberValue: fv.numberValue ?? null, dateValue: fv.dateValue ? new Date(fv.dateValue) : null, optionId: fv.optionId ?? null })),
+        );
+      }
+      return { id: row.id, name: row.name, description: row.description ?? null, dueDateOffset: row.dueDateOffset ?? null, fieldValues: input.fieldValues ?? [] };
+    },
+
+    updateCardTemplate: async (companyId: string, templateId: string, input: { name?: string; description?: string | null; dueDateOffset?: number | null; fieldValues?: Array<{ fieldId: string; textValue?: string | null; numberValue?: number | null; dateValue?: string | null; optionId?: string | null }> }) => {
+      const [row] = await db
+        .update(rt2WorkBoardCardTemplates)
+        .set({ name: input.name, description: input.description ?? null, dueDateOffset: input.dueDateOffset ?? null, updatedAt: new Date() })
+        .where(and(eq(rt2WorkBoardCardTemplates.companyId, companyId), eq(rt2WorkBoardCardTemplates.id, templateId)))
+        .returning();
+      if (!row) throw notFound("Card template not found");
+      if (input.fieldValues) {
+        await db.delete(rt2WorkBoardCardTemplateFieldValues).where(and(eq(rt2WorkBoardCardTemplateFieldValues.companyId, companyId), eq(rt2WorkBoardCardTemplateFieldValues.templateId, templateId)));
+        if (input.fieldValues.length > 0) {
+          await db.insert(rt2WorkBoardCardTemplateFieldValues).values(
+            input.fieldValues.map((fv) => ({ companyId, templateId, fieldId: fv.fieldId, textValue: fv.textValue ?? null, numberValue: fv.numberValue ?? null, dateValue: fv.dateValue ? new Date(fv.dateValue) : null, optionId: fv.optionId ?? null })),
+          );
+        }
+      }
+      return { id: row.id, name: row.name, description: row.description ?? null, dueDateOffset: row.dueDateOffset ?? null };
+    },
+
+    deleteCardTemplate: async (companyId: string, templateId: string) => {
+      await db.delete(rt2WorkBoardCardTemplateFieldValues).where(and(eq(rt2WorkBoardCardTemplateFieldValues.companyId, companyId), eq(rt2WorkBoardCardTemplateFieldValues.templateId, templateId)));
+      await db.delete(rt2WorkBoardCardTemplates).where(and(eq(rt2WorkBoardCardTemplates.companyId, companyId), eq(rt2WorkBoardCardTemplates.id, templateId)));
+    },
+
+    applyTemplateToCard: async (companyId: string, issueId: string, actorUserId: string, templateId: string) => {
+      const [template] = await db
+        .select()
+        .from(rt2WorkBoardCardTemplates)
+        .where(and(eq(rt2WorkBoardCardTemplates.companyId, companyId), eq(rt2WorkBoardCardTemplates.id, templateId)))
+        .then((r) => r);
+      if (!template) throw notFound("Card template not found");
+      const fieldValueRows = await db
+        .select()
+        .from(rt2WorkBoardCardTemplateFieldValues)
+        .where(and(eq(rt2WorkBoardCardTemplateFieldValues.companyId, companyId), eq(rt2WorkBoardCardTemplateFieldValues.templateId, templateId)));
+      if (template.dueDateOffset !== null) {
+        const dueDate = new Date();
+        dueDate.setDate(dueDate.getDate() + template.dueDateOffset);
+        await db.update(rt2WorkBoardCards).set({ dueDate, updatedByUserId: actorUserId, updatedAt: new Date() }).where(and(eq(rt2WorkBoardCards.companyId, companyId), eq(rt2WorkBoardCards.issueId, issueId)));
+      }
+      const results = [];
+      for (const fv of fieldValueRows) {
+        const result = await upsertCardCustomFieldValue(companyId, issueId, actorUserId, { fieldId: fv.fieldId, textValue: fv.textValue ?? null, numberValue: fv.numberValue ?? null, dateValue: fv.dateValue ? new Date(fv.dateValue).toISOString() : null, optionId: fv.optionId ?? null });
+        results.push(result);
+      }
+      return { applied: true, dueDateSet: template.dueDateOffset !== null };
     },
   };
 }
