@@ -144,6 +144,8 @@ export async function prepareCommandManagedRuntime(input: {
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
   installCommand?: string | null;
+  /** When provided alongside `installCommand`, skip the install if `command -v <detectCommand>` succeeds. */
+  detectCommand?: string | null;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -164,13 +166,52 @@ export async function prepareCommandManagedRuntime(input: {
   const shellCommand = preferredShellForSandbox(input.spec.shellCommand);
 
   if (input.installCommand?.trim()) {
+    const installCommand = input.installCommand.trim();
+    const detectCommand = input.detectCommand?.trim();
+    // Skip the install when the binary is already on PATH. Without this
+    // probe the install runs unconditionally on every execute() call (and
+    // also runs a second time after `ensureAdapterExecutionTargetCommandResolvable`
+    // has already installed it during the resolvability gate).
+    if (detectCommand) {
+      const probe = await input.runner.execute({
+        command: shellCommand,
+        args: ["-lc", `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`],
+        cwd: workspaceRemoteDir,
+        timeoutMs,
+      });
+      if (!probe.timedOut && (probe.exitCode ?? 1) === 0) {
+        return await prepareSandboxManagedRuntime({
+          spec: runtimeSpec,
+          client,
+          adapterKey: input.adapterKey,
+          workspaceLocalDir: input.workspaceLocalDir,
+          workspaceRemoteDir,
+          workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+          preserveAbsentOnRestore: input.preserveAbsentOnRestore,
+          assets: input.assets,
+        });
+      }
+    }
     const result = await input.runner.execute({
       command: shellCommand,
-      args: ["-lc", input.installCommand.trim()],
+      args: ["-lc", installCommand],
       cwd: workspaceRemoteDir,
       timeoutMs,
     });
-    requireSuccessfulResult(result, input.installCommand.trim());
+    // A failed install is not always fatal: the CLI may already be on PATH
+    // from a previous lease, the template image, or another path entry. Log
+    // and continue rather than aborting the agent run; downstream code that
+    // exec's the CLI will surface a clear "command not found" if it is in
+    // fact missing. The test path's `maybeRunSandboxInstallCommand` already
+    // honors this contract — keep them consistent.
+    if (result.timedOut || (result.exitCode ?? 0) !== 0) {
+      const tail = (text: string) =>
+        text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-3).join(" | ").slice(0, 480);
+      const reason = result.timedOut ? "timed out" : `exited ${result.exitCode ?? "?"}`;
+      console.warn(
+        `[paperclip] managed-runtime install command ${reason}: ${installCommand} :: ${tail(result.stderr || result.stdout)}`,
+      );
+    }
   }
 
   return await prepareSandboxManagedRuntime({
