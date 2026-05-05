@@ -60,7 +60,8 @@ describe("ghFetch", () => {
       "fetch",
       vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
-          reject(new DOMException("Aborted", "AbortError"));
+          // AbortSignal.timeout() rejects with TimeoutError in Node 18+ (not AbortError).
+          reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
         });
       })),
     );

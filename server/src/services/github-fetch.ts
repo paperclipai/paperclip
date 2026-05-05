@@ -131,11 +131,12 @@ export async function ghFetch(url: string, init?: GhFetchInit): Promise<Response
 
       return response;
     } catch (err) {
-      const isAbort = err instanceof Error && err.name === "AbortError";
-      if (isAbort && fetchInitBase.signal?.aborted) {
+      const isDeadline =
+        err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
+      if (isDeadline && fetchInitBase.signal?.aborted) {
         throw err;
       }
-      if (isAbort) {
+      if (isDeadline) {
         throw unprocessable(
           `Request to ${hostname} timed out after ${timeoutMs}ms — ensure the URL points to a GitHub or GitHub Enterprise instance`,
         );
