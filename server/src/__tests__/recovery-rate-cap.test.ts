@@ -149,11 +149,14 @@ describeEmbeddedPostgres("stranded issue recovery rate cap", () => {
     ]);
 
     await db.insert(budgetPolicies).values({
-      id: randomUUID(),
       companyId,
-      agentId: ctoAgentId,
-      maxDailyCostCents: 100_000,
-      maxMonthlyCostCents: 1_000_000,
+      scopeType: "agent",
+      scopeId: ctoAgentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1_000_000_00,
+      hardStopEnabled: true,
+      isActive: true,
     });
 
     return { companyId, ctoAgentId, engineerAgentId };
