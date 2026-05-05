@@ -3,7 +3,14 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+// The curated default + model list use the `opencode/*` provider prefix
+// (Zen-routed, free-credits path) rather than `openai/*`. The `openai/*`
+// prefix routes through ChatGPT-OAuth and is gated by an OAuth allowlist
+// that does not include `gpt-5.2-codex`, so OAuth-only users hit a 400
+// at adapter startup the moment they accept the curated default at hire
+// time (issue #5132). `opencode/*` works for both OAuth and api-key
+// auth, matching the project's "free credits for new users" framing.
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "opencode/gpt-5.2-codex";
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -14,10 +21,10 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "opencode/gpt-5.4", label: "opencode/gpt-5.4" },
+  { id: "opencode/gpt-5.2", label: "opencode/gpt-5.2" },
+  { id: "opencode/gpt-5.1-codex-max", label: "opencode/gpt-5.1-codex-max" },
+  { id: "opencode/gpt-5.1-codex-mini", label: "opencode/gpt-5.1-codex-mini" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
@@ -26,7 +33,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use OpenCode's known Codex mini model as the budget lane.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
+      model: "opencode/gpt-5.1-codex-mini",
       variant: "low",
     },
     source: "adapter_default",
