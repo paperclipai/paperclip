@@ -34,7 +34,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
-import { useToast, type ToastInput } from "@/context/ToastContext";
+import { useToastActions, type ToastInput } from "@/context/ToastContext";
 
 // ---------------------------------------------------------------------------
 // Bridge error type (mirrors the SDK's PluginBridgeError)
@@ -369,7 +369,7 @@ export function useHostContext(): PluginHostContext {
 // ---------------------------------------------------------------------------
 
 export function usePluginToast(): PluginToastFn {
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   return useCallback(
     (input: PluginToastInput) => pushToast(input),
     [pushToast],

@@ -49,9 +49,18 @@ export interface AdapterDisplayInfo {
   recommended?: boolean;
   comingSoon?: boolean;
   disabledLabel?: string;
+  experimental?: boolean;
+  hideFromVisualSelection?: boolean;
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
+  acpx_local: {
+    label: "ACPX",
+    description: "Experimental local ACPX multi-agent adapter",
+    icon: Bot,
+    experimental: true,
+    hideFromVisualSelection: true,
+  },
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",

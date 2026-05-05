@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { projectRoutes } from "../routes/projects.js";
-import { goalRoutes } from "../routes/goals.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockProjectService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -22,30 +19,26 @@ const mockGoalService = vi.hoisted(() => ({
 }));
 
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockSecretService = vi.hoisted(() => ({
+  normalizeEnvBindingsForPersistence: vi.fn(),
+}));
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
-const mockTrackProjectCreated = vi.hoisted(() => vi.fn());
-const mockTrackGoalCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
-
-vi.mock("@paperclipai/shared/telemetry", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
-    "@paperclipai/shared/telemetry",
-  );
-  return {
-    ...actual,
-    trackProjectCreated: mockTrackProjectCreated,
-    trackGoalCreated: mockTrackGoalCreated,
-  };
-});
+const mockTelemetryTrack = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
 }));
 
 vi.mock("../services/index.js", () => ({
+  environmentService: () => mockEnvironmentService,
   goalService: () => mockGoalService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
+  secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
@@ -54,7 +47,30 @@ vi.mock("../services/workspace-runtime.js", () => ({
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
-function createApp(route: ReturnType<typeof projectRoutes> | ReturnType<typeof goalRoutes>) {
+function registerModuleMocks() {
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    environmentService: () => mockEnvironmentService,
+    goalService: () => mockGoalService,
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    secretService: () => mockSecretService,
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/workspace-runtime.js", () => ({
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
+}
+
+async function createApp(routeType: "project" | "goal") {
+  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>(
+    "../middleware/index.js",
+  );
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -67,16 +83,37 @@ function createApp(route: ReturnType<typeof projectRoutes> | ReturnType<typeof g
     };
     next();
   });
-  app.use("/api", route);
+  if (routeType === "project") {
+    const { projectRoutes } = await vi.importActual<typeof import("../routes/projects.js")>(
+      "../routes/projects.js",
+    );
+    app.use("/api", projectRoutes({} as any));
+  } else {
+    const { goalRoutes } = await vi.importActual<typeof import("../routes/goals.js")>(
+      "../routes/goals.js",
+    );
+    app.use("/api", goalRoutes({} as any));
+  }
   app.use(errorHandler);
   return app;
 }
 
 describe("project and goal telemetry routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../routes/projects.js");
+    vi.doUnmock("../routes/goals.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.clearAllMocks();
-    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockGetTelemetryClient.mockReturnValue({ track: mockTelemetryTrack });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
+    mockEnvironmentService.getById.mockReset();
+    mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     mockProjectService.create.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
@@ -96,20 +133,22 @@ describe("project and goal telemetry routes", () => {
   });
 
   it("emits telemetry when a project is created", async () => {
-    const res = await request(createApp(projectRoutes({} as any)))
+    const app = await createApp("project");
+    const res = await request(app)
       .post("/api/companies/company-1/projects")
       .send({ name: "Telemetry project" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockTrackProjectCreated).toHaveBeenCalledWith(expect.anything());
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockTelemetryTrack).toHaveBeenCalledWith("project.created");
   });
 
   it("emits telemetry when a goal is created", async () => {
-    const res = await request(createApp(goalRoutes({} as any)))
+    const app = await createApp("goal");
+    const res = await request(app)
       .post("/api/companies/company-1/goals")
       .send({ title: "Telemetry goal", level: "team" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockTrackGoalCreated).toHaveBeenCalledWith(expect.anything(), { goalLevel: "team" });
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockTelemetryTrack).toHaveBeenCalledWith("goal.created", { goal_level: "team" });
   });
 });

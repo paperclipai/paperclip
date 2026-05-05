@@ -5,7 +5,14 @@ import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FailedRunInboxRow, InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./Inbox";
+import type { CompanyJoinRequest } from "../api/access";
+import {
+  FailedRunInboxRow,
+  InboxGroupHeader,
+  InboxIssueMetaLeading,
+  InboxIssueTrailingColumns,
+  formatJoinRequestInboxLabel,
+} from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: ComponentProps<"a">) => (
@@ -62,6 +69,44 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+function createJoinRequest(
+  overrides: Partial<CompanyJoinRequest> = {},
+): CompanyJoinRequest {
+  return {
+    id: "join-1",
+    inviteId: "invite-1",
+    companyId: "company-1",
+    requestType: "human",
+    status: "pending_approval",
+    requestIp: "127.0.0.1",
+    requestingUserId: "user-1",
+    requestEmailSnapshot: "joiner@example.com",
+    agentName: null,
+    adapterType: null,
+    capabilities: null,
+    agentDefaultsPayload: null,
+    claimSecretExpiresAt: null,
+    claimSecretConsumedAt: null,
+    createdAgentId: null,
+    approvedByUserId: null,
+    approvedAt: null,
+    rejectedByUserId: null,
+    rejectedAt: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    requesterUser: {
+      id: "user-1",
+      name: "Jordan Example",
+      email: "joiner@example.com",
+      image: null,
+    },
+    approvedByUser: null,
+    rejectedByUser: null,
+    invite: null,
+    ...overrides,
+  };
+}
+
 describe("FailedRunInboxRow", () => {
   let container: HTMLDivElement;
 
@@ -96,12 +141,22 @@ describe("FailedRunInboxRow", () => {
       logBytes: null,
       logSha256: null,
       logCompressed: false,
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      lastOutputBytes: null,
       errorCode: null,
       externalRunId: null,
       processPid: null,
+      processGroupId: null,
       processStartedAt: null,
       retryOfRunId: null,
       processLossRetryCount: 0,
+      livenessState: null,
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
       stdoutExcerpt: null,
       stderrExcerpt: null,
       contextSnapshot: null,
@@ -205,6 +260,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
@@ -229,11 +286,82 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
 
     expect(container.textContent).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("formatJoinRequestInboxLabel", () => {
+  it("shows the human requester's name and email when available", () => {
+    expect(formatJoinRequestInboxLabel(createJoinRequest())).toBe(
+      "Jordan Example (joiner@example.com)",
+    );
+  });
+
+  it("falls back to the email snapshot when the requester profile is missing", () => {
+    expect(
+      formatJoinRequestInboxLabel(
+        createJoinRequest({
+          requesterUser: null,
+          requestEmailSnapshot: "snapshot@example.com",
+          requestingUserId: null,
+        }),
+      ),
+    ).toBe("snapshot@example.com");
+  });
+});
+
+describe("InboxGroupHeader", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  it("shows a left caret and expanded state for collapsible mobile headers", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<InboxGroupHeader label="Primary workspace (default)" collapsible collapsed={false} />);
+    });
+
+    const button = container.querySelector("button");
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute("aria-expanded")).toBe("true");
+    expect(button?.textContent).toContain("Primary workspace (default)");
+    const caret = container.querySelector("svg");
+    expect(caret?.className.baseVal).toContain("rotate-90");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the caret collapsed when the mobile group is hidden", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<InboxGroupHeader label="Feature Branch" collapsible collapsed />);
+    });
+
+    const button = container.querySelector("button");
+    expect(button?.getAttribute("aria-expanded")).toBe("false");
+    const caret = container.querySelector("svg");
+    expect(caret?.className.baseVal).not.toContain("rotate-90");
 
     act(() => {
       root.unmount();

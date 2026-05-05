@@ -89,6 +89,8 @@ Show resolved environment configuration:
 pnpm paperclipai env
 ```
 
+This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and `PAPERCLIP_BIND_HOST` when configured.
+
 ## `paperclipai allowed-hostname`
 
 Allow a private hostname for authenticated/private mode:

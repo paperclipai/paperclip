@@ -126,6 +126,80 @@ describe("extractIssueTimelineEvents", () => {
     ]);
   });
 
+  it("marks explicit follow-up timeline updates", () => {
+    const events = extractIssueTimelineEvents([
+      {
+        id: "evt-follow-up",
+        companyId: "company-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: "issue-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        details: {
+          status: "todo",
+          reopened: true,
+          reopenedFrom: "done",
+          source: "comment",
+          commentId: "comment-1",
+          resumeIntent: true,
+          followUpRequested: true,
+        },
+      },
+    ] satisfies ActivityEvent[]);
+
+    expect(events).toEqual([
+      {
+        id: "evt-follow-up",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        actorType: "agent",
+        actorId: "agent-1",
+        commentId: "comment-1",
+        followUpRequested: true,
+        statusChange: {
+          from: "done",
+          to: "todo",
+        },
+      },
+    ]);
+  });
+
+  it("synthesizes non-status follow-up rows from comment activity", () => {
+    const events = extractIssueTimelineEvents([
+      {
+        id: "evt-comment-follow-up",
+        companyId: "company-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: "issue-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        details: {
+          commentId: "comment-1",
+          resumeIntent: true,
+          followUpRequested: true,
+        },
+      },
+    ] satisfies ActivityEvent[]);
+
+    expect(events).toEqual([
+      {
+        id: "evt-comment-follow-up",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        actorType: "agent",
+        actorId: "agent-1",
+        commentId: "comment-1",
+        followUpRequested: true,
+      },
+    ]);
+  });
+
   it("ignores issue updates without visible status or assignee transitions", () => {
     const events = extractIssueTimelineEvents([
       {
