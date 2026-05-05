@@ -3585,7 +3585,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // Comments are append-only evidence and explicitly do not mutate status, ownership, or fields,
+    // so any same-company agent may post even if the issue is assigned to someone else. The
+    // AGENTS.md mention-wake protocol depends on this channel for stranded triage notes.
+    // Reopen / resume / interrupt intents are still gated by assertExplicitResumeIntentAllowed and
+    // the board-only interrupt branch below; implicit reopen is restricted to board users in
+    // shouldImplicitlyMoveCommentedIssueToTodo.
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
