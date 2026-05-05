@@ -130,6 +130,9 @@ export {
   rt2WorkBoardAttachments,
   rt2WorkBoardCards,
   rt2WorkBoardChecklistItems,
+  rt2WorkBoardCustomFields,
+  rt2WorkBoardCustomFieldOptions,
+  rt2WorkBoardCardCustomFieldValues,
 } from "./rt2_work_board.js";
 export { rt2AgentMarketplace, rt2ByoaAgents, rt2AgentSubscriptions } from "./rt2_agent_marketplace.js";
 export { rt2CareerProfiles, rt2CareerPortfolio, rt2SkillTransfers, rt2CareerMilestones } from "./rt2_career_mate.js";

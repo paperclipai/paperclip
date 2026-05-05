@@ -1,6 +1,57 @@
-import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
+
+export const rt2WorkBoardCustomFields = pgTable(
+  "rt2_work_board_custom_fields",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    fieldType: text("field_type").notNull().default("text"),
+    position: integer("position").notNull().default(0),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyPositionIdx: index("rt2_work_board_custom_fields_company_position_idx").on(table.companyId, table.position),
+  }),
+);
+
+export const rt2WorkBoardCustomFieldOptions = pgTable(
+  "rt2_work_board_custom_field_options",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    fieldId: uuid("field_id").notNull().references(() => rt2WorkBoardCustomFields.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    position: integer("position").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    fieldPositionIdx: index("rt2_work_board_custom_field_options_field_position_idx").on(table.companyId, table.fieldId, table.position),
+  }),
+);
+
+export const rt2WorkBoardCardCustomFieldValues = pgTable(
+  "rt2_work_board_card_custom_field_values",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    fieldId: uuid("field_id").notNull().references(() => rt2WorkBoardCustomFields.id, { onDelete: "cascade" }),
+    textValue: text("text_value"),
+    numberValue: real("number_value"),
+    dateValue: timestamp("date_value", { withTimezone: true }),
+    optionId: uuid("option_id").references(() => rt2WorkBoardCustomFieldOptions.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    issueFieldIdx: uniqueIndex("rt2_work_board_card_cfv_issue_field_uq").on(table.companyId, table.issueId, table.fieldId),
+  }),
+);
 
 export const rt2WorkBoardCards = pgTable(
   "rt2_work_board_cards",
