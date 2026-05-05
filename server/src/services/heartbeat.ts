@@ -164,6 +164,17 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// Watchdog error codes for the two stream-stall failure modes the
+// PID-only reaper used to miss (see issue #4266 + paperclip ops notes).
+//   wrapper_hung_after_completion: log already shows a terminal `result`
+//     event but the wrapper never updated the DB (e.g. setRunStatus hung
+//     on a transient DB connection).
+//   silent_stuck: PID alive but no stdout/stderr events for more than
+//     SILENT_STUCK_DEFAULT_THRESHOLD_MS (typically a non-Anthropic backend
+//     dropping the SSE stream mid-tool-call without closing the socket).
+const WRAPPER_HUNG_AFTER_COMPLETION_ERROR_CODE = "wrapper_hung_after_completion";
+const SILENT_STUCK_ERROR_CODE = "silent_stuck";
+const SILENT_STUCK_DEFAULT_THRESHOLD_MS = 15 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -2021,6 +2032,76 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
+}
+
+// Peek at the last segment of a run's log file and look for a terminal
+// stream-json `result` event. Used by reapOrphanedRuns to detect the
+// "Claude completed but wrapper never updated the DB" failure mode
+// (issue #4266) and to distinguish a working child from a silent-stuck
+// one. Returns null if the log is unreadable, missing, or contains no
+// `result` event yet.
+async function peekRunLogForTerminal(
+  store: { read(handle: { store: "local_file"; logRef: string }, opts?: { offset?: number; limitBytes?: number }): Promise<{ content: string; nextOffset?: number }> },
+  handle: { store: "local_file"; logRef: string },
+): Promise<
+  | {
+      terminal: true;
+      isError: boolean;
+      stopReason: string | null;
+      numTurns: number | null;
+    }
+  | null
+> {
+  let content: string;
+  try {
+    // 2 MiB is more than enough for any well-behaved heartbeat run; the
+    // result event is always emitted last so reading from offset 0 is fine.
+    const result = await store.read(handle, { offset: 0, limitBytes: 2_000_000 });
+    content = result.content;
+  } catch {
+    return null;
+  }
+  if (!content) return null;
+
+  let found = false;
+  let isError = false;
+  let stopReason: string | null = null;
+  let numTurns: number | null = null;
+
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let outer: { stream?: unknown; chunk?: unknown } | null = null;
+    try {
+      outer = JSON.parse(trimmed) as { stream?: unknown; chunk?: unknown };
+    } catch {
+      continue;
+    }
+    const chunk = typeof outer?.chunk === "string" ? outer.chunk.trimEnd() : "";
+    if (!chunk) continue;
+    // Each chunk can carry one or more newline-separated stream-json events.
+    for (const sub of chunk.split("\n")) {
+      const subTrim = sub.trim();
+      if (!subTrim.startsWith("{")) continue;
+      let inner: { type?: unknown; is_error?: unknown; stop_reason?: unknown; num_turns?: unknown } | null = null;
+      try {
+        inner = JSON.parse(subTrim);
+      } catch {
+        continue;
+      }
+      if (inner?.type === "result") {
+        found = true;
+        isError = Boolean(inner.is_error);
+        stopReason = typeof inner.stop_reason === "string" ? inner.stop_reason : null;
+        numTurns = typeof inner.num_turns === "number" && Number.isFinite(inner.num_turns) ? inner.num_turns : null;
+        // Don't break; keep scanning so the LAST result event in the file wins
+        // (multi-attempt/resumed runs emit multiple).
+      }
+    }
+  }
+
+  if (!found) return null;
+  return { terminal: true, isError, stopReason, numTurns };
 }
 
 // A positive liveness check means some process currently owns the PID.
@@ -5786,8 +5867,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; silentStuckThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const silentStuckThresholdMs = opts?.silentStuckThresholdMs ?? SILENT_STUCK_DEFAULT_THRESHOLD_MS;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -5816,6 +5898,157 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
+        // Two stream-stall failure modes were previously invisible to the
+        // PID-only reaper (issue #4266):
+        //   (A) wrapper_hung_after_completion: Claude already wrote a
+        //       terminal `result` event to the log, but the wrapper
+        //       never persisted the final status to the DB.
+        //   (B) silent_stuck: child is alive but has not produced any
+        //       stdout/stderr events for >silentStuckThresholdMs (a
+        //       non-Anthropic backend dropping the SSE stream
+        //       mid-tool-call is the typical cause).
+        const logHandle: { store: "local_file"; logRef: string } | null =
+          run.logStore === "local_file" && run.logRef
+            ? { store: "local_file", logRef: run.logRef }
+            : null;
+        const terminal = logHandle ? await peekRunLogForTerminal(runLogStore, logHandle) : null;
+
+        if (terminal?.terminal) {
+          // (A) wrapper-hung-after-completion — force-finalize.
+          const finalStatus = terminal.isError ? "failed" : "succeeded";
+          const reason =
+            `Reaper: child pid ${run.processPid} alive but log shows terminal stream-json result event ` +
+            `(stop_reason=${terminal.stopReason ?? "?"}, is_error=${terminal.isError}); ` +
+            `force-finalizing as ${finalStatus} (${WRAPPER_HUNG_AFTER_COMPLETION_ERROR_CODE}, issue #4266).`;
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          }).catch(() => {});
+
+          let finalizedRun = await setRunStatus(run.id, finalStatus, {
+            error: terminal.isError ? reason : null,
+            errorCode: terminal.isError ? WRAPPER_HUNG_AFTER_COMPLETION_ERROR_CODE : null,
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              finalStatus,
+              {
+                resultJson: parseObject(run.resultJson),
+                errorCode: terminal.isError ? WRAPPER_HUNG_AFTER_COMPLETION_ERROR_CODE : null,
+                errorMessage: terminal.isError ? reason : null,
+              },
+            ),
+          });
+          await setWakeupStatus(
+            run.wakeupRequestId,
+            finalStatus === "succeeded" ? "completed" : "failed",
+            {
+              finishedAt: now,
+              error: finalStatus === "failed" ? reason : null,
+            },
+          );
+          if (!finalizedRun) finalizedRun = await getRun(run.id);
+          if (!finalizedRun) continue;
+          finalizedRun =
+            (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ?? finalizedRun;
+          await releaseEnvironmentLeasesForRun({
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+            agentId: finalizedRun.agentId,
+            status: finalizedRun.status,
+            failureReason: finalizedRun.error ?? undefined,
+          });
+          await releaseIssueExecutionAndPromote(finalizedRun);
+          await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: terminal.isError ? "error" : "warn",
+            message: reason,
+            payload: {
+              processPid: run.processPid,
+              watchdogReason: WRAPPER_HUNG_AFTER_COMPLETION_ERROR_CODE,
+              terminalStopReason: terminal.stopReason,
+              terminalIsError: terminal.isError,
+              terminalNumTurns: terminal.numTurns,
+            },
+          });
+          await finalizeAgentStatus(run.agentId, finalStatus);
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
+
+        // (B) silent-stuck check: PID alive but no stream output for too long.
+        // Only `lastOutputAt` and `processStartedAt` are valid signals here —
+        // `startedAt` is just the DB row's createdAt-equivalent and bears no
+        // relationship to whether the child has actually been running silently.
+        const lastOutputMs = run.lastOutputAt
+          ? new Date(run.lastOutputAt).getTime()
+          : run.processStartedAt
+            ? new Date(run.processStartedAt).getTime()
+            : 0;
+        const silentForMs = lastOutputMs > 0 ? now.getTime() - lastOutputMs : 0;
+        if (silentStuckThresholdMs > 0 && silentForMs >= silentStuckThresholdMs) {
+          const minutes = Math.round(silentForMs / 60_000);
+          const thresholdMinutes = Math.round(silentStuckThresholdMs / 60_000);
+          const reason =
+            `Reaper: child pid ${run.processPid} alive but no stream-json output for ${minutes}m ` +
+            `(>= ${thresholdMinutes}m threshold); terminating as ${SILENT_STUCK_ERROR_CODE}.`;
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          }).catch(() => {});
+
+          let finalizedRun = await setRunStatus(run.id, "failed", {
+            error: reason,
+            errorCode: SILENT_STUCK_ERROR_CODE,
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              "failed",
+              {
+                resultJson: parseObject(run.resultJson),
+                errorCode: SILENT_STUCK_ERROR_CODE,
+                errorMessage: reason,
+              },
+            ),
+          });
+          await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: reason });
+          if (!finalizedRun) finalizedRun = await getRun(run.id);
+          if (!finalizedRun) continue;
+          finalizedRun =
+            (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ?? finalizedRun;
+          await releaseEnvironmentLeasesForRun({
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+            agentId: finalizedRun.agentId,
+            status: finalizedRun.status,
+            failureReason: finalizedRun.error ?? undefined,
+          });
+          await releaseIssueExecutionAndPromote(finalizedRun);
+          await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: reason,
+            payload: {
+              processPid: run.processPid,
+              watchdogReason: SILENT_STUCK_ERROR_CODE,
+              silentForMs,
+              silentStuckThresholdMs,
+            },
+          });
+          await finalizeAgentStatus(run.agentId, "failed");
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
+
+        // (C) Healthy: PID alive AND recent output AND no terminal event yet.
+        // Mark the run as detached so operators can see the in-memory handle
+        // was lost, but otherwise leave it alone (existing behavior).
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {

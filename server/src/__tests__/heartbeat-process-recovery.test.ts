@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
 import { and, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -68,6 +72,15 @@ vi.mock("../adapters/index.ts", async () => {
     })),
   };
 });
+
+// Redirect run-log writes to a per-run-process tmpdir so the local-file
+// store does not pollute the real ~/.paperclip/data/run-logs while these
+// tests are running. The store reads RUN_LOG_BASE_PATH at first use, so
+// this MUST be set before the heartbeat module is imported below.
+const RUN_LOG_TMPDIR =
+  process.env.RUN_LOG_BASE_PATH ??
+  mkdtempSync(path.join(os.tmpdir(), "paperclip-test-run-logs-"));
+process.env.RUN_LOG_BASE_PATH = RUN_LOG_TMPDIR;
 
 import { heartbeatService } from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -2337,6 +2350,149 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
     });
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Watchdog stream-stall coverage (issue #4266 + silent-stuck symmetry).
+  // The PID-only reaper used to leave runs in `running` whenever the
+  // child PID was alive. These two tests pin the new behavior:
+  //   - log shows a terminal `result` event → force-finalize
+  //   - PID alive but stream silent past threshold → kill + force-fail
+  // ─────────────────────────────────────────────────────────────────
+
+  function safeSegment(value: string) {
+    return value.replace(/[^a-zA-Z0-9._-]/g, "_");
+  }
+
+  async function seedRunLogFile(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    events: Array<Record<string, unknown>>;
+  }): Promise<{ logRef: string }> {
+    const dir = path.join(
+      RUN_LOG_TMPDIR,
+      safeSegment(input.companyId),
+      safeSegment(input.agentId),
+    );
+    await fs.mkdir(dir, { recursive: true });
+    const relPath = path.join(
+      safeSegment(input.companyId),
+      safeSegment(input.agentId),
+      `${safeSegment(input.runId)}.ndjson`,
+    );
+    const absPath = path.join(RUN_LOG_TMPDIR, relPath);
+    const ts = new Date().toISOString();
+    const lines = input.events
+      .map((event) =>
+        JSON.stringify({
+          ts,
+          stream: "stdout",
+          chunk: JSON.stringify(event),
+        }),
+      )
+      .join("\n");
+    await fs.writeFile(absPath, `${lines}\n`, "utf8");
+    await db
+      .update(heartbeatRuns)
+      .set({ logStore: "local_file", logRef: relPath })
+      .where(eq(heartbeatRuns.id, input.runId));
+    return { logRef: relPath };
+  }
+
+  it("force-finalizes a run when the log already shows a terminal result event but the wrapper is hung (issue #4266)", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId, companyId, agentId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+
+    // Synthesize the canonical claude-local terminal stream-json event:
+    // wrapper would have written this just before calling setRunStatus.
+    await seedRunLogFile({
+      companyId,
+      agentId,
+      runId,
+      events: [
+        { type: "system", subtype: "init", session_id: "s1" },
+        { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          stop_reason: "end_turn",
+          num_turns: 7,
+          duration_ms: 1234,
+          session_id: "s1",
+        },
+      ],
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const reapedRun = await heartbeat.getRun(runId);
+    expect(reapedRun?.status).toBe("succeeded");
+    expect(reapedRun?.errorCode).toBeNull();
+    expect(reapedRun?.finishedAt).toBeTruthy();
+    // The wrapper PID must be terminated so the agent slot is freed.
+    expect(await waitForPidExit(child.pid as number, 2_000)).toBe(true);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("completed");
+
+    // Issue should be released for the next pickup, not stuck waiting on the dead run.
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("force-fails a run when the PID is alive but the stream has been silent past the silent-stuck threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, companyId, agentId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+
+    // Backdate lastOutputAt so the reaper sees a 30-minute silent gap
+    // (well past the default 15-minute threshold). startedAt remains the
+    // fixture default — only stream-derived timestamps drive silent-stuck.
+    const silentSince = new Date(Date.now() - 30 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastOutputAt: silentSince,
+        processStartedAt: silentSince,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({
+      silentStuckThresholdMs: 15 * 60 * 1000,
+    });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const reapedRun = await heartbeat.getRun(runId);
+    expect(reapedRun?.status).toBe("failed");
+    expect(reapedRun?.errorCode).toBe("silent_stuck");
+    expect(reapedRun?.error ?? "").toContain("silent_stuck");
+    expect(reapedRun?.finishedAt).toBeTruthy();
+    // The watchdog must terminate the silent child so the agent unblocks.
+    expect(await waitForPidExit(child.pid as number, 2_000)).toBe(true);
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
