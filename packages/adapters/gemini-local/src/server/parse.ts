@@ -121,6 +121,19 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
+    if (type === "message") {
+      const role = asString(event.role, "").trim().toLowerCase();
+      if (role === "assistant") {
+        // Mirror the assistant-event handling above: collect every assistant
+        // message including deltas. Gemini CLI emits these as discrete final
+        // messages (one per assistant turn), not as cumulative streaming
+        // tokens, so collecting all of them produces the expected concatenated
+        // turn-by-turn summary rather than duplicated text.
+        messages.push(...collectMessageText(event.content));
+      }
+      continue;
+    }
+
     if (type === "result") {
       resultEvent = event;
       accumulateUsage(usage, event.usage ?? event.usageMetadata);
@@ -273,9 +286,18 @@ export function isGeminiTurnLimitResult(
   if (exitCode === 53) return true;
   if (!parsed) return false;
 
-  const status = asString(parsed.status, "").trim().toLowerCase();
-  if (status === "turn_limit" || status === "max_turns") return true;
+  const structuredStopReasons = [
+    parsed.status,
+    parsed.stopReason,
+    parsed.stop_reason,
+    parsed.errorCode,
+    parsed.error_code,
+  ].map((value) => asString(value, "").trim().toLowerCase());
 
-  const error = asString(parsed.error, "").trim();
-  return /turn\s*limit|max(?:imum)?\s+turns?/i.test(error);
+  return structuredStopReasons.some((reason) =>
+    reason === "turn_limit" ||
+    reason === "max_turns" ||
+    reason === "max_turns_exhausted" ||
+    reason === "turn_limit_exhausted",
+  );
 }

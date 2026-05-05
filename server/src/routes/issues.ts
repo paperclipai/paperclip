@@ -30,6 +30,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -81,6 +82,8 @@ import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  redactIssueMonitorExternalRef,
+  setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -162,6 +165,53 @@ function summarizeIssueReferenceActivityDetails(input:
     ...(input.addedReferencedIssues.length > 0 ? { addedReferencedIssues: input.addedReferencedIssues } : {}),
     ...(input.removedReferencedIssues.length > 0 ? { removedReferencedIssues: input.removedReferencedIssues } : {}),
     ...(input.currentReferencedIssues.length > 0 ? { currentReferencedIssues: input.currentReferencedIssues } : {}),
+  };
+}
+
+function monitorPoliciesEqual(left: NormalizedExecutionPolicy | null, right: NormalizedExecutionPolicy | null) {
+  return JSON.stringify(left?.monitor ?? null) === JSON.stringify(right?.monitor ?? null);
+}
+
+function applyActorMonitorScheduledBy(
+  policy: NormalizedExecutionPolicy | null,
+  actorType: "agent" | "user",
+) {
+  return setIssueExecutionPolicyMonitorScheduledBy(policy, actorType === "user" ? "board" : "assignee");
+}
+
+function assertCanManageIssueMonitor(req: Request, assigneeAgentId: string | null, monitorChanged: boolean) {
+  if (!monitorChanged) return;
+  if (req.actor.type === "board") return;
+  if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId === assigneeAgentId) return;
+  throw forbidden("Only the assignee agent or a board user can manage issue monitors");
+}
+
+function summarizeIssueMonitor(
+  issue: {
+    monitorNextCheckAt?: Date | null;
+    monitorLastTriggeredAt?: Date | null;
+    monitorAttemptCount?: number | null;
+    monitorNotes?: string | null;
+    monitorScheduledBy?: string | null;
+    executionState?: unknown;
+  },
+  policy: NormalizedExecutionPolicy | null,
+) {
+  const state = parseIssueExecutionState(issue.executionState);
+  return {
+    nextCheckAt: issue.monitorNextCheckAt?.toISOString() ?? policy?.monitor?.nextCheckAt ?? null,
+    lastTriggeredAt: issue.monitorLastTriggeredAt?.toISOString() ?? state?.monitor?.lastTriggeredAt ?? null,
+    attemptCount: issue.monitorAttemptCount ?? state?.monitor?.attemptCount ?? 0,
+    notes: policy?.monitor?.notes ?? issue.monitorNotes ?? state?.monitor?.notes ?? null,
+    scheduledBy: issue.monitorScheduledBy ?? policy?.monitor?.scheduledBy ?? state?.monitor?.scheduledBy ?? null,
+    kind: policy?.monitor?.kind ?? state?.monitor?.kind ?? null,
+    serviceName: policy?.monitor?.serviceName ?? state?.monitor?.serviceName ?? null,
+    externalRef: redactIssueMonitorExternalRef(policy?.monitor?.externalRef ?? state?.monitor?.externalRef ?? null),
+    timeoutAt: policy?.monitor?.timeoutAt ?? state?.monitor?.timeoutAt ?? null,
+    maxAttempts: policy?.monitor?.maxAttempts ?? state?.monitor?.maxAttempts ?? null,
+    recoveryPolicy: policy?.monitor?.recoveryPolicy ?? state?.monitor?.recoveryPolicy ?? null,
+    status: state?.monitor?.status ?? (policy?.monitor ? "scheduled" : null),
+    clearReason: state?.monitor?.clearReason ?? null,
   };
 }
 
@@ -831,9 +881,10 @@ export function issueRoutes(
     });
   }
 
-  async function normalizeIssueIdentifier(rawId: string): Promise<string> {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      const issue = await svc.getByIdentifier(rawId);
+  async function resolveIssueRouteId(rawId: string): Promise<string> {
+    const identifier = normalizeIssueReferenceIdentifier(rawId);
+    if (identifier) {
+      const issue = await svc.getByIdentifier(identifier);
       if (issue) {
         return issue.id;
       }
@@ -871,7 +922,7 @@ export function issueRoutes(
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
-      req.params.id = await normalizeIssueIdentifier(rawId);
+      req.params.id = await resolveIssueRouteId(rawId);
       next();
     } catch (err) {
       next(err);
@@ -881,7 +932,7 @@ export function issueRoutes(
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for company-scoped attachment routes.
   router.param("issueId", async (req, res, next, rawId) => {
     try {
-      req.params.issueId = await normalizeIssueIdentifier(rawId);
+      req.params.issueId = await resolveIssueRouteId(rawId);
       next();
     } catch (err) {
       next(err);
@@ -1812,7 +1863,11 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
-    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    const executionPolicy = applyActorMonitorScheduledBy(
+      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      actor.actorType,
+    );
+    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -1847,6 +1902,29 @@ export function issueRoutes(
       },
     });
 
+    if (executionPolicy?.monitor) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          nextCheckAt: executionPolicy.monitor.nextCheckAt,
+          notes: executionPolicy.monitor.notes,
+          scheduledBy: executionPolicy.monitor.scheduledBy,
+          serviceName: executionPolicy.monitor.serviceName ?? null,
+          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+        },
+      });
+    }
+
     void queueIssueAssignmentWakeup({
       heartbeat,
       issue,
@@ -1879,7 +1957,11 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
-    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    const executionPolicy = applyActorMonitorScheduledBy(
+      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      actor.actorType,
+    );
+    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...req.body,
       executionPolicy,
@@ -1908,6 +1990,30 @@ export function issueRoutes(
       },
     });
 
+    if (executionPolicy?.monitor) {
+      await logActivity(db, {
+        companyId: parent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          parentId: parent.id,
+          nextCheckAt: executionPolicy.monitor.nextCheckAt,
+          notes: executionPolicy.monitor.notes,
+          scheduledBy: executionPolicy.monitor.scheduledBy,
+          serviceName: executionPolicy.monitor.serviceName ?? null,
+          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+        },
+      });
+    }
+
     void queueIssueAssignmentWakeup({
       heartbeat,
       issue,
@@ -1919,6 +2025,27 @@ export function issueRoutes(
     });
 
     res.status(201).json(issue);
+  });
+
+  router.post("/issues/:id/monitor/check-now", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    assertCanManageIssueMonitor(req, issue.assigneeAgentId, true);
+
+    const actor = getActorInfo(req);
+    await heartbeat.triggerIssueMonitor(issue.id, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId ?? null,
+      runId: actor.runId ?? null,
+    });
+
+    res.json({ ok: true });
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -2043,7 +2170,10 @@ export function issueRoutes(
       updateFields.status = "todo";
     }
     if (req.body.executionPolicy !== undefined) {
-      updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+      updateFields.executionPolicy = applyActorMonitorScheduledBy(
+        normalizeIssueExecutionPolicy(req.body.executionPolicy),
+        actor.actorType,
+      );
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =
@@ -2053,10 +2183,13 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
+    assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
+      previousPolicy: previousExecutionPolicy,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId: normalizedAssigneeAgentId,
@@ -2069,6 +2202,7 @@ export function issueRoutes(
       },
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -2368,6 +2502,51 @@ export function issueRoutes(
           participants: approverChanges.participants,
           addedParticipants: approverChanges.addedParticipants,
           removedParticipants: approverChanges.removedParticipants,
+        },
+      });
+    }
+
+    const nextStoredExecutionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    const previousMonitor = summarizeIssueMonitor(existing, previousExecutionPolicy);
+    const nextMonitor = summarizeIssueMonitor(issue, nextStoredExecutionPolicy);
+    const monitorScheduledChanged = previousMonitor.nextCheckAt !== nextMonitor.nextCheckAt;
+    if (nextMonitor.nextCheckAt && (monitorScheduledChanged || previousMonitor.notes !== nextMonitor.notes)) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          nextCheckAt: nextMonitor.nextCheckAt,
+          previousNextCheckAt: previousMonitor.nextCheckAt,
+          notes: nextMonitor.notes,
+          scheduledBy: nextMonitor.scheduledBy,
+          serviceName: nextMonitor.serviceName,
+          timeoutAt: nextMonitor.timeoutAt,
+          maxAttempts: nextMonitor.maxAttempts,
+          recoveryPolicy: nextMonitor.recoveryPolicy,
+        },
+      });
+    } else if (!nextMonitor.nextCheckAt && previousMonitor.nextCheckAt) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_cleared",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          previousNextCheckAt: previousMonitor.nextCheckAt,
+          reason: nextMonitor.clearReason ?? "manual",
+          notes: previousMonitor.notes,
         },
       });
     }
