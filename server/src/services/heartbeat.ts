@@ -5804,7 +5804,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      if (activeRunExecutions.has(run.id)) continue;
+
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+
+      // For runs with an in-memory handle, verify the underlying OS process is
+      // still alive before trusting it. On Windows (and occasionally Linux),
+      // the child 'close' event can fail to fire after an external kill, leaving
+      // a stale runningProcesses entry that permanently blocks the reaper.
+      if (runningProcesses.has(run.id)) {
+        const handle = runningProcesses.get(run.id)!;
+        const childExited = handle.child.exitCode !== null || handle.child.killed;
+        const pidDead = tracksLocalChild && run.processPid != null && !isProcessAlive(run.processPid);
+        if (!childExited && !pidDead) continue; // genuinely alive, leave it
+        logger.warn(
+          { runId: run.id, pid: run.processPid, childExited, pidDead },
+          "reap: clearing stale in-memory handle for exited process",
+        );
+        runningProcesses.delete(run.id);
+      }
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -5812,7 +5830,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {

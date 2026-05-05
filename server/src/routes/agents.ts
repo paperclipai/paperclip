@@ -2950,19 +2950,45 @@ export function agentRoutes(
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
-    assertBoard(req);
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
-    if (existing) {
-      assertCompanyAccess(req, existing.companyId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
     }
+    assertCompanyAccess(req, existing.companyId);
+
+    if (req.actor.type !== "board") {
+      if (req.actor.type !== "agent" || !req.actor.agentId) {
+        throw forbidden("Board access required");
+      }
+      if (existing.agentId !== req.actor.agentId) {
+        throw forbidden("Board access required to cancel another agent's run");
+      }
+      const pid = existing.processPid;
+      if (pid != null) {
+        let processAlive = false;
+        try {
+          process.kill(pid, 0);
+          processAlive = true;
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException | undefined)?.code;
+          processAlive = code === "EPERM";
+        }
+        if (processAlive) {
+          throw forbidden("Board access required to cancel a live-process run");
+        }
+      }
+    }
+
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {
+      const actorInfo = getActorInfo(req);
       await logActivity(db, {
         companyId: run.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: actorInfo.actorType,
+        actorId: actorInfo.actorId,
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
