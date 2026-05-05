@@ -9,6 +9,22 @@ import {
 } from "@paperclipai/adapter-openclaw-gateway/ui";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
+function extractStructuredWakePayload(message: unknown): Record<string, unknown> | null {
+  const text = String(message ?? "");
+  const marker = "Structured wake payload JSON:";
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return null;
+  const jsonStart = text.indexOf("```json", markerIndex);
+  if (jsonStart < 0) return null;
+  const bodyStart = text.indexOf("\n", jsonStart);
+  if (bodyStart < 0) return null;
+  const fenceEnd = text.indexOf("\n```", bodyStart);
+  if (fenceEnd < 0) return null;
+  const json = text.slice(bodyStart + 1, fenceEnd).trim();
+  if (!json) return null;
+  return JSON.parse(json) as Record<string, unknown>;
+}
+
 function buildContext(
   config: Record<string, unknown>,
   overrides?: Partial<AdapterExecutionContext>,
@@ -531,12 +547,21 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
       expect(String(payload?.message ?? "")).toContain("\"latestCommentId\":\"comment-2\"");
-      // paperclip structured payload is now forwarded to the gateway agent.
-      expect(payload?.paperclip).toMatchObject({
-        runId: "run-123",
-        taskId: "task-123",
-        issueId: "issue-123",
-        wakeReason: "issue_assigned",
+      expect(payload?.paperclip).toBeUndefined();
+      expect(extractStructuredWakePayload(payload?.message)).toMatchObject({
+        reason: "issue_commented",
+        issue: {
+          id: "issue-123",
+          identifier: "PAP-874",
+          title: "chat-speed issues",
+          status: "in_progress",
+          priority: "medium",
+        },
+        commentIds: ["comment-1", "comment-2"],
+        latestCommentId: "comment-2",
+        requestedCount: 2,
+        includedCount: 2,
+        missingCount: 0,
       });
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
