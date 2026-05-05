@@ -95,6 +95,47 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/
   -d '{}'
 ```
 
+### Avoid agent bundles as canonical local sources
+
+The `local_path` registry derives the company-skill `key` from the resolved source path
+(`local/<sha10(path)>/<slug>`). If two agent bundles ship `skills/<slug>/SKILL.md` from
+different on-disk paths, two `import` calls produce two distinct skill rows even though
+the `slug` is identical — slash-command resolution then falls back to opaque
+`<slug>--<hash>` disambiguation that operators cannot see.
+
+**Rule:** canonical company-level skills should not live under
+`agents/<id>/instructions/skills/`. Place the canonical `SKILL.md` under a
+non-agent-scoped path (a project workspace, a `managed_local` source, or a dedicated
+company skills directory) and import once from there. To apply later revisions to an
+existing company skill, use:
+
+```sh
+curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/install-update" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+```
+
+Re-running `import` from a *different* on-disk path will create a second row, not update the first.
+
+**Detect existing duplicates:**
+
+```sh
+curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  | jq '[.[] | {id, slug, key, sourceType, sourceLocator, attachedAgentCount}]
+        | group_by(.slug)
+        | map(select(length > 1))'
+```
+
+For each duplicate slug, keep the entry with `attachedAgentCount > 0` (or the most
+recently updated row), then remove the others:
+
+```sh
+curl -sS -X DELETE "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+```
+
+The DELETE refuses if any agent still desires the skill — detach with `agents/<id>/skills/sync` first.
+
 ## Inspect What Was Installed
 
 ```sh
