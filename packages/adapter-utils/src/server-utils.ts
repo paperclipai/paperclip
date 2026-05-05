@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
@@ -1039,54 +1040,11 @@ function quoteForCmd(arg: string) {
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
-const SSH_REMOTE_ENV_IDENTITY_KEYS = new Set([
-  "PATH",
-  "HOME",
-  "PWD",
-  "SHELL",
-  "USER",
-  "LOGNAME",
-  "NVM_DIR",
-  "TMPDIR",
-  "TMP",
-  "TEMP",
-  "XDG_CONFIG_HOME",
-  "XDG_CACHE_HOME",
-  "XDG_DATA_HOME",
-  "XDG_STATE_HOME",
-  "XDG_RUNTIME_DIR",
-]);
-
-function readEnvValueCaseInsensitive(env: NodeJS.ProcessEnv, key: string): string | undefined {
-  const direct = env[key];
-  if (typeof direct === "string") return direct;
-  const upper = key.toUpperCase();
-  for (const [candidateKey, candidateValue] of Object.entries(env)) {
-    if (candidateKey.toUpperCase() === upper && typeof candidateValue === "string") {
-      return candidateValue;
-    }
-  }
-  return undefined;
-}
-
 export function sanitizeSshRemoteEnv(
   env: Record<string, string>,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
-  const sanitized: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    const normalizedKey = key.toUpperCase();
-    if (!SSH_REMOTE_ENV_IDENTITY_KEYS.has(normalizedKey)) {
-      sanitized[key] = value;
-      continue;
-    }
-    const inheritedValue = readEnvValueCaseInsensitive(inheritedEnv, key);
-    if (typeof inheritedValue === "string" && inheritedValue === value) {
-      continue;
-    }
-    sanitized[key] = value;
-  }
-  return sanitized;
+  return sanitizeRemoteExecutionEnv(env, inheritedEnv);
 }
 
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
@@ -1114,9 +1072,9 @@ async function resolveSpawnTarget(
       spec: remote,
       command,
       args,
-      env: sanitizeSshRemoteEnv(Object.fromEntries(
+      env: Object.fromEntries(
         Object.entries(options.remoteEnv ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-      )),
+      ),
     });
     return {
       command: sshResolved,
