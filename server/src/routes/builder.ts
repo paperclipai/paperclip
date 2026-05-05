@@ -80,8 +80,10 @@ export function builderRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       assertBoardActor(req);
       const updated = await svc.upsertSettings(companyId, req.body);
+      res.json({ settings: updated });
+      // Best-effort activity log — never fail settings update because of logging
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      logActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -95,8 +97,9 @@ export function builderRoutes(db: Db) {
           model: updated.model,
           hasApiKey: updated.hasApiKey,
         },
-      });
-      res.json({ settings: updated });
+      }).catch((logErr) =>
+        logger.warn({ logErr, companyId }, "builder settings: activity log failed"),
+      );
     },
   );
 
@@ -139,8 +142,10 @@ export function builderRoutes(db: Db) {
         createdByUserId: identity.userId,
         title: typeof req.body.title === "string" ? req.body.title : "",
       });
+      res.status(201).json({ session });
+      // Best-effort activity log — never fail session creation because of logging
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      logActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -150,8 +155,9 @@ export function builderRoutes(db: Db) {
         entityType: "builder_session",
         entityId: session.id,
         details: { title: session.title, model: session.model },
-      });
-      res.status(201).json({ session });
+      }).catch((logErr) =>
+        logger.warn({ logErr, sessionId: session.id }, "builder sessions: activity log failed"),
+      );
     },
   );
 

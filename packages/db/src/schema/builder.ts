@@ -9,7 +9,6 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
-import { companySecrets } from "./company_secrets.js";
 
 /**
  * Company AI Builder — chat session.
@@ -29,7 +28,7 @@ export const builderSessions = pgTable(
       .references(() => companies.id, { onDelete: "cascade" }),
     createdByUserId: text("created_by_user_id"),
     title: text("title").notNull().default(""),
-    providerType: text("provider_type").notNull(),
+    adapterType: text("adapter_type").notNull(),
     model: text("model").notNull(),
     state: text("state").notNull().default("active"),
     inputTokensTotal: integer("input_tokens_total").notNull().default(0),
@@ -116,10 +115,11 @@ export const builderProposals = pgTable(
 );
 
 /**
- * Company AI Builder — per-company provider configuration.
+ * Company AI Builder — per-company adapter configuration.
  *
- * Stores which provider/model the Builder uses for this company and which
- * `companySecret` holds the API key. The key itself is never stored here.
+ * Stores which adapter the Builder uses for this company. Uses the same
+ * adapter system as agents: adapterType + adapterConfig (JSONB).
+ * Secrets are referenced via adapterConfig.env bindings with secret_ref.
  */
 export const builderProviderSettings = pgTable(
   "builder_provider_settings",
@@ -127,11 +127,8 @@ export const builderProviderSettings = pgTable(
     companyId: uuid("company_id")
       .primaryKey()
       .references(() => companies.id, { onDelete: "cascade" }),
-    providerType: text("provider_type").notNull(),
-    model: text("model").notNull(),
-    baseUrl: text("base_url"),
-    secretId: uuid("secret_id").references(() => companySecrets.id, { onDelete: "set null" }),
-    extras: jsonb("extras").$type<Record<string, unknown>>().notNull().default({}),
+    adapterType: text("adapter_type").notNull().default("claude_local"),
+    adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
