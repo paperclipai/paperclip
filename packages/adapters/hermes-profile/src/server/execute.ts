@@ -1,15 +1,11 @@
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { parseAdapterConfigFromContext, profileHome, profileWrapperPath } from "./config.js";
+import { cfgString, parseAdapterConfigFromContext, profileHome, profileWrapperPath } from "./config.js";
 import { buildHermesProfileEnv } from "./profile-env.js";
 import type { HermesProfileAdapterConfig } from "./config.js";
 
 const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
-
-function cfgString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
 
 function renderTemplate(template: string, vars: Record<string, string>): string {
   let rendered = template;
@@ -80,11 +76,11 @@ Paperclip identity:
 
 If assigned a task, work it using your tools. Use Authorization: Bearer $PAPERCLIP_API_KEY for Paperclip API calls when PAPERCLIP_API_KEY is present. Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on mutating Paperclip API calls.
 
-Task ID: {{taskId}}
+{{#taskId}}Task ID: {{taskId}}
 Title: {{taskTitle}}
-Comment ID: {{commentId}}
-
-{{taskBody}}`;
+{{#commentId}}Comment ID: {{commentId}}
+{{/commentId}}
+{{taskBody}}{{/taskId}}{{#noTask}}No task assigned for this run.{{/noTask}}`;
 
   return renderTemplate(template, {
     profile: config.profile,
@@ -180,8 +176,15 @@ export async function executeHermesProfile(ctx: AdapterExecutionContext): Promis
   const args = ["chat", "-q", prompt];
 
   if (config.quiet) args.push("-Q");
-  if (config.toolsets) args.push("-t", config.toolsets);
-  if (config.enabledToolsets?.length) args.push("-t", config.enabledToolsets.join(","));
+
+  // Merge toolsets and enabledToolsets into a single -t flag to avoid the CLI
+  // silently dropping earlier flags when multiple -t arguments are supplied.
+  const allToolsets = [
+    ...(config.toolsets ? config.toolsets.split(",").map((s) => s.trim()).filter(Boolean) : []),
+    ...(config.enabledToolsets ?? []),
+  ];
+  if (allToolsets.length) args.push("-t", allToolsets.join(","));
+
   if (config.source) args.push("--source", config.source);
   if (config.yolo) args.push("--yolo");
 
@@ -190,11 +193,13 @@ export async function executeHermesProfile(ctx: AdapterExecutionContext): Promis
   if (config.persistSession && prevSessionId) args.push("--resume", prevSessionId);
   if (config.extraArgs?.length) args.push(...config.extraArgs);
 
+  // Log meta after args are fully assembled so commandArgs reflects the real invocation.
+  const loggedArgs = args.map((a, i) => (i === 2 ? "[prompt]" : a));
   await ctx.onMeta?.({
     adapterType: "hermes_profile",
     command: wrapper,
     cwd,
-    commandArgs: ["chat", "-q", "[prompt]"],
+    commandArgs: loggedArgs,
     context: { profile: config.profile },
   });
   await ctx.onLog("stdout", `[hermes_profile] Starting profile ${config.profile} via ${wrapper}\n`);
