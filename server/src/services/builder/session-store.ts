@@ -8,7 +8,6 @@ import type {
   BuilderSession,
   BuilderSessionDetail,
   BuilderSessionState,
-  BuilderProviderType,
   BuilderProposalStatus,
 } from "@paperclipai/shared";
 
@@ -32,7 +31,7 @@ function toSession(row: SessionRow): BuilderSession {
     companyId: row.companyId,
     createdByUserId: row.createdByUserId,
     title: row.title,
-    providerType: row.providerType as BuilderProviderType,
+    adapterType: row.adapterType,
     model: row.model,
     state: row.state as BuilderSessionState,
     inputTokensTotal: row.inputTokensTotal,
@@ -161,7 +160,7 @@ export function builderSessionStore(db: Db) {
       companyId: string;
       createdByUserId: string | null;
       title: string;
-      providerType: BuilderProviderType;
+      adapterType: string;
       model: string;
     }): Promise<BuilderSession> => {
       const [row] = await db
@@ -170,7 +169,7 @@ export function builderSessionStore(db: Db) {
           companyId: input.companyId,
           createdByUserId: input.createdByUserId,
           title: input.title,
-          providerType: input.providerType,
+          adapterType: input.adapterType,
           model: input.model,
           state: "active",
         })

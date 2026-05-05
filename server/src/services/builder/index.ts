@@ -1,10 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import type {
   BuilderActor,
-  BuilderProviderConfig,
 } from "./types.js";
-import { getBuilderProvider } from "./provider/openai-compat.js";
-import { hasModelPricing } from "@paperclipai/shared";
 import { runBuilderTurn } from "./runner.js";
 import { builderSessionStore } from "./session-store.js";
 import { builderProviderSettingsStore } from "./settings-store.js";
@@ -43,27 +40,27 @@ export function builderService(db: Db) {
       const config = await settings.get(input.companyId);
       if (!config) {
         throw unprocessable(
-          "Builder is not configured for this company. Set provider, model, and API-key secret first.",
+          "Builder is not configured for this company. Set adapter type and config first.",
         );
       }
-      const apiKey = await settings.resolveApiKey(input.companyId);
-      if (!apiKey) {
+      
+      // Extract model from adapter config
+      const model = typeof config.adapterConfig.model === "string" 
+        ? config.adapterConfig.model 
+        : "";
+      
+      if (!model) {
         throw unprocessable(
-          "Builder API key secret is not bound or could not be resolved. Reconfigure provider settings.",
+          "Builder adapter config must specify a model.",
         );
       }
-      // Reject session creation if the model lacks pricing data to ensure budget hard-stop works
-      if (!hasModelPricing(config.model)) {
-        throw unprocessable(
-          `Model "${config.model}" is not in the pricing table. Budget hard-stop will not work. Add pricing data or use a supported model.`,
-        );
-      }
+      
       return sessions.createSession({
         companyId: input.companyId,
         createdByUserId: input.createdByUserId,
         title: input.title || "New session",
-        providerType: config.providerType,
-        model: config.model,
+        adapterType: config.adapterType,
+        model,
       });
     },
 
@@ -94,20 +91,14 @@ export function builderService(db: Db) {
       if (!config) {
         throw unprocessable("Builder is not configured for this company");
       }
-      if (!hasModelPricing(config.model)) {
-        throw unprocessable(
-          `Model "${config.model}" is not recognized. Budget hard-stop requires a known model. Update provider settings to a supported model variant.`,
-        );
-      }
-      const apiKey = await settings.resolveApiKey(input.companyId);
-      if (!apiKey) {
-        throw unprocessable(
-          "Builder API key secret is not bound or could not be resolved. Reconfigure provider settings.",
-        );
-      }
+      
+      // Extract model from adapter config
+      const model = typeof config.adapterConfig.model === "string" 
+        ? config.adapterConfig.model 
+        : "";
 
       // Persist the user message before invoking the model so the transcript
-      // is durable even if the provider call fails.
+      // is durable even if the adapter call fails.
       const userMessage = await sessions.appendMessage(
         input.sessionId,
         input.companyId,
@@ -120,19 +111,12 @@ export function builderService(db: Db) {
         },
       );
 
-      const provider = getBuilderProvider(config.providerType);
-      const providerConfig: BuilderProviderConfig = {
-        providerType: config.providerType,
-        model: config.model,
-        apiKey,
-        baseUrl: config.baseUrl,
-        extras: config.extras,
-      };
-
       const turn = await runBuilderTurn({
         db,
-        provider,
-        providerConfig,
+        adapterConfig: {
+          adapterType: config.adapterType,
+          adapterConfig: config.adapterConfig,
+        },
         sessionId: input.sessionId,
         companyId: input.companyId,
         actor: input.actor,

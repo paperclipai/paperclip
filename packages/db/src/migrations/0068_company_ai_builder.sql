@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS "builder_sessions" (
 	"company_id" uuid NOT NULL,
 	"created_by_user_id" text,
 	"title" text DEFAULT '' NOT NULL,
-	"provider_type" text NOT NULL,
+	"adapter_type" text NOT NULL,
 	"model" text NOT NULL,
 	"state" text DEFAULT 'active' NOT NULL,
 	"input_tokens_total" integer DEFAULT 0 NOT NULL,
@@ -46,11 +46,8 @@ CREATE TABLE IF NOT EXISTS "builder_proposals" (
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "builder_provider_settings" (
 	"company_id" uuid PRIMARY KEY NOT NULL,
-	"provider_type" text NOT NULL,
-	"model" text NOT NULL,
-	"base_url" text,
-	"secret_id" uuid,
-	"extras" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"adapter_type" text DEFAULT 'claude_local' NOT NULL,
+	"adapter_config" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -89,11 +86,6 @@ ALTER TABLE "builder_provider_settings"
 	ADD CONSTRAINT "builder_provider_settings_company_id_companies_id_fk"
 	FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id")
 	ON DELETE cascade ON UPDATE no action;
---> statement-breakpoint
-ALTER TABLE "builder_provider_settings"
-	ADD CONSTRAINT "builder_provider_settings_secret_id_company_secrets_id_fk"
-	FOREIGN KEY ("secret_id") REFERENCES "public"."company_secrets"("id")
-	ON DELETE set null ON UPDATE no action;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "builder_sessions_company_idx" ON "builder_sessions" USING btree ("company_id");
 --> statement-breakpoint

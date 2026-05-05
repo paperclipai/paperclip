@@ -3558,32 +3558,15 @@
           "primaryKey": true,
           "notNull": true
         },
-        "provider_type": {
-          "name": "provider_type",
+        "adapter_type": {
+          "name": "adapter_type",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'claude_local'"
         },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "base_url": {
-          "name": "base_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "secret_id": {
-          "name": "secret_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "extras": {
-          "name": "extras",
+        "adapter_config": {
+          "name": "adapter_config",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -3617,19 +3600,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "builder_provider_settings_secret_id_company_secrets_id_fk": {
-          "name": "builder_provider_settings_secret_id_company_secrets_id_fk",
-          "tableFrom": "builder_provider_settings",
-          "tableTo": "company_secrets",
-          "columnsFrom": [
-            "secret_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -3669,8 +3639,8 @@
           "notNull": true,
           "default": "''"
         },
-        "provider_type": {
-          "name": "provider_type",
+        "adapter_type": {
+          "name": "adapter_type",
           "type": "text",
           "primaryKey": false,
           "notNull": true

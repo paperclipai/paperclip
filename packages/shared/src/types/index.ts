@@ -300,7 +300,6 @@ export type {
 export type {
   BuilderSessionState,
   BuilderMessageRole,
-  BuilderProviderType,
   BuilderProposalStatus,
   BuilderToolCall,
   BuilderToolResult,
@@ -316,6 +315,5 @@ export type {
 export {
   BUILDER_SESSION_STATES,
   BUILDER_MESSAGE_ROLES,
-  BUILDER_PROVIDER_TYPES,
   BUILDER_PROPOSAL_STATUSES,
 } from "./builder.js";

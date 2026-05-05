@@ -2,8 +2,6 @@ import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import type {
   BuilderActor,
-  BuilderProvider,
-  BuilderProviderConfig,
   BuilderProviderMessage,
 } from "./types.js";
 import {
@@ -15,6 +13,10 @@ import { builderSessionStore } from "./session-store.js";
 import { builderProposalStore } from "./proposal-store.js";
 import { recordBuilderCost } from "./cost-bridge.js";
 import type { PersistedBuilderMessage } from "./session-store.js";
+import {
+  executeBuilderTurn,
+  type BuilderAdapterConfig,
+} from "./adapter-executor.js";
 
 /**
  * Hard caps to keep a runaway LLM from spending the world. Combined with the
@@ -71,7 +73,7 @@ function toProviderMessages(persisted: PersistedBuilderMessage[]): BuilderProvid
 }
 
 /**
- * Run a single Builder turn: hand the transcript to the LLM, execute any tool
+ * Run a single Builder turn: hand the transcript to the adapter, execute any tool
  * calls it emits, feed the results back, repeat until the model stops or we
  * hit the per-turn cap.
  *
@@ -80,8 +82,7 @@ function toProviderMessages(persisted: PersistedBuilderMessage[]): BuilderProvid
  */
 export async function runBuilderTurn(opts: {
   db: Db;
-  provider: BuilderProvider;
-  providerConfig: BuilderProviderConfig;
+  adapterConfig: BuilderAdapterConfig;
   sessionId: string;
   companyId: string;
   actor: BuilderActor;
@@ -93,16 +94,12 @@ export async function runBuilderTurn(opts: {
   /** Optional injected proposal store (test-only). */
   proposalStore?: ReturnType<typeof builderProposalStore>;
 }) {
-  const { db, provider, providerConfig, sessionId, companyId, actor, signal } = opts;
+  const { db, adapterConfig, sessionId, companyId, actor, signal } = opts;
   const store = opts.store ?? builderSessionStore(db);
   const catalog = opts.toolCatalog ?? getBuilderToolCatalog(db);
   const proposalStore = opts.proposalStore ?? builderProposalStore(db);
 
-  const providerTools = Array.from(catalog.values()).map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    parametersSchema: tool.parametersSchema,
-  }));
+  const providerTools = Array.from(catalog.values());
 
   const newMessages: PersistedBuilderMessage[] = [];
   const usage = { inputTokens: 0, outputTokens: 0, costCents: 0 };
@@ -114,10 +111,13 @@ export async function runBuilderTurn(opts: {
     const transcript = await store.listMessages(sessionId);
     const providerMessages = toProviderMessages(transcript);
 
-    const response = await provider.chat({
+    const response = await executeBuilderTurn({
+      db,
+      sessionId,
+      companyId,
       messages: providerMessages,
       tools: providerTools,
-      config: providerConfig,
+      adapterConfig,
       signal,
     });
 
@@ -130,8 +130,10 @@ export async function runBuilderTurn(opts: {
     // the chat loop. Skipped automatically when cost is zero.
     await recordBuilderCost(db, {
       companyId,
-      provider: providerConfig.providerType,
-      model: providerConfig.model,
+      provider: adapterConfig.adapterType,
+      model: typeof adapterConfig.adapterConfig.model === "string" 
+        ? adapterConfig.adapterConfig.model 
+        : "unknown",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
       costCents: response.usage.costCents ?? 0,

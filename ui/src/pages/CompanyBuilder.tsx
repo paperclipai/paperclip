@@ -5,9 +5,11 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { builderApi } from "../api/builder";
+import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "../components/EmptyState";
+import { listUIAdapters } from "../adapters/registry";
 import type {
   BuilderMessage,
   BuilderProviderSettings,
@@ -29,6 +31,74 @@ import type {
  */
 
 const QUERY_KEY = ["builder"] as const;
+
+// Supported local CLI adapters for Builder
+// These are the adapters that spawn processes and work with the adapter executor
+const SUPPORTED_BUILDER_ADAPTER_TYPES = [
+  "claude_local",
+  "codex_local",
+  "opencode_local",
+  "cursor_local",
+  "gemini_local",
+  "pi_local",
+] as const;
+
+// Get available adapters dynamically from the UI adapter registry
+function getAvailableBuilderAdapters() {
+  const allAdapters = listUIAdapters();
+  return allAdapters.filter((adapter) =>
+    SUPPORTED_BUILDER_ADAPTER_TYPES.includes(adapter.type as any)
+  );
+}
+
+// Get models for a specific adapter type
+async function getAdapterModels(adapterType: string): Promise<Array<{ id: string; label: string }>> {
+  try {
+    // Dynamically import the adapter module to get its models
+    switch (adapterType) {
+      case "claude_local":
+        const claude = await import("@paperclipai/adapter-claude-local");
+        return claude.models || [];
+      case "codex_local":
+        const codex = await import("@paperclipai/adapter-codex-local");
+        return codex.models || [];
+      case "opencode_local":
+        const opencode = await import("@paperclipai/adapter-opencode-local");
+        return opencode.models || [];
+      case "cursor_local":
+        const cursor = await import("@paperclipai/adapter-cursor-local");
+        return cursor.models || [];
+      case "gemini_local":
+        const gemini = await import("@paperclipai/adapter-gemini-local");
+        return gemini.models || [];
+      case "pi_local":
+        const pi = await import("@paperclipai/adapter-pi-local");
+        return pi.models || [];
+      default:
+        return [];
+    }
+  } catch (err) {
+    console.warn(`Failed to load models for ${adapterType}:`, err);
+    return [];
+  }
+}
+
+// Get adapter compatibility status badge
+function getAdapterStatusBadge(adapterType: string): string {
+  // Phase 4 will add actual testing - for now mark all as experimental
+  switch (adapterType) {
+    case "claude_local":
+    case "opencode_local":
+      return "🧪 Experimental - Core functionality implemented";
+    case "codex_local":
+    case "cursor_local":
+    case "gemini_local":
+    case "pi_local":
+      return "⚠️ Untested - May require additional configuration";
+    default:
+      return "❓ Unknown compatibility status";
+  }
+}
 
 function formatRoleLabel(role: BuilderMessage["role"]): string {
   switch (role) {
@@ -127,18 +197,14 @@ function MessageBubble({
 }
 
 interface SettingsFormState {
-  providerType: "openai_compat";
+  adapterType: string;
   model: string;
-  baseUrl: string;
-  secretId: string;
 }
 
 function deriveFormFromSettings(settings: BuilderProviderSettings | null): SettingsFormState {
   return {
-    providerType: settings?.providerType ?? "openai_compat",
-    model: settings?.model ?? "gpt-4o-mini",
-    baseUrl: settings?.baseUrl ?? "",
-    secretId: settings?.secretId ?? "",
+    adapterType: settings?.adapterType ?? "claude_local",
+    model: (settings?.adapterConfig?.model as string) ?? "",
   };
 }
 
@@ -150,6 +216,11 @@ function SettingsPanel({ companyId }: { companyId: string }) {
     queryFn: () => builderApi.getSettings(companyId),
   });
   const [form, setForm] = useState<SettingsFormState | null>(null);
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; label: string }>>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+
+  // Get available Builder-compatible adapters dynamically
+  const availableAdapters = useMemo(() => getAvailableBuilderAdapters(), []);
 
   useEffect(() => {
     if (settingsQuery.data) {
@@ -157,14 +228,37 @@ function SettingsPanel({ companyId }: { companyId: string }) {
     }
   }, [settingsQuery.data]);
 
+  // Load models when adapter type changes
+  useEffect(() => {
+    if (form?.adapterType) {
+      setLoadingModels(true);
+      getAdapterModels(form.adapterType)
+        .then((models) => {
+          setAvailableModels(models);
+          // If no model is set and models are available, select the first one
+          if (!form.model && models.length > 0) {
+            setForm((prev) => prev ? { ...prev, model: models[0].id } : null);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load models:', err);
+          setAvailableModels([]);
+        })
+        .finally(() => {
+          setLoadingModels(false);
+        });
+    }
+  }, [form?.adapterType]);
+
   const mutation = useMutation({
     mutationFn: async () => {
       if (!form) return null;
+      
       return builderApi.updateSettings(companyId, {
-        providerType: form.providerType,
-        model: form.model.trim(),
-        baseUrl: form.baseUrl.trim() ? form.baseUrl.trim() : null,
-        secretId: form.secretId.trim() ? form.secretId.trim() : null,
+        adapterType: form.adapterType,
+        adapterConfig: {
+          model: form.model.trim(),
+        },
       });
     },
     onSuccess: async () => {
@@ -182,52 +276,66 @@ function SettingsPanel({ companyId }: { companyId: string }) {
 
   if (!form) return <div className="text-xs text-muted-foreground">Loading settings…</div>;
 
+  const selectedAdapter = availableAdapters.find((a) => a.type === form.adapterType);
+
   return (
     <div className="space-y-3 text-sm">
       <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-        <SettingsIcon className="h-3.5 w-3.5" /> Provider
+        <SettingsIcon className="h-3.5 w-3.5" /> Configuration
       </div>
+      
+      <label className="block text-xs">
+        Adapter Type
+        <select
+          className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          value={form.adapterType}
+          onChange={(e) => {
+            setForm({ ...form, adapterType: e.target.value, model: "" });
+          }}
+        >
+          {availableAdapters.map((adapter) => (
+            <option key={adapter.type} value={adapter.type}>
+              {adapter.label}
+            </option>
+          ))}
+        </select>
+        {selectedAdapter && (
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            {getAdapterStatusBadge(form.adapterType)}
+          </div>
+        )}
+      </label>
+      
       <label className="block text-xs">
         Model
-        <input
-          className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
-          value={form.model}
-          onChange={(e) => setForm({ ...form, model: e.target.value })}
-        />
+        {loadingModels ? (
+          <div className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm text-muted-foreground">
+            Loading models...
+          </div>
+        ) : (
+          <select
+            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm font-mono"
+            value={form.model}
+            onChange={(e) => setForm({ ...form, model: e.target.value })}
+          >
+            {!form.model && <option value="">-- Select a model --</option>}
+            {availableModels.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        )}
       </label>
-      <label className="block text-xs">
-        Base URL (optional, e.g. https://api.together.xyz/v1)
-        <input
-          className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
-          value={form.baseUrl}
-          onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-          placeholder="https://api.openai.com/v1"
-        />
-      </label>
-      <label className="block text-xs">
-        Secret ID (companySecret holding the API key)
-        <input
-          className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm font-mono"
-          value={form.secretId}
-          onChange={(e) => setForm({ ...form, secretId: e.target.value })}
-          placeholder="uuid"
-        />
-      </label>
+      
       <Button
         onClick={() => mutation.mutate()}
-        disabled={mutation.isPending}
+        disabled={mutation.isPending || !form.model.trim()}
         size="sm"
         className="w-full"
       >
         {mutation.isPending ? "Saving…" : "Save settings"}
       </Button>
-      {settingsQuery.data?.settings?.hasApiKey ? (
-        <div className="text-xs text-emerald-600">API key bound ✓</div>
-      ) : (
-        <div className="text-xs text-amber-600">
-          No API key bound — Builder will refuse to start a session until a secret is set.
-        </div>
-      )}
     </div>
   );
 }

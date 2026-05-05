@@ -3,18 +3,16 @@ import type { Db } from "@paperclipai/db";
 import { builderProviderSettings } from "@paperclipai/db";
 import type {
   BuilderProviderSettings,
-  BuilderProviderType,
   UpdateBuilderProviderSettings,
 } from "@paperclipai/shared";
 import { secretService } from "../secrets.js";
 import { unprocessable } from "../../errors.js";
 
 /**
- * Per-company Builder provider settings.
+ * Per-company Builder adapter settings.
  *
- * The API key is stored as a `companySecret` and referenced by id; the raw
- * value is never returned to clients. A `hasApiKey` boolean lets the UI show
- * "configured / not configured" without revealing anything.
+ * Uses the same adapter system as agents. Secrets are stored in company_secrets
+ * and referenced via adapterConfig.env with secret_ref bindings.
  */
 
 type Row = typeof builderProviderSettings.$inferSelect;
@@ -22,15 +20,39 @@ type Row = typeof builderProviderSettings.$inferSelect;
 function toSettings(row: Row): BuilderProviderSettings {
   return {
     companyId: row.companyId,
-    providerType: row.providerType as BuilderProviderType,
-    model: row.model,
-    baseUrl: row.baseUrl,
-    secretId: row.secretId,
-    hasApiKey: !!row.secretId,
-    extras: (row.extras ?? {}) as Record<string, unknown>,
+    adapterType: row.adapterType,
+    adapterConfig: (row.adapterConfig ?? {}) as Record<string, unknown>,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+/**
+ * Validate that all secret references in adapterConfig.env belong to the company.
+ */
+function validateAdapterConfigSecrets(
+  companyId: string,
+  adapterConfig: Record<string, unknown>,
+  secrets: ReturnType<typeof secretService>,
+): void {
+  const env = adapterConfig.env as Record<string, unknown> | undefined;
+  if (!env) return;
+
+  for (const [key, binding] of Object.entries(env)) {
+    if (
+      typeof binding === "object" &&
+      binding !== null &&
+      (binding as any).type === "secret_ref"
+    ) {
+      const secretId = (binding as any).secretId;
+      if (typeof secretId !== "string") {
+        throw unprocessable(
+          `Invalid secret reference in env.${key}: missing secretId`,
+        );
+      }
+      // Secret validation will be done in upsert via async check
+    }
+  }
 }
 
 export function builderProviderSettingsStore(db: Db) {
@@ -50,24 +72,34 @@ export function builderProviderSettingsStore(db: Db) {
       companyId: string,
       input: UpdateBuilderProviderSettings,
     ): Promise<BuilderProviderSettings> => {
-      // Validate the secret reference belongs to this company before storing
-      // it; otherwise an attacker with company A access could bind a secret
-      // from company B by id.
-      if (input.secretId) {
-        const secret = await secrets.getById(input.secretId);
-        if (!secret || secret.companyId !== companyId) {
-          throw unprocessable("Secret must belong to the same company");
+      // Validate all secret references belong to this company
+      const env = (input.adapterConfig.env as Record<string, unknown>) ?? {};
+      for (const [key, binding] of Object.entries(env)) {
+        if (
+          typeof binding === "object" &&
+          binding !== null &&
+          (binding as any).type === "secret_ref"
+        ) {
+          const secretId = (binding as any).secretId;
+          if (typeof secretId !== "string") {
+            throw unprocessable(
+              `Invalid secret reference in env.${key}: missing secretId`,
+            );
+          }
+          const secret = await secrets.getById(secretId);
+          if (!secret || secret.companyId !== companyId) {
+            throw unprocessable(
+              `Secret ${secretId} must belong to the same company`,
+            );
+          }
         }
       }
 
       const now = new Date();
       const values = {
         companyId,
-        providerType: input.providerType,
-        model: input.model,
-        baseUrl: input.baseUrl ?? null,
-        secretId: input.secretId ?? null,
-        extras: input.extras ?? {},
+        adapterType: input.adapterType,
+        adapterConfig: input.adapterConfig,
         updatedAt: now,
       };
 
@@ -80,25 +112,6 @@ export function builderProviderSettingsStore(db: Db) {
         })
         .returning();
       return toSettings(row);
-    },
-
-    /**
-     * Resolve the API key for the configured provider. Returns null if no
-     * settings exist or no secret is bound; callers should treat that as
-     * "Builder not configured".
-     */
-    resolveApiKey: async (companyId: string): Promise<string | null> => {
-      const row = await db
-        .select()
-        .from(builderProviderSettings)
-        .where(eq(builderProviderSettings.companyId, companyId))
-        .then((rows) => rows[0] ?? null);
-      if (!row || !row.secretId) return null;
-      try {
-        return await secrets.resolveSecretValue(companyId, row.secretId, "latest");
-      } catch {
-        return null;
-      }
     },
   };
 }

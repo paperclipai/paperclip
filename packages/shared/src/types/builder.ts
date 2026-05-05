@@ -11,9 +11,6 @@ export type BuilderSessionState = (typeof BUILDER_SESSION_STATES)[number];
 export const BUILDER_MESSAGE_ROLES = ["system", "user", "assistant", "tool"] as const;
 export type BuilderMessageRole = (typeof BUILDER_MESSAGE_ROLES)[number];
 
-export const BUILDER_PROVIDER_TYPES = ["openai_compat"] as const;
-export type BuilderProviderType = (typeof BUILDER_PROVIDER_TYPES)[number];
-
 export const BUILDER_PROPOSAL_STATUSES = [
   "pending",
   "approved",
@@ -80,7 +77,7 @@ export interface BuilderSession {
   companyId: string;
   createdByUserId: string | null;
   title: string;
-  providerType: BuilderProviderType;
+  adapterType: string;
   model: string;
   state: BuilderSessionState;
   inputTokensTotal: number;
@@ -96,14 +93,8 @@ export interface BuilderSessionDetail extends BuilderSession {
 
 export interface BuilderProviderSettings {
   companyId: string;
-  providerType: BuilderProviderType;
-  model: string;
-  baseUrl: string | null;
-  /** Reference to a `companySecrets` row containing the API key. */
-  secretId: string | null;
-  /** True iff a secret is currently bound. The key value is never returned. */
-  hasApiKey: boolean;
-  extras: Record<string, unknown>;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }

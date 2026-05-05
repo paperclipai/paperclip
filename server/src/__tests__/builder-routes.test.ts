@@ -74,7 +74,7 @@ describe("builder routes", () => {
       companyId,
       title: "test",
       model: "gpt-test",
-      providerType: "openai_compat",
+      adapterType: "claude_local",
       state: "active",
       createdByUserId: "board-user",
       inputTokensTotal: 0,
@@ -208,7 +208,7 @@ describe("builder routes", () => {
     });
     const res = await request(app)
       .put(`/api/companies/${companyId}/builder/settings`)
-      .send({ providerType: "not_a_real_provider", model: "x" });
+      .send({ adapterType: "", adapterConfig: {} });
     expect(res.status).toBe(400);
     expect(mockBuilderService.upsertSettings).not.toHaveBeenCalled();
   });

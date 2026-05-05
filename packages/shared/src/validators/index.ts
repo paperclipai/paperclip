@@ -380,7 +380,6 @@ export {
 } from "./plugin.js";
 
 export {
-  builderProviderTypeSchema,
   createBuilderSessionSchema,
   sendBuilderMessageSchema,
   updateBuilderProviderSettingsSchema,

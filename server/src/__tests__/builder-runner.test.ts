@@ -5,12 +5,14 @@ import {
   _resetBuilderToolExtensions,
   registerBuilderTool,
 } from "../services/builder/tool-registry.js";
-import type {
-  BuilderProvider,
-  BuilderProviderConfig,
-  BuilderTool,
-} from "../services/builder/types.js";
+import type { BuilderTool } from "../services/builder/types.js";
 import type { PersistedBuilderMessage } from "../services/builder/session-store.js";
+
+const mockExecuteBuilderTurn = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/builder/adapter-executor.js", () => ({
+  executeBuilderTurn: mockExecuteBuilderTurn,
+}));
 
 /**
  * Runner tests use an in-memory session store + an injected tool catalog so
@@ -77,11 +79,11 @@ function makeCatalog(tools: BuilderTool[]) {
   return map;
 }
 
-const config: BuilderProviderConfig = {
-  providerType: "openai_compat",
-  model: "gpt-test",
-  apiKey: "sk-test",
-  baseUrl: null,
+const config = {
+  adapterType: "claude_local",
+  adapterConfig: {
+    model: "gpt-test",
+  },
 };
 
 afterEach(() => {
@@ -92,20 +94,16 @@ afterEach(() => {
 describe("builder runner", () => {
   it("appends a single assistant message when the model finishes immediately", async () => {
     const { state, store } = makeStore();
-    const provider: BuilderProvider = {
-      type: "openai_compat",
-      chat: vi.fn(async () => ({
-        text: "hello",
-        toolCalls: [],
-        finishReason: "stop",
-        usage: { inputTokens: 10, outputTokens: 4 },
-      })),
-    };
+    mockExecuteBuilderTurn.mockResolvedValueOnce({
+      text: "hello",
+      toolCalls: [],
+      finishReason: "stop",
+      usage: { inputTokens: 10, outputTokens: 4, costCents: 0 },
+    });
 
     const result = await runBuilderTurn({
       db: {} as unknown as Db,
-      provider,
-      providerConfig: config,
+      adapterConfig: config,
       sessionId,
       companyId,
       actor: { type: "user", id: "user-1" },
@@ -118,7 +116,7 @@ describe("builder runner", () => {
     expect(result.newMessages[0].content.text).toBe("hello");
     expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 4, costCents: 0 });
     expect(result.truncated).toBe(false);
-    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(mockExecuteBuilderTurn).toHaveBeenCalledTimes(1);
     expect(state.totals.inputTokens).toBe(10);
   });
 
@@ -138,32 +136,23 @@ describe("builder runner", () => {
       run: toolRun,
     };
 
-    let call = 0;
-    const provider: BuilderProvider = {
-      type: "openai_compat",
-      chat: vi.fn(async () => {
-        call += 1;
-        if (call === 1) {
-          return {
-            text: "",
-            toolCalls: [{ id: "c1", name: "say_hi", arguments: {} }],
-            finishReason: "tool_calls" as const,
-            usage: { inputTokens: 5, outputTokens: 2 },
-          };
-        }
-        return {
-          text: "done",
-          toolCalls: [],
-          finishReason: "stop" as const,
-          usage: { inputTokens: 7, outputTokens: 3 },
-        };
-      }),
-    };
+    mockExecuteBuilderTurn
+      .mockResolvedValueOnce({
+        text: "",
+        toolCalls: [{ id: "c1", name: "say_hi", arguments: {} }],
+        finishReason: "tool_calls",
+        usage: { inputTokens: 5, outputTokens: 2, costCents: 0 },
+      })
+      .mockResolvedValueOnce({
+        text: "done",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: { inputTokens: 7, outputTokens: 3, costCents: 0 },
+      });
 
     const result = await runBuilderTurn({
       db: {} as unknown as Db,
-      provider,
-      providerConfig: config,
+      adapterConfig: config,
       sessionId,
       companyId,
       actor: { type: "user", id: "user-1" },
@@ -180,32 +169,23 @@ describe("builder runner", () => {
 
   it("surfaces an unknown-tool error to the model rather than crashing", async () => {
     const { store } = makeStore();
-    let call = 0;
-    const provider: BuilderProvider = {
-      type: "openai_compat",
-      chat: vi.fn(async () => {
-        call += 1;
-        if (call === 1) {
-          return {
-            text: "",
-            toolCalls: [{ id: "c1", name: "nonexistent_tool", arguments: {} }],
-            finishReason: "tool_calls" as const,
-            usage: { inputTokens: 1, outputTokens: 1 },
-          };
-        }
-        return {
-          text: "ok",
-          toolCalls: [],
-          finishReason: "stop" as const,
-          usage: { inputTokens: 1, outputTokens: 1 },
-        };
-      }),
-    };
+    mockExecuteBuilderTurn
+      .mockResolvedValueOnce({
+        text: "",
+        toolCalls: [{ id: "c1", name: "nonexistent_tool", arguments: {} }],
+        finishReason: "tool_calls",
+        usage: { inputTokens: 1, outputTokens: 1, costCents: 0 },
+      })
+      .mockResolvedValueOnce({
+        text: "ok",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1, costCents: 0 },
+      });
 
     const result = await runBuilderTurn({
       db: {} as unknown as Db,
-      provider,
-      providerConfig: config,
+      adapterConfig: config,
       sessionId,
       companyId,
       actor: { type: "user", id: "user-1" },

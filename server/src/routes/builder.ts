@@ -93,9 +93,7 @@ export function builderRoutes(db: Db) {
         entityType: "builder_provider_settings",
         entityId: companyId,
         details: {
-          providerType: updated.providerType,
-          model: updated.model,
-          hasApiKey: updated.hasApiKey,
+          adapterType: updated.adapterType,
         },
       }).catch((logErr) =>
         logger.warn({ logErr, companyId }, "builder settings: activity log failed"),

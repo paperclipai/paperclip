@@ -26,9 +26,8 @@ async function ensureSyntheticBuilderAgent(db: Db, companyId: string): Promise<s
     .then((rows) => rows[0] ?? null);
   if (existing) return existing.id;
 
-  // Use ON CONFLICT to handle race: two concurrent requests both find no agent
-  // and both try to insert. One succeeds, the other hits conflict and returns
-  // the existing row.
+  // Create the synthetic agent - if it already exists from a race condition, 
+  // the next request will find it via the query above
   const [created] = await db
     .insert(agents)
     .values({
@@ -44,18 +43,21 @@ async function ensureSyntheticBuilderAgent(db: Db, companyId: string): Promise<s
       budgetMonthlyCents: 0,
       spentMonthlyCents: 0,
     })
-    .onConflictDoNothing({ target: [agents.companyId, agents.name] })
-    .returning({ id: agents.id });
+    .returning({ id: agents.id })
+    .catch(async (err) => {
+      // If insert fails (e.g., race condition), retry the query
+      logger.debug({ err, companyId }, "Synthetic agent insert failed, retrying query");
+      const retry = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.name, SYNTHETIC_AGENT_NAME)))
+        .then((rows) => rows[0]);
+      if (!retry) throw new Error("Failed to create or find synthetic builder agent");
+      return [retry];
+    });
   
-  // If ON CONFLICT DO NOTHING returns nothing, re-query for the existing row
   if (!created) {
-    const retry = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.companyId, companyId), eq(agents.name, SYNTHETIC_AGENT_NAME)))
-      .then((rows) => rows[0]);
-    if (!retry) throw new Error("Failed to create or find synthetic builder agent");
-    return retry.id;
+    throw new Error("Failed to create synthetic builder agent");
   }
   
   return created.id;

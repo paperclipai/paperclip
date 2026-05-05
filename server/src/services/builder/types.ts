@@ -73,14 +73,8 @@ export interface BuilderTool extends BuilderToolDescriptor {
 }
 
 // ---------------------------------------------------------------------------
-// LLM provider abstraction
+// Message format (used by runner for adapter input)
 // ---------------------------------------------------------------------------
-
-export interface BuilderProviderToolDef {
-  name: string;
-  description: string;
-  parametersSchema: Record<string, unknown>;
-}
 
 export interface BuilderProviderMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -90,41 +84,6 @@ export interface BuilderProviderMessage {
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
   /** Tool-role only: id of the tool call this message responds to. */
   toolCallId?: string;
-}
-
-export interface BuilderProviderUsage {
-  inputTokens: number;
-  outputTokens: number;
-  /** Optional provider-reported cost in USD cents (× 100 for fractional). */
-  costCents?: number;
-}
-
-export interface BuilderProviderResponse {
-  /** Free-form assistant text. */
-  text: string;
-  /** Tool calls the model wants the host to execute. */
-  toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
-  /** "stop" if the model is done; "tool_calls" if it wants tools run. */
-  finishReason: "stop" | "tool_calls" | "length" | "other";
-  usage: BuilderProviderUsage;
-}
-
-export interface BuilderProviderConfig {
-  providerType: string;
-  model: string;
-  apiKey: string;
-  baseUrl?: string | null;
-  extras?: Record<string, unknown>;
-}
-
-export interface BuilderProvider {
-  type: string;
-  chat(input: {
-    messages: BuilderProviderMessage[];
-    tools: BuilderProviderToolDef[];
-    config: BuilderProviderConfig;
-    signal?: AbortSignal;
-  }): Promise<BuilderProviderResponse>;
 }
 
 // ---------------------------------------------------------------------------
