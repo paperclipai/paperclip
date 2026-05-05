@@ -209,7 +209,15 @@ export function builderProposalStore(db: Db) {
           decidedAt: status === "approved" || status === "rejected" ? now : null,
           updatedAt: now,
         })
-        .where(eq(builderProposals.id, proposalId))
+        .where(
+          and(
+            eq(builderProposals.id, proposalId),
+            or(
+              eq(builderProposals.status, "pending"),
+              eq(builderProposals.status, "approved"),
+            ),
+          ),
+        )
         .returning();
       return row ? toProposal(row) : null;
     },
