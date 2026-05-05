@@ -30,6 +30,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  STRANDED_ISSUE_RECOVERY_INVARIANT_KEYS,
+  buildStrandedIssueRecoveryFingerprint,
+} from "../services/recovery/origins.ts";
 import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
@@ -70,7 +74,6 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-import { buildStrandedIssueRecoveryFingerprint } from "../services/recovery/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -88,6 +91,17 @@ function isLikelyLinuxContainerWithoutProcessGroupReap() {
   try {
     const cgroup = readFileSync("/proc/self/cgroup", "utf8");
     return cgroup.includes("docker") || cgroup.includes("containerd") || cgroup.includes("kubepods");
+  } catch {
+    return false;
+  }
+}
+
+/** cgroup v2 unified hierarchy at `/` only — common in constrained sandboxes where PGID reap does not reach detached children. */
+function isMinimalCgroupV2Root() {
+  if (process.env.PAPERCLIP_TEST_FORCE_PROCESS_GROUP_REAP === "1") return false;
+  if (process.platform !== "linux") return false;
+  try {
+    return readFileSync("/proc/self/cgroup", "utf8").trim() === "0::/";
   } catch {
     return false;
   }
