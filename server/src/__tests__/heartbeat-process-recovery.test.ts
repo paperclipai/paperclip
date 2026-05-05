@@ -1747,7 +1747,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("does not continue seeded in-progress work that has no run linkage", async () => {
+  it("resets in-progress issue with no run linkage to todo (startup recovery for Change 3)", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -1788,12 +1788,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.dispatchRequeued).toBe(0);
     expect(result.continuationRequeued).toBe(0);
     expect(result.escalated).toBe(0);
-    expect(result.skipped).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect((result as Record<string, unknown>).inProgressResetToTodo).toBe(1);
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(0);
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(issue?.status).toBe("in_progress");
+    // Change 3: orphaned in_progress issues with no run linkage are reset to todo so the
+    // next heartbeat timer picks them up rather than leaving them stranded indefinitely.
+    expect(issue?.status).toBe("todo");
     expect(issue?.executionRunId).toBeNull();
   });
 
