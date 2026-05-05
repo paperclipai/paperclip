@@ -401,6 +401,23 @@ describe("shouldResetTaskSessionForWake", () => {
     ).toBe(true);
   });
 
+  it("resets session context on legacy scheduler timer wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        source: "scheduler",
+        reason: "interval_elapsed",
+      }),
+    ).toBe(true);
+  });
+
+  it("resets session context when wakeReason is heartbeat_timer", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "heartbeat_timer",
+      }),
+    ).toBe(true);
+  });
+
   it("preserves session context on manual on-demand invokes by default", () => {
     expect(
       shouldResetTaskSessionForWake({
@@ -472,6 +489,20 @@ describe("applyFreshSessionPolicyToWakeContext", () => {
     expect(result).toEqual({
       wakeSource: "timer",
       wakeReason: "heartbeat_timer",
+      forceFreshSession: true,
+    });
+  });
+
+  it("forces a fresh session for legacy scheduler timer wakes", () => {
+    const result = applyFreshSessionPolicyToWakeContext({
+      source: "scheduler",
+      reason: "interval_elapsed",
+      resumeSessionDisplayId: "session-1",
+    });
+
+    expect(result).toEqual({
+      source: "scheduler",
+      reason: "interval_elapsed",
       forceFreshSession: true,
     });
   });

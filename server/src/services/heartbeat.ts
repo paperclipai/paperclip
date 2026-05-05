@@ -1404,8 +1404,13 @@ export function shouldResetTaskSessionForWake(
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
   if (wakeSource === "timer") return true;
 
+  const legacySource = readNonEmptyString(contextSnapshot?.source);
+  const legacyReason = readNonEmptyString(contextSnapshot?.reason);
+  if (legacySource === "scheduler" && legacyReason === "interval_elapsed") return true;
+
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
+    wakeReason === "heartbeat_timer" ||
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
@@ -4739,7 +4744,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const runtime = await ensureRuntimeState(agent);
-    const context = parseObject(run.contextSnapshot);
+    const context = applyFreshSessionPolicyToWakeContext(parseObject(run.contextSnapshot));
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
