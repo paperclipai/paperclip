@@ -26,6 +26,7 @@ declare global {
           | "agent_key"
           | "agent_jwt"
           | "mobile_paperclip_jwt"
+          | "cloud_tenant"
           | "none";
       };
     }
