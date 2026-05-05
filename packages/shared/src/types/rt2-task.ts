@@ -142,6 +142,33 @@ export interface Rt2BoardCardMember {
   avatarUrl?: string | null;
 }
 
+export type Rt2CustomFieldType = "text" | "number" | "date" | "dropdown";
+
+export interface Rt2CustomFieldOption {
+  id: string;
+  label: string;
+  position: number;
+}
+
+export interface Rt2CustomFieldDefinition {
+  id: string;
+  name: string;
+  fieldType: Rt2CustomFieldType;
+  position: number;
+  options?: Rt2CustomFieldOption[];
+}
+
+export interface Rt2CustomFieldValue {
+  fieldId: string;
+  fieldName: string;
+  fieldType: Rt2CustomFieldType;
+  textValue?: string | null;
+  numberValue?: number | null;
+  dateValue?: string | null;
+  optionId?: string | null;
+  optionLabel?: string | null;
+}
+
 export interface Rt2BoardAttachmentPreview {
   id: string;
   issueId: string;
@@ -165,6 +192,7 @@ export interface Rt2BoardCardMeta {
   checklistProgress: number;
   labels: Rt2BoardCardLabel[];
   members: Rt2BoardCardMember[];
+  customFields: Rt2CustomFieldValue[];
 }
 
 export interface Rt2BoardOverview {

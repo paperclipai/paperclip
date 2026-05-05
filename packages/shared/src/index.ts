@@ -464,6 +464,10 @@ export type {
   Rt2CaptureReliabilityReportMetrics,
   Rt2CaptureReliabilityReportSourceRow,
   Rt2CaptureReliabilityReport,
+  Rt2CustomFieldType,
+  Rt2CustomFieldOption,
+  Rt2CustomFieldDefinition,
+  Rt2CustomFieldValue,
 } from "./types/rt2-task.js";
 
 export {
