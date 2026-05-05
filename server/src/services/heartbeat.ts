@@ -1937,10 +1937,10 @@ async function buildPaperclipWakePayload(input: {
           key: continuationSummary.key,
           title: continuationSummary.title,
           body:
-            continuationSummary.body.length > 4_000
-              ? continuationSummary.body.slice(0, 4_000)
+            continuationSummary.body.length > 2_000
+              ? continuationSummary.body.slice(0, 2_000)
               : continuationSummary.body,
-          bodyTruncated: continuationSummary.body.length > 4_000,
+          bodyTruncated: continuationSummary.body.length > 2_000,
           updatedAt: continuationSummary.updatedAt.toISOString(),
         }
       : null,
@@ -1988,6 +1988,7 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     body: string;
   } | null;
+  continuationSummaryBody?: string | null;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -2012,7 +2013,12 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
     const description = issue.description?.trim();
-    if (description) {
+    const continuationBody = input.continuationSummaryBody?.trim() ?? "";
+    const descriptionAlreadyInSummary =
+      !!description &&
+      continuationBody.length > 0 &&
+      continuationBody.includes(description);
+    if (description && !descriptionAlreadyInSummary) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
   }
@@ -6293,6 +6299,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
       wakeComment: wakeCommentContext,
+      continuationSummaryBody: continuationSummary?.body ?? null,
     });
     if (issueRef) {
       context.paperclipIssue = {

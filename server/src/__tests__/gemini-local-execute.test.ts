@@ -420,7 +420,7 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("--resume");
       expect(capture.argv).toContain("gemini-session-1");
       expect(promptArg).toContain("## Paperclip Resume Delta");
-      expect(promptArg).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(promptArg).toContain("Resuming session");
       expect(promptArg).toContain("Second comment");
       expect(promptArg).not.toContain("Follow the paperclip heartbeat.");
     } finally {

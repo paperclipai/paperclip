@@ -49,9 +49,10 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("- Summary is issue-local");
     expect(body).toContain("## Recent Concrete Actions");
     expect(body).toContain("Run `run-1` finished with status `succeeded`");
+    expect(body).toContain("## Files / Routes Touched");
     expect(body).toContain("`server/src/services/heartbeat.ts`");
-    expect(body).toContain("## Commands Run");
-    expect(body).toContain("## Blockers / Decisions");
+    expect(body).not.toContain("## Commands Run");
+    expect(body).not.toContain("## Blockers / Decisions");
     expect(body).toContain("## Next Action");
     expect(body.length).toBeLessThanOrEqual(ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
   });

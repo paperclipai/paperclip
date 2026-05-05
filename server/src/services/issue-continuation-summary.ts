@@ -111,6 +111,11 @@ function bulletList(items: string[], empty: string) {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
+function optionalSection(heading: string, items: string[]): string[] | null {
+  if (items.length === 0) return null;
+  return ["", `## ${heading}`, "", items.map((item) => `- ${item}`).join("\n")];
+}
+
 function extractPreviousNextAction(previousBody: string | null | undefined) {
   const section = extractMarkdownSection(previousBody, "Next Action");
   if (!section) return null;
@@ -142,7 +147,11 @@ export function buildContinuationSummaryMarkdown(input: {
   const mode = inferMode(issue, run);
   const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
 
-  const body = [
+  const filesTouched = paths.map((path) => `\`${path}\``);
+  const blockerItems = run.error
+    ? [`Latest run ended with \`${run.status}\`; inspect the error before continuing.`]
+    : [];
+  const sections: string[] = [
     "# Continuation Summary",
     "",
     `- Issue: ${issue.identifier ?? issue.id} — ${issue.title}`,
@@ -163,34 +172,15 @@ export function buildContinuationSummaryMarkdown(input: {
     "## Recent Concrete Actions",
     "",
     bulletList(recentActions, "No recent actions captured."),
-    "",
-    "## Files / Routes Touched",
-    "",
-    bulletList(paths.map((path) => `\`${path}\``), "No file or route paths were detected in the captured run summary."),
-    "",
-    "## Commands Run",
-    "",
-    bulletList(
-      [
-        `Heartbeat run \`${run.id}\` invoked adapter \`${agent.adapterType ?? "unknown"}\`.`,
-        "Detailed shell/tool commands remain in the run log and transcript.",
-      ],
-      "No command metadata captured.",
-    ),
-    "",
-    "## Blockers / Decisions",
-    "",
-    bulletList(
-      run.error
-        ? [`Latest run ended with \`${run.status}\`; inspect the error before continuing.`]
-        : ["No new blocker was recorded by the latest run."],
-      "No blockers or decisions captured.",
-    ),
-    "",
-    "## Next Action",
-    "",
-    `- ${nextAction}`,
-  ].join("\n");
+  ];
+  for (const part of [
+    optionalSection("Files / Routes Touched", filesTouched),
+    optionalSection("Blockers / Decisions", blockerItems),
+  ]) {
+    if (part) sections.push(...part);
+  }
+  sections.push("", "## Next Action", "", `- ${nextAction}`);
+  const body = sections.join("\n");
 
   return truncateText(body, ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
 }

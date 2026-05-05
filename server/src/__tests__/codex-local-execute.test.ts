@@ -479,11 +479,9 @@ describe("codex execute", () => {
         commentIds: ["comment-1", "comment-2"],
       });
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
-      expect(capture.prompt).toContain("Treat this wake payload as the highest-priority change for the current heartbeat.");
-      expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
-      expect(capture.prompt).toContain(
-        "acknowledge the latest comment and explain how it changes your next action.",
-      );
+      expect(capture.prompt).toContain("Highest-priority for this heartbeat");
+      expect(capture.prompt).toContain("acknowledge the latest comment first");
+      expect(capture.prompt).toContain("skills/paperclip/SKILL.md");
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
     } finally {
@@ -918,7 +916,7 @@ describe("codex execute", () => {
         commentIds: [],
       });
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
-      expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(capture.prompt).toContain("Scoped to the issue below");
       expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");
       expect(capture.prompt).toContain("- pending comments: 0/0");
       expect(capture.prompt).toContain("- issue status: in_progress");
@@ -1025,7 +1023,7 @@ describe("codex execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.argv).toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
       expect(capture.prompt).toContain("## Paperclip Resume Delta");
-      expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(capture.prompt).toContain("Resuming session");
       expect(capture.prompt).toContain("Second comment");
       expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
       expect(capture.prompt).not.toContain("You are managed instructions.");

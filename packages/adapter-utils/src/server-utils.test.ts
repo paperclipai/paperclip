@@ -450,9 +450,9 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("## Paperclip Wake Payload");
-    expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
-    expect(prompt).toContain("use child issues instead of polling");
-    expect(prompt).toContain("mark blocked work with the unblock owner/action");
+    expect(prompt).toContain("Highest-priority for this heartbeat");
+    expect(prompt).toContain("skills/paperclip/SKILL.md");
+    expect(prompt).toContain("acknowledge the latest comment first");
   });
 
   it("renders dependency-blocked interaction guidance", () => {
