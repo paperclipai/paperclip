@@ -1705,6 +1705,63 @@ export function routineService(
       return { triggered };
     },
 
+    forceTerminateExecution: async (routineId: string, companyId: string) => {
+      const openIssues = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          originRunId: issues.originRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "routine_execution"),
+            eq(issues.originId, routineId),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .orderBy(asc(issues.createdAt));
+
+      if (openIssues.length === 0) return { terminatedIssueIds: [], terminatedCount: 0 };
+
+      const now = new Date();
+      const terminatedIssueIds: string[] = [];
+
+      for (const issue of openIssues) {
+        await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select id from ${issues} where id = ${issue.id} for update`,
+          );
+          await tx
+            .update(issues)
+            .set({
+              status: "cancelled",
+              cancelledAt: now,
+              executionRunId: null,
+              checkoutRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, issue.id));
+
+          if (issue.originRunId) {
+            await finalizeRun(issue.originRunId, {
+              status: "failed",
+              failureReason: "Force-terminated by admin via force-terminate endpoint",
+              completedAt: now,
+            }, tx as unknown as Db);
+          }
+        });
+        terminatedIssueIds.push(issue.id);
+      }
+
+      return { terminatedIssueIds, terminatedCount: terminatedIssueIds.length };
+    },
+
     syncRunStatusForIssue: async (issueId: string) => {
       const issue = await db
         .select({
