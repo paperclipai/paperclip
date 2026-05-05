@@ -38,6 +38,8 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  plugins,
+  pluginState,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -3670,7 +3672,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     let issueTitle: string | null = null;
     let issueDescription: string | null = null;
-    if (eventType === "agent.run.started" && issueId) {
+    if (issueId) {
       const issueRow = await db
         .select({ title: issues.title, description: issues.description })
         .from(issues)
@@ -7320,6 +7322,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
+      }
+      try {
+        const hindsightPluginRow = await db
+          .select({ id: plugins.id })
+          .from(plugins)
+          .where(eq(plugins.pluginKey, "@vectorize-io/hindsight-paperclip"))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (hindsightPluginRow) {
+          const recalledValue = await db
+            .select({ valueJson: pluginState.valueJson })
+            .from(pluginState)
+            .where(
+              and(
+                eq(pluginState.pluginId, hindsightPluginRow.id),
+                eq(pluginState.scopeKind, "run"),
+                eq(pluginState.scopeId, run.id),
+                eq(pluginState.stateKey, "recalled-memories"),
+                eq(pluginState.namespace, "default"),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0]?.valueJson ?? null);
+          if (recalledValue && typeof recalledValue === "string" && recalledValue.trim()) {
+            context.paperclipHindsightMemories = recalledValue;
+          }
+        }
+      } catch {
+        // Non-fatal: do not block execution if memory read fails
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
