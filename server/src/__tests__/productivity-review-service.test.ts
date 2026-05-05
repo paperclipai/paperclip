@@ -562,7 +562,8 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     // 12 hours after the close: past the 6h blanket window, but well within
     // the 24h long_active_duration suppression window. No new review should
-    // be spawned.
+    // be spawned, and the issue lands in the `snoozed` bucket (not `skipped`)
+    // so dashboards can distinguish "actively suppressed" from "no evidence".
     const result = await service.reconcileProductivityReviews({
       now: new Date(closedAt.getTime() + 12 * 60 * 60 * 1000),
       companyId: seeded.companyId,
@@ -570,6 +571,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     const reviews = await listProductivityReviews(seeded.companyId);
 
     expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+    expect(result.skipped).toBe(0);
     expect(reviews).toHaveLength(1);
   });
 

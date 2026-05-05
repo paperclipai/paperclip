@@ -476,26 +476,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActiveRaw = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
-
-    // Suppress long_active_duration when a productivity review on this issue
-    // closed as productive within the longActiveResolvedSnoozeMs window
-    // (issue #5145). Routine-execution-origin issues legitimately stay
-    // in_progress for days, so without this guard the trigger re-fires every
-    // evaluation tick after the 6h blanket window expires. Other triggers
-    // (no_comment_streak, high_churn) are intentionally not gated by this
-    // window — they signal independent lifecycle problems that a "yes,
-    // long-active is fine" review close does not address.
-    const longActive = longActiveRaw && !(await findRecentResolvedProductivityReview(
-      sourceIssue.companyId,
-      sourceIssue.id,
-      new Date(now.getTime() - thresholds.longActiveResolvedSnoozeMs),
-    ));
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 
@@ -835,6 +821,24 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
       if (!evidence) {
         result.skipped += 1;
+        continue;
+      }
+      // Suppress long_active_duration when a productivity review on this issue
+      // closed as productive within the longActiveResolvedSnoozeMs window
+      // (issue #5145). Other triggers (no_comment_streak, high_churn) are
+      // intentionally not gated by this window — they signal independent
+      // lifecycle problems that a "long-active is fine" close doesn't address.
+      // Counted as snoozed (not skipped) so it's distinguishable from
+      // "no evidence" in observability counters.
+      if (
+        evidence.trigger === "long_active_duration" &&
+        (await findRecentResolvedProductivityReview(
+          candidate.companyId,
+          candidate.id,
+          new Date(now.getTime() - thresholds.longActiveResolvedSnoozeMs),
+        ))
+      ) {
+        result.snoozed += 1;
         continue;
       }
       let prefix = prefixCache.get(candidate.companyId);
