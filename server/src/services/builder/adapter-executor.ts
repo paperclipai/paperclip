@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { getServerAdapter } from "../../adapters/registry.js";
+import { calculateModelCostCents } from "@paperclipai/shared";
 import type {
   AdapterAgent,
   AdapterRuntime,
@@ -165,7 +166,11 @@ export async function executeBuilderTurn(
     }, "Builder adapter execution completed");
 
     // Parse adapter result and convert to Builder format
-    return parseAdapterResult(result, adapterType);
+    const model =
+      typeof config.model === "string" && config.model.trim().length > 0
+        ? config.model.trim()
+        : "";
+    return parseAdapterResult(result, adapterType, model);
   } catch (error) {
     logger.error({ error, adapterType, sessionId }, "Builder adapter execution failed");
     throw new Error(
@@ -183,6 +188,7 @@ export async function executeBuilderTurn(
 function parseAdapterResult(
   result: AdapterExecutionResult,
   _adapterType: string,
+  model: string,
 ): BuilderAdapterResponse {
   // Check for errors
   if (result.exitCode !== 0 || result.errorMessage) {
@@ -194,7 +200,11 @@ function parseAdapterResult(
   // Extract usage
   const inputTokens = result.usage?.inputTokens ?? 0;
   const outputTokens = result.usage?.outputTokens ?? 0;
-  const costCents = result.costUsd ? Math.round(result.costUsd * 100) : 0;
+  const cachedInputTokens = result.usage?.cachedInputTokens ?? 0;
+  const costCents =
+    typeof result.costUsd === "number" && Number.isFinite(result.costUsd) && result.costUsd > 0
+      ? Math.round(result.costUsd * 100)
+      : calculateModelCostCents(model, inputTokens, outputTokens, cachedInputTokens);
 
   const parsed = parseBuilderResponse(result);
   if (parsed) {
