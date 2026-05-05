@@ -17,17 +17,21 @@ progress:
 
 ## Current Position
 
-**Phase: 90** (context gathered)
+**Phase: 91** (planned)
 **Plan:** —
 **Status:** Planning
-**Last activity:** 2026-05-05 — Phase 90 context gathered
+**Last activity:** 2026-05-05 — Phase 90 complete
+
+## 다음 단계
+
+Phase 91 (POWER-04~06) plan을 작성합니다. `/gsd-plan-phase 91`로 plan을 작성하세요.
 
 ## Phase Progress (v3.5)
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 89 | Trello Field Extension Parity | TRELLO-01~04 | Complete | 2026-05-04 |
-| 90 | Automation / Power-up Parity (1) | POWER-01~03 | Context Complete | 2026-05-05 |
+| 90 | Automation / Power-up Parity (1) | POWER-01~03 | Complete | 2026-05-05 |
 | 91 | Automation / Power-up Parity (2) | POWER-04~06 | Planned |
 | 92 | v3.5 Verification and Closure | GATE-01~02 | Planned |
 
