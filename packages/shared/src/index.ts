@@ -914,6 +914,13 @@ export {
   type ConfigMeta,
 } from "./config-schema.js";
 
+export {
+  calculateModelCostCents,
+  hasModelPricing,
+  getModelPricing,
+  type ModelPricing,
+} from "./model-pricing.js";
+
 export type {
   BuilderSessionState,
   BuilderMessageRole,

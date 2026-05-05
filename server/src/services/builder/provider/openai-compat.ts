@@ -5,6 +5,8 @@ import type {
   BuilderProviderResponse,
   BuilderProviderToolDef,
 } from "../types.js";
+import { calculateModelCostCents, hasModelPricing } from "@paperclipai/shared";
+import { logger } from "../../../middleware/logger.js";
 
 /**
  * Minimal OpenAI-compatible Chat Completions provider.
@@ -142,10 +144,28 @@ export const openAiCompatProvider: BuilderProvider = {
       usage: {
         inputTokens: json.usage?.prompt_tokens ?? 0,
         outputTokens: json.usage?.completion_tokens ?? 0,
+        costCents: calculateModelCostCents(
+          config.model,
+          json.usage?.prompt_tokens ?? 0,
+          json.usage?.completion_tokens ?? 0,
+        ),
       },
     };
   },
 };
+
+/**
+ * Log a warning if the model lacks pricing data. This is called once per
+ * session initialization so operators see the gap in logs without flooding.
+ */
+export function warnIfMissingPricing(model: string): void {
+  if (!hasModelPricing(model)) {
+    logger.warn(
+      { model },
+      "No pricing data for model — budget hard-stop will not trigger for Builder spend",
+    );
+  }
+}
 
 /**
  * Look up a provider implementation by `providerType`. The Builder is single-

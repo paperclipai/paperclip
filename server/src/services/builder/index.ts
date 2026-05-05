@@ -3,7 +3,7 @@ import type {
   BuilderActor,
   BuilderProviderConfig,
 } from "./types.js";
-import { getBuilderProvider } from "./provider/openai-compat.js";
+import { getBuilderProvider, warnIfMissingPricing } from "./provider/openai-compat.js";
 import { runBuilderTurn } from "./runner.js";
 import { builderSessionStore } from "./session-store.js";
 import { builderProviderSettingsStore } from "./settings-store.js";
@@ -51,6 +51,8 @@ export function builderService(db: Db) {
           "Builder API key secret is not bound or could not be resolved. Reconfigure provider settings.",
         );
       }
+      // Warn once per session if the model lacks pricing data
+      warnIfMissingPricing(config.model);
       return sessions.createSession({
         companyId: input.companyId,
         createdByUserId: input.createdByUserId,
