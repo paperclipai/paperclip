@@ -1020,11 +1020,14 @@ export function issueRoutes(
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
+      originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       excludeRoutineExecutions:
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
+      includePluginOperations:
+        req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       q: req.query.q as string | undefined,
       limit,
