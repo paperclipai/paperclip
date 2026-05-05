@@ -35,6 +35,7 @@ import { getRunLogStore } from "../run-log-store.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  buildStrandedIssueRecoveryFingerprint,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -51,6 +52,13 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+/**
+ * Post-23505 re-read attempts when another writer wins the partial unique index.
+ * Linear backoff: sum delays = BASE * (1+2+…+(MAX-1)) — keep BASE modest but not trivial so
+ * post-commit reads that briefly trail the primary (replica or pool lag) can observe the winner row.
+ */
+const STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS = 12;
+const STRANDED_RECOVERY_RACE_READ_BASE_DELAY_MS = 8;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -1253,6 +1261,53 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findOpenStrandedIssueRecoveryIssueAfterCreateConflict(companyId: string, sourceIssueId: string) {
+    for (let attempt = 0; attempt < STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS; attempt++) {
+      const row = await findOpenStrandedIssueRecoveryIssue(companyId, sourceIssueId);
+      if (row) return row;
+      if (attempt < STRANDED_RECOVERY_RACE_READ_MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, STRANDED_RECOVERY_RACE_READ_BASE_DELAY_MS * (attempt + 1)),
+        );
+      }
+    }
+    return null;
+  }
+
+  async function enqueueStrandedRecoveryAssigneeWakeIfEligible(input: {
+    companyId: string;
+    sourceIssueId: string;
+    recoveryIssue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+  }) {
+    const ownerAgentId = input.recoveryIssue.assigneeAgentId;
+    if (!ownerAgentId) return;
+
+    if (await hasQueuedIssueWake(input.companyId, input.recoveryIssue.id)) return;
+    if (await hasActiveRunForIssueId(input.companyId, input.recoveryIssue.id)) return;
+
+    await deps.enqueueWakeup(ownerAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId: input.recoveryIssue.id,
+        sourceIssueId: input.sourceIssueId,
+        strandedRunId: input.latestRun?.id ?? null,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: input.recoveryIssue.id,
+        taskId: input.recoveryIssue.id,
+        wakeReason: "issue_assigned",
+        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+        sourceIssueId: input.sourceIssueId,
+        strandedRunId: input.latestRun?.id ?? null,
+      },
+    });
+  }
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
@@ -1335,7 +1390,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-    if (existing) return existing;
+    if (existing) {
+      await enqueueStrandedRecoveryAssigneeWakeIfEligible({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        recoveryIssue: existing,
+        latestRun: input.latestRun,
+      });
+      return existing;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
@@ -1360,41 +1423,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
         originId: input.issue.id,
         originRunId: input.latestRun?.id ?? null,
-        originFingerprint: [
-          STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-          input.issue.companyId,
-          input.issue.id,
-          input.latestRun?.id ?? "no-run",
-        ].join(":"),
+        originFingerprint: buildStrandedIssueRecoveryFingerprint(input.issue.companyId, input.issue.id),
         billingCode: input.issue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.issue.id,
       });
     } catch (error) {
       if (!isUniqueStrandedIssueRecoveryConflict(error)) throw error;
-      const raced = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-      if (!raced) throw error;
+      const raced = await findOpenStrandedIssueRecoveryIssueAfterCreateConflict(
+        input.issue.companyId,
+        input.issue.id,
+      );
+      if (!raced) {
+        logger.warn(
+          {
+            companyId: input.issue.companyId,
+            sourceIssueId: input.issue.id,
+            source: "recovery.ensure_stranded_issue_recovery_issue",
+          },
+          "stranded_issue_recovery unique index conflict but no active recovery row visible after bounded re-reads",
+        );
+        throw error;
+      }
+      await enqueueStrandedRecoveryAssigneeWakeIfEligible({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        recoveryIssue: raced,
+        latestRun: input.latestRun,
+      });
       return raced;
     }
 
-    await deps.enqueueWakeup(ownerAgentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: {
-        issueId: recovery.id,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-      },
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: {
-        issueId: recovery.id,
-        taskId: recovery.id,
-        wakeReason: "issue_assigned",
-        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-      },
+    await enqueueStrandedRecoveryAssigneeWakeIfEligible({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      recoveryIssue: recovery,
+      latestRun: input.latestRun,
     });
 
     return recovery;

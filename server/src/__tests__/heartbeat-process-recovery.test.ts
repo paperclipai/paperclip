@@ -69,6 +69,7 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
+import { buildStrandedIssueRecoveryFingerprint } from "../services/recovery/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -708,6 +709,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       originKind: "stranded_issue_recovery",
       originId: input.issueId,
       originRunId: input.runId,
+      originFingerprint: buildStrandedIssueRecoveryFingerprint(input.companyId, input.issueId),
       priority: "medium",
     });
     expect(recovery.title).toContain("Recover stalled issue");
