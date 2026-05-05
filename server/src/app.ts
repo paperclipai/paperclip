@@ -9,7 +9,10 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
-import { mobilePaperclipAuthGuard } from "./middleware/mobile-paperclip-auth.js";
+import {
+  createMobilePaperclipBoardLookups,
+  mobilePaperclipAuthGuard,
+} from "./middleware/mobile-paperclip-auth.js";
 import { mobilePaperclipCors } from "./middleware/mobile-paperclip-cors.js";
 import { buildOriginMatcher } from "./mobile-paperclip-origins.js";
 import { isMobilePaperclipJwtConfigured } from "./mobile-paperclip-jwt.js";
@@ -197,6 +200,7 @@ export async function createApp(
     mobilePaperclipAuthGuard({
       enabled: mobilePaperclipEnabled,
       publicHostnames: mobilePaperclipPublicHostnameSet,
+      ...createMobilePaperclipBoardLookups(db),
     }),
   );
   app.use("/api/auth", authRoutes(db));
