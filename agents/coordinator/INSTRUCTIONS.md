@@ -215,10 +215,25 @@ parents):
 1. Look up the task's expected branch: `task/{identifier}` (e.g. `task/AA-700`).
 2. Check for a PR via `gh pr list --head task/{identifier} --state all --limit 1 --json number,state,mergedAt`.
 3. Three valid outcomes:
-   - PR exists and is `MERGED` → all good, leave task `done`.
-   - PR exists and is `OPEN` → all good, will resolve in §Merge sweep when it merges.
-   - **No PR** → silent failure. Re-open the task: PATCH parent back to `in_review`, comment `"Auto-reopened: parent went done with no PR. Architect run silently failed (likely Step 0 abort or cwd violation). Re-running verify."`, and create a fresh verify subtask.
-4. If the task's worktree is missing (already GC'd), the work may also be lost. Comment on the task and escalate to the board — do NOT promote backlog or create new subtasks until human triage.
+   - PR exists and `MERGED` → leave task `done`.
+   - PR exists and `OPEN` → leave task `done`; §Merge sweep will pick it up.
+   - **No PR** → re-open. PATCH parent → `in_review`, comment `"Auto-reopened: done with no PR. Architect run failed silently (Step 0 abort, cwd violation, or push fail). Re-running verify."`, create a fresh verify subtask.
+
+**Re-opening is mandatory. Do not rationalize.** The audit exists for the
+"work committed in worktree, never pushed, never PR'd" case. The
+Architect's next run pushes and opens the PR — that's why it has `gh`
+access. The board's only manual git role is merging PRs; if the audit
+needs the board to push to recover, the audit failed. Same reflex
+applies to "the work exists, why churn?", "the board will catch up",
+and "this is a known bottleneck": those are descriptions of the disease
+the audit cures.
+
+The only real risk is a re-open loop on a permanent Step 0 failure.
+Mitigation: track the re-open count in a comment trailer; if a task is
+auto-reopened 3 cycles in a row without producing a PR, stop and
+escalate to the board.
+
+4. If the worktree is already GC'd, the work may be unrecoverable. Don't promote backlog or create subtasks; comment and escalate to the board for triage.
 
 ### What this catches
 
