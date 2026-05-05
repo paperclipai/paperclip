@@ -206,7 +206,10 @@ export function builderProposalStore(db: Db) {
         .set({
           status,
           decidedByUserId: decidedByUserId ?? null,
-          decidedAt: status === "approved" || status === "rejected" ? now : null,
+          decidedAt:
+            status === "approved" || status === "rejected" || status === "applied"
+              ? now
+              : null,
           updatedAt: now,
         })
         .where(
