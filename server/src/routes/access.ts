@@ -3522,6 +3522,17 @@ export function accessRoutes(
           humanRoleToGrant,
           "active"
         );
+        const grants = humanJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null,
+          humanRoleToGrant
+        );
+        await access.setPrincipalGrants(
+          companyId,
+          "user",
+          created.requestingUserId,
+          grants,
+          invite.invitedByUserId ?? null
+        );
       }
 
       if (
