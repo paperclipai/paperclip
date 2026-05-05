@@ -60,16 +60,16 @@ fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
 
 // Route responses
 // POST /api/companies/<id>/issues  (create issue)
-if (method === 'POST' && /\\/issues$/.test(url) && !url.includes('/comments')) {
+if (method === 'POST' && url.endsWith('/issues')) {
   const idk = body && body.title && body.title.includes('Stark') ? 'LINAA-43' : 'LINAA-42';
   process.stdout.write(JSON.stringify({ identifier: idk, id: 'uuid-' + idk }) + '\\n');
   process.exit(0);
 }
 
 // GET /api/issues/<identifier>  (poll or identifier resolution)
-const pollMatch = url.match(/\\/api\\/issues\\/([^/]+)$/);
-if (method === 'GET' && pollMatch) {
-  const id = pollMatch[1];
+if (method === 'GET' && url.includes('/api/issues/')) {
+  const parts = url.split('/');
+  const id = parts[parts.length - 1].split('?')[0];
   const status = id === 'LINAA-43' ? 'in_progress' : 'done';
   process.stdout.write(JSON.stringify({ id: 'uuid-' + id, identifier: id, status }) + '\\n');
   process.exit(0);
