@@ -19,15 +19,14 @@ if [ "$(id -u)" = "0" ]; then
 
   # Clean up old run logs to prevent ENOSPC (volume full)
   # Keeps last 24h of logs, removes everything older
-  RUN_LOGS="/paperclip/instances/default/data/run-logs"
-  if [ -d "$RUN_LOGS" ]; then
-    OLD_COUNT=$(find "$RUN_LOGS" -type f -mmin +1440 2>/dev/null | wc -l)
-    if [ "$OLD_COUNT" -gt 0 ]; then
-      echo "Cleaning up $OLD_COUNT old run log files..."
-      find "$RUN_LOGS" -type f -mmin +1440 -delete 2>/dev/null || true
-      find "$RUN_LOGS" -type d -empty -delete 2>/dev/null || true
+# Clean up old run logs for ALL instances (Issue 3)
+for instance_dir in /paperclip/instances/*; do
+    RUN_LOG_DIR="${instance_dir}/data/run-logs"
+    if [ -d "$RUN_LOG_DIR" ]; then
+        echo "Cleaning logs in $RUN_LOG_DIR"
+        find "$RUN_LOG_DIR" -type f -mtime +7 -delete
     fi
-  fi
+done
 
   # Clean up Claude Code temp/cache files that accumulate
   for AGENT_DIR in /paperclip/instances/*/agents/*/; do
