@@ -265,7 +265,10 @@ export function setupLiveEventsWebSocketServer(
         });
       })
       .catch((err) => {
-        logger.error({ err, path: redactHttpUrlForLogs(req.url) }, "failed websocket upgrade authorization");
+        logger.error(
+          { err, path: redactHttpUrlForLogs(req.url ?? "") },
+          "failed websocket upgrade authorization",
+        );
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       });
   });
