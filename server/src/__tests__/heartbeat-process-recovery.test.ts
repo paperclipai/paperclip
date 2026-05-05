@@ -994,7 +994,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(lease?.releasedAt).toBeTruthy();
   });
 
-  it.skipIf(process.platform === "win32" || isLikelyLinuxContainerWithoutProcessGroupReap())(
+  it.skipIf(
+    process.platform === "win32" ||
+      isLikelyLinuxContainerWithoutProcessGroupReap() ||
+      isMinimalCgroupV2Root(),
+  )(
     "reaps orphaned descendant process groups when the parent pid is already gone",
     async () => {
     const orphan = await spawnOrphanedProcessGroup();
