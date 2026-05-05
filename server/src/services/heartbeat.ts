@@ -3649,7 +3649,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return updated;
   }
 
-  function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
+  async function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
         ? "agent.run.started"
@@ -3661,6 +3661,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
+
+    const issueId =
+      typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
+        ? ((run.contextSnapshot as Record<string, unknown>).issueId as string | null | undefined) ??
+          null
+        : null;
+
+    let issueTitle: string | null = null;
+    let issueDescription: string | null = null;
+    if (eventType === "agent.run.started" && issueId) {
+      const issueRow = await db
+        .select({ title: issues.title, description: issues.description })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (issueRow) {
+        issueTitle = issueRow.title;
+        issueDescription = issueRow.description ?? null;
+      }
+    }
+
     publishPluginDomainEvent({
       eventId: randomUUID(),
       eventType,
@@ -3678,9 +3700,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         triggerDetail: run.triggerDetail,
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
-        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
-          : null,
+        issueId,
+        issueTitle,
+        issueDescription,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
       },
