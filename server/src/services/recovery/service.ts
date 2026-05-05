@@ -2012,7 +2012,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ),
         ),
       db
-        .selectDistinct({ agentId: routines.assigneeAgentId })
+        .selectDistinct({ agentId: routines.assigneeAgentId, companyId: routines.companyId })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
         .where(
@@ -2059,7 +2059,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingApprovals: approvalRows,
       openRecoveryIssues,
       agentIdsWithEnabledFutureRoutines: agentIdsWithEnabledFutureRoutineRows.flatMap((row) =>
-        row.agentId ? [row.agentId] : [],
+        row.agentId && row.companyId ? [`${row.companyId}:${row.agentId}`] : [],
       ),
       now: new Date(),
     });

@@ -24,6 +24,7 @@ import {
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  projects,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
@@ -358,6 +359,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
+    await db.delete(projects);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
       try {
@@ -2498,6 +2500,86 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     // Dead work must be cancelled even when the agent has a live routine
+    expect(result.vestigialSuppressed).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("cancelled");
+  });
+
+  it("cancels vestigial issue superseded by a done issue", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Create a done issue that supersedes the stranded one
+    const supersederIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: supersederIssueId,
+      companyId,
+      title: "Superseding done issue",
+      status: "done",
+      priority: "medium",
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+    });
+    await db.update(issues).set({ supersededById: supersederIssueId }).where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.vestigialSuppressed).toBe(1);
+
+    const updatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("cancelled");
+  });
+
+  it("cancels vestigial issue when a duplicate with the same origin fingerprint is done", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Create a project to scope the fingerprint dedup, then set it on the stranded issue
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Dedup scope project",
+      status: "in_progress",
+    });
+    const fingerprint = "fingerprint-dupe-test";
+    await db.update(issues)
+      .set({ originFingerprint: fingerprint, projectId })
+      .where(eq(issues.id, issueId));
+
+    // Insert a done issue in the same (companyId, projectId) scope with the same fingerprint
+    const dupeIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: dupeIssueId,
+      companyId,
+      title: "Already done duplicate",
+      status: "done",
+      priority: "medium",
+      originFingerprint: fingerprint,
+      projectId,
+      issueNumber: 98,
+      identifier: `${issuePrefix}-98`,
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
     expect(result.vestigialSuppressed).toBe(1);
 
     const updatedIssue = await db

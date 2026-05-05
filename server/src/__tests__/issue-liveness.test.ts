@@ -438,7 +438,7 @@ describe("issue graph liveness classifier", () => {
       ],
       relations: [],
       agents: [agent(), manager],
-      agentIdsWithEnabledFutureRoutines: [coderId],
+      agentIdsWithEnabledFutureRoutines: [`${companyId}:${coderId}`],
     });
 
     expect(findings).toEqual([]);
