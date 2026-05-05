@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -182,8 +183,13 @@ async function statIfExists(targetPath: string) {
 }
 
 async function assertExternalInstructionsRootSafe(rootPath: string): Promise<void> {
-  const entries = await fs.readdir(rootPath, { withFileTypes: true }).catch(() => null);
-  if (!entries) return;
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw unprocessable(`External instructions root is not readable: ${reason}`);
+  }
 
   for (const entry of entries) {
     if (EXTERNAL_ROOT_REJECTED_FILE_NAMES.has(entry.name)) {

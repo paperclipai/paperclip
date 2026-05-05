@@ -198,6 +198,12 @@ describe("agent instructions service", () => {
     await expect(svc.exportFiles(agent)).rejects.toThrow(
       "External instructions root is not allowed to point at a repository or application root",
     );
+    await expect(svc.readFile(agent, "AGENTS.md")).rejects.toThrow(
+      "External instructions root is not allowed to point at a repository or application root",
+    );
+    await expect(svc.deleteFile(agent, "AGENTS.md")).rejects.toThrow(
+      "External instructions root is not allowed to point at a repository or application root",
+    );
   });
 
   it("keeps narrow external instruction directories working", async () => {
