@@ -1,0 +1,183 @@
+import { useEffect, useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { qslApi, type QslIssue } from "../api/qsl";
+import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { queryKeys } from "../lib/queryKeys";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { ShieldAlert, CheckCircle2, XCircle } from "lucide-react";
+
+function deriveRuleId(issue: QslIssue): string | null {
+  if (issue.rule_id) return issue.rule_id;
+  if (issue.threat_category) {
+    return issue.threat_category
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "");
+  }
+  if (issue.title) {
+    return issue.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "")
+      .slice(0, 64);
+  }
+  return null;
+}
+
+type CardStatus = "idle" | "loading" | "approved" | "denied" | "error";
+
+function QslIssueCard({ issue }: { issue: QslIssue }) {
+  const [status, setStatus] = useState<CardStatus>("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const ruleId = deriveRuleId(issue);
+
+  const mutation = useMutation({
+    mutationFn: (approved: boolean) =>
+      qslApi.approve({
+        rule_id: ruleId!,
+        approved,
+        reason: approved ? "approved from Paperclip UI" : "denied from Paperclip UI",
+        source: "paperclip-ui",
+      }),
+    onMutate: () => {
+      setStatus("loading");
+      setErrorMsg(null);
+    },
+    onSuccess: (_data, approved) => {
+      setStatus(approved ? "approved" : "denied");
+    },
+    onError: (err) => {
+      setStatus("error");
+      setErrorMsg(err instanceof Error ? err.message : "Request failed");
+    },
+  });
+
+  const resolved = status === "approved" || status === "denied";
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <h3 className="text-sm font-medium leading-snug">{issue.title}</h3>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {issue.severity && (
+              <Badge variant="outline" className="text-[10px]">
+                {issue.severity}
+              </Badge>
+            )}
+            {issue.priority && (
+              <Badge variant="outline" className="text-[10px]">
+                {issue.priority}
+              </Badge>
+            )}
+            {issue.risk_score != null && (
+              <Badge variant="secondary" className="text-[10px]">
+                risk {issue.risk_score}
+              </Badge>
+            )}
+            {ruleId && (
+              <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[200px]">
+                {ruleId}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {resolved && (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              {status === "approved" ? (
+                <><CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> Approved</>
+              ) : (
+                <><XCircle className="h-3.5 w-3.5 text-red-500" /> Denied</>
+              )}
+            </span>
+          )}
+          {!resolved && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!ruleId || status === "loading"}
+                onClick={() => mutation.mutate(false)}
+              >
+                Deny
+              </Button>
+              <Button
+                size="sm"
+                disabled={!ruleId || status === "loading"}
+                onClick={() => mutation.mutate(true)}
+              >
+                Approve
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {!ruleId && (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          No rule_id — cannot submit decision.
+        </p>
+      )}
+      {status === "error" && (
+        <p className="mt-2 text-xs text-destructive">{errorMsg}</p>
+      )}
+    </div>
+  );
+}
+
+export function QslReview() {
+  const { setBreadcrumbs } = useBreadcrumbs();
+
+  useEffect(() => {
+    setBreadcrumbs([{ label: "QSL Review" }]);
+  }, [setBreadcrumbs]);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.qsl.issues,
+    queryFn: qslApi.listIssues,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-6 text-center">
+        <ShieldAlert className="mx-auto h-8 w-8 text-muted-foreground/30 mb-3" />
+        <p className="text-sm text-destructive">
+          {error instanceof Error ? error.message : "Failed to load QSL issues"}
+        </p>
+      </div>
+    );
+  }
+
+  const issues = Array.isArray(data) ? data : [];
+
+  if (issues.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <ShieldAlert className="h-8 w-8 text-muted-foreground/30 mb-3" />
+        <p className="text-sm text-muted-foreground">No QSL issues to review.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {issues.map((issue, i) => (
+        <QslIssueCard key={issue.id ?? i} issue={issue} />
+      ))}
+    </div>
+  );
+}

@@ -173,4 +173,7 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  qsl: {
+    issues: ["qsl", "issues"] as const,
+  },
 };
