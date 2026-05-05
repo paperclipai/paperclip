@@ -1364,10 +1364,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .returning();
     if (!claimed) return null;
 
-    const updated = await issuesSvc.update(input.issue.id, {
-      blockedByIssueIds: blockerIds,
-    });
-
     const retryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot)?.retryReason) ?? "unknown";
     const interventionLine = [
       "",
@@ -1379,6 +1375,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
 
     await issuesSvc.addComment(input.issue.id, `${input.comment}${interventionLine}`, {});
+
+    const updated = await issuesSvc.update(input.issue.id, {
+      blockedByIssueIds: blockerIds,
+    });
 
     await logActivity(db, {
       companyId: input.issue.companyId,

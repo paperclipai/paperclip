@@ -1563,6 +1563,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "assignment_recovery",
     });
     expect(escalationComment.body ?? "").not.toContain("sk-test-recovery-secret");
+    expect(escalationComment.body ?? "").not.toContain("Authorization: Bearer");
     expect(escalationComment.body ?? "").not.toContain("sk-tes...cret");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
