@@ -3645,7 +3645,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
-      publishRunLifecyclePluginEvent(updated);
+      publishRunLifecyclePluginEvent(updated).catch((err) =>
+        logger.error({ err }, "publishRunLifecyclePluginEvent failed"),
+      );
     }
 
     return updated;
@@ -5595,7 +5597,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
-    publishRunLifecyclePluginEvent(claimed);
+    publishRunLifecyclePluginEvent(claimed).catch((err) =>
+      logger.error({ err }, "publishRunLifecyclePluginEvent failed"),
+    );
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
