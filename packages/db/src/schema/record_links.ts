@@ -6,7 +6,7 @@ export const recordLinks = pgTable(
   "record_links",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     ownerKind: text("owner_kind").notNull(),
     ownerId: uuid("owner_id").notNull(),
     recordKind: text("record_kind").notNull(),
