@@ -1257,7 +1257,7 @@ export async function resolveTaskSessionWorkspaceFallbackForRun(input: {
   previousSessionParams: Record<string, unknown> | null;
   resolvedProjectId: string | null;
   workspaceHints: Array<{
-    workspaceId: string | null;
+    workspaceId: string;
     cwd: string | null;
     repoUrl: string | null;
     repoRef: string | null;
