@@ -540,6 +540,13 @@
       "when": 1777675301279,
       "tag": "0076_useful_elektra",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1777933347806,
+      "tag": "0077_unusual_karnak",
+      "breakpoints": true
     }
   ]
 }
