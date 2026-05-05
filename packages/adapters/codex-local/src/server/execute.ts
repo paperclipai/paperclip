@@ -484,7 +484,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
   const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
-  const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
+  const timerWakeRequiresFreshSession =
+    context.forceFreshSession === true ||
+    wakeReason === "heartbeat_timer" ||
+    asString(context.wakeSource, "") === "timer";
+  const forceFreshSession =
+    timerWakeRequiresFreshSession || fallbackModeUsesFreshSession(codexTransientFallbackMode);
   const sessionId = canResumeSession && !forceFreshSession ? runtimeSessionId : null;
   if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(

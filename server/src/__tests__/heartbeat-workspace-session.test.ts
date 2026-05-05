@@ -4,6 +4,7 @@ import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-lo
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  applyFreshSessionPolicyToWakeContext,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -452,6 +453,41 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("applyFreshSessionPolicyToWakeContext", () => {
+  it("forces a fresh session and strips resume fields for timer wakes", () => {
+    const result = applyFreshSessionPolicyToWakeContext({
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      resumeFromRunId: "run-1",
+      resumeSessionDisplayId: "session-1",
+      resumeSessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/workspace",
+      },
+    });
+
+    expect(result).toEqual({
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      forceFreshSession: true,
+    });
+  });
+
+  it("preserves resume fields for comment wakes that may continue an active session", () => {
+    const result = applyFreshSessionPolicyToWakeContext({
+      wakeReason: "issue_commented",
+      resumeFromRunId: "run-1",
+      resumeSessionDisplayId: "session-1",
+    });
+
+    expect(result).toEqual({
+      wakeReason: "issue_commented",
+      resumeFromRunId: "run-1",
+      resumeSessionDisplayId: "session-1",
+    });
   });
 });
 

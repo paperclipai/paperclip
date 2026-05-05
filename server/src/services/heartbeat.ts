@@ -1416,6 +1416,21 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+export function applyFreshSessionPolicyToWakeContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const nextContext = { ...(contextSnapshot ?? {}) };
+  if (!shouldResetTaskSessionForWake(nextContext)) {
+    return nextContext;
+  }
+
+  nextContext.forceFreshSession = true;
+  delete nextContext.resumeFromRunId;
+  delete nextContext.resumeSessionDisplayId;
+  delete nextContext.resumeSessionParams;
+  return nextContext;
+}
+
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -6387,31 +6402,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       triggerDetail,
       payload,
     });
-    let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    const wakeContextSnapshot = applyFreshSessionPolicyToWakeContext(enrichedContextSnapshot);
+    let issueId = readNonEmptyString(wakeContextSnapshot.issueId) ?? issueIdFromPayload;
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
-    const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
+    const explicitResumeSession = shouldResetTaskSessionForWake(wakeContextSnapshot)
+      ? null
+      : await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
-      enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
-      enrichedContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
-      enrichedContextSnapshot.resumeSessionParams = explicitResumeSession.sessionParams;
-      if (!readNonEmptyString(enrichedContextSnapshot.issueId) && explicitResumeSession.issueId) {
-        enrichedContextSnapshot.issueId = explicitResumeSession.issueId;
+      wakeContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
+      wakeContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
+      wakeContextSnapshot.resumeSessionParams = explicitResumeSession.sessionParams;
+      if (!readNonEmptyString(wakeContextSnapshot.issueId) && explicitResumeSession.issueId) {
+        wakeContextSnapshot.issueId = explicitResumeSession.issueId;
       }
-      if (!readNonEmptyString(enrichedContextSnapshot.taskId) && explicitResumeSession.taskId) {
-        enrichedContextSnapshot.taskId = explicitResumeSession.taskId;
+      if (!readNonEmptyString(wakeContextSnapshot.taskId) && explicitResumeSession.taskId) {
+        wakeContextSnapshot.taskId = explicitResumeSession.taskId;
       }
-      if (!readNonEmptyString(enrichedContextSnapshot.taskKey) && explicitResumeSession.taskKey) {
-        enrichedContextSnapshot.taskKey = explicitResumeSession.taskKey;
+      if (!readNonEmptyString(wakeContextSnapshot.taskKey) && explicitResumeSession.taskKey) {
+        wakeContextSnapshot.taskKey = explicitResumeSession.taskKey;
       }
-      issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
+      issueId = readNonEmptyString(wakeContextSnapshot.issueId) ?? issueId;
     }
-    const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
+    const effectiveTaskKey = readNonEmptyString(wakeContextSnapshot.taskKey) ?? taskKey;
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
-    const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
+    const continuationAttempt = readContinuationAttempt(wakeContextSnapshot.livenessContinuationAttempt);
 
     const writeSkippedRequest = async (skipReason: string) => {
       await db.insert(agentWakeupRequests).values({
@@ -6429,7 +6447,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
-    let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
+    let projectId = readNonEmptyString(wakeContextSnapshot.projectId);
     if (!projectId && issueId) {
       projectId = await db
         .select({ projectId: issues.projectId })
@@ -7028,7 +7046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         triggerDetail,
         status: "queued",
         wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
+        contextSnapshot: wakeContextSnapshot,
         sessionIdBefore: sessionBefore,
         continuationAttempt,
       })
