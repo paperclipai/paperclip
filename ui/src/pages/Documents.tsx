@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, startTransition, useDeferredValue } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { ArrowUpDown, Download, FileText, Filter, Layers, X } from "lucide-react";
+import { ArrowUpDown, ChevronDown, ChevronRight, Download, FileText, Filter, Layers, X } from "lucide-react";
 import type { CompanyDocumentListItem } from "@paperclipai/shared";
 import { documentsApi } from "../api/documents";
 import { projectsApi } from "../api/projects";
@@ -13,7 +13,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusIcon } from "../components/StatusIcon";
 import { issueStatusOrder } from "../lib/issue-filters";
-import { issueUrl, relativeTime } from "../lib/utils";
+import { issueUrl, relativeTime, cn } from "../lib/utils";
 import {
   Select,
   SelectContent,
@@ -39,6 +39,7 @@ interface DocsViewState {
   statuses: string[];
   showAutoOrigins: boolean;
   groupBy: GroupField;
+  collapsedGroups: string[];
 }
 
 const defaultViewState: DocsViewState = {
@@ -47,6 +48,7 @@ const defaultViewState: DocsViewState = {
   statuses: [],
   showAutoOrigins: false,
   groupBy: "none",
+  collapsedGroups: [],
 };
 
 function loadViewState(): DocsViewState {
@@ -58,7 +60,12 @@ function loadViewState(): DocsViewState {
       return {
         ...defaultViewState,
         ...parsed,
-        statuses: Array.isArray(parsed?.statuses) ? parsed.statuses.filter((s: unknown) => typeof s === "string") : [],
+        statuses: Array.isArray(parsed?.statuses)
+          ? parsed.statuses.filter((s: unknown) => typeof s === "string")
+          : [],
+        collapsedGroups: Array.isArray(parsed?.collapsedGroups)
+          ? parsed.collapsedGroups.filter((s: unknown) => typeof s === "string")
+          : [],
       };
     }
   } catch {
@@ -141,7 +148,6 @@ function groupDocuments(docs: CompanyDocumentListItem[], field: GroupField): Doc
     ordered.sort((a, b) => issueStatusOrder.indexOf(a.key) - issueStatusOrder.indexOf(b.key));
   } else if (field === "origin") {
     ordered.sort((a, b) => {
-      // manual first, then everything else alpha
       if (a.key === "manual") return -1;
       if (b.key === "manual") return 1;
       return a.label.localeCompare(b.label);
@@ -247,6 +253,14 @@ export function Documents() {
     });
   }
 
+  function toggleGroup(key: string) {
+    updateView({
+      collapsedGroups: viewState.collapsedGroups.includes(key)
+        ? viewState.collapsedGroups.filter((k) => k !== key)
+        : [...viewState.collapsedGroups, key],
+    });
+  }
+
   function clickSortField(field: SortField) {
     if (viewState.sortField === field) {
       updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
@@ -256,7 +270,7 @@ export function Documents() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <input
           type="search"
@@ -264,7 +278,7 @@ export function Documents() {
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder="Search documents..."
           data-page-search-target="true"
-          className="flex h-9 min-w-0 flex-1 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[280px] sm:flex-none"
+          className="flex h-9 min-w-0 flex-1 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:max-w-[280px] sm:flex-none"
         />
         <Select value={projectFilter} onValueChange={setProjectFilter}>
           <SelectTrigger className="h-9 w-[160px] sm:w-[200px]">
@@ -284,25 +298,18 @@ export function Documents() {
           <PopoverTrigger asChild>
             <Button
               variant="outline"
-              size="sm"
-              className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}
+              size="icon"
+              className={cn(
+                "relative h-8 w-8 shrink-0",
+                activeFilterCount > 0 && "text-blue-600 dark:text-blue-400",
+              )}
               title={activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}
             >
-              <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span className="hidden sm:inline">
-                {activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}
-              </span>
+              <Filter className="h-3.5 w-3.5" />
               {activeFilterCount > 0 && (
-                <span className="ml-1 text-[10px] font-medium sm:hidden">{activeFilterCount}</span>
-              )}
-              {activeFilterCount > 0 && (
-                <X
-                  className="ml-1 hidden h-3 w-3 sm:block"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    updateView({ statuses: [] });
-                  }}
-                />
+                <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">
+                  {activeFilterCount}
+                </span>
               )}
             </Button>
           </PopoverTrigger>
@@ -310,7 +317,7 @@ export function Documents() {
             <div className="border-b border-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Status
             </div>
-            <div className="p-2 space-y-0.5">
+            <div className="space-y-0.5 p-2">
               {issueStatusOrder.map((status) => {
                 const checked = viewState.statuses.includes(status);
                 return (
@@ -329,7 +336,7 @@ export function Documents() {
             <div className="border-t border-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Source
             </div>
-            <div className="p-2 space-y-0.5">
+            <div className="space-y-0.5 p-2">
               <button
                 type="button"
                 onClick={() =>
@@ -364,7 +371,7 @@ export function Documents() {
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-48 p-0">
-            <div className="p-2 space-y-0.5">
+            <div className="space-y-0.5 p-2">
               {([
                 ["updated", "Updated"],
                 ["created", "Created"],
@@ -374,11 +381,12 @@ export function Documents() {
                 <button
                   key={field}
                   type="button"
-                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
                     viewState.sortField === field
                       ? "bg-accent/50 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/50"
-                  }`}
+                      : "text-muted-foreground hover:bg-accent/50",
+                  )}
                   onClick={() => clickSortField(field)}
                 >
                   <span>{label}</span>
@@ -398,14 +406,17 @@ export function Documents() {
             <Button
               variant="outline"
               size="icon"
-              className={`h-8 w-8 shrink-0 ${viewState.groupBy !== "none" ? "text-blue-600 dark:text-blue-400" : ""}`}
+              className={cn(
+                "h-8 w-8 shrink-0",
+                viewState.groupBy !== "none" && "text-blue-600 dark:text-blue-400",
+              )}
               title={viewState.groupBy !== "none" ? `Group: ${viewState.groupBy}` : "Group"}
             >
               <Layers className="h-3.5 w-3.5" />
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-44 p-0">
-            <div className="p-2 space-y-0.5">
+            <div className="space-y-0.5 p-2">
               {([
                 ["none", "None"],
                 ["status", "Status"],
@@ -416,11 +427,12 @@ export function Documents() {
                 <button
                   key={value}
                   type="button"
-                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
                     viewState.groupBy === value
                       ? "bg-accent/50 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/50"
-                  }`}
+                      : "text-muted-foreground hover:bg-accent/50",
+                  )}
                   onClick={() => updateView({ groupBy: value })}
                 >
                   <span>{label}</span>
@@ -455,184 +467,121 @@ export function Documents() {
       )}
 
       {!showSkeleton && documents && visibleDocuments.length > 0 && (
-        <>
-          {/* Mobile: stacked cards. Tap title to view; download icon trailing right. */}
-          <div className="sm:hidden">
-            {docGroups.map((group) => (
-              <div key={group.key} className="mb-4 last:mb-0">
+        <div className="space-y-3">
+          {docGroups.map((group) => {
+            const isCollapsed = viewState.collapsedGroups.includes(group.key);
+            return (
+              <div key={group.key}>
                 {viewState.groupBy !== "none" && (
-                  <h3 className="mb-2 flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group.key)}
+                    className="flex w-full items-center gap-2 px-2 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )}
                     <span className="capitalize">{group.label}</span>
-                    <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] tabular-nums">
+                    <span className="text-[11px] tabular-nums text-muted-foreground/70">
                       {group.items.length}
                     </span>
-                  </h3>
+                  </button>
                 )}
-                <ul className="space-y-2">
-                  {group.items.map((doc) => {
-                    const issueHref = issuePrefix
-                      ? `/${issuePrefix}/issues/${doc.issue.identifier ?? doc.issue.id}`
-                      : issueUrl({ id: doc.issue.id, identifier: doc.issue.identifier });
-                    const docHref = issuePrefix
-                      ? `/${issuePrefix}/documents/${doc.issueId}/${encodeURIComponent(doc.key)}`
-                      : `/documents/${doc.issueId}/${encodeURIComponent(doc.key)}`;
-                    const downloadHref = `/api/issues/${doc.issueId}/documents/${encodeURIComponent(doc.key)}/download`;
-                    const author =
-                      (doc.updatedByAgentId && agentNameById.get(doc.updatedByAgentId)) ||
-                      (doc.createdByAgentId && agentNameById.get(doc.createdByAgentId)) ||
-                      (doc.updatedByUserId ? "user" : null);
-                    return (
-                      <li key={doc.id} className="rounded-md border border-border p-3">
-                  <div className="flex items-start gap-2">
-                    <Link to={docHref} className="min-w-0 flex-1 text-foreground hover:underline">
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                          {doc.key}
-                        </span>
-                        <span className="break-words font-medium">
-                          {doc.issue.identifier ? (
-                            <span className="text-muted-foreground">{doc.issue.identifier} - </span>
-                          ) : null}
-                          {doc.title ?? doc.key}
-                        </span>
-                      </div>
-                    </Link>
-                    <a
-                      href={downloadHref}
-                      download={`${doc.key}.md`}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                      title="Download document"
-                      aria-label="Download document"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Download className="h-4 w-4" />
-                    </a>
-                  </div>
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="shrink-0">
-                      <StatusIcon status={doc.issue.status} />
-                    </span>
-                    <Link to={issueHref} className="min-w-0 truncate text-xs text-muted-foreground hover:text-foreground hover:underline">
-                      {doc.issue.identifier ?? "—"}
-                      {doc.issue.title ? <span className="ml-1 text-muted-foreground">{doc.issue.title}</span> : null}
-                    </Link>
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-                    {doc.issue.project?.name && <span>{doc.issue.project.name}</span>}
-                    {author && <span>· {author}</span>}
-                    <span>· rev {doc.latestRevisionNumber}</span>
-                    <span title={new Date(doc.updatedAt).toLocaleString()}>
-                      · updated {relativeTime(doc.updatedAt)}
-                    </span>
-                  </div>
-                </li>
-              );
-            })}
-                </ul>
+                {!isCollapsed && (
+                  <ul>
+                    {group.items.map((doc) => (
+                      <DocumentRow
+                        key={doc.id}
+                        doc={doc}
+                        issuePrefix={issuePrefix}
+                        agentNameById={agentNameById}
+                      />
+                    ))}
+                  </ul>
+                )}
               </div>
-            ))}
-          </div>
-
-          {/* Desktop / tablet: table. */}
-          <div className="hidden overflow-hidden rounded-md border border-border sm:block">
-            <table className="w-full text-sm">
-              <thead className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">Document</th>
-                  <th className="px-3 py-2 font-medium">Issue</th>
-                  <th className="px-3 py-2 font-medium">Project</th>
-                  <th className="px-3 py-2 font-medium">Author</th>
-                  <th className="px-3 py-2 font-medium text-right">Rev</th>
-                  <th className="px-3 py-2 font-medium text-right">Updated</th>
-                  <th className="w-10 px-2 py-2"></th>
-                </tr>
-              </thead>
-              {docGroups.map((group) => (
-              <tbody key={group.key}>
-                {viewState.groupBy !== "none" && (
-                  <tr className="bg-muted/20">
-                    <td colSpan={7} className="px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      <span className="capitalize">{group.label}</span>
-                      <span className="ml-2 rounded-full border border-border px-1.5 py-0.5 text-[10px] tabular-nums">
-                        {group.items.length}
-                      </span>
-                    </td>
-                  </tr>
-                )}
-                {group.items.map((doc) => {
-                  const issueHref = issuePrefix
-                    ? `/${issuePrefix}/issues/${doc.issue.identifier ?? doc.issue.id}`
-                    : issueUrl({ id: doc.issue.id, identifier: doc.issue.identifier });
-                  const docHref = issuePrefix
-                    ? `/${issuePrefix}/documents/${doc.issueId}/${encodeURIComponent(doc.key)}`
-                    : `/documents/${doc.issueId}/${encodeURIComponent(doc.key)}`;
-                  const downloadHref = `/api/issues/${doc.issueId}/documents/${encodeURIComponent(doc.key)}/download`;
-                  const author =
-                    (doc.updatedByAgentId && agentNameById.get(doc.updatedByAgentId)) ||
-                    (doc.createdByAgentId && agentNameById.get(doc.createdByAgentId)) ||
-                    (doc.updatedByUserId ? "user" : null);
-                  return (
-                    <tr key={doc.id} className="border-b border-border last:border-0 hover:bg-accent/30">
-                      <td className="px-3 py-2 align-top">
-                        <Link to={docHref} className="block text-foreground hover:underline">
-                          <div className="flex items-center gap-2">
-                            <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                              {doc.key}
-                            </span>
-                            <span className="font-medium">
-                              {doc.issue.identifier ? (
-                                <span className="text-muted-foreground">{doc.issue.identifier} - </span>
-                              ) : null}
-                              {doc.title ?? doc.key}
-                            </span>
-                          </div>
-                        </Link>
-                      </td>
-                      <td className="px-3 py-2 align-top text-muted-foreground">
-                        <div className="flex items-center gap-1.5">
-                          <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="shrink-0">
-                            <StatusIcon status={doc.issue.status} />
-                          </span>
-                          <Link to={issueHref} className="min-w-0 hover:text-foreground hover:underline">
-                            {doc.issue.identifier ?? "—"}{" "}
-                            <span className="text-xs">{doc.issue.title}</span>
-                          </Link>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 align-top text-muted-foreground">
-                        {doc.issue.project?.name ?? "—"}
-                      </td>
-                      <td className="px-3 py-2 align-top text-muted-foreground">{author ?? "—"}</td>
-                      <td className="px-3 py-2 align-top text-right tabular-nums text-muted-foreground">
-                        {doc.latestRevisionNumber}
-                      </td>
-                      <td
-                        className="px-3 py-2 align-top text-right text-muted-foreground"
-                        title={new Date(doc.updatedAt).toLocaleString()}
-                      >
-                        {relativeTime(doc.updatedAt)}
-                      </td>
-                      <td className="px-2 py-2 text-right align-top">
-                        <a
-                          href={downloadHref}
-                          download={`${doc.key}.md`}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                          title="Download document"
-                          aria-label="Download document"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </a>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              ))}
-            </table>
-          </div>
-        </>
+            );
+          })}
+        </div>
       )}
     </div>
+  );
+}
+
+interface DocumentRowProps {
+  doc: CompanyDocumentListItem;
+  issuePrefix: string | null;
+  agentNameById: Map<string, string>;
+}
+
+function DocumentRow({ doc, issuePrefix, agentNameById }: DocumentRowProps) {
+  const issueHref = issuePrefix
+    ? `/${issuePrefix}/issues/${doc.issue.identifier ?? doc.issue.id}`
+    : issueUrl({ id: doc.issue.id, identifier: doc.issue.identifier });
+  const docHref = issuePrefix
+    ? `/${issuePrefix}/documents/${doc.issueId}/${encodeURIComponent(doc.key)}`
+    : `/documents/${doc.issueId}/${encodeURIComponent(doc.key)}`;
+  const downloadHref = `/api/issues/${doc.issueId}/documents/${encodeURIComponent(doc.key)}/download`;
+  const author =
+    (doc.updatedByAgentId && agentNameById.get(doc.updatedByAgentId)) ||
+    (doc.createdByAgentId && agentNameById.get(doc.createdByAgentId)) ||
+    (doc.updatedByUserId ? "user" : null);
+  const displayTitle = doc.title?.trim() || doc.key;
+
+  return (
+    <li className="group flex items-center gap-2 border-b border-border py-2 pl-2 pr-2 text-sm last:border-b-0 hover:bg-accent/40">
+      <span
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        className="shrink-0"
+        title={`Issue status: ${doc.issue.status.replace(/_/g, " ")}`}
+      >
+        <StatusIcon status={doc.issue.status} />
+      </span>
+      <Link
+        to={issueHref}
+        className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+        title={doc.issue.title}
+      >
+        {doc.issue.identifier ?? "—"}
+      </Link>
+      <Link
+        to={docHref}
+        className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-foreground no-underline hover:underline"
+        title={`${displayTitle} (key: ${doc.key})`}
+      >
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{displayTitle}</span>
+      </Link>
+      <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+        {doc.issue.project?.name ?? ""}
+      </span>
+      {author && (
+        <span className="hidden shrink-0 text-xs text-muted-foreground md:inline">{author}</span>
+      )}
+      <span className="hidden shrink-0 text-xs tabular-nums text-muted-foreground md:inline">
+        rev {doc.latestRevisionNumber}
+      </span>
+      <span
+        className="shrink-0 text-xs text-muted-foreground"
+        title={new Date(doc.updatedAt).toLocaleString()}
+      >
+        {relativeTime(doc.updatedAt)}
+      </span>
+      <a
+        href={downloadHref}
+        download={`${doc.key}.md`}
+        onClick={(e) => e.stopPropagation()}
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+        title="Download document"
+        aria-label="Download document"
+      >
+        <Download className="h-3.5 w-3.5" />
+      </a>
+    </li>
   );
 }
