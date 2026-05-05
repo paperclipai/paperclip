@@ -182,8 +182,15 @@ export function builderRoutes(db: Db) {
         text: req.body.text,
       });
       if (!result) throw notFound("Session not found");
+      res.json({
+        userMessage: result.userMessage,
+        newMessages: result.newMessages,
+        usage: result.usage,
+        truncated: result.truncated,
+      });
+      // Best-effort activity log — never fail the turn because of logging
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      logActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -198,13 +205,9 @@ export function builderRoutes(db: Db) {
           truncated: result.truncated,
           newMessageCount: result.newMessages.length,
         },
-      });
-      res.json({
-        userMessage: result.userMessage,
-        newMessages: result.newMessages,
-        usage: result.usage,
-        truncated: result.truncated,
-      });
+      }).catch((logErr) =>
+        logger.warn({ logErr, sessionId }, "builder messages: activity log failed"),
+      );
     },
   );
 
@@ -333,8 +336,9 @@ export function builderRoutes(db: Db) {
     assertBoardActor(req);
     const sessionId =
       typeof req.query.sessionId === "string" ? (req.query.sessionId as string) : undefined;
+    const ALLOWED_STATUSES: ReadonlyArray<string> = ["pending", "approved", "applied", "rejected", "failed"];
     const status =
-      typeof req.query.status === "string"
+      typeof req.query.status === "string" && ALLOWED_STATUSES.includes(req.query.status)
         ? (req.query.status as Parameters<typeof svc.listProposals>[1] extends infer F
             ? F extends { status?: infer S }
               ? S
