@@ -115,6 +115,14 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  executeHermesProfile,
+  testHermesProfileEnvironment,
+  hermesProfileSessionCodec,
+  listHermesProfileSkills,
+  syncHermesProfileSkills,
+} from "@paperclipai/adapter-hermes-profile/server";
+import { agentConfigurationDoc as hermesProfileAgentConfigurationDoc } from "@paperclipai/adapter-hermes-profile";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -439,6 +447,20 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const hermesProfileAdapter: ServerAdapterModule = {
+  type: "hermes_profile",
+  execute: executeHermesProfile,
+  testEnvironment: testHermesProfileEnvironment,
+  sessionCodec: hermesProfileSessionCodec,
+  listSkills: listHermesProfileSkills,
+  syncSkills: syncHermesProfileSkills,
+  models: [],
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: hermesProfileAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -461,6 +483,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    hermesProfileAdapter,
     processAdapter,
     httpAdapter,
   ]) {

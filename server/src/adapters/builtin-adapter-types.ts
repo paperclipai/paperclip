@@ -11,6 +11,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
   "hermes_local",
+  "hermes_profile",
   "process",
   "http",
 ]);

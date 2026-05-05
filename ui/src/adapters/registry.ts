@@ -8,6 +8,7 @@ import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { hermesLocalUIAdapter } from "./hermes-local";
+import { hermesProfileUIAdapter } from "./hermes-profile";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
 import { loadDynamicParser, invalidateDynamicParser, setDynamicParserResultNotifier } from "./dynamic-loader";
@@ -55,6 +56,7 @@ function registerBuiltInUIAdapters() {
     codexLocalUIAdapter,
     geminiLocalUIAdapter,
     hermesLocalUIAdapter,
+    hermesProfileUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,

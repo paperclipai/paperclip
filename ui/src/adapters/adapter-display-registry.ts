@@ -88,6 +88,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Hermes CLI agent",
     icon: HermesIcon,
   },
+  hermes_profile: {
+    label: "Hermes Profile",
+    description: "Profile-isolated Hermes agent",
+    icon: HermesIcon,
+  },
   pi_local: {
     label: "Pi",
     description: "Local Pi agent",
