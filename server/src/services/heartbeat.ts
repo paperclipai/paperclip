@@ -1252,6 +1252,33 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
+export function resolveExplicitResumeSessionForRun(input: {
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  sessionCodec: AdapterSessionCodec;
+  allowResume: boolean;
+}) {
+  if (!input.allowResume) {
+    return {
+      sessionParams: null as Record<string, unknown> | null,
+      sessionDisplayId: null as string | null,
+    };
+  }
+
+  const sessionParams = normalizeSessionParams(
+    input.sessionCodec.deserialize(parseObject(input.contextSnapshot?.resumeSessionParams)),
+  );
+  const sessionDisplayId = truncateDisplayId(
+    readNonEmptyString(input.contextSnapshot?.resumeSessionDisplayId) ??
+      (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(sessionParams) : null) ??
+      readNonEmptyString(sessionParams?.sessionId),
+  );
+
+  return {
+    sessionParams,
+    sessionDisplayId,
+  };
+}
+
 export async function resolveTaskSessionWorkspaceFallbackForRun(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -4773,14 +4800,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeSessionParams(
-      sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
-    );
-    const explicitResumeSessionDisplayId = truncateDisplayId(
-      readNonEmptyString(context.resumeSessionDisplayId) ??
-        (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
-        readNonEmptyString(explicitResumeSessionParams?.sessionId),
-    );
+    const explicitResumeSession = resolveExplicitResumeSessionForRun({
+      contextSnapshot: context,
+      sessionCodec,
+      allowResume: !resetTaskSession,
+    });
+    const explicitResumeSessionParams = explicitResumeSession.sessionParams;
+    const explicitResumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
+    if (resetTaskSession) {
+      delete context.resumeFromRunId;
+      delete context.resumeSessionDisplayId;
+      delete context.resumeSessionParams;
+    }
     const previousSessionParams =
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??

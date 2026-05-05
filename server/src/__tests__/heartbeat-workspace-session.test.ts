@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveExplicitResumeSessionForRun,
   resolveRuntimeSessionParamsForWorkspace,
   resolveTaskSessionWorkspaceFallbackForRun,
   stripWorkspaceRuntimeFromExecutionRunConfig,
@@ -167,6 +168,50 @@ describe("resolveTaskSessionWorkspaceFallbackForRun", () => {
     expect(result.warnings).toContain(
       `Saved session workspace "${process.cwd()}" is being ignored for this run. Using fallback workspace "${resolveDefaultAgentWorkspaceDir("agent-123")}" instead.`,
     );
+  });
+});
+
+describe("resolveExplicitResumeSessionForRun", () => {
+  it("preserves explicit resume session params when resume is allowed", () => {
+    const result = resolveExplicitResumeSessionForRun({
+      contextSnapshot: {
+        resumeSessionDisplayId: "session-1",
+        resumeSessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/workspace",
+        },
+      },
+      sessionCodec: codexSessionCodec,
+      allowResume: true,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-1",
+      sessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/workspace",
+      },
+    });
+  });
+
+  it("drops explicit resume session params for timer/fresh-session wakes", () => {
+    const result = resolveExplicitResumeSessionForRun({
+      contextSnapshot: {
+        resumeFromRunId: "run-1",
+        resumeSessionDisplayId: "session-1",
+        resumeSessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/workspace",
+        },
+      },
+      sessionCodec: codexSessionCodec,
+      allowResume: false,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: null,
+      sessionParams: null,
+    });
   });
 });
 
