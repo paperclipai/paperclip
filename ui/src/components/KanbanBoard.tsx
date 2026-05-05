@@ -364,7 +364,7 @@ function KanbanCard({
               {boardCard.dueDate}
             </span>
           ) : null}
-          {boardCard?.checklistTotal ? (
+{boardCard?.checklistTotal ? (
             <span className="inline-flex items-center gap-1 rounded-sm bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
               <CheckSquare className="h-3 w-3" />
               {boardCard.checklistDone}/{boardCard.checklistTotal}
@@ -381,6 +381,11 @@ function KanbanCard({
               To-Do {childCount}
             </span>
           ) : null}
+          {boardCard?.customFields?.slice(0, 2).map((cf) => (
+            <span key={cf.fieldId} className="rounded-sm bg-violet-500/10 px-1.5 py-0.5 text-[11px] text-violet-700 dark:text-violet-300 truncate max-w-[80px]">
+              {cf.fieldType === "dropdown" && cf.optionLabel ? cf.optionLabel : cf.textValue ?? cf.numberValue?.toString() ?? cf.dateValue?.slice(0, 10) ?? cf.fieldName}
+            </span>
+          ))}
         </div>
         {deliverables.primaryTitle ? (
           <div className="mb-3 truncate text-xs text-muted-foreground">
