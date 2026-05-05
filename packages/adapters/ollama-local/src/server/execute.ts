@@ -16,6 +16,14 @@ import {
   DEFAULT_OLLAMA_TIMEOUT_SEC,
 } from "../index.js";
 import { isOllamaCloudHost, resolveOllamaApiKey, resolveOllamaHost } from "./models.js";
+import {
+  buildSessionPath,
+  ensureSessionsDir,
+  loadSession,
+  saveSession,
+  sessionMatchesCurrentRun,
+  type OllamaSessionState,
+} from "./session.js";
 
 interface OllamaToolCall {
   function?: {
@@ -277,8 +285,31 @@ async function readInstructions(cwd: string, instructionsFilePath: string): Prom
   }
 }
 
+function classifyOllamaError(message: string): {
+  errorCode: string;
+  family: "transient_upstream" | null;
+} {
+  const lower = message.toLowerCase();
+  if (lower.includes("econnrefused") || lower.includes("fetch failed") || lower.includes("network")) {
+    return { errorCode: "ollama_unreachable", family: "transient_upstream" };
+  }
+  if (lower.includes("401") || lower.includes("unauthorized") || lower.includes("api key")) {
+    return { errorCode: "ollama_auth", family: null };
+  }
+  if (lower.includes("404") || lower.includes("model not found") || lower.includes("pull")) {
+    return { errorCode: "ollama_model_missing", family: null };
+  }
+  if (lower.includes("429") || lower.includes("rate limit")) {
+    return { errorCode: "ollama_rate_limited", family: "transient_upstream" };
+  }
+  if (lower.includes("timed out")) {
+    return { errorCode: "ollama_timeout", family: "transient_upstream" };
+  }
+  return { errorCode: "ollama_unknown", family: null };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, config, context, onLog, onMeta } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
   const model = asString(config.model, DEFAULT_OLLAMA_MODEL).trim();
   const host = resolveOllamaHost(asString(config.host, ""));
   const apiKey = resolveOllamaApiKey(asString(config.apiKey, ""));
@@ -323,10 +354,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakeReason) userPromptParts.push(`Wake reason: ${wakeReason}`);
   const userPrompt = userPromptParts.join("\n\n").trim() || "Begin work on the configured task.";
 
-  const messages: OllamaMessage[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt },
-  ];
+  // Resolve / restore session ────────────────────────────────────────────
+  await ensureSessionsDir().catch(() => undefined);
+  const runtimeSessionParams = parseObject(runtime.sessionParams);
+  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "").trim();
+  const cloud = isOllamaCloudHost(host);
+  let resumed = false;
+  let messages: OllamaMessage[] = [];
+  let sessionPath = runtimeSessionId;
+  let priorCreatedAt: string | null = null;
+  if (runtimeSessionId) {
+    const existing = await loadSession(runtimeSessionId);
+    if (existing && sessionMatchesCurrentRun(existing, { cwd, model, host })) {
+      messages = existing.messages as OllamaMessage[];
+      const deltaPrompt = userPrompt.length > 0 ? userPrompt : "(continue)";
+      messages.push({ role: "user", content: deltaPrompt });
+      priorCreatedAt = existing.createdAt;
+      resumed = true;
+    } else {
+      sessionPath = "";
+    }
+  }
+  if (!resumed) {
+    messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ];
+    sessionPath = buildSessionPath(agent.id, new Date().toISOString());
+  }
 
   if (onMeta) {
     await onMeta({
@@ -346,7 +401,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   await onLog(
     "stdout",
-    `[paperclip] Starting ollama_local run ${runId} on ${host} with model "${model}".\n`,
+    `[paperclip] ${resumed ? "Resuming" : "Starting"} ollama_local run ${runId} on ${host}${cloud ? " (cloud)" : ""} with model "${model}".\n`,
   );
 
   const abort = new AbortController();
@@ -423,29 +478,60 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     clearTimeout(timeoutHandle);
   }
 
+  // Persist session for resume on next wake — even on partial failures, the
+  // accumulated context is worth keeping so a transient error doesn't burn it.
+  let savedSessionId: string | null = null;
+  if (sessionPath) {
+    try {
+      const state: OllamaSessionState = {
+        agentId: agent.id,
+        cwd,
+        model,
+        host,
+        cloud,
+        messages: messages as unknown as OllamaSessionState["messages"],
+        createdAt: priorCreatedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await saveSession(sessionPath, state);
+      savedSessionId = sessionPath;
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to persist session: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
   const exitCode = timedOut ? 124 : errorMessage ? 1 : 0;
+  const errorClass = errorMessage ? classifyOllamaError(errorMessage) : null;
 
   return {
     exitCode,
     signal: null,
     timedOut,
     errorMessage: errorMessage ?? null,
+    errorCode: errorClass?.errorCode ?? null,
+    errorFamily: errorClass?.family ?? null,
     usage: {
       inputTokens,
       outputTokens,
     },
-    sessionId: null,
-    sessionParams: null,
-    sessionDisplayId: null,
+    sessionId: savedSessionId,
+    sessionParams: savedSessionId
+      ? { sessionId: savedSessionId, cwd, model, host }
+      : null,
+    sessionDisplayId: savedSessionId,
     provider: "ollama",
-    biller: isOllamaCloudHost(host) ? "ollama_cloud" : "ollama",
+    biller: cloud ? "ollama_cloud" : "ollama",
     model,
-    billingType: isOllamaCloudHost(host) ? "subscription" : "fixed",
+    billingType: cloud ? "subscription" : "fixed",
     costUsd: 0,
     resultJson: {
       iterations,
       host,
-      cloud: isOllamaCloudHost(host),
+      cloud,
+      resumed,
     },
     summary: finalMessage ?? null,
   };

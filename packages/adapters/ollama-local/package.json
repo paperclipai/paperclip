@@ -14,7 +14,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/server/index.ts"
+    "./server": "./src/server/index.ts",
+    "./ui": "./src/ui/index.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -26,6 +27,10 @@
       "./server": {
         "types": "./dist/server/index.d.ts",
         "import": "./dist/server/index.js"
+      },
+      "./ui": {
+        "types": "./dist/ui/index.d.ts",
+        "import": "./dist/ui/index.js"
       }
     },
     "main": "./dist/index.js",

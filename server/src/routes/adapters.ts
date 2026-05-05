@@ -45,6 +45,13 @@ import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSour
 import { logger } from "../middleware/logger.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
+import {
+  pullOllamaModel,
+  deleteOllamaModel,
+  showOllamaModel,
+  resolveOllamaHost,
+  resolveOllamaApiKey,
+} from "@paperclipai/adapter-ollama-local/server";
 
 const execFileAsync = promisify(execFile);
 
@@ -672,6 +679,84 @@ export function adapterRoutes() {
       return;
     }
     res.type("application/javascript").send(source);
+  });
+
+  // ── POST /api/adapters/ollama_local/pull-model ───────────────────────────
+  // Stream a model pull from the configured Ollama host.
+  // Server-Sent Events; each event is a JSON progress line from /api/pull.
+  router.post("/adapters/ollama_local/pull-model", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as { name?: unknown; host?: unknown; apiKey?: unknown };
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) {
+      res.status(400).json({ error: "Missing required field: name" });
+      return;
+    }
+    const host = resolveOllamaHost(typeof body.host === "string" ? body.host : null);
+    const apiKey = resolveOllamaApiKey(typeof body.apiKey === "string" ? body.apiKey : null);
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    const controller = new AbortController();
+    req.on("close", () => controller.abort());
+
+    try {
+      await pullOllamaModel(host, name, {
+        apiKey,
+        signal: controller.signal,
+        onProgress: async (event) => {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        },
+      });
+      res.write(`data: ${JSON.stringify({ status: "success" })}\n\n`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.write(`data: ${JSON.stringify({ status: "error", error: message })}\n\n`);
+    } finally {
+      res.end();
+    }
+  });
+
+  // ── DELETE /api/adapters/ollama_local/models/:name ──────────────────────
+  router.delete("/adapters/ollama_local/models/:name", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const name = decodeURIComponent(req.params.name as string);
+    const host = resolveOllamaHost(typeof req.query.host === "string" ? req.query.host : null);
+    const apiKey = resolveOllamaApiKey(typeof req.query.apiKey === "string" ? req.query.apiKey : null);
+    try {
+      await deleteOllamaModel(host, name, { apiKey });
+      res.json({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: message });
+    }
+  });
+
+  // ── GET /api/adapters/ollama_local/show-model ────────────────────────────
+  router.get("/adapters/ollama_local/show-model", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const name = typeof req.query.name === "string" ? req.query.name.trim() : "";
+    if (!name) {
+      res.status(400).json({ error: "Missing required query: name" });
+      return;
+    }
+    const host = resolveOllamaHost(typeof req.query.host === "string" ? req.query.host : null);
+    const apiKey = resolveOllamaApiKey(typeof req.query.apiKey === "string" ? req.query.apiKey : null);
+    try {
+      const info = await showOllamaModel(host, name, { apiKey });
+      res.json({
+        name,
+        capabilities: info.capabilities ?? [],
+        details: info.details ?? null,
+        supportsTools: Array.isArray(info.capabilities) && info.capabilities.includes("tools"),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: message });
+    }
   });
 
   return router;

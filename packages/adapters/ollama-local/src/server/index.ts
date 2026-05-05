@@ -1,19 +1,42 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
-/**
- * v0.1: session resume is not yet implemented. The codec is a no-op shim so the
- * adapter type slot exists; serialize() always returns null which signals "no
- * resumable session" to the host.
- */
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 export const sessionCodec: AdapterSessionCodec = {
-  deserialize() {
-    return null;
+  deserialize(raw: unknown) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const sessionId =
+      readNonEmptyString(record.sessionId) ?? readNonEmptyString(record.session_id);
+    if (!sessionId) return null;
+    const cwd = readNonEmptyString(record.cwd);
+    const model = readNonEmptyString(record.model);
+    const host = readNonEmptyString(record.host);
+    return {
+      sessionId,
+      ...(cwd ? { cwd } : {}),
+      ...(model ? { model } : {}),
+      ...(host ? { host } : {}),
+    };
   },
-  serialize() {
-    return null;
+  serialize(params: Record<string, unknown> | null) {
+    if (!params) return null;
+    const sessionId = readNonEmptyString(params.sessionId);
+    if (!sessionId) return null;
+    const cwd = readNonEmptyString(params.cwd);
+    const model = readNonEmptyString(params.model);
+    const host = readNonEmptyString(params.host);
+    return {
+      sessionId,
+      ...(cwd ? { cwd } : {}),
+      ...(model ? { model } : {}),
+      ...(host ? { host } : {}),
+    };
   },
-  getDisplayId() {
-    return null;
+  getDisplayId(params: Record<string, unknown> | null) {
+    return params ? readNonEmptyString(params.sessionId) : null;
   },
 };
 
@@ -32,3 +55,11 @@ export {
 } from "./models.js";
 export type { OllamaPullProgressEvent, OllamaShowResponse } from "./models.js";
 export { listOllamaSkills, syncOllamaSkills } from "./skills.js";
+export {
+  ensureSessionsDir,
+  buildSessionPath,
+  loadSession,
+  saveSession,
+  sessionMatchesCurrentRun,
+} from "./session.js";
+export type { OllamaSessionState, OllamaSessionMessage } from "./session.js";
