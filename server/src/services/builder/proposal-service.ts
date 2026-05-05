@@ -101,6 +101,8 @@ export function proposalService(db: Db) {
       if (proposal.status !== "pending" && proposal.status !== "approved") {
         throw new Error(`Proposal is ${proposal.status}; cannot reject`);
       }
+      const rejected = await store.markRejected(proposalId, decidedByUserId);
+      // Best-effort activity log — never fail the reject because of logging
       await logActivity(db, {
         companyId,
         actorType: "user",
@@ -109,8 +111,10 @@ export function proposalService(db: Db) {
         entityType: "builder_proposal",
         entityId: proposalId,
         details: { proposalId, kind: proposal.kind, sessionId: proposal.sessionId },
-      });
-      return store.markRejected(proposalId, decidedByUserId);
+      }).catch((logErr) =>
+        logger.warn({ logErr, proposalId }, "builder reject: activity log failed"),
+      );
+      return rejected;
     },
   };
 }

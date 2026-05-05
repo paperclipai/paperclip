@@ -559,43 +559,15 @@ const setBudget: BuilderTool = defineMutationTool({
       payload.amountCents,
     )}¢`;
   },
-  async apply(payload, ctx) {
-    // Verify scopeId ownership for agent/project budgets to prevent cross-company IDOR
-    if (payload.scopeType === "agent") {
-      const agent = await agentService(ctx.db).getById(String(payload.scopeId));
-      if (!agent || agent.companyId !== ctx.companyId) {
-        throw new Error("Agent not found");
-      }
-    }
-    if (payload.scopeType === "project") {
-      const project = await projectService(ctx.db).getById(String(payload.scopeId));
-      if (!project || project.companyId !== ctx.companyId) {
-        throw new Error("Project not found");
-      }
-    }
-    const updated = await budgetService(ctx.db).upsertPolicy(
-      ctx.companyId,
-      {
-        scopeType: payload.scopeType as "company" | "agent" | "project",
-        scopeId: String(payload.scopeId),
-        amount: Number(payload.amountCents),
-        hardStopEnabled: Boolean(payload.hardStopEnabled),
-      },
-      ctx.decidedByUserId,
-    );
-    await logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
-      action: "budget.policy_updated",
-      entityType: "budget_policy",
-      entityId: (updated as { id?: string }).id ?? String(payload.scopeId),
-      details: { source: "builder", scope: payload.scopeType, scopeId: payload.scopeId },
-    });
+  async apply(_payload, _ctx) {
+    // No-op applier: the actual budget update is performed by `approvalService.approve`
+    // when the linked `set_budget` approval row is approved through the standard
+    // Approvals UI. The Builder proposal is marked applied here purely to record
+    // that the operator sent the request forward; the side effect happens elsewhere.
     return {
-      summary: `${String(payload.scopeType)} budget updated`,
-      entityId: (updated as { id?: string }).id ?? null,
-      entityType: "budget_policy",
+      summary: "Budget policy request sent to Approvals queue",
+      entityType: "approval",
+      entityId: null,
     };
   },
 });
@@ -635,22 +607,16 @@ const updateCompany: BuilderTool = defineMutationTool({
     const fields = Object.keys(payload.patch as Record<string, unknown>).join(", ");
     return `Update company (${fields})`;
   },
-  async apply(payload, ctx) {
-    const updated = await companyService(ctx.db).update(
-      ctx.companyId,
-      payload.patch as Record<string, unknown>,
-    );
-    if (!updated) throw new Error("Company not found");
-    await logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
-      action: "company.updated",
-      entityType: "company",
-      entityId: ctx.companyId,
-      details: { source: "builder", patch: payload.patch },
-    });
-    return { summary: "Company metadata updated", entityId: ctx.companyId, entityType: "company" };
+  async apply(_payload, _ctx) {
+    // No-op applier: the actual company update is performed by `approvalService.approve`
+    // when the linked `update_company` approval row is approved through the standard
+    // Approvals UI. The Builder proposal is marked applied here purely to record
+    // that the operator sent the request forward; the side effect happens elsewhere.
+    return {
+      summary: "Company update request sent to Approvals queue",
+      entityType: "approval",
+      entityId: null,
+    };
   },
 });
 
