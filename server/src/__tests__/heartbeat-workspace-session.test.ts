@@ -303,6 +303,15 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(true);
   });
 
+  it("resets session context on timer heartbeats even with an explicit task key", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeSource: "timer",
+        taskKey: "issue-789",
+      }),
+    ).toBe(true);
+  });
+
   it("preserves session context on manual on-demand invokes by default", () => {
     expect(
       shouldResetTaskSessionForWake({

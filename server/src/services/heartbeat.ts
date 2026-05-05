@@ -1271,10 +1271,9 @@ function parseIssueAssigneeAdapterOverrides(
 }
 
 /**
- * Synthetic task key for timer/heartbeat wakes that have no issue context.
- * This allows timer wakes to participate in the `agentTaskSessions` system
- * and benefit from robust session resume, instead of relying solely on the
- * simpler `agentRuntimeState.sessionId` fallback.
+ * Derives the issue/task key that scopes `agentTaskSessions` for a wake.
+ * Timer wakes deliberately avoid inventing a synthetic key so scheduler-driven
+ * runs can force a fresh session unless they carry an explicit task binding.
  */
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -1295,6 +1294,7 @@ export function deriveTaskKeyWithHeartbeatFallback(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
 ) {
+  // Keep the public helper name stable for tests and downstream callers.
   return deriveTaskKey(contextSnapshot, payload);
 }
 
