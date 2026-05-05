@@ -24,6 +24,8 @@ import {
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  routineTriggers,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -320,6 +322,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRelations);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -1741,6 +1745,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("skips stranded in-progress work when an active future-fire routine is parented on the issue (COM-348)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    const routineId = randomUUID();
+    const triggerId = randomUUID();
+    const futureFireAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      parentIssueId: issueId,
+      assigneeAgentId: agentId,
+      title: "Observation follow-up",
+      status: "active",
+      lastTriggeredAt: null,
+    });
+    await db.insert(routineTriggers).values({
+      id: triggerId,
+      companyId,
+      routineId,
+      kind: "cron",
+      enabled: true,
+      cronExpression: "32 9 6 5 *",
+      timezone: "Asia/Seoul",
+      nextRunAt: futureFireAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const recoveryComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(recoveryComments).toHaveLength(0);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((row) => row.id)).toEqual([runId]);
   });
 
   it("does not continue seeded in-progress work that has no run linkage", async () => {
