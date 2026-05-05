@@ -8431,6 +8431,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const expectedRetryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
+      // Keep auto-recovery bounded: in-progress continuation recovery gets one automatic retry,
+      // then must surface explicitly instead of recursing through more retries.
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
