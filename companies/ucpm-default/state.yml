@@ -1,0 +1,4 @@
+# ucpm-default is a template inherited by per-property companies, not a runnable instance.
+# Per-property companies override property_id, property_address, ledger_id, etc., and set state: active.
+state: template
+schema: ucpm-company-state/v1
