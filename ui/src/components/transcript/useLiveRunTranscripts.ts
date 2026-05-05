@@ -8,6 +8,7 @@ import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type 
 import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
+const LOG_POLL_INTERVAL_MAX_MS = 30_000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
@@ -212,28 +213,30 @@ export function useLiveRunTranscripts({
 
     let cancelled = false;
 
-    const readRunLog = async (run: RunTranscriptSource) => {
+    const readRunLog = async (run: RunTranscriptSource): Promise<boolean> => {
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
-        return;
+        return false;
       }
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
         const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
-        if (cancelled) return;
+        if (cancelled) return false;
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
-        if (result.nextOffset !== undefined) {
-          logOffsetByRunRef.current.set(run.id, result.nextOffset);
-          return;
-        }
-        if (result.content.length > 0) {
-          logOffsetByRunRef.current.set(run.id, offset + result.content.length);
-        }
+        const newOffset =
+          result.nextOffset !== undefined
+            ? result.nextOffset
+            : result.content.length > 0
+              ? offset + result.content.length
+              : offset;
+        logOffsetByRunRef.current.set(run.id, newOffset);
+        return newOffset > offset;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
           missingTerminalLogRunIdsRef.current.add(run.id);
         }
+        return false;
       } finally {
         if (!cancelled) {
           setHydratedRunIds((prev) => {
@@ -246,21 +249,36 @@ export function useLiveRunTranscripts({
       }
     };
 
-    const readAll = async () => {
-      await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
+    const readAll = async (): Promise<boolean> => {
+      const results = await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
+      return results.some(Boolean);
     };
 
     void readAll();
     const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
-    const interval = activeRuns.length > 0 && logPollIntervalMs > 0
-      ? window.setInterval(() => {
-          void Promise.all(activeRuns.map((run) => readRunLog(run)));
-        }, logPollIntervalMs)
-      : null;
+    let idleCycles = 0;
+    let timer: number | null = null;
+    const scheduleNext = (delay: number) => {
+      timer = window.setTimeout(async () => {
+        if (cancelled || activeRuns.length === 0) return;
+        const results = await Promise.all(activeRuns.map((run) => readRunLog(run)));
+        if (cancelled) return;
+        const sawNewBytes = results.some(Boolean);
+        idleCycles = sawNewBytes ? 0 : idleCycles + 1;
+        const nextDelay = Math.min(
+          logPollIntervalMs * 2 ** idleCycles,
+          LOG_POLL_INTERVAL_MAX_MS,
+        );
+        scheduleNext(nextDelay);
+      }, delay);
+    };
+    if (activeRuns.length > 0 && logPollIntervalMs > 0) {
+      scheduleNext(logPollIntervalMs);
+    }
 
     return () => {
       cancelled = true;
-      if (interval !== null) window.clearInterval(interval);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
 

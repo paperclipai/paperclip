@@ -145,14 +145,14 @@ export function CompanyRail() {
     queries: companyIds.map((companyId) => ({
       queryKey: queryKeys.liveRuns(companyId),
       queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
-      refetchInterval: 10_000,
+      refetchInterval: companyId === highlightedCompanyId ? 10_000 : 60_000,
     })),
   });
   const sidebarBadgeQueries = useQueries({
     queries: companyIds.map((companyId) => ({
       queryKey: queryKeys.sidebarBadges(companyId),
       queryFn: () => sidebarBadgesApi.get(companyId),
-      refetchInterval: 15_000,
+      refetchInterval: companyId === highlightedCompanyId ? 15_000 : 60_000,
     })),
   });
   const hasLiveAgentsByCompanyId = useMemo(() => {

@@ -95,6 +95,7 @@ export function getIssueDetailQueryOptions(
     queryKey: queryKeys.issues.detail(issueRef),
     queryFn: () => fetchIssueDetail(queryClient, issueRef),
     placeholderData: getCachedIssueDetail(queryClient, issueRef, options?.placeholderIssue ?? undefined),
+    retry: false,
   };
 }
 

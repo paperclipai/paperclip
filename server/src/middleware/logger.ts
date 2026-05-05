@@ -52,6 +52,7 @@ export const httpLogger = pinoHttp({
       return "silent";
     }
     if (err || res.statusCode >= 500) return "error";
+    if (res.statusCode === 404) return "info";
     if (res.statusCode >= 400) return "warn";
     return "info";
   },
