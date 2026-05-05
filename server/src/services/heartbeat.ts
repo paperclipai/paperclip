@@ -1252,6 +1252,77 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   };
 }
 
+export async function resolveTaskSessionWorkspaceFallbackForRun(input: {
+  agentId: string;
+  previousSessionParams: Record<string, unknown> | null;
+  resolvedProjectId: string | null;
+  workspaceHints: Array<{
+    workspaceId: string | null;
+    cwd: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
+  allowTaskSessionWorkspace: boolean;
+}): Promise<ResolvedWorkspaceForRun> {
+  const {
+    agentId,
+    previousSessionParams,
+    resolvedProjectId,
+    workspaceHints,
+    allowTaskSessionWorkspace,
+  } = input;
+  const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
+  if (allowTaskSessionWorkspace && sessionCwd) {
+    const sessionCwdExists = await fs
+      .stat(sessionCwd)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+    if (sessionCwdExists) {
+      return {
+        cwd: sessionCwd,
+        source: "task_session" as const,
+        projectId: resolvedProjectId,
+        workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
+        repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
+        repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+        workspaceHints,
+        warnings: [],
+      };
+    }
+  }
+
+  const cwd = resolveDefaultAgentWorkspaceDir(agentId);
+  await fs.mkdir(cwd, { recursive: true });
+  const warnings: string[] = [];
+  if (sessionCwd && allowTaskSessionWorkspace) {
+    warnings.push(
+      `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
+    );
+  } else if (sessionCwd) {
+    warnings.push(
+      `Saved session workspace "${sessionCwd}" is being ignored for this run. Using fallback workspace "${cwd}" instead.`,
+    );
+  } else if (resolvedProjectId) {
+    warnings.push(
+      `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
+    );
+  } else {
+    warnings.push(
+      `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
+    );
+  }
+  return {
+    cwd,
+    source: "agent_home" as const,
+    projectId: resolvedProjectId,
+    workspaceId: null,
+    repoUrl: null,
+    repoRef: null,
+    workspaceHints,
+    warnings,
+  };
+}
+
 function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
@@ -2356,7 +2427,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: {
+      useProjectWorkspace?: boolean | null;
+      allowTaskSessionWorkspace?: boolean | null;
+    },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -2507,52 +2581,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
-    if (sessionCwd) {
-      const sessionCwdExists = await fs
-        .stat(sessionCwd)
-        .then((stats) => stats.isDirectory())
-        .catch(() => false);
-      if (sessionCwdExists) {
-        return {
-          cwd: sessionCwd,
-          source: "task_session" as const,
-          projectId: resolvedProjectId,
-          workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
-          repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
-          repoRef: readNonEmptyString(previousSessionParams?.repoRef),
-          workspaceHints,
-          warnings: [],
-        };
-      }
-    }
-
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
-    const warnings: string[] = [];
-    if (sessionCwd) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else if (resolvedProjectId) {
-      warnings.push(
-        `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
-      );
-    }
-    return {
-      cwd,
-      source: "agent_home" as const,
-      projectId: resolvedProjectId,
-      workspaceId: null,
-      repoUrl: null,
-      repoRef: null,
+    return resolveTaskSessionWorkspaceFallbackForRun({
+      agentId: agent.id,
+      previousSessionParams,
+      resolvedProjectId,
       workspaceHints,
-      warnings,
-    };
+      allowTaskSessionWorkspace: opts?.allowTaskSessionWorkspace !== false,
+    });
   }
 
   async function upsertTaskSession(input: {
@@ -4760,7 +4795,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+      {
+        useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+        allowTaskSessionWorkspace: !resetTaskSession,
+      },
     );
     const issueRef = issueContext
       ? {

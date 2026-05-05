@@ -14,6 +14,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  resolveTaskSessionWorkspaceFallbackForRun,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -124,6 +125,48 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("resolveTaskSessionWorkspaceFallbackForRun", () => {
+  it("reuses the saved task-session workspace when allowed and present", async () => {
+    const result = await resolveTaskSessionWorkspaceFallbackForRun({
+      agentId: "agent-123",
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: process.cwd(),
+        workspaceId: "workspace-1",
+        repoUrl: "https://example.com/repo.git",
+        repoRef: "main",
+      },
+      resolvedProjectId: null,
+      workspaceHints: [],
+      allowTaskSessionWorkspace: true,
+    });
+
+    expect(result.source).toBe("task_session");
+    expect(result.cwd).toBe(process.cwd());
+    expect(result.workspaceId).toBe("workspace-1");
+  });
+
+  it("ignores the saved task-session workspace for timer/fresh-session wakes", async () => {
+    const result = await resolveTaskSessionWorkspaceFallbackForRun({
+      agentId: "agent-123",
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: process.cwd(),
+        workspaceId: "workspace-1",
+      },
+      resolvedProjectId: null,
+      workspaceHints: [],
+      allowTaskSessionWorkspace: false,
+    });
+
+    expect(result.source).toBe("agent_home");
+    expect(result.cwd).toBe(resolveDefaultAgentWorkspaceDir("agent-123"));
+    expect(result.warnings).toContain(
+      `Saved session workspace "${process.cwd()}" is being ignored for this run. Using fallback workspace "${resolveDefaultAgentWorkspaceDir("agent-123")}" instead.`,
+    );
   });
 });
 
