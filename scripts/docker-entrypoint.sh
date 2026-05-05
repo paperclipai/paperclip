@@ -22,7 +22,8 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-# Always ensure the node user owns the paperclip directory and its subdirectories to prevent EACCES errors
-chown -R node:node /paperclip
+if [ "$changed" = "1" ]; then
+    chown -R node:node /paperclip
+fi
 
 exec gosu node "$@"

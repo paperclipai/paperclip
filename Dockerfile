@@ -73,9 +73,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true \
-  ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic \
-  ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro
+  OPENCODE_ALLOW_ALL_MODELS=true
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
