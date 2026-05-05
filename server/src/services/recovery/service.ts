@@ -19,6 +19,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -38,6 +40,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
+import { checkVestigialIssue, type VestigialDetectionResult } from "./vestigial.js";
 import {
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
@@ -1508,6 +1511,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  async function hasEnabledFutureRoutineForAgent(companyId: string, agentId: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: routineTriggers.id })
+      .from(routineTriggers)
+      .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.assigneeAgentId, agentId),
+          eq(routineTriggers.enabled, true),
+          gt(routineTriggers.nextRunAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -1577,6 +1597,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function suppressVestigialIssue(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    detection: VestigialDetectionResult;
+  }) {
+    logger.warn(
+      {
+        issueId: input.issue.id,
+        companyId: input.issue.companyId,
+        vestigialReason: input.detection.reason,
+        vestigialDetails: input.detection.details,
+      },
+      "vestigial_issue_detected",
+    );
+
+    if (input.latestRun) {
+      const [seqRow] = await db
+        .select({ maxSeq: sql<number | null>`MAX(${heartbeatRunEvents.seq})` })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, input.latestRun.id));
+      const seq = Number(seqRow?.maxSeq ?? 0) + 1;
+
+      await db.insert(heartbeatRunEvents).values({
+        companyId: input.issue.companyId,
+        runId: input.latestRun.id,
+        agentId: input.latestRun.agentId,
+        seq,
+        eventType: "vestigial_issue_detected",
+        stream: "system",
+        level: "warn",
+        message: `Vestigial issue suppressed: ${input.detection.reason}`,
+        payload: {
+          issueId: input.issue.id,
+          ...input.detection.details,
+        },
+      });
+    }
+
+    await issuesSvc.update(input.issue.id, { status: "cancelled" });
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -1597,6 +1658,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       escalated: 0,
+      vestigialSuppressed: 0,
+      inProgressResetToTodo: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -1619,12 +1682,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      // Dead work is a terminal state — cancel unconditionally before the routine guard defers live-but-parked issues
+      const vestigialDetection = await checkVestigialIssue(db, issue);
+      if (vestigialDetection) {
+        await suppressVestigialIssue({ issue, latestRun, detection: vestigialDetection });
+        result.vestigialSuppressed += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
+      if (await hasEnabledFutureRoutineForAgent(issue.companyId, agentId)) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
         continue;
       }
 
-      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -1710,7 +1788,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
-        result.skipped += 1;
+        // Startup recovery: this in_progress issue has no live execution path (no run, checkout, or execution
+        // run ID) — the 1-2 May incident produced 59 issues in this state after SIGTERM without drain.
+        // Reset to todo so the assigned agent picks it up on the next heartbeat rather than leaving it stranded.
+        const reset = await issuesSvc.update(issue.id, { status: "todo" });
+        if (reset) {
+          await issuesSvc.addComment(
+            issue.id,
+            "Startup recovery: reset to `todo` — issue was `in_progress` with no live execution path, likely orphaned by a previous unclean shutdown.",
+            {},
+          );
+          result.inProgressResetToTodo += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
         continue;
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
@@ -1821,6 +1913,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       interactionRows,
       approvalRows,
       recoveryIssueRows,
+      agentIdsWithEnabledFutureRoutineRows,
     ] = await Promise.all([
       db
         .select({
@@ -1933,6 +2026,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             notInArray(issues.status, ["done", "cancelled"]),
           ),
         ),
+      db
+        .selectDistinct({ agentId: routines.assigneeAgentId })
+        .from(routineTriggers)
+        .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .where(
+          and(
+            sql`${routines.assigneeAgentId} is not null`,
+            eq(routineTriggers.enabled, true),
+            gt(routineTriggers.nextRunAt, new Date()),
+          ),
+        ),
     ]);
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
@@ -1969,6 +2073,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues,
+      agentIdsWithEnabledFutureRoutines: agentIdsWithEnabledFutureRoutineRows.flatMap((row) =>
+        row.agentId ? [row.agentId] : [],
+      ),
       now: new Date(),
     });
   }

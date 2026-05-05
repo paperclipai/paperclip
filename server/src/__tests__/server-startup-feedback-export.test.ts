@@ -17,7 +17,8 @@ const {
   fakeServer,
   loadConfigMock,
 } = vi.hoisted(() => {
-  const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const appFn = (_: unknown, __: unknown) => {};
+  const createAppMock = vi.fn(async () => ({ app: appFn, pluginReadyPromise: Promise.resolve() }) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);

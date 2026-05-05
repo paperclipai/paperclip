@@ -423,15 +423,26 @@ export async function createApp(
       async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
     )
     : null;
+  // Change 2: Expose plugin readiness so the heartbeat dispatcher can gate new runs
+  // until all plugins are active (prevents tool calls with no worker on the other end).
+  let pluginReadyResolve!: () => void;
+  const pluginReadyPromise = new Promise<void>((resolve) => {
+    pluginReadyResolve = resolve;
+  });
   void loader.loadAll().then((result) => {
-    if (!result) return;
+    if (!result) {
+      pluginReadyResolve();
+      return;
+    }
     for (const loaded of result.results) {
       if (devWatcher && loaded.success && loaded.plugin.packagePath) {
         devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
       }
     }
+    pluginReadyResolve();
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
+    pluginReadyResolve(); // Always resolve so we never block the dispatcher indefinitely.
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
@@ -444,5 +455,5 @@ export async function createApp(
     void flushPluginLogBuffer();
   });
 
-  return app;
+  return { app, pluginReadyPromise };
 }

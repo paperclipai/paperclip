@@ -593,7 +593,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const app = await createApp(db as any, {
+  const { app, pluginReadyPromise } = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
@@ -669,18 +669,23 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
   
+  // Change 1+2: hoist heartbeat so the SIGTERM drain handler can call heartbeat.drain()
+  // and so we can pass pluginReadyPromise for the startup health gate.
+  let heartbeat: ReturnType<typeof heartbeatService> | null = null;
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeatInstance = heartbeatService(db as any, { pluginWorkerManager, pluginReadyPromise });
+    heartbeat = heartbeatInstance;
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
-    void heartbeat
+    void heartbeatInstance
       .reapOrphanedRuns()
-      .then(() => heartbeat.promoteDueScheduledRetries())
+      .then(() => heartbeatInstance.promoteDueScheduledRetries())
       .then(async (promotion) => {
-        await heartbeat.resumeQueuedRuns();
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        // Change 5: jitter startup dispatch to spread the Anthropic API burst.
+        await heartbeatInstance.resumeQueuedRunsWithJitter();
+        const reconciled = await heartbeatInstance.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
           reconciled.assignmentDispatched > 0 ||
@@ -695,19 +700,19 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
-        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+        const reconciled = await heartbeatInstance.reconcileIssueGraphLiveness();
         if (reconciled.escalationsCreated > 0) {
           logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
         }
       })
       .then(async () => {
-        const scanned = await heartbeat.scanSilentActiveRuns();
+        const scanned = await heartbeatInstance.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
         }
       })
       .then(async () => {
-        const reviewed = await heartbeat.reconcileProductivityReviews();
+        const reviewed = await heartbeatInstance.reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
@@ -882,6 +887,16 @@ export async function startServer(): Promise<StartedServer> {
           await embeddedPostgres?.stop();
         } catch (err) {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+        }
+      }
+
+      // Change 1: drain in-flight heartbeat runs before exiting so we don't orphan agents.
+      // The drain waits up to 60 s for active executions to finish; then exits regardless.
+      if (heartbeat) {
+        try {
+          await heartbeat.drain({ timeoutMs: 60_000 });
+        } catch (err) {
+          logger.error({ err }, "heartbeat drain failed during shutdown");
         }
       }
 
