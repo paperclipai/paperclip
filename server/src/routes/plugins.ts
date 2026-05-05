@@ -2330,42 +2330,128 @@ export function pluginRoutes(
     }
     // Prefer the original source path (set for current-style local installs)
     // and fall back to packagePath for legacy installs that predate the
-    // managed-install copy. .pcplugin / npm installs have neither set in a way
-    // useful for re-reading from disk; surface a clear message instead.
+    // managed-install copy.
     const sourcePath = plugin.localSourcePath ?? plugin.packagePath;
-    if (!sourcePath) {
-      res.status(400).json({
-        error:
-          "Reinstall is only supported for plugins installed from a local path. Use /upgrade for npm-installed plugins, or upload a fresh .pcplugin to update.",
+
+    // Local-path reinstall: source directory must exist on disk.
+    // Library-installed plugins have localSourcePath set to the temp dir that
+    // was cleaned up after installation — those fall through to the library
+    // re-download path below.
+    if (sourcePath && existsSync(sourcePath)) {
+      const previousVersion = plugin.version;
+      try {
+        await lifecycle.unload(plugin.id, /* purge= */ false);
+        const discovered = await loader.installPlugin({ localPath: sourcePath });
+        if (!discovered.manifest) {
+          res.status(500).json({ error: "Plugin reinstalled but manifest is missing" });
+          return;
+        }
+        await lifecycle.load(plugin.id);
+        const updated = await registry.getById(plugin.id);
+        await logPluginMutationActivity(req, "plugin.reinstalled", plugin.id, {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          packagePath: plugin.packagePath,
+          previousVersion,
+          version: updated?.version ?? previousVersion,
+        });
+        publishGlobalLiveEvent({
+          type: "plugin.ui.updated",
+          payload: { pluginId: plugin.id, action: "reinstalled" },
+        });
+        res.json(updated);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: message });
+      }
+      return;
+    }
+
+    // Source path is absent or stale (e.g. library plugin whose temp extraction
+    // dir was cleaned up). Try to re-fetch the latest build from the library.
+    let library: LibraryResponse;
+    try {
+      library = await fetchLatestLibrary();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(sourcePath ? 502 : 400).json({
+        error: sourcePath
+          ? `Plugin source path no longer exists and library fetch failed: ${message}`
+          : "Reinstall is only supported for plugins installed from a local path. Use /upgrade for npm-installed plugins, or upload a fresh .pcplugin to update.",
       });
       return;
     }
 
+    const entry = library.plugins.find((p) => p.id === plugin.pluginKey);
+    if (!entry?.downloadUrl) {
+      res.status(400).json({
+        error: sourcePath
+          ? `Plugin source path no longer exists (${sourcePath}) and "${plugin.pluginKey}" was not found in the library. Upload a fresh .pcplugin to reinstall.`
+          : "Reinstall is only supported for plugins installed from a local path, or plugins available in the library.",
+      });
+      return;
+    }
+
+    // Re-download from the library (same flow as /library/install for upgrades).
+    const tempRoot = path.join(os.tmpdir(), "paperclip-pcplugin-library");
+    const tempDir = path.join(tempRoot, randomUUID());
     const previousVersion = plugin.version;
     try {
-      await lifecycle.unload(plugin.id, /* purge= */ false);
-      const discovered = await loader.installPlugin({ localPath: sourcePath });
-      if (!discovered.manifest) {
-        res.status(500).json({ error: "Plugin reinstalled but manifest is missing" });
+      const assetRes = await fetch(entry.downloadUrl, {
+        headers: { accept: "application/octet-stream" },
+      });
+      if (!assetRes.ok) {
+        res.status(502).json({
+          error: `Failed to download plugin from library (HTTP ${assetRes.status}).`,
+        });
         return;
       }
-      await lifecycle.load(plugin.id);
-      const updated = await registry.getById(plugin.id);
+      const buf = Buffer.from(await assetRes.arrayBuffer());
+      let zip: JSZip;
+      try {
+        zip = await JSZip.loadAsync(buf);
+      } catch (err) {
+        res.status(502).json({
+          error: `Downloaded asset is not a valid zip: ${(err as Error).message}`,
+        });
+        return;
+      }
+      await mkdir(tempDir, { recursive: true });
+      for (const [relPath, archiveEntry] of Object.entries(zip.files)) {
+        if (archiveEntry.dir) continue;
+        const target = path.resolve(tempDir, relPath);
+        if (
+          !target.startsWith(path.resolve(tempDir) + path.sep) &&
+          target !== path.resolve(tempDir)
+        ) {
+          res.status(502).json({ error: `Invalid file path in archive: ${relPath}` });
+          return;
+        }
+        const data = await archiveEntry.async("nodebuffer");
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, data);
+      }
+      const result = await lifecycle.upgrade(plugin.id, undefined, tempDir);
+      cachedLibrary = null;
       await logPluginMutationActivity(req, "plugin.reinstalled", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
-        packagePath: plugin.packagePath,
         previousVersion,
-        version: updated?.version ?? previousVersion,
+        version: result.version,
+        source: "library",
+        libraryRepo: library.repo,
+        libraryReleaseTag: library.release.tag,
       });
       publishGlobalLiveEvent({
         type: "plugin.ui.updated",
         payload: { pluginId: plugin.id, action: "reinstalled" },
       });
-      res.json(updated);
+      res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 
