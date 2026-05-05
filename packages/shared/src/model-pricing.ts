@@ -6,10 +6,12 @@
  * 
  * **OPERATIONAL NOTE:**
  * This table uses exact model version strings (e.g. "gpt-4o-2024-11-20").
- * When providers release new model variants, operators configuring those models
- * in the Builder will receive an "unprocessable" error until this file is updated
- * and deployed. Consider adding a PRICING_OVERRIDE env-var or DB-backed override
- * mechanism to allow operators to unblock themselves without a redeploy.
+ * When providers release new model variants, sessions using unknown models are
+ * created successfully but silently record costCents: 0 on every turn, causing
+ * budget tracking to fail. Operators should monitor for zero-cost sessions and
+ * update this file promptly. Consider adding a PRICING_OVERRIDE env-var or
+ * DB-backed override mechanism to allow operators to unblock themselves without
+ * a redeploy.
  * 
  * Sources:
  * - OpenAI: https://openai.com/api/pricing/
