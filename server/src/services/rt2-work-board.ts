@@ -53,6 +53,9 @@ type CaptureSourceRow = typeof rt2CaptureSources.$inferSelect;
 type CustomFieldRow = typeof rt2WorkBoardCustomFields.$inferSelect;
 type CustomFieldOptionRow = typeof rt2WorkBoardCustomFieldOptions.$inferSelect;
 type CustomFieldValueRow = typeof rt2WorkBoardCardCustomFieldValues.$inferSelect;
+type CustomFieldRow = typeof rt2WorkBoardCustomFields.$inferSelect;
+type CustomFieldOptionRow = typeof rt2WorkBoardCustomFieldOptions.$inferSelect;
+type CustomFieldValueRow = typeof rt2WorkBoardCardCustomFieldValues.$inferSelect;
 
 const CAPTURE_SOURCE_LABELS = {
   web: "Web",
@@ -412,7 +415,7 @@ function buildReliabilityMetrics(drafts: CaptureDraftView[]) {
   };
 }
 
-function cardSummary(row: CardRow | undefined, checklist: ReturnType<typeof toChecklist>[], attachments: ReturnType<typeof toAttachment>[], labels: Rt2BoardCardLabel[] = [], members: Rt2BoardCardMember[] = []) {
+function cardSummary(row: CardRow | undefined, checklist: ReturnType<typeof toChecklist>[], attachments: ReturnType<typeof toAttachment>[], labels: Rt2BoardCardLabel[] = [], members: Rt2BoardCardMember[] = [], customFields: Rt2CustomFieldValue[] = []) {
   const checklistDone = checklist.filter((item) => item.checked).length;
   const checklistTotal = checklist.length;
   return {
@@ -428,6 +431,7 @@ function cardSummary(row: CardRow | undefined, checklist: ReturnType<typeof toCh
     checklistProgress: checklistTotal === 0 ? 0 : Math.round((checklistDone / checklistTotal) * 100),
     labels,
     members,
+    customFields,
   };
 }
 
@@ -607,6 +611,7 @@ export function rt2WorkBoardService(db: Db) {
           goalId: issues.goalId,
         }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueIssueIds))),
       ]);
+      const customFieldValuesMap = await getCardCustomFieldValues(companyId, uniqueIssueIds);
 
       const cardsByIssue = new Map(cardRows.map((row) => [row.issueId, row]));
       const checklistByIssue = new Map<string, ReturnType<typeof toChecklist>[]>();
@@ -647,7 +652,14 @@ export function rt2WorkBoardService(db: Db) {
       return {
         companyId,
         cards: uniqueIssueIds.map((issueId) => ({
-          ...cardSummary(cardsByIssue.get(issueId), checklistByIssue.get(issueId) ?? [], attachmentsByIssue.get(issueId) ?? []),
+          ...cardSummary(
+            cardsByIssue.get(issueId),
+            checklistByIssue.get(issueId) ?? [],
+            attachmentsByIssue.get(issueId) ?? [],
+            [],
+            [],
+            customFieldValuesMap.get(issueId) ?? [],
+          ),
           issueId,
         })),
         filters: {
