@@ -35,9 +35,10 @@ Human merges. You GC the worktree + branch.
 4. **Batch verify** (see §Batch verify below): if any tasks are queued for Architect review, run cargo once across all of them, then dispatch Architects in parallel.
 5. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
 6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
-7. **Merge sweep**: for each PR opened by Architect, check status. Merged → tear down worktree + branch (see §Worktree teardown).
-8. New tasks from `docs/ROADMAP.md` current phase. Dedupe vs active. Create in `backlog` unassigned (step 5 assigns). Stock backlog ≥5.
-9. Exit.
+7. **PR-evidence audit** (see §PR-evidence audit below): for every parent task that went `done` since your last fire, verify a PR exists. Tasks with no PR are silent failures — re-open them.
+8. **Merge sweep**: for each PR opened by Architect, check status. Merged → tear down worktree + branch (see §Worktree teardown).
+9. New tasks from `docs/ROADMAP.md` current phase. Dedupe vs active. Create in `backlog` unassigned (step 5 assigns). Stock backlog ≥5.
+10. Exit.
 
 Review/verify subtasks: `in_review`, not `todo`. Review = file list + "optimize, improve, IP compliance". Verify = `needs-build` + "cargo check/clippy/test, fix".
 
@@ -189,6 +190,47 @@ cap is obsolete. Scale Architects to match Q's depth — 3+ Architects
 fixing 3+ tasks in parallel is the explicit goal of this design.
 Coordinator/Planner/Facilitator caps still apply (those are
 single-instance orchestrators, not workers).
+
+## PR-evidence audit
+
+The server marks a verify subtask `done` purely on Architect run exit
+code. Any silent-exit path (Step 0 abort, missing manifest, comment
+write fail, agent ran with wrong cwd) produces a `done` task with no
+PR opened and no work merged. The parent task can then also flip to
+`done` while the actual code changes remain stranded in a worktree or
+the main checkout. Concrete failure observed on AA-757: agent ran from
+the main checkout (Step 0 cwd violation), dropped 10 files of edits in
+the wrong tree, exited cleanly, server marked task done. Six other
+tasks (AA-700, AA-725, AA-730, AA-731, AA-734, AA-735) hit a different
+flavor of the same failure mode and stranded their work for ~36h
+before the board manually pushed and PR'd.
+
+### Audit step
+
+For every parent task whose status changed to `done` since your last
+fire (look at `updatedAt > {your_last_fire_timestamp}` filtered to
+`status=done` parents — verify subtasks are skipped here, only their
+parents):
+
+1. Look up the task's expected branch: `task/{identifier}` (e.g. `task/AA-700`).
+2. Check for a PR via `gh pr list --head task/{identifier} --state all --limit 1 --json number,state,mergedAt`.
+3. Three valid outcomes:
+   - PR exists and is `MERGED` → all good, leave task `done`.
+   - PR exists and is `OPEN` → all good, will resolve in §Merge sweep when it merges.
+   - **No PR** → silent failure. Re-open the task: PATCH parent back to `in_review`, comment `"Auto-reopened: parent went done with no PR. Architect run silently failed (likely Step 0 abort or cwd violation). Re-running verify."`, and create a fresh verify subtask.
+4. If the task's worktree is missing (already GC'd), the work may also be lost. Comment on the task and escalate to the board — do NOT promote backlog or create new subtasks until human triage.
+
+### What this catches
+
+- Architect Step 0 aborts (manifest missing, branch mismatch, cwd violation) that exit 0
+- Worker dirty-tree exits where Reviewer's gate already caught it but the task still flipped done somehow
+- Workers that ran from the wrong cwd and dropped edits in main / sibling worktrees
+- Architects that committed fixes but failed to push or open the PR
+
+### What this does NOT catch
+
+- The case where the work was actually merged via a different branch name or via the board's manual push (false positive — task gets re-opened unnecessarily). Mitigation: when re-opening, also check `git log --since={updatedAt} --grep={task-id}` on origin/main to see if the work landed under a different branch. If so, leave done and comment "PR-evidence audit: matched commit on main, accepting".
+- Long-running batch verifies that span multiple Coordinator fires (verify subtask correctly stays `in_review` across fires; only flag once it goes `done`).
 
 ## Worktree teardown
 
