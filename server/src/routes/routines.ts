@@ -303,6 +303,36 @@ export function routineRoutes(
     res.status(202).json(run);
   });
 
+  router.post("/routines/:id/force-terminate", async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can force-terminate routine executions" });
+      return;
+    }
+    const result = await svc.forceTerminateExecution(routine.id, routine.companyId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "routine.force_terminated",
+      entityType: "routine",
+      entityId: routine.id,
+      details: {
+        routineId: routine.id,
+        terminatedCount: result.terminatedCount,
+        terminatedIssueIds: result.terminatedIssueIds,
+      },
+    });
+    res.json(result);
+  });
+
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
