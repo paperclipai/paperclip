@@ -21,7 +21,10 @@ export async function safeSymlink(source: string, target: string): Promise<void>
     return;
   }
 
-  const stats = await fs.stat(source).catch(() => null);
+  const stats = await fs.stat(source).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  });
   if (stats?.isDirectory()) {
     await fs.symlink(path.resolve(source), target, "junction");
     return;

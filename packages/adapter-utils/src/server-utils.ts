@@ -5,6 +5,8 @@ import path from "node:path";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { safeSymlink } from "./safe-symlink.js";
+
+export { safeSymlink } from "./safe-symlink.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
