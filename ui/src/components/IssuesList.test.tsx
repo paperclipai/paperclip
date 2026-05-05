@@ -123,7 +123,17 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[] }) => {
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD: 100,
+  KANBAN_COLD_STATUSES: ["backlog", "done", "cancelled"],
+  KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT: 50,
+  KANBAN_COLUMN_REVEAL_INCREMENT: 50,
+  KanbanBoard: (props: {
+    issues: Issue[];
+    compactCards?: boolean;
+    collapsedStatuses?: string[];
+    initialVisibleCount?: number;
+    revealIncrement?: number;
+  }) => {
     mockKanbanBoard(props);
     return (
       <div data-testid="kanban-board">
@@ -939,6 +949,51 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Backlog column issue");
       expect(container.textContent).toContain("Done column issue");
       expect(container.textContent).not.toContain("Parent total-limited issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses compact cards and collapsed cold lanes for high-volume boards", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const backlogIssues = Array.from({ length: 101 }, (_, index) =>
+      createIssue({
+        id: `issue-backlog-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Backlog issue ${index + 1}`,
+        status: "backlog",
+      }),
+    );
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        compactCards: true,
+        collapsedStatuses: expect.arrayContaining(["backlog", "done", "cancelled"]),
+        initialVisibleCount: 50,
+        revealIncrement: 50,
+      }));
     });
 
     act(() => {

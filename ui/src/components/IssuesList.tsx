@@ -60,8 +60,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2 } from "lucide-react";
-import { KanbanBoard } from "./KanbanBoard";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw } from "lucide-react";
+import {
+  KanbanBoard,
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
+  KANBAN_COLD_STATUSES,
+  KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT,
+  KANBAN_COLUMN_REVEAL_INCREMENT,
+} from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
@@ -109,6 +115,8 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 /* ── View state ── */
 
 export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type BoardCardDensity = "auto" | "compact" | "comfortable";
+export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
@@ -118,6 +126,8 @@ export type IssueViewState = IssueFilterState & {
   nestingEnabled: boolean;
   collapsedGroups: string[];
   collapsedParents: string[];
+  boardCardDensity: BoardCardDensity;
+  boardColdLaneMode: BoardColdLaneMode;
 };
 
 const defaultViewState: IssueViewState = {
@@ -129,14 +139,30 @@ const defaultViewState: IssueViewState = {
   nestingEnabled: true,
   collapsedGroups: [],
   collapsedParents: [],
+  boardCardDensity: "auto",
+  boardColdLaneMode: "auto",
 };
+
+function normalizeBoardCardDensity(value: unknown): BoardCardDensity {
+  return value === "compact" || value === "comfortable" || value === "auto" ? value : "auto";
+}
+
+function normalizeBoardColdLaneMode(value: unknown): BoardColdLaneMode {
+  return value === "collapsed" || value === "expanded" || value === "auto" ? value : "auto";
+}
 
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...defaultViewState, ...parsed, ...normalizeIssueFilterState(parsed) };
+      return {
+        ...defaultViewState,
+        ...parsed,
+        ...normalizeIssueFilterState(parsed),
+        boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
+        boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
+      };
     }
   } catch { /* ignore */ }
   return { ...defaultViewState };
@@ -960,6 +986,19 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
+  const boardCompactCards =
+    viewState.boardCardDensity === "compact"
+    || (viewState.boardCardDensity === "auto" && boardHighVolume);
+  const boardCollapsedStatuses = useMemo(
+    () =>
+      viewState.boardColdLaneMode === "collapsed"
+      || (viewState.boardColdLaneMode === "auto" && boardHighVolume)
+        ? [...KANBAN_COLD_STATUSES]
+        : [],
+    [boardHighVolume, viewState.boardColdLaneMode],
+  );
+  const boardDensityCustomized = viewState.boardCardDensity !== "auto" || viewState.boardColdLaneMode !== "auto";
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -1225,6 +1264,42 @@ export function IssuesList({
             </Button>
           )}
 
+          {viewState.viewMode === "board" && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", boardCompactCards && "bg-accent")}
+                onClick={() => updateView({ boardCardDensity: boardCompactCards ? "comfortable" : "compact" })}
+                title={boardCompactCards ? "Use comfortable cards" : "Use compact cards"}
+              >
+                <ChevronsDownUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", boardCollapsedStatuses.length > 0 && "bg-accent")}
+                onClick={() => updateView({ boardColdLaneMode: boardCollapsedStatuses.length > 0 ? "expanded" : "collapsed" })}
+                title={boardCollapsedStatuses.length > 0 ? "Expand cold lanes" : "Collapse cold lanes"}
+              >
+                <PanelTopClose className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => updateView({ boardCardDensity: "auto", boardColdLaneMode: "auto" })}
+                disabled={!boardDensityCustomized}
+                title="Reset board density"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
+
           <IssueColumnPicker
             availableColumns={availableIssueColumns}
             visibleColumnSet={visibleIssueColumnSet}
@@ -1354,6 +1429,10 @@ export function IssuesList({
           issues={filtered}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          compactCards={boardCompactCards}
+          collapsedStatuses={boardCollapsedStatuses}
+          initialVisibleCount={KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT}
+          revealIncrement={KANBAN_COLUMN_REVEAL_INCREMENT}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
