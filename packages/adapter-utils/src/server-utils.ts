@@ -885,6 +885,79 @@ export function applyPaperclipWorkspaceEnv(
   return env;
 }
 
+export function shapePaperclipWorkspaceEnvForExecution(input: {
+  workspaceCwd?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const workspaceCwd =
+    typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+      ? input.workspaceCwd.trim()
+      : null;
+  const workspaceWorktreePath =
+    typeof input.workspaceWorktreePath === "string" && input.workspaceWorktreePath.trim().length > 0
+      ? input.workspaceWorktreePath.trim()
+      : null;
+  const workspaceHints = Array.isArray(input.workspaceHints) ? input.workspaceHints : [];
+
+  if (!input.executionTargetIsRemote) {
+    return {
+      workspaceCwd,
+      workspaceWorktreePath,
+      workspaceHints,
+    };
+  }
+
+  const executionCwd =
+    typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+      ? input.executionCwd.trim()
+      : null;
+  // On a remote target we must never fall back to the local workspaceCwd —
+  // doing so leaks host paths into the remote env (the exact failure mode
+  // this helper exists to prevent). Callers are expected to resolve
+  // executionCwd via adapterExecutionTargetRemoteCwd before calling this
+  // helper, which always returns a non-empty string. Surface a warning so
+  // future callers don't silently regress to the leak.
+  if (executionCwd === null) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] shapePaperclipWorkspaceEnvForExecution called with executionCwd=null on a remote target; " +
+        "stripping workspaceCwd to avoid leaking local paths into the remote environment.",
+    );
+  }
+  const realizedWorkspaceCwd = executionCwd;
+  const localWorkspaceCwd = workspaceCwd ? path.resolve(workspaceCwd) : null;
+  const shapedWorkspaceHints = workspaceHints.map((hint) => {
+    const nextHint = { ...hint };
+    const hintCwd = typeof nextHint.cwd === "string" ? nextHint.cwd.trim() : "";
+    if (!hintCwd) return nextHint;
+
+    if (localWorkspaceCwd && path.resolve(hintCwd) === localWorkspaceCwd) {
+      if (realizedWorkspaceCwd) {
+        nextHint.cwd = realizedWorkspaceCwd;
+      } else {
+        delete nextHint.cwd;
+      }
+      return nextHint;
+    }
+
+    delete nextHint.cwd;
+    return nextHint;
+  });
+
+  return {
+    workspaceCwd: realizedWorkspaceCwd,
+    workspaceWorktreePath: null,
+    workspaceHints: shapedWorkspaceHints,
+  };
+}
+
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
@@ -966,6 +1039,56 @@ function quoteForCmd(arg: string) {
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+const SSH_REMOTE_ENV_IDENTITY_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "PWD",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "NVM_DIR",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+]);
+
+function readEnvValueCaseInsensitive(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  const direct = env[key];
+  if (typeof direct === "string") return direct;
+  const upper = key.toUpperCase();
+  for (const [candidateKey, candidateValue] of Object.entries(env)) {
+    if (candidateKey.toUpperCase() === upper && typeof candidateValue === "string") {
+      return candidateValue;
+    }
+  }
+  return undefined;
+}
+
+export function sanitizeSshRemoteEnv(
+  env: Record<string, string>,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const normalizedKey = key.toUpperCase();
+    if (!SSH_REMOTE_ENV_IDENTITY_KEYS.has(normalizedKey)) {
+      sanitized[key] = value;
+      continue;
+    }
+    const inheritedValue = readEnvValueCaseInsensitive(inheritedEnv, key);
+    if (typeof inheritedValue === "string" && inheritedValue === value) {
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
   return path.join(fallbackRoot, "System32", "cmd.exe");
@@ -991,9 +1114,9 @@ async function resolveSpawnTarget(
       spec: remote,
       command,
       args,
-      env: Object.fromEntries(
+      env: sanitizeSshRemoteEnv(Object.fromEntries(
         Object.entries(options.remoteEnv ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-      ),
+      )),
     });
     return {
       command: sshResolved,

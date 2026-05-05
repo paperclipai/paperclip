@@ -12,6 +12,8 @@ import {
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
+  sanitizeSshRemoteEnv,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
 
@@ -57,6 +59,86 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
     );
+  });
+});
+
+describe("sanitizeSshRemoteEnv", () => {
+  it("drops inherited host shell identity variables for SSH remote execution", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          NVM_DIR: "/Users/local/.nvm",
+          TMPDIR: "/var/folders/local/T",
+          XDG_CONFIG_HOME: "/Users/local/.config",
+          SAFE_VALUE: "visible",
+        },
+        {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          NVM_DIR: "/Users/local/.nvm",
+          TMPDIR: "/var/folders/local/T",
+          XDG_CONFIG_HOME: "/Users/local/.config",
+        },
+      ),
+    ).toEqual({
+      SAFE_VALUE: "visible",
+    });
+  });
+
+  it("preserves explicit remote overrides even for filtered key names", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/custom/remote/bin:/usr/bin",
+          HOME: "/home/agent",
+          TMPDIR: "/tmp",
+          SAFE_VALUE: "visible",
+        },
+        {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          TMPDIR: "/var/folders/local/T",
+        },
+      ),
+    ).toEqual({
+      PATH: "/custom/remote/bin:/usr/bin",
+      HOME: "/home/agent",
+      TMPDIR: "/tmp",
+      SAFE_VALUE: "visible",
+    });
+  });
+
+  it("filters identity keys via case-insensitive match against the inherited env", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          // Caller passed PATH in upper case while the inherited (Windows-style)
+          // host env exposes it as Path. The lookup must still treat them as
+          // equal so the leaked host PATH gets stripped.
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/host/home",
+        },
+        {
+          Path: "/host/bin:/usr/bin",
+          home: "/host/home",
+        },
+      ),
+    ).toEqual({});
+  });
+
+  it("preserves explicitly-set identity keys when the inherited env disagrees in case but not in value", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          PATH: "/explicit/remote/bin",
+        },
+        {
+          Path: "/host/bin:/usr/bin",
+        },
+      ),
+    ).toEqual({ PATH: "/explicit/remote/bin" });
   });
 });
 
@@ -548,6 +630,70 @@ describe("applyPaperclipWorkspaceEnv", () => {
     );
 
     expect(env).toEqual({});
+  });
+});
+
+describe("shapePaperclipWorkspaceEnvForExecution", () => {
+  it("rewrites workspace env paths for remote execution", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/tmp/workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-2",
+          cwd: "/tmp/other-workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-3",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/remote/workspace",
+      workspaceWorktreePath: null,
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/remote/workspace",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-2",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+        {
+          workspaceId: "workspace-3",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+        },
+      ],
+    });
+  });
+
+  it("leaves local execution workspace paths unchanged", () => {
+    const workspaceHints = [{ workspaceId: "workspace-1", cwd: "/tmp/workspace" }];
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints,
+      executionTargetIsRemote: false,
+      executionCwd: "/remote/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints,
+    });
   });
 });
 

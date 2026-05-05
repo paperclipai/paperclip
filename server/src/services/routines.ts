@@ -10,6 +10,8 @@ import {
   issueInboxArchives,
   issueReadStates,
   issues,
+  pluginManagedResources,
+  plugins,
   projects,
   routineRuns,
   routines,
@@ -21,6 +23,7 @@ import type {
   Routine,
   RoutineDetail,
   RoutineListItem,
+  RoutineManagedByPlugin,
   RoutineRunSummary,
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
@@ -34,6 +37,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
@@ -354,6 +358,16 @@ function createRoutineDispatchFingerprint(input: {
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
+function readManagedRoutineIssueTemplate(defaultsJson: Record<string, unknown> | null | undefined) {
+  const value = defaultsJson?.issueTemplate;
+  if (!isPlainRecord(value)) return null;
+  return {
+    surfaceVisibility: typeof value.surfaceVisibility === "string" ? value.surfaceVisibility : null,
+    originId: typeof value.originId === "string" && value.originId.trim() ? value.originId.trim() : null,
+    billingCode: typeof value.billingCode === "string" && value.billingCode.trim() ? value.billingCode.trim() : null,
+  };
+}
+
 function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
   return (routine.variables ?? []).some((variable) => variable.name === WORKSPACE_BRANCH_ROUTINE_VARIABLE)
     || extractRoutineVariableNames([routine.title, routine.description]).includes(WORKSPACE_BRANCH_ROUTINE_VARIABLE);
@@ -378,6 +392,63 @@ export function routineService(
       .from(routines)
       .where(eq(routines.id, id))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
+    return db
+      .select({
+        pluginKey: pluginManagedResources.pluginKey,
+        defaultsJson: pluginManagedResources.defaultsJson,
+        manifestJson: plugins.manifestJson,
+      })
+      .from(pluginManagedResources)
+      .innerJoin(plugins, eq(pluginManagedResources.pluginId, plugins.id))
+      .where(
+        and(
+          eq(pluginManagedResources.companyId, routine.companyId),
+          eq(pluginManagedResources.resourceKind, "routine"),
+          eq(pluginManagedResources.resourceId, routine.id),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function listManagedRoutineMetadata(routineIds: string[]) {
+    if (routineIds.length === 0) return new Map<string, RoutineManagedByPlugin>();
+    const rows = await db
+      .select({
+        id: pluginManagedResources.id,
+        pluginId: pluginManagedResources.pluginId,
+        pluginKey: pluginManagedResources.pluginKey,
+        manifestJson: plugins.manifestJson,
+        resourceKey: pluginManagedResources.resourceKey,
+        resourceId: pluginManagedResources.resourceId,
+        defaultsJson: pluginManagedResources.defaultsJson,
+        createdAt: pluginManagedResources.createdAt,
+        updatedAt: pluginManagedResources.updatedAt,
+      })
+      .from(pluginManagedResources)
+      .innerJoin(plugins, eq(pluginManagedResources.pluginId, plugins.id))
+      .where(
+        and(
+          eq(pluginManagedResources.resourceKind, "routine"),
+          inArray(pluginManagedResources.resourceId, routineIds),
+        ),
+      );
+    return new Map(rows.map((row) => [
+      row.resourceId,
+      {
+        id: row.id,
+        pluginId: row.pluginId,
+        pluginKey: row.pluginKey,
+        pluginDisplayName: row.manifestJson.displayName ?? row.pluginKey,
+        resourceKind: "routine",
+        resourceKey: row.resourceKey,
+        defaultsJson: row.defaultsJson,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      } satisfies RoutineManagedByPlugin,
+    ]));
   }
 
   async function getTriggerById(id: string) {
@@ -664,8 +735,11 @@ export function routineService(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
     dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
   ) {
     const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
     const executionBoundIssue = await executor
       .select()
       .from(issues)
@@ -679,8 +753,8 @@ export function routineService(
       .where(
         and(
           eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, "routine_execution"),
-          eq(issues.originId, routine.id),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           isNull(issues.hiddenAt),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
@@ -705,8 +779,8 @@ export function routineService(
       .where(
         and(
           eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, "routine_execution"),
-          eq(issues.originId, routine.id),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           isNull(issues.hiddenAt),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
@@ -844,6 +918,13 @@ export function routineService(
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
+    const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
+    const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
+      ? pluginOperationIssueOriginKind(managedRoutineBinding.pluginKey)
+      : "routine_execution";
+    const issueOriginId = managedIssueTemplate?.originId ?? input.routine.id;
+    const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
@@ -902,7 +983,10 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          kind: issueOriginKind,
+          id: issueOriginId,
+        });
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
@@ -942,10 +1026,11 @@ export function routineService(
             assigneeAgentId,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
-            originKind: "routine_execution",
-            originId: input.routine.id,
+            originKind: issueOriginKind,
+            originId: issueOriginId,
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
+            billingCode: issueBillingCode,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -962,7 +1047,10 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+            kind: issueOriginKind,
+            id: issueOriginId,
+          });
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
@@ -1084,13 +1172,15 @@ export function routineService(
         .where(and(...conditions))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
-      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine] = await Promise.all([
+      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine] = await Promise.all([
         listTriggersForRoutineIds(companyId, routineIds),
         listLatestRunByRoutineIds(companyId, routineIds),
         listLiveIssueByRoutineIds(companyId, routineIds),
+        listManagedRoutineMetadata(routineIds),
       ]);
       return rows.map((row) => ({
         ...row,
+        managedByPlugin: managedByRoutine.get(row.id) ?? null,
         triggers: (triggersByRoutine.get(row.id) ?? []).map((trigger) => ({
           id: trigger.id,
           kind: trigger.kind as RoutineListItem["triggers"][number]["kind"],
@@ -1110,7 +1200,7 @@ export function routineService(
     getDetail: async (id: string): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;
-      const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
+      const [project, assignee, parentIssue, triggers, recentRuns, activeIssue, managedByRoutine] = await Promise.all([
         row.projectId
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
           : null,
@@ -1189,10 +1279,12 @@ export function routineService(
             })),
           ),
         findLiveExecutionIssue(row),
+        listManagedRoutineMetadata([row.id]),
       ]);
 
       return {
         ...row,
+        managedByPlugin: managedByRoutine.get(row.id) ?? null,
         project,
         assignee,
         parentIssue,
