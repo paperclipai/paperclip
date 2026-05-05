@@ -91,6 +91,12 @@ const createRoutine: BuilderTool = defineMutationTool({
         throw new Error("Project not found");
       }
     }
+    if (payload.assigneeAgentId) {
+      const agent = await agentService(ctx.db).getById(String(payload.assigneeAgentId));
+      if (!agent || agent.companyId !== ctx.companyId) {
+        throw new Error("Assignee agent not found");
+      }
+    }
     const created = await routineService(ctx.db).create(
       ctx.companyId,
       {
@@ -168,6 +174,14 @@ const updateRoutine: BuilderTool = defineMutationTool({
     const existing = await routineService(ctx.db).get(String(payload.routineId));
     if (!existing || existing.companyId !== ctx.companyId) {
       throw new Error("Routine not found");
+    }
+    // Verify assigneeAgentId if present in patch
+    const patch = payload.patch as Record<string, unknown>;
+    if (patch.assigneeAgentId) {
+      const agent = await agentService(ctx.db).getById(String(patch.assigneeAgentId));
+      if (!agent || agent.companyId !== ctx.companyId) {
+        throw new Error("Assignee agent not found");
+      }
     }
     const updated = await routineService(ctx.db).update(
       String(payload.routineId),
@@ -345,6 +359,12 @@ const createIssue: BuilderTool = defineMutationTool({
         throw new Error("Project not found");
       }
     }
+    if (payload.assigneeAgentId) {
+      const agent = await agentService(ctx.db).getById(String(payload.assigneeAgentId));
+      if (!agent || agent.companyId !== ctx.companyId) {
+        throw new Error("Assignee agent not found");
+      }
+    }
     const created = await issueService(ctx.db).create(ctx.companyId, {
       title: String(payload.title),
       description: (payload.description as string | null) ?? null,
@@ -414,6 +434,14 @@ const updateIssue: BuilderTool = defineMutationTool({
     const existing = await issueService(ctx.db).getById(String(payload.issueId));
     if (!existing || existing.companyId !== ctx.companyId) {
       throw new Error("Issue not found");
+    }
+    // Verify assigneeAgentId if present in patch
+    const patch = payload.patch as Record<string, unknown>;
+    if (patch.assigneeAgentId) {
+      const agent = await agentService(ctx.db).getById(String(patch.assigneeAgentId));
+      if (!agent || agent.companyId !== ctx.companyId) {
+        throw new Error("Assignee agent not found");
+      }
     }
     const result = (await issueService(ctx.db).update(
       String(payload.issueId),

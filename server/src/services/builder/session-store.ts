@@ -154,17 +154,7 @@ export function builderSessionStore(db: Db) {
         .where(eq(builderMessages.sessionId, sessionId))
         .orderBy(asc(builderMessages.sequence));
       
-      // Fetch proposals to include status in toolResults
-      const proposals = await db
-        .select()
-        .from(builderProposals)
-        .where(eq(builderProposals.sessionId, sessionId));
-      
-      const proposalStatusMap = new Map<string, BuilderProposalStatus>(
-        proposals.map((p) => [p.id, p.status as BuilderProposalStatus])
-      );
-      
-      return rows.map((msg) => toMessage(msg, proposalStatusMap));
+      return rows.map((msg) => toMessage(msg));
     },
 
     createSession: async (input: {
