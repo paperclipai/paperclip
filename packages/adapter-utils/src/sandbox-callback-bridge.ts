@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -145,6 +145,13 @@ export interface SandboxCallbackBridgeQueueClient {
   listJsonFiles(remotePath: string): Promise<string[]>;
   readTextFile(remotePath: string): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
+  writeResponseFile?(
+    responsePath: string,
+    body: string,
+    options?: {
+      requestPath?: string | null;
+    },
+  ): Promise<{ wrote: boolean }>;
   rename(fromPath: string, toPath: string): Promise<void>;
   remove(remotePath: string): Promise<void>;
 }
@@ -196,12 +203,14 @@ async function runShell(
   script: string,
   timeoutMs: number,
   shellCommand: "bash" | "sh" = "sh",
+  stdin?: string,
 ): Promise<RunProcessResult> {
   return await runner.execute({
     command: shellCommand,
     args: ["-lc", script],
     cwd,
     timeoutMs,
+    stdin,
   });
 }
 
@@ -216,6 +225,43 @@ function base64Chunks(body: string): string[] {
     out.push(body.slice(offset, offset + REMOTE_WRITE_BASE64_CHUNK_SIZE));
   }
   return out;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  return await fs.stat(filePath).then(() => true).catch(() => false);
+}
+
+function buildRemotePidLockAcquireScript(lockDirExpr: string, timeoutMessage: string): string[] {
+  return [
+    "attempts=0",
+    `while ! mkdir ${lockDirExpr} 2>/dev/null; do`,
+    "  holder_pid=\"\"",
+    `  if [ -s ${lockDirExpr}/pid ]; then`,
+    `    holder_pid="$(cat ${lockDirExpr}/pid 2>/dev/null || true)"`,
+    "  fi",
+    "  if [ -n \"$holder_pid\" ] && ! kill -0 \"$holder_pid\" 2>/dev/null; then",
+    `    rm -rf ${lockDirExpr}`,
+    "    continue",
+    "  fi",
+    "  attempts=$((attempts + 1))",
+    "  if [ \"$attempts\" -ge 600 ]; then",
+    `    echo ${shellQuote(timeoutMessage)} >&2`,
+    "    exit 1",
+    "  fi",
+    "  sleep 0.05",
+    "done",
+    `printf '%s\\n' "$$" > ${lockDirExpr}/pid`,
+  ];
+}
+
+function buildRemotePidLockCleanupScript(lockDirExpr: string, cleanupLines: string[]): string[] {
+  return [
+    "cleanup() {",
+    ...cleanupLines.map((line) => `  ${line}`),
+    `  rm -rf ${lockDirExpr}`,
+    "}",
+    "trap cleanup EXIT INT TERM",
+  ];
 }
 
 export function createSandboxCallbackBridgeToken(bytes = DEFAULT_BRIDGE_TOKEN_BYTES): string {
@@ -315,6 +361,80 @@ export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallb
       await fs.mkdir(path.posix.dirname(remotePath), { recursive: true });
       await fs.writeFile(remotePath, body, "utf8");
     },
+    writeResponseFile: async (responsePath, body, options = {}) => {
+      const responseDir = path.posix.dirname(responsePath);
+      const tempPath = `${responsePath}.tmp`;
+      const lockDir = `${responsePath}.paperclip-write.lock`;
+      const lockPidFile = `${lockDir}/pid`;
+      if (options.requestPath) {
+        const requestExists = await pathExists(options.requestPath);
+        if (!requestExists) {
+          return { wrote: false };
+        }
+      }
+      await fs.mkdir(responseDir, { recursive: true });
+      // PID-liveness mkdir-mutex: mirrors the shell-based bridge mutex so a
+      // crashed holder (SIGKILL / OOM) doesn't deadlock subsequent writers
+      // for the full timeout window.
+      let attempts = 0;
+      while (true) {
+        try {
+          await fs.mkdir(lockDir);
+          await fs.writeFile(lockPidFile, `${process.pid}\n`, "utf8");
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException)?.code;
+          if (code !== "EEXIST") {
+            throw error;
+          }
+          let holderPid: number | null = null;
+          try {
+            const raw = await fs.readFile(lockPidFile, "utf8");
+            const parsed = Number.parseInt(raw.trim(), 10);
+            if (Number.isFinite(parsed) && parsed > 0) holderPid = parsed;
+          } catch {
+            // pid file missing or unreadable — treat as stale lock
+          }
+          let holderAlive = false;
+          if (holderPid !== null) {
+            try {
+              process.kill(holderPid, 0);
+              holderAlive = true;
+            } catch {
+              holderAlive = false;
+            }
+          }
+          if (!holderAlive) {
+            await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+            continue;
+          }
+          attempts += 1;
+          if (attempts >= 600) {
+            throw new Error("Timed out acquiring sandbox callback bridge response lock.");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+
+      try {
+        if (options.requestPath) {
+          const requestExists = await pathExists(options.requestPath);
+          if (!requestExists) {
+            return { wrote: false };
+          }
+        }
+        const responseExists = await pathExists(responsePath);
+        if (responseExists) {
+          return { wrote: false };
+        }
+        await fs.writeFile(tempPath, body, "utf8");
+        await fs.rename(tempPath, responsePath);
+        return { wrote: true };
+      } finally {
+        await fs.rm(tempPath, { force: true }).catch(() => undefined);
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    },
     rename: async (fromPath, toPath) => {
       await fs.mkdir(path.posix.dirname(toPath), { recursive: true });
       await fs.rename(fromPath, toPath);
@@ -385,6 +505,53 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
         `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
       );
     },
+    writeResponseFile: async (responsePath, body, options = {}) => {
+      const responseDir = path.posix.dirname(responsePath);
+      const tempPath = `${responsePath}.tmp`;
+      const lockDir = `${responsePath}.paperclip-write.lock`;
+      const requestPath = options.requestPath?.trim() || "";
+      const result = await runShell(
+        input.runner,
+        input.remoteCwd,
+        [
+          "set -eu",
+          `response_dir=${shellQuote(responseDir)}`,
+          `response_path=${shellQuote(responsePath)}`,
+          `temp_path=${shellQuote(tempPath)}`,
+          `lock_dir=${shellQuote(lockDir)}`,
+          `request_path=${shellQuote(requestPath)}`,
+          "mkdir -p \"$response_dir\"",
+          ...buildRemotePidLockAcquireScript("\"$lock_dir\"", "Timed out acquiring sandbox callback bridge response lock."),
+          ...buildRemotePidLockCleanupScript("\"$lock_dir\"", [
+            "rm -f \"$temp_path\"",
+          ]),
+          "if [ -n \"$request_path\" ] && [ ! -f \"$request_path\" ]; then",
+          "  printf '{\"wrote\":false}\\n'",
+          "  exit 0",
+          "fi",
+          "if [ -f \"$response_path\" ]; then",
+          "  printf '{\"wrote\":false}\\n'",
+          "  exit 0",
+          "fi",
+          "cat > \"$temp_path\"",
+          "mv \"$temp_path\" \"$response_path\"",
+          "printf '{\"wrote\":true}\\n'",
+        ].join("\n"),
+        timeoutMs,
+        shellCommand,
+        body,
+      );
+      requireSuccessfulResult(`write bridge response ${responsePath}`, result);
+      try {
+        return {
+          wrote: JSON.parse(result.stdout.trim())?.wrote === true,
+        };
+      } catch (error) {
+        throw new Error(
+          `Sandbox callback bridge response write wrote invalid result JSON: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    },
     rename: async (fromPath, toPath) => {
       await runChecked(
         `rename ${fromPath}`,
@@ -399,11 +566,17 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
 
 async function writeBridgeResponse(
   client: SandboxCallbackBridgeQueueClient,
+  requestPath: string,
   responsePath: string,
   response: SandboxCallbackBridgeResponse,
 ) {
+  const body = `${JSON.stringify(response)}\n`;
+  if (client.writeResponseFile) {
+    await client.writeResponseFile(responsePath, body, { requestPath });
+    return;
+  }
   const tempPath = `${responsePath}.tmp`;
-  await client.writeTextFile(tempPath, `${JSON.stringify(response)}\n`);
+  await client.writeTextFile(tempPath, body);
   await client.rename(tempPath, responsePath);
 }
 
@@ -447,7 +620,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
     } catch {
       const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
-      await writeBridgeResponse(input.client, responsePath, {
+      await writeBridgeResponse(input.client, requestPath, responsePath, {
         id: requestId,
         status: 400,
         headers: { "content-type": "application/json" },
@@ -460,7 +633,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
 
     const denialReason = await authorizeRequest(request);
     if (denialReason) {
-      await writeBridgeResponse(input.client, responsePath, {
+      await writeBridgeResponse(input.client, requestPath, responsePath, {
         id: request.id,
         status: 403,
         headers: { "content-type": "application/json" },
@@ -477,7 +650,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
         throw new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
       }
-      await writeBridgeResponse(input.client, responsePath, {
+      await writeBridgeResponse(input.client, requestPath, responsePath, {
         id: request.id,
         status: result.status,
         headers: result.headers ?? {},
@@ -488,7 +661,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       console.warn(
         `[paperclip] sandbox callback bridge handler failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`,
       );
-      await writeBridgeResponse(input.client, responsePath, {
+      await writeBridgeResponse(input.client, requestPath, responsePath, {
         id: request.id,
         status: 502,
         headers: { "content-type": "application/json" },
@@ -511,7 +684,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       try {
         const raw = await input.client.readTextFile(requestPath);
         const parsed = JSON.parse(raw) as Partial<SandboxCallbackBridgeRequest>;
-        await writeBridgeResponse(input.client, responsePath, {
+        await writeBridgeResponse(input.client, requestPath, responsePath, {
           id: typeof parsed.id === "string" && parsed.id.length > 0 ? parsed.id : requestId,
           status: 503,
           headers: { "content-type": "application/json" },
@@ -578,6 +751,99 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
 }
 
+export async function syncSandboxCallbackBridgeEntrypoint(input: {
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  assetRemoteDir: string;
+  bridgeAsset: SandboxCallbackBridgeAsset;
+  timeoutMs?: number | null;
+  shellCommand?: "bash" | "sh" | null;
+}): Promise<{ remoteEntrypoint: string; sha256: string; uploaded: boolean }> {
+  const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
+  const shellCommand = preferredShellForSandbox(input.shellCommand);
+  const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
+  const remoteEntrypointPartial = `${remoteEntrypoint}.partial`;
+  const remoteUploadPath = `${remoteEntrypoint}.paperclip-upload.b64`;
+  const remoteLockDir = path.posix.join(input.assetRemoteDir, ".paperclip-bridge-upload.lock");
+  const entrypointSource = await fs.readFile(input.bridgeAsset.entrypoint, "utf8");
+  const entrypointBase64 = toBuffer(Buffer.from(entrypointSource, "utf8")).toString("base64");
+  const sha256 = createHash("sha256").update(entrypointSource, "utf8").digest("hex");
+
+  const syncResult = await runShell(
+    input.runner,
+    input.remoteCwd,
+    [
+      "set -eu",
+      `remote_dir=${shellQuote(input.assetRemoteDir)}`,
+      `remote_path=${shellQuote(remoteEntrypoint)}`,
+      `remote_partial=${shellQuote(remoteEntrypointPartial)}`,
+      `remote_upload=${shellQuote(remoteUploadPath)}`,
+      `lock_dir=${shellQuote(remoteLockDir)}`,
+      `expected_sha=${shellQuote(sha256)}`,
+      "hash_file() {",
+      "  if command -v sha256sum >/dev/null 2>&1; then",
+      "    sha256sum \"$1\" | awk '{print $1}'",
+      "    return 0",
+      "  fi",
+      "  if command -v shasum >/dev/null 2>&1; then",
+      "    shasum -a 256 \"$1\" | awk '{print $1}'",
+      "    return 0",
+      "  fi",
+      "  return 127",
+      "}",
+      "mkdir -p \"$remote_dir\"",
+      ...buildRemotePidLockAcquireScript("\"$lock_dir\"", "Timed out acquiring sandbox callback bridge upload lock."),
+      ...buildRemotePidLockCleanupScript("\"$lock_dir\"", [
+        "rm -f \"$remote_upload\" \"$remote_partial\"",
+      ]),
+      "current_sha=\"\"",
+      "if [ -f \"$remote_path\" ]; then",
+      "  current_sha=\"$(hash_file \"$remote_path\" 2>/dev/null)\" || current_sha=\"\"",
+      "fi",
+      "if [ -n \"$current_sha\" ] && [ \"$current_sha\" = \"$expected_sha\" ]; then",
+      "  printf '{\"uploaded\":false}\\n'",
+      "  exit 0",
+      "fi",
+      "rm -f \"$remote_upload\" \"$remote_partial\"",
+      "cat > \"$remote_upload\"",
+      "base64 -d < \"$remote_upload\" > \"$remote_partial\"",
+      // Verify upload integrity. If neither sha256sum nor shasum is on PATH
+      // (minimal Alpine/scratch images), surface the missing-tool error
+      // instead of a misleading "sha mismatch" — the verify step is then
+      // best-effort and we trust base64-decode + atomic rename below.
+      "if partial_sha=\"$(hash_file \"$remote_partial\" 2>/dev/null)\"; then",
+      "  if [ \"$partial_sha\" != \"$expected_sha\" ]; then",
+      "    echo \"Sandbox callback bridge entrypoint upload sha mismatch.\" >&2",
+      "    exit 1",
+      "  fi",
+      "else",
+      "  echo \"Sandbox callback bridge entrypoint sha verify skipped: no sha256sum/shasum on remote.\" >&2",
+      "fi",
+      "mv \"$remote_partial\" \"$remote_path\"",
+      "printf '{\"uploaded\":true}\\n'",
+    ].join("\n"),
+    timeoutMs,
+    shellCommand,
+    entrypointBase64,
+  );
+  requireSuccessfulResult("sync sandbox callback bridge entrypoint", syncResult);
+
+  let uploaded = false;
+  try {
+    uploaded = JSON.parse(syncResult.stdout.trim())?.uploaded === true;
+  } catch (error) {
+    throw new Error(
+      `Sandbox callback bridge sync wrote invalid result JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return {
+    remoteEntrypoint,
+    sha256,
+    uploaded,
+  };
+}
+
 export async function startSandboxCallbackBridgeServer(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
@@ -598,17 +864,17 @@ export async function startSandboxCallbackBridgeServer(input: {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
   const shellCommand = preferredShellForSandbox(input.shellCommand);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
-  const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
+  let remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
   if (input.bridgeAsset) {
-    const assetClient = createCommandManagedSandboxCallbackBridgeQueueClient({
+    const assetSync = await syncSandboxCallbackBridgeEntrypoint({
       runner: input.runner,
       remoteCwd: input.remoteCwd,
+      assetRemoteDir: input.assetRemoteDir,
+      bridgeAsset: input.bridgeAsset,
       timeoutMs,
       shellCommand,
     });
-    await assetClient.makeDir(input.assetRemoteDir);
-    const entrypointSource = await fs.readFile(input.bridgeAsset.entrypoint, "utf8");
-    await assetClient.writeTextFile(remoteEntrypoint, entrypointSource);
+    remoteEntrypoint = assetSync.remoteEntrypoint;
   }
   const env = buildSandboxCallbackBridgeEnv({
     queueDir: input.queueDir,
