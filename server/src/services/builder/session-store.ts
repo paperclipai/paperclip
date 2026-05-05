@@ -167,30 +167,47 @@ export function builderSessionStore(db: Db) {
       companyId: string,
       input: AppendMessageInput,
     ): Promise<BuilderMessage> => {
-      // Compute next sequence atomically (simple read-then-insert is fine here
-      // because Builder sessions are single-writer per request).
-      const last = await db
-        .select({ sequence: builderMessages.sequence })
-        .from(builderMessages)
-        .where(eq(builderMessages.sessionId, sessionId))
-        .orderBy(desc(builderMessages.sequence))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      const sequence = (last?.sequence ?? -1) + 1;
-      const [row] = await db
-        .insert(builderMessages)
-        .values({
-          sessionId,
-          companyId,
-          sequence,
-          role: input.role,
-          content: input.content as Record<string, unknown>,
-          inputTokens: input.inputTokens,
-          outputTokens: input.outputTokens,
-          costCents: input.costCents,
-        })
-        .returning();
-      return toMessage(row);
+      // Retry loop for sequence race: if two concurrent requests compute same
+      // next value, one insert succeeds, other hits unique constraint violation.
+      // Retry with fresh max once.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const last = await db
+          .select({ sequence: builderMessages.sequence })
+          .from(builderMessages)
+          .where(eq(builderMessages.sessionId, sessionId))
+          .orderBy(desc(builderMessages.sequence))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const sequence = (last?.sequence ?? -1) + 1;
+        try {
+          const [row] = await db
+            .insert(builderMessages)
+            .values({
+              sessionId,
+              companyId,
+              sequence,
+              role: input.role,
+              content: input.content as Record<string, unknown>,
+              inputTokens: input.inputTokens,
+              outputTokens: input.outputTokens,
+              costCents: input.costCents,
+            })
+            .returning();
+          return toMessage(row);
+        } catch (err) {
+          // Unique constraint violation on (session_id, sequence) → retry once
+          if (
+            attempt === 0 &&
+            err instanceof Error &&
+            "code" in err &&
+            err.code === "23505"
+          ) {
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new Error("Failed to append message after retry");
     },
 
     applyTotals: async (

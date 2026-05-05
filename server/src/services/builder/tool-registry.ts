@@ -86,8 +86,16 @@ export function resolveBuilderTool(
 ): BuilderTool | null {
   const direct = catalog.get(requestedName);
   if (direct) return direct;
+  // Bare-name fallback: collect all matching tools. If multiple match, return
+  // null to prevent silently shadowing extensions by core tools.
+  const matches: BuilderTool[] = [];
   for (const tool of catalog.values()) {
-    if (tool.name === requestedName) return tool;
+    if (tool.name === requestedName) matches.push(tool);
+  }
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    // Ambiguous: multiple tools share bare name. Caller must use namespaced name.
+    return null;
   }
   return null;
 }

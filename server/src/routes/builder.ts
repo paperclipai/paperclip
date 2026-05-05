@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { builderService } from "../services/builder/index.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { logActivity } from "../services/activity-log.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, notFound } from "../errors.js";
@@ -36,6 +37,13 @@ function assertBoardActor(req: Request) {
   }
 }
 
+async function assertBuilderEnabled(db: Db) {
+  const experimental = await instanceSettingsService(db).getExperimental();
+  if (!experimental.builderEnabled) {
+    throw notFound("Builder not enabled");
+  }
+}
+
 function actorIdentity(req: Request) {
   if (req.actor.type !== "board") {
     throw forbidden("Builder is board-only in this release");
@@ -54,6 +62,7 @@ export function builderRoutes(db: Db) {
   // ------------------------------------------------------------------------
 
   router.get("/companies/:companyId/builder/settings", async (req, res) => {
+    await assertBuilderEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoardActor(req);
@@ -65,6 +74,7 @@ export function builderRoutes(db: Db) {
     "/companies/:companyId/builder/settings",
     validate(updateBuilderProviderSettingsSchema),
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       assertBoardActor(req);
@@ -94,6 +104,7 @@ export function builderRoutes(db: Db) {
   // ------------------------------------------------------------------------
 
   router.get("/companies/:companyId/builder/tools", async (req, res) => {
+    await assertBuilderEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoardActor(req);
@@ -105,6 +116,7 @@ export function builderRoutes(db: Db) {
   // ------------------------------------------------------------------------
 
   router.get("/companies/:companyId/builder/sessions", async (req, res) => {
+    await assertBuilderEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoardActor(req);
@@ -116,6 +128,7 @@ export function builderRoutes(db: Db) {
     "/companies/:companyId/builder/sessions",
     validate(createBuilderSessionSchema),
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       assertBoardActor(req);
@@ -142,6 +155,7 @@ export function builderRoutes(db: Db) {
   );
 
   router.get("/companies/:companyId/builder/sessions/:sessionId", async (req, res) => {
+    await assertBuilderEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoardActor(req);
@@ -154,6 +168,7 @@ export function builderRoutes(db: Db) {
     "/companies/:companyId/builder/sessions/:sessionId/messages",
     validate(sendBuilderMessageSchema),
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       const sessionId = req.params.sessionId as string;
       assertCompanyAccess(req, companyId);
@@ -195,6 +210,7 @@ export function builderRoutes(db: Db) {
   router.post(
     "/companies/:companyId/builder/sessions/:sessionId/abort",
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       const sessionId = req.params.sessionId as string;
       assertCompanyAccess(req, companyId);
@@ -229,6 +245,7 @@ export function builderRoutes(db: Db) {
     "/companies/:companyId/builder/sessions/:sessionId/messages/stream",
     validate(sendBuilderMessageSchema),
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       const sessionId = req.params.sessionId as string;
       assertCompanyAccess(req, companyId);
@@ -306,6 +323,7 @@ export function builderRoutes(db: Db) {
   // ------------------------------------------------------------------------
 
   router.get("/companies/:companyId/builder/proposals", async (req, res) => {
+    await assertBuilderEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoardActor(req);
@@ -326,6 +344,7 @@ export function builderRoutes(db: Db) {
   router.get(
     "/companies/:companyId/builder/proposals/:proposalId",
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       const proposalId = req.params.proposalId as string;
       assertCompanyAccess(req, companyId);
@@ -340,6 +359,7 @@ export function builderRoutes(db: Db) {
     "/companies/:companyId/builder/proposals/:proposalId/apply",
     validate(applyBuilderProposalSchema),
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       const proposalId = req.params.proposalId as string;
       assertCompanyAccess(req, companyId);
@@ -354,6 +374,7 @@ export function builderRoutes(db: Db) {
     "/companies/:companyId/builder/proposals/:proposalId/reject",
     validate(rejectBuilderProposalSchema),
     async (req, res) => {
+      await assertBuilderEnabled(db);
       const companyId = req.params.companyId as string;
       const proposalId = req.params.proposalId as string;
       assertCompanyAccess(req, companyId);

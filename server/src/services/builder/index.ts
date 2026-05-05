@@ -45,6 +45,12 @@ export function builderService(db: Db) {
           "Builder is not configured for this company. Set provider, model, and API-key secret first.",
         );
       }
+      const apiKey = await settings.resolveApiKey(input.companyId);
+      if (!apiKey) {
+        throw unprocessable(
+          "Builder API key secret is not bound or could not be resolved. Reconfigure provider settings.",
+        );
+      }
       return sessions.createSession({
         companyId: input.companyId,
         createdByUserId: input.createdByUserId,

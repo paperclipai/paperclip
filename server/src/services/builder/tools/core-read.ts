@@ -200,18 +200,7 @@ export function buildCoreReadOnlyTools(db: Db): BuilderTool[] {
       async run(_params, ctx) {
         let overview: unknown = null;
         try {
-          const svc = budgets as unknown as {
-            getOverview?: (id: string) => Promise<unknown>;
-            overview?: (id: string) => Promise<unknown>;
-            list?: (id: string) => Promise<unknown>;
-          };
-          if (typeof svc.getOverview === "function") {
-            overview = await svc.getOverview(ctx.companyId);
-          } else if (typeof svc.overview === "function") {
-            overview = await svc.overview(ctx.companyId);
-          } else if (typeof svc.list === "function") {
-            overview = await svc.list(ctx.companyId);
-          }
+          overview = await budgets.overview(ctx.companyId);
         } catch (err) {
           return {
             ok: false,
