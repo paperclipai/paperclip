@@ -3,6 +3,7 @@ import {
   extractClaudeHardLimitBlock,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -60,6 +61,31 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "5-hour limit reached.",
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT classify the live CLI wording 'You've hit your limit · resets 8pm' as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You've hit your limit · resets 8pm (Europe/Berlin)",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your limit · resets 8pm (Europe/Berlin)",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT classify a stream carrying a rejected rate_limit_event as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        rateLimitInfo: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1778004000 },
       }),
     ).toBe(false);
   });
@@ -129,6 +155,81 @@ describe("extractClaudeHardLimitBlock", () => {
     });
     expect(block?.limitKind).toBe("extra_usage");
     expect(block?.resetsAt).not.toBeNull();
+  });
+
+  it("classifies the live CLI wording 'You've hit your limit · resets 8pm (Europe/Berlin)' as five_hour", () => {
+    const now = new Date("2026-05-05T17:58:37.000Z");
+    const block = extractClaudeHardLimitBlock(
+      { errorMessage: "You've hit your limit · resets 8pm (Europe/Berlin)" },
+      now,
+    );
+    expect(block?.limitKind).toBe("five_hour");
+    expect(block?.modelFamily).toBeNull();
+    expect(block?.resetsAt).toBe("2026-05-05T18:00:00.000Z");
+  });
+
+  it("prefers structured rate_limit_info over text matching", () => {
+    const block = extractClaudeHardLimitBlock({
+      rateLimitInfo: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: 1778004000,
+      },
+      errorMessage: "Some unrelated message that would not match the regex.",
+    });
+    expect(block?.limitKind).toBe("five_hour");
+    expect(block?.modelFamily).toBeNull();
+    expect(block?.resetsAt).toBe("2026-05-05T18:00:00.000Z");
+  });
+
+  it("maps structured seven_day_opus to claude-opus modelFamily", () => {
+    const block = extractClaudeHardLimitBlock({
+      rateLimitInfo: {
+        status: "rejected",
+        rateLimitType: "seven_day_opus",
+        resetsAt: 1778004000,
+      },
+    });
+    expect(block?.limitKind).toBe("seven_day_opus");
+    expect(block?.modelFamily).toBe("claude-opus");
+  });
+
+  it("ignores rate_limit_info when status is allowed (not rejected)", () => {
+    expect(
+      extractClaudeHardLimitBlock({
+        rateLimitInfo: {
+          status: "allow",
+          rateLimitType: "five_hour",
+          resetsAt: 1778004000,
+        },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("parseClaudeStreamJson rate_limit_event extraction", () => {
+  it("captures rate_limit_info from a rejected rate_limit_event in the JSONL stream", () => {
+    const stream = [
+      '{"type":"system","subtype":"init","session_id":"sess-1","model":"claude-sonnet-4-6"}',
+      '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1778004000,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false},"session_id":"sess-1"}',
+      '{"type":"assistant","message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You\'ve hit your limit · resets 8pm (Europe/Berlin)"}]},"session_id":"sess-1","error":"rate_limit"}',
+      '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"duration_ms":475,"result":"You\'ve hit your limit · resets 8pm (Europe/Berlin)","stop_reason":"stop_sequence","session_id":"sess-1","total_cost_usd":0}',
+    ].join("\n");
+    const parsed = parseClaudeStreamJson(stream);
+    expect(parsed.rateLimitInfo).toEqual({
+      status: "rejected",
+      rateLimitType: "five_hour",
+      resetsAt: 1778004000,
+    });
+  });
+
+  it("returns null rateLimitInfo when no rate_limit_event is present", () => {
+    const stream = [
+      '{"type":"system","subtype":"init","session_id":"sess-1","model":"claude-sonnet-4-6"}',
+      '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"sess-1"}',
+    ].join("\n");
+    const parsed = parseClaudeStreamJson(stream);
+    expect(parsed.rateLimitInfo).toBeNull();
   });
 });
 

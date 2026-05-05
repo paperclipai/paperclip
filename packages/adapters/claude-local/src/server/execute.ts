@@ -804,9 +804,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
-      const errorInput = { parsed: null as null, stdout: proc.stdout, stderr: proc.stderr, errorMessage: fallbackErrorMessage };
+      const errorInput = {
+        parsed: null as null,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage: fallbackErrorMessage,
+        rateLimitInfo: parsedStream.rateLimitInfo ?? null,
+      };
       const hardLimitBlock =
-        !loginMeta.requiresLogin && (proc.exitCode ?? 0) !== 0
+        !loginMeta.requiresLogin &&
+        ((proc.exitCode ?? 0) !== 0 || errorInput.rateLimitInfo?.status === "rejected")
           ? extractClaudeHardLimitBlock(errorInput)
           : null;
       const transientUpstream =
@@ -885,7 +892,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
-    const parsedErrorInput = { parsed, stdout: proc.stdout, stderr: proc.stderr, errorMessage };
+    const parsedErrorInput = {
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+      errorMessage,
+      rateLimitInfo: parsedStream.rateLimitInfo ?? null,
+    };
     const hardLimitBlock =
       failed && !loginMeta.requiresLogin
         ? extractClaudeHardLimitBlock(parsedErrorInput)
