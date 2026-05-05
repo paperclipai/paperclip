@@ -14,7 +14,9 @@ const mockDocumentsService = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => ({}),
   agentService: () => ({}),
+  companyService: () => ({}),
   documentService: () => mockDocumentsService,
+  environmentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({}),
   goalService: () => ({}),
@@ -27,7 +29,9 @@ vi.mock("../services/index.js", () => ({
     getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
   }),
   issueApprovalService: () => ({}),
+  issueReferenceService: () => ({}),
   issueService: () => ({}),
+  issueThreadInteractionService: () => ({}),
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
   routineService: () => ({
@@ -99,6 +103,7 @@ describe("GET /companies/:companyId/documents", () => {
       q: undefined,
       updatedAfter: undefined,
       limit: undefined,
+      includeAutoOrigins: false,
     });
   });
 
@@ -111,6 +116,7 @@ describe("GET /companies/:companyId/documents", () => {
         q: "wirex",
         updatedAfter: "2026-04-20T00:00:00Z",
         limit: "25",
+        includeAutoOrigins: "true",
       });
 
     expect(mockDocumentsService.listCompanyDocuments).toHaveBeenCalledWith(companyId, {
@@ -118,6 +124,7 @@ describe("GET /companies/:companyId/documents", () => {
       q: "wirex",
       updatedAfter: new Date("2026-04-20T00:00:00Z"),
       limit: 25,
+      includeAutoOrigins: true,
     });
   });
 
