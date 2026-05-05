@@ -91,7 +91,10 @@ describe("proposalService", () => {
       status: "pending",
     });
 
-    const svc = proposalService({} as unknown as Db);
+    const mockDb = {
+      transaction: vi.fn(async (fn) => fn(mockDb)),
+    } as unknown as Db;
+    const svc = proposalService(mockDb);
     const result = await svc.apply(companyId, "p1", "user-1");
 
     expect(apply).toHaveBeenCalledOnce();
@@ -110,7 +113,10 @@ describe("proposalService", () => {
       status: "pending",
     });
 
-    const svc = proposalService({} as unknown as Db);
+    const mockDb = {
+      transaction: vi.fn(async (fn) => fn(mockDb)),
+    } as unknown as Db;
+    const svc = proposalService(mockDb);
     await expect(svc.apply(companyId, "p2", "user-1")).rejects.toThrow(/No registered applier/);
   });
 
@@ -138,7 +144,10 @@ describe("proposalService", () => {
       status: "pending",
     });
 
-    const svc = proposalService({} as unknown as Db);
+    const mockDb = {
+      transaction: vi.fn(async (fn) => fn(mockDb)),
+    } as unknown as Db;
+    const svc = proposalService(mockDb);
     const result = await svc.reject(companyId, "p3", "user-1");
 
     expect(apply).not.toHaveBeenCalled();
