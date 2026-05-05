@@ -22,6 +22,11 @@ export function isStrandedIssueRecoveryOriginKind(originKind: string | null | un
   return originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 }
 
+/** Stable coalescing fingerprint: one active row per company + source issue (see issues_active_stranded_issue_recovery_uq). Per-run detail stays on originRunId and comments. */
+export function buildStrandedIssueRecoveryFingerprint(companyId: string, sourceIssueId: string) {
+  return [RECOVERY_ORIGIN_KINDS.strandedIssueRecovery, companyId, sourceIssueId].join(":");
+}
+
 export function buildIssueGraphLivenessIncidentKey(input: {
   companyId: string;
   issueId: string;

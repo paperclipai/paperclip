@@ -8,6 +8,7 @@ import {
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
   buildRunLivenessContinuationIdempotencyKey,
+  buildStrandedIssueRecoveryFingerprint,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
   isStrandedIssueRecoveryOriginKind,
@@ -150,5 +151,11 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("uses a stable stranded-issue recovery fingerprint (no per-run segment)", () => {
+    expect(buildStrandedIssueRecoveryFingerprint(companyId, issueId)).toBe(
+      "stranded_issue_recovery:company-1:issue-1",
+    );
   });
 });
