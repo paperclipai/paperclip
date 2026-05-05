@@ -1,0 +1,154 @@
+name: OSV-Scanner
+
+# Scans the workspace `pnpm-lock.yaml` against the OSV vulnerability
+# database. Findings land in the repo's Security tab (Code Scanning >
+# OSV-Scanner) via SARIF upload, and PRs introducing HIGH or CRITICAL
+# vulnerabilities are blocked.
+#
+# This is detection-only — OSV-Scanner does NOT open PRs or modify pins.
+# It reports known CVEs in currently-pinned dependency versions so we can
+# decide when and how to patch on our own schedule.
+#
+# Complements Dependabot (CHG-0001 issue #1): Dependabot opens PRs for
+# advisory-flagged versions on its own cadence; OSV-Scanner runs on every
+# PR/push and reports vulnerable transitives Dependabot may not yet have
+# surfaced.
+#
+# Two jobs:
+#   1. `scan` — runs on every trigger, uploads SARIF to the Security tab,
+#      never fails the run (so pre-existing pinned-but-vulnerable deps
+#      don't block master pushes; triage via Security tab).
+#   2. `pr-severity-gate` — PR-only, fails the PR if any HIGH or CRITICAL
+#      vulnerability is reported in the lockfile. MEDIUM/LOW remain
+#      visible via the SARIF upload from job 1.
+#
+# Mirrors the sibling `hermes-agent-ucpm/.github/workflows/osv-scanner.yml`,
+# pointed at this repo's pnpm workspace lockfile.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - '**/package.json'
+      - '.github/workflows/osv-scanner.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - '**/package.json'
+  schedule:
+    # Weekly scan against master — catches CVEs published after merge for
+    # deps that haven't changed since.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so a new push or PR commit
+# preempts the in-flight scan.
+concurrency:
+  group: osv-scanner-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  # Required by the reusable workflow / SARIF upload to the Security tab.
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  # SARIF upload for all triggers. fail-on-vuln is false so the run
+  # always succeeds; PR severity gating happens in `pr-severity-gate`.
+  scan:
+    name: Scan lockfile (SARIF upload)
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@c51854704019a247608d928f370c98740469d4b5  # v2.3.5
+    with:
+      # The workspace `pnpm-lock.yaml` at the repo root is the single
+      # source of truth for every `package.json` in the repo (server,
+      # ui, cli, packages/*).
+      scan-args: |-
+        --lockfile=pnpm-lock.yaml
+      fail-on-vuln: false
+
+  # PR-only severity gate: fails the PR check if any HIGH or CRITICAL
+  # finding is present in the lockfile. We run osv-scanner ourselves
+  # (rather than rely on the reusable PR workflow) because neither the
+  # reusable workflow nor `osv-reporter` supports a severity threshold,
+  # only a binary fail-on-vuln. Filtering the JSON output by CVSS
+  # severity is the supported way to gate by severity today.
+  pr-severity-gate:
+    name: PR severity gate (HIGH/CRITICAL)
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run osv-scanner (JSON output)
+        id: scan
+        uses: google/osv-scanner-action/osv-scanner-action@7222d1c7ee4f96d71d883e0d3c603f1e1705eca9  # v2.3.5
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output=osv-results.json
+            --lockfile=pnpm-lock.yaml
+
+      - name: Fail on HIGH or CRITICAL findings
+        run: |
+          set -euo pipefail
+          if [ ! -s osv-results.json ]; then
+            echo "No osv-results.json produced — assuming no findings."
+            exit 0
+          fi
+
+          # OSV-scanner groups vulnerabilities and emits a numeric
+          # `groups[].max_severity` (CVSS v3 base score, as a string) per
+          # group. We treat a max_severity >= 7.0 as HIGH or CRITICAL,
+          # matching the standard CVSS v3 severity bands. MEDIUM
+          # (4.0–6.9) and LOW (<4.0) findings are reported via the
+          # SARIF upload from the `scan` job above but do not block the
+          # PR. Empty `max_severity` (some advisories lack a CVSS score)
+          # falls into the "do not block" bucket — the SARIF upload
+          # still surfaces them in the Security tab.
+          mapfile -t severities < <(jq -r '
+            [.results[]?.packages[]?.groups[]?.max_severity // ""]
+            | .[]
+            | select(. != "")
+          ' osv-results.json)
+
+          high_or_crit=0
+          for s in "${severities[@]:-}"; do
+            [ -z "${s}" ] && continue
+            if awk -v v="${s}" 'BEGIN { exit !(v + 0 >= 7.0) }'; then
+              high_or_crit=$((high_or_crit + 1))
+            fi
+          done
+
+          echo "HIGH/CRITICAL findings: ${high_or_crit}"
+          if [ "${high_or_crit}" -gt 0 ]; then
+            echo "::error::Blocking PR — ${high_or_crit} HIGH or CRITICAL OSV finding(s) in pnpm-lock.yaml. See the Security tab for details."
+            jq '[
+              .results[]?.packages[]? as $p
+              | $p.groups[]?
+              | select((.max_severity // "0") | tonumber? // 0 | . >= 7.0)
+              | {
+                  ids: .ids,
+                  max_severity: .max_severity,
+                  package: $p.package.name,
+                  version: $p.package.version
+                }
+            ]' osv-results.json
+            exit 1
+          fi
+
+      - name: Upload PR scan artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-pr-results
+          path: osv-results.json
+          retention-days: 14
