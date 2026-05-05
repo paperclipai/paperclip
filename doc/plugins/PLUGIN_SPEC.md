@@ -27,7 +27,7 @@ Current limitations to keep in mind:
 - Published npm packages are the intended install artifact for deployed plugins.
 - The repo example plugins under `packages/plugins/examples/` are development conveniences. They work from a source checkout and should not be assumed to exist in a generic published build unless they are explicitly shipped with that build.
 - Dynamic plugin install is not yet cloud-ready for horizontally scaled or ephemeral deployments. There is no shared artifact store, install coordination, or cross-node distribution layer yet.
-- The current runtime does not yet ship a real host-provided plugin UI component kit, and it does not support plugin asset uploads/reads. Treat those as future-scope ideas in this spec, not current implementation promises.
+- The current runtime ships a small host-provided plugin UI component kit through `@paperclipai/plugin-sdk/ui`, but does not support plugin asset uploads/reads yet. Treat plugin asset APIs as future-scope ideas, not current implementation promises.
 - Scoped plugin API routes are JSON-only and must be declared in `apiRoutes`.
   They mount under `/api/plugins/:pluginId/api/*`; plugins cannot shadow core
   API routes.
@@ -976,12 +976,22 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
 
 The SDK includes a `ui` subpath export that plugin frontends import. This subpath provides:
 
-- **Bridge hooks**: `usePluginData(key, params)`, `usePluginAction(key)`, `useHostContext()`
+- **Bridge hooks**: `usePluginData(key, params)`, `usePluginAction(key)`, `useHostContext()`, `useHostNavigation()`
 - **Design tokens**: colors, spacing, typography, shadows matching the host theme
 - **Shared components**: `MetricCard`, `StatusBadge`, `DataTable`, `LogView`, `ActionBar`, `Spinner`, etc.
 - **Type definitions**: `PluginPageProps`, `PluginWidgetProps`, `PluginDetailTabProps`
 
 Plugins are encouraged but not required to use the shared components. A plugin may render entirely custom UI as long as it communicates through the bridge.
+
+`useHostNavigation()` is the supported way for plugin UI to navigate to
+Paperclip-internal pages. It exposes `resolveHref(to)`, `navigate(to,
+options?)`, and `linkProps(to, options?)`. Plugin links should prefer
+`linkProps()` so anchors keep real `href` values for copy-link, modifier-click,
+middle-click, and open-in-new-tab behavior while plain left-clicks route through
+the host SPA router. The host resolves company-scoped paths against the active
+company prefix without double-prefixing already-prefixed paths. Plugin UI should
+not use raw same-origin `href`s or `window.location.assign()` for internal
+Paperclip navigation because those can force a full document reload.
 
 ### 19.0.2 Bundle Isolation
 
@@ -1062,6 +1072,11 @@ The host SDK ships shared components that plugins can import to quickly build UI
 | `LogView` | Scrollable log output with timestamps | Webhook deliveries, job output, process logs |
 | `JsonTree` | Collapsible JSON tree for debugging | Raw API responses, plugin state inspection |
 | `Spinner` | Loading indicator | Data fetch states |
+| `FileTree` | Host-styled file/directory tree | Wiki pages, workspace files, import previews |
+| `IssuesList` | Host issue list | Plugin pages that need a native issue view |
+| `AssigneePicker` | Host assignee picker for agents and board users | Creating issues, assigning routines, filtering work |
+| `ProjectPicker` | Host project picker | Creating issues, scoping dashboards, filtering work |
+| `ManagedRoutinesList` | Host routine list | Plugin settings pages that manage routines |
 
 Plugins may also use entirely custom components. The shared components exist to reduce boilerplate and keep visual consistency, not to limit what plugins can render.
 

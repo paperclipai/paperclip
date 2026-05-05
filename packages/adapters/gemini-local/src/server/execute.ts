@@ -13,6 +13,7 @@ import {
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
@@ -44,7 +45,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
@@ -273,8 +274,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveGeminiBillingType(effectiveEnv);
-  const runtimeEnv = ensurePathInEnv(effectiveEnv);
-  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+  const runtimeEnv = Object.fromEntries(
+    Object.entries(ensurePathInEnv(effectiveEnv)).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const graceSec = asNumber(config.graceSec, 20);
+  await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+    runId,
+    target: executionTarget,
+    installCommand: ctx.runtimeCommandSpec?.installCommand,
+    detectCommand: ctx.runtimeCommandSpec?.detectCommand,
+    cwd,
+    env: runtimeEnv,
+    timeoutSec,
+    graceSec,
+    onLog,
+  });
+  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, { installCommand: SANDBOX_INSTALL_COMMAND });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   let loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
@@ -282,8 +300,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
-  const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -306,6 +322,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         target: executionTarget,
         adapterKey: "gemini",
         workspaceLocalDir: cwd,
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: command,
         assets: [{
           key: "skills",
           localDir: localSkillsDir,
