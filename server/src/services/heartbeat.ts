@@ -4833,6 +4833,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.resumeSessionParams;
     }
     const previousSessionParams =
+      resetTaskSession
+        ? null
+        :
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
