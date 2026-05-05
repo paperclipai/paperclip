@@ -225,7 +225,11 @@ describe("in_review assignee-change enforcement", () => {
       return null;
     });
     mockAgentService.list.mockResolvedValue([makeAgent(agentId), makeAgent(reviewerAgentId)]);
-    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, ref: string) => {
+      if (ref === agentId) return { ambiguous: false, agent: makeAgent(agentId) };
+      if (ref === reviewerAgentId) return { ambiguous: false, agent: makeAgent(reviewerAgentId) };
+      return { ambiguous: false, agent: null };
+    });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "KFS" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);

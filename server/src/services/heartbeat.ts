@@ -7327,7 +7327,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const hindsightPluginRow = await db
           .select({ id: plugins.id })
           .from(plugins)
-          .where(eq(plugins.pluginKey, "@vectorize-io/hindsight-paperclip"))
+          .where(eq(plugins.packageName, "@vectorize-io/hindsight-paperclip"))
           .limit(1)
           .then((rows) => rows[0] ?? null);
         if (hindsightPluginRow) {

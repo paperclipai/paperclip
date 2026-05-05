@@ -2418,7 +2418,12 @@ export function issueRoutes(
       nextAssigneeUserId === existing.createdByUserId;
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentReturningIssueToCreator) {
+      const isAgentReleasingForInReview =
+        req.actor.type === "agent" &&
+        !!req.actor.agentId &&
+        existing.assigneeAgentId === req.actor.agentId &&
+        updateFields.status === "in_review";
+      if (!isAgentReturningIssueToCreator && !isAgentReleasingForInReview) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
