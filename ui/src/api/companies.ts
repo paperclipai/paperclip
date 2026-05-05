@@ -19,6 +19,7 @@ export const companiesApi = {
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
     name: string;
+    issuePrefix?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
   }) =>

@@ -27,6 +27,7 @@ interface CompanyContextValue {
   reloadCompanies: () => Promise<void>;
   createCompany: (data: {
     name: string;
+    issuePrefix?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
   }) => Promise<Company>;
@@ -128,6 +129,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const createMutation = useMutation({
     mutationFn: (data: {
       name: string;
+      issuePrefix?: string;
       description?: string | null;
       budgetMonthlyCents?: number;
     }) =>
@@ -141,6 +143,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const createCompany = useCallback(
     async (data: {
       name: string;
+      issuePrefix?: string;
       description?: string | null;
       budgetMonthlyCents?: number;
     }) => {

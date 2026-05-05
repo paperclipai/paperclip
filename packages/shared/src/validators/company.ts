@@ -13,16 +13,25 @@ const attachmentMaxBytesSchema = z
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
 
-export const createCompanySchema = z.object({
+export const companyIssuePrefixSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Z]{2,4}$/, "Issue prefix must be 2-4 uppercase letters");
+
+const createCompanyBaseSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
 });
 
+export const createCompanySchema = createCompanyBaseSchema.extend({
+  issuePrefix: companyIssuePrefixSchema.optional(),
+});
+
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
-export const updateCompanySchema = createCompanySchema
+export const updateCompanySchema = createCompanyBaseSchema
   .partial()
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),

@@ -137,6 +137,24 @@ export function companyService(db: Db) {
       && constraint === "companies_issue_prefix_idx";
   }
 
+  async function createCompanyWithExplicitPrefix(
+    data: typeof companies.$inferInsert,
+    issuePrefix: string,
+  ) {
+    try {
+      const rows = await db
+        .insert(companies)
+        .values({ ...data, issuePrefix })
+        .returning();
+      return rows[0];
+    } catch (error) {
+      if (isIssuePrefixConflict(error)) {
+        throw unprocessable(`Issue prefix ${issuePrefix} is already in use`);
+      }
+      throw error;
+    }
+  }
+
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
@@ -173,7 +191,19 @@ export function companyService(db: Db) {
     },
 
     create: async (data: typeof companies.$inferInsert) => {
-      const created = await createCompanyWithUniquePrefix(data);
+      const explicitIssuePrefix =
+        typeof data.issuePrefix === "string" && data.issuePrefix.length > 0
+          ? data.issuePrefix
+          : null;
+      if (
+        explicitIssuePrefix &&
+        !/^[A-Z]{2,4}$/.test(explicitIssuePrefix)
+      ) {
+        throw unprocessable("Issue prefix must be 2-4 uppercase letters");
+      }
+      const created = explicitIssuePrefix
+        ? await createCompanyWithExplicitPrefix(data, explicitIssuePrefix)
+        : await createCompanyWithUniquePrefix(data);
       await environmentsSvc.ensureLocalEnvironment(created.id);
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))

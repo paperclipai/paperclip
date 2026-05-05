@@ -94,6 +94,44 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     vi.clearAllMocks();
   });
 
+  it("accepts an explicit issue prefix when creating a company", async () => {
+    const company = { ...createCompany(), name: "Trading", issuePrefix: "TRD" };
+    mockCompanyService.create.mockResolvedValue(company);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies")
+      .send({ name: "Trading", issuePrefix: "TRD" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.issuePrefix).toBe("TRD");
+    expect(mockCompanyService.create).toHaveBeenCalledWith({
+      name: "Trading",
+      issuePrefix: "TRD",
+      budgetMonthlyCents: 0,
+    });
+  });
+
+  it("rejects invalid explicit issue prefixes when creating a company", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies")
+      .send({ name: "Trading", issuePrefix: "trading" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockCompanyService.create).not.toHaveBeenCalled();
+  });
+
   it("rejects non-CEO agent callers", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",

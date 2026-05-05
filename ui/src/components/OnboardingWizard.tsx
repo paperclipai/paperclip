@@ -36,6 +36,11 @@ import {
   buildOnboardingProjectPayload,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
+import {
+  deriveOnboardingIssuePrefix,
+  sanitizeOnboardingIssuePrefix,
+  validateOnboardingIssuePrefix
+} from "../lib/onboarding-company-prefix";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -105,6 +110,9 @@ export function OnboardingWizard() {
 
   // Step 1
   const [companyName, setCompanyName] = useState("");
+  const [companyIssuePrefix, setCompanyIssuePrefix] = useState("");
+  const [companyIssuePrefixTouched, setCompanyIssuePrefixTouched] =
+    useState(false);
   const [companyGoal, setCompanyGoal] = useState("");
 
   // Step 2
@@ -250,6 +258,10 @@ export function OnboardingWizard() {
     adapterType === "claude_local" &&
     adapterEnvResult?.status === "fail" &&
     hasAnthropicApiKeyOverrideCheck;
+  const companyIssuePrefixError = useMemo(() => {
+    if (!companyName.trim() && !companyIssuePrefix.trim()) return null;
+    return validateOnboardingIssuePrefix(companyIssuePrefix, companies);
+  }, [companies, companyIssuePrefix, companyName]);
   const filteredModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
     return (adapterModels ?? []).filter((entry) => {
@@ -291,6 +303,8 @@ export function OnboardingWizard() {
     setLoading(false);
     setError(null);
     setCompanyName("");
+    setCompanyIssuePrefix("");
+    setCompanyIssuePrefixTouched(false);
     setCompanyGoal("");
     setAgentName("CEO");
     setAdapterType("claude_local");
@@ -386,10 +400,23 @@ export function OnboardingWizard() {
   }
 
   async function handleStep1Next() {
+    const normalizedIssuePrefix = companyIssuePrefix.trim().toUpperCase();
+    const prefixError = validateOnboardingIssuePrefix(
+      normalizedIssuePrefix,
+      companies
+    );
+    if (prefixError) {
+      setError(prefixError);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company = await companiesApi.create({
+        name: companyName.trim(),
+        issuePrefix: normalizedIssuePrefix
+      });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -708,9 +735,54 @@ export function OnboardingWizard() {
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                       placeholder="Acme Corp"
                       value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
+                      onChange={(e) => {
+                        const nextName = e.target.value;
+                        setCompanyName(nextName);
+                        if (!companyIssuePrefixTouched) {
+                          setCompanyIssuePrefix(
+                            deriveOnboardingIssuePrefix(nextName)
+                          );
+                        }
+                      }}
                       autoFocus
                     />
+                  </div>
+                  <div className="group">
+                    <label
+                      htmlFor="onboarding-company-issue-prefix"
+                      className={cn(
+                        "text-xs mb-1 block transition-colors",
+                        companyIssuePrefix.trim()
+                          ? "text-foreground"
+                          : "text-muted-foreground group-focus-within:text-foreground"
+                      )}
+                    >
+                      Issue prefix
+                    </label>
+                    <input
+                      id="onboarding-company-issue-prefix"
+                      className={cn(
+                        "w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono uppercase outline-none focus:ring-1 placeholder:text-muted-foreground/50",
+                        companyIssuePrefixError
+                          ? "border-destructive focus:ring-destructive"
+                          : "border-border focus:ring-ring"
+                      )}
+                      placeholder="ACM"
+                      value={companyIssuePrefix}
+                      maxLength={4}
+                      aria-invalid={Boolean(companyIssuePrefixError)}
+                      onChange={(e) => {
+                        setCompanyIssuePrefixTouched(true);
+                        setCompanyIssuePrefix(
+                          sanitizeOnboardingIssuePrefix(e.target.value)
+                        );
+                      }}
+                    />
+                    {companyIssuePrefixError && (
+                      <p className="mt-1 text-xs text-destructive">
+                        {companyIssuePrefixError}
+                      </p>
+                    )}
                   </div>
                   <div className="group">
                     <label
@@ -1222,7 +1294,11 @@ export function OnboardingWizard() {
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || loading}
+                      disabled={
+                        !companyName.trim() ||
+                        Boolean(companyIssuePrefixError) ||
+                        loading
+                      }
                       onClick={handleStep1Next}
                     >
                       {loading ? (
