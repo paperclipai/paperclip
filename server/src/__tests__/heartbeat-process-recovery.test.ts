@@ -2396,7 +2396,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("classifies actionable plan-only recovery and enqueues one liveness continuation", async () => {
+  it("blocks plan-only continuation retries after the bounded in-progress retry is consumed", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
@@ -2406,37 +2406,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       provider: "test",
       model: "test-model",
     });
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.reconcileStrandedAssignedIssues();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
 
-    const livenessWake = await waitForValue(async () => {
-      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-      return rows.find((row) => row.reason === "run_liveness_continuation") ?? null;
-    });
-    expect(livenessWake).toBeTruthy();
-    expect(livenessWake?.payload).toMatchObject({
-      issueId,
-      livenessState: "plan_only",
-      continuationAttempt: 1,
-    });
+    const blockedIssue = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "blocked" ? row : null;
+    }, 5_000);
+    expect(blockedIssue?.status).toBe("blocked");
 
-    const sourceRunId = (livenessWake?.payload as Record<string, unknown> | null)?.sourceRunId;
-    expect(sourceRunId).toBeTruthy();
-    const sourceRun = await db
+    const recovery = await db
       .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, String(sourceRunId)))
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)))
       .then((rows) => rows[0] ?? null);
-    if (sourceRun?.id) {
-      await waitForRunToSettle(heartbeat, sourceRun.id, 5_000);
-    }
-    expect(sourceRun?.id).not.toBe(runId);
-    expect(sourceRun?.livenessState).toBe("plan_only");
+    expect(recovery).toBeTruthy();
+    expect(recovery?.assigneeAgentId).toBe(agentId);
+    expect(["todo", "in_progress"]).toContain(recovery?.status);
+    expect(recovery?.originRunId).toBeTruthy();
+    expect(recovery?.originRunId).not.toBe(runId);
+
+    const livenessWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(livenessWake.some((row) => row.reason === "run_liveness_continuation")).toBe(false);
   });
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {
