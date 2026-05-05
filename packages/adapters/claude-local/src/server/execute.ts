@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,8 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  CLAUDE_CODE_NESTING_VARS,
+  appendWithCap,
   asString,
   asNumber,
   asBoolean,
@@ -36,6 +39,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   renderPaperclipWakePrompt,
+  runningProcesses,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -290,6 +294,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   };
 }
 
+const CLAUDE_LOGIN_RETURN_TIMEOUT_MS = 15_000;
+const CLAUDE_LOGIN_GRACE_SEC = 5;
+
+function stripClaudeNestingVars(env: NodeJS.ProcessEnv) {
+  const sanitized = { ...env };
+  for (const key of CLAUDE_CODE_NESTING_VARS) {
+    delete sanitized[key];
+  }
+  return sanitized;
+}
+
 export async function runClaudeLogin(input: {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -307,23 +322,115 @@ export async function runClaudeLogin(input: {
     authToken: input.authToken,
   });
 
-  const proc = await runAdapterExecutionTargetProcess(input.runId, null, runtime.command, ["login"], {
-    cwd: runtime.cwd,
-    env: runtime.env,
-    timeoutSec: runtime.timeoutSec,
-    graceSec: runtime.graceSec,
-    onLog,
-  });
+  // `claude auth login` is long-lived: it spawns a browser flow and waits for
+  // the OAuth callback before exiting. Spawn it directly and resolve as soon
+  // as the OAuth URL appears in stdout/stderr so the UI can surface the link
+  // without waiting for the user to finish browser auth. The child is left
+  // running so the OAuth callback can still complete; it is registered in the
+  // shared `runningProcesses` map so external shutdown (or a follow-up login
+  // attempt) can cancel it.
+  return await new Promise<ReturnType<typeof buildLoginResult>>((resolve, reject) => {
+    const mergedEnv = ensurePathInEnv(stripClaudeNestingVars({ ...process.env, ...runtime.env }));
+    const child = spawn(runtime.command, ["auth", "login"], {
+      cwd: runtime.cwd,
+      env: mergedEnv,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    runningProcesses.set(input.runId, {
+      child,
+      graceSec: CLAUDE_LOGIN_GRACE_SEC,
+      processGroupId: null,
+    });
 
-  const loginMeta = detectClaudeLoginRequired({
-    parsed: null,
-    stdout: proc.stdout,
-    stderr: proc.stderr,
-  });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let logChain: Promise<void> = Promise.resolve();
+    const startedAt = new Date().toISOString();
 
-  return buildLoginResult({
-    proc,
-    loginUrl: loginMeta.loginUrl,
+    const enqueueLog = (stream: "stdout" | "stderr", text: string) => {
+      logChain = logChain.then(() => onLog(stream, text)).catch(() => {});
+    };
+
+    const finish = (proc: RunProcessResult) => {
+      if (settled) return;
+      settled = true;
+      const loginMeta = detectClaudeLoginRequired({
+        parsed: null,
+        stdout,
+        stderr,
+      });
+      resolve(buildLoginResult({ proc, loginUrl: loginMeta.loginUrl }));
+    };
+
+    const maybeFinishEarly = () => {
+      const loginMeta = detectClaudeLoginRequired({
+        parsed: null,
+        stdout,
+        stderr,
+      });
+      if (!loginMeta.loginUrl) return;
+      clearTimeout(timeout);
+      finish({
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        stdout,
+        stderr,
+        pid: child.pid ?? null,
+        startedAt,
+      });
+    };
+
+    child.stdout?.on("data", (chunk: unknown) => {
+      const text = String(chunk);
+      stdout = appendWithCap(stdout, text);
+      enqueueLog("stdout", text);
+      maybeFinishEarly();
+    });
+
+    child.stderr?.on("data", (chunk: unknown) => {
+      const text = String(chunk);
+      stderr = appendWithCap(stderr, text);
+      enqueueLog("stderr", text);
+      maybeFinishEarly();
+    });
+
+    child.on("error", (err: Error) => {
+      clearTimeout(timeout);
+      runningProcesses.delete(input.runId);
+      if (settled) return;
+      reject(err);
+    });
+
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timeout);
+      runningProcesses.delete(input.runId);
+      finish({
+        exitCode: code,
+        signal,
+        timedOut: false,
+        stdout,
+        stderr,
+        pid: child.pid ?? null,
+        startedAt,
+      });
+    });
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      finish({
+        exitCode: null,
+        signal: null,
+        timedOut: true,
+        stdout,
+        stderr,
+        pid: child.pid ?? null,
+        startedAt,
+      });
+    }, CLAUDE_LOGIN_RETURN_TIMEOUT_MS);
   });
 }
 

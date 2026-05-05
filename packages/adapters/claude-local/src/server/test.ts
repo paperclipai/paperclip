@@ -237,8 +237,8 @@ export async function testEnvironment(
           message: "Claude CLI is installed, but login is required.",
           ...(detail ? { detail } : {}),
           hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
+            ? `Run \`claude auth login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
+            : "Run `claude auth login` in this environment, then retry the probe.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();

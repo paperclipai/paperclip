@@ -41,7 +41,7 @@ Run these once. The resulting login state persists in the `review-home` Docker v
 ```sh
 gh auth login
 codex login
-claude login
+claude auth login
 ```
 
 If you prefer API-key auth instead of CLI login, pass keys through Compose env:
