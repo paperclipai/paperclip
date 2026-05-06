@@ -345,7 +345,7 @@ export function rt2TaskExecutionService(db: Db) {
     const task = await taskSvc.getTaskMeta(input.attempt.taskIssueId);
     await domainEvents.appendAndProject({
       companyId: input.attempt.companyId,
-      eventType: input.eventType,
+      eventType: input.eventType as any,
       actorType: input.actorType,
       actorId: input.actorId,
       entityType: "execution",

@@ -3,10 +3,11 @@
 
 import type { Db } from '@paperclipai/db';
 import { rt2V33WorkEntities, rt2V33DomainEvents } from '@paperclipai/db';
-import { v4 as uuidv4 } from 'uuid';
+// uuid 사용 안 함 - 제거됨
 import type { AppendRt2DomainEvent } from '@paperclipai/shared';
 import { eq } from 'drizzle-orm';
-import type { Rt2DomainEvent } from '@paperclipai/shared';
+import type { Rt2DomainEvent, Rt2DomainEventActorType } from '@paperclipai/shared';
+import { randomUUID } from 'node:crypto';
 // Row type derived from drizzle schema (best-effort)
 type Rt2V33WorkEntitiesRow = typeof rt2V33WorkEntities.$inferSelect;
 
@@ -28,7 +29,7 @@ export interface UpdateWorkStateInput {
 export function rt2WorkEntityService(db: Db) {
   // createWork: inserts rt2V33WorkEntities with state='draft', emits rt2.work.created
   async function createWork(input: CreateWorkInput): Promise<Rt2V33WorkEntitiesRow> {
-    const workEntityId = uuidv4();
+    const workEntityId = randomUUID();
     const now = new Date();
     const row: any = {
       id: workEntityId,
@@ -48,7 +49,7 @@ export function rt2WorkEntityService(db: Db) {
 
     // Emit domain event (idempotency key pattern)
     const event = {
-      id: uuidv4(),
+      id: randomUUID(),
       companyId: input.companyId,
       eventType: 'rt2.work.created',
       idempotencyKey: `rt2.work.created:${workEntityId}`,
@@ -91,7 +92,7 @@ export function rt2WorkEntityService(db: Db) {
 
     // Emit domain event: state_changed
     const event: AppendRt2DomainEvent = {
-      companyId: existing?.companyId ?? input.companyId,
+      companyId: existing?.companyId ?? 'unknown',
       eventType: 'rt2.work.state_changed',
       eventVersion: 1,
       entityType: 'work',
@@ -132,28 +133,28 @@ export function rt2WorkEntityService(db: Db) {
     }
   }
 
-  async function getWorkById(workEntityId: string): Promise<any> {
-    if (db?.select?.bind) {
-      return await db.select('rt2_v33_work_entities').where({ id: workEntityId });
+  async function getWorkById(workEntityId: string): Promise<Rt2V33WorkEntitiesRow | null> {
+    const results = await db.select().from(rt2V33WorkEntities).where(eq(rt2V33WorkEntities.id, workEntityId)).limit(1);
+    return results[0] ?? null;
+  }
+
+  async function listWorksByCompany(companyId: string, state?: string): Promise<Rt2V33WorkEntitiesRow[]> {
+    const baseWhere = [eq(rt2V33WorkEntities.companyId, companyId)];
+    if (state) {
+      return await db.select().from(rt2V33WorkEntities).where(eq(rt2V33WorkEntities.state, state as any)).limit(100);
     }
-    return null;
+    return await db.select().from(rt2V33WorkEntities).where(baseWhere[0]).limit(100);
   }
 
-  async function listWorksByCompany(companyId: string, state?: string): Promise<any[]> {
-    if (!db?.select?.bind) return [];
-    const q: any = { companyId };
-    if (state) q.state = state;
-    return await db.select('rt2_v33_work_entities').where(q);
-  }
-
-  async function getWorkProjectorReadModel(companyId: string): Promise<any> {
-    // Simple aggregation placeholders
-    const total = await (db?.count?.bind ? db.count('rt2_v33_work_entities').where({ companyId }) : 0);
-    const draft = await (db?.count?.bind ? db.count('rt2_v33_work_entities').where({ companyId, state: 'draft' }) : 0);
-    const active = await (db?.count?.bind ? db.count('rt2_v33_work_entities').where({ companyId, state: 'active' }) : 0);
-    const completed = await (db?.count?.bind ? db.count('rt2_v33_work_entities').where({ companyId, state: 'completed' }) : 0);
-    const cancelled = await (db?.count?.bind ? db.count('rt2_v33_work_entities').where({ companyId, state: 'cancelled' }) : 0);
-    return { total, draft, active, completed, cancelled };
+  async function getWorkProjectorReadModel(companyId: string): Promise<{ total: number; draft: number; active: number; completed: number; cancelled: number }> {
+    const all = await db.select().from(rt2V33WorkEntities).where(eq(rt2V33WorkEntities.companyId, companyId));
+    return {
+      total: all.length,
+      draft: all.filter(w => w.state === 'draft').length,
+      active: all.filter(w => w.state === 'active').length,
+      completed: all.filter(w => w.state === 'completed').length,
+      cancelled: all.filter(w => w.state === 'cancelled').length,
+    };
   }
 
   return {

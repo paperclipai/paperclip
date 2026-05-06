@@ -1,5 +1,5 @@
 // Legacy migration service for Work entities (WORK-03)
-import type { Db } from 'server/types';
+import type { Db } from '@paperclipai/db';
 
 export interface MigrationBatch {
   batchId: string;
