@@ -10,6 +10,7 @@ import {
   Bot,
   Code,
   Gem,
+  Globe,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -61,17 +62,32 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     experimental: true,
     hideFromVisualSelection: true,
   },
+  agent_zero_bridge: {
+    label: "Agent Zero Bridge",
+    description: "Fire-and-forget bridge that hands work to an Agent Zero worker",
+    icon: Bot,
+  },
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",
     icon: Sparkles,
     recommended: true,
   },
+  cloudflare_workers_ai: {
+    label: "Cloudflare Workers AI",
+    description: "Call Cloudflare Workers AI directly or via AI Gateway",
+    icon: Globe,
+  },
   codex_local: {
     label: "Codex",
     description: "Local Codex agent",
     icon: Code,
     recommended: true,
+  },
+  custom_llm_local: {
+    label: "Custom LLM",
+    description: "OpenAI or Anthropic-compatible local or proxy endpoint",
+    icon: Globe,
   },
   gemini_local: {
     label: "Gemini CLI",
@@ -102,8 +118,16 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "OpenClaw Gateway",
     description: "Invoke OpenClaw via gateway protocol",
     icon: Bot,
-    comingSoon: true,
-    disabledLabel: "Configure OpenClaw within the App",
+  },
+  ollama_http: {
+    label: "Ollama HTTP",
+    description: "Talk directly to an Ollama-compatible HTTP API",
+    icon: Bot,
+  },
+  ollama_local: {
+    label: "Ollama",
+    description: "Richer Ollama adapter with skill injection, sessions, and optional tool calls",
+    icon: Bot,
   },
   process: {
     label: "Process",

@@ -17,14 +17,19 @@ const ALL_FALSE: AdapterCapabilities = {
  */
 const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
   acpx_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
+  agent_zero_bridge: ALL_FALSE,
   claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true },
+  cloudflare_workers_ai: { supportsInstructionsBundle: true, supportsSkills: false, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
   codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true },
+  custom_llm_local: { supportsInstructionsBundle: true, supportsSkills: false, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
   cursor: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: true },
   gemini_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: true },
   opencode_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: true },
   pi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: false },
   hermes_local: { supportsInstructionsBundle: false, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
+  ollama_local: { supportsInstructionsBundle: false, supportsSkills: true, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
   openclaw_gateway: ALL_FALSE,
+  ollama_http: { supportsInstructionsBundle: true, supportsSkills: false, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
 };
 
 /**

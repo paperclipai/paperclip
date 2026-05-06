@@ -183,10 +183,17 @@ export const agentsApi = {
   adapterModels: (
     companyId: string,
     type: string,
-    options?: { refresh?: boolean; environmentId?: string | null },
+    options?: { refresh?: boolean; environmentId?: string | null; adapterConfig?: Record<string, unknown> },
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
+    if (options?.adapterConfig) {
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      return api.post<AdapterModel[]>(
+        `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models/preview${query}`,
+        { adapterConfig: options.adapterConfig },
+      );
+    }
     if (options?.environmentId) params.set("environmentId", options.environmentId);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return api.get<AdapterModel[]>(

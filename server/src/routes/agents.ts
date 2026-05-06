@@ -47,7 +47,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -72,6 +72,12 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
+import { listOllamaHttpModels } from "../adapters/ollama-http/model-discovery.js";
+import {
+  DEFAULT_OLLAMA_LOCAL_BASE_URL,
+  normalizeOllamaLocalBaseUrl,
+} from "../adapters/ollama-local/config.js";
+import { discoverOllamaLocalModels } from "../adapters/ollama-local/models.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -719,6 +725,35 @@ export function agentRoutes(
     return adapterType;
   }
 
+  async function listPreviewAdapterModels(input: {
+    companyId: string;
+    adapterType: string;
+    adapterConfig: Record<string, unknown>;
+  }) {
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      input.companyId,
+      input.adapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      input.companyId,
+      normalizedAdapterConfig,
+    );
+
+    switch (input.adapterType) {
+      case "ollama_http":
+        return listOllamaHttpModels(runtimeAdapterConfig);
+      case "ollama_local": {
+        const baseUrl = normalizeOllamaLocalBaseUrl(
+          asNonEmptyString(runtimeAdapterConfig.baseUrl) ?? DEFAULT_OLLAMA_LOCAL_BASE_URL,
+        );
+        return discoverOllamaLocalModels(baseUrl);
+      }
+      default:
+        return listAdapterModels(input.adapterType);
+    }
+  }
+
   async function assertAgentDefaultEnvironmentSelection(
     companyId: string,
     environmentId: string | null | undefined,
@@ -818,6 +853,24 @@ export function agentRoutes(
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  function assertValidOpenClawGatewayUrl(adapterConfig: Record<string, unknown>) {
+    const urlValue = asNonEmptyString(adapterConfig.url);
+    if (!urlValue) {
+      throw unprocessable("Invalid openclaw_gateway adapterConfig: adapterConfig.url is required");
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(urlValue);
+    } catch {
+      throw unprocessable("Invalid openclaw_gateway adapterConfig: adapterConfig.url is not a valid URL");
+    }
+
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+      throw unprocessable("Invalid openclaw_gateway adapterConfig: adapterConfig.url must use ws:// or wss://");
+    }
   }
 
   function preserveInstructionsBundleConfig(
@@ -1046,6 +1099,10 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "openclaw_gateway") {
+      assertValidOpenClawGatewayUrl(adapterConfig);
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -1372,6 +1429,30 @@ export function agentRoutes(
       ? await refreshAdapterModels(type)
       : await listAdapterModels(type);
     res.json(models);
+  });
+
+  router.post("/companies/:companyId/adapters/:type/models/preview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const type = assertKnownAdapterType(req.params.type as string);
+    await assertCanReadConfigurations(req, companyId);
+
+    try {
+      const adapterConfig = asRecord(req.body?.adapterConfig) ?? {};
+      const models = await listPreviewAdapterModels({
+        companyId,
+        adapterType: type,
+        adapterConfig,
+      });
+      res.json(models);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to preview adapter models.";
+      const status = message.includes("requires adapterConfig.baseUrl")
+        || message.includes("must be")
+        || message.startsWith("CONFIG_INVALID:")
+        ? 422
+        : 502;
+      res.status(status).json({ error: message });
+    }
   });
 
   router.get("/companies/:companyId/adapters/:type/model-profiles", async (req, res) => {
@@ -3277,10 +3358,25 @@ export function agentRoutes(
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes,
-    });
+    let result;
+    try {
+      result = await heartbeat.readLog(run, {
+        offset: Number.isFinite(offset) ? offset : 0,
+        limitBytes,
+      });
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) {
+        res.set("Cache-Control", "no-cache, no-store");
+        res.json({
+          runId,
+          store: run.logStore,
+          logRef: run.logRef,
+          content: "",
+        });
+        return;
+      }
+      throw err;
+    }
 
     res.set("Cache-Control", "no-cache, no-store");
     res.json(result);

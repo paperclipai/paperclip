@@ -37,6 +37,21 @@ describe("adapter metadata", () => {
     expect(isEnabledAdapterType("http")).toBe(false);
   });
 
+  it("keeps the OpenClaw Gateway adapter enabled", () => {
+    expect(isEnabledAdapterType("openclaw_gateway")).toBe(true);
+    expect(isValidAdapterType("openclaw_gateway")).toBe(true);
+  });
+
+  it("keeps the Ollama HTTP adapter enabled", () => {
+    expect(isEnabledAdapterType("ollama_http")).toBe(true);
+    expect(isValidAdapterType("ollama_http")).toBe(true);
+  });
+
+  it("keeps the Cloudflare Workers AI adapter enabled", () => {
+    expect(isEnabledAdapterType("cloudflare_workers_ai")).toBe(true);
+    expect(isValidAdapterType("cloudflare_workers_ai")).toBe(true);
+  });
+
   it("keeps ACPX selectable from explicit configuration but out of visual pickers", () => {
     expect(isEnabledAdapterType("acpx_local")).toBe(true);
     expect(isValidAdapterType("acpx_local")).toBe(true);

@@ -1,7 +1,7 @@
 export const type = "openclaw_gateway";
 export const label = "OpenClaw Gateway";
 
-export const models: { id: string; label: string }[] = [];
+export { models } from "./models.js";
 
 export const agentConfigurationDoc = `# openclaw_gateway agent configuration
 
@@ -26,10 +26,13 @@ Gateway connect identity fields:
 - clientMode (string, optional): gateway client mode (default backend)
 - clientVersion (string, optional): client version string
 - role (string, optional): gateway role (default operator)
-- scopes (string[] | comma string, optional): gateway scopes (default ["operator.admin"])
+- scopes (string[] | comma string, optional): gateway scopes (default ["operator.admin", "operator.pairing"])
 - disableDeviceAuth (boolean, optional): disable signed device payload in connect params (default false)
 
 Request behavior fields:
+- model (string, optional): provider/model id forwarded on gateway agent requests; when omitted, OpenClaw uses its configured default model routing
+- fallbackModels (string[] | comma string, optional): ordered backup model ids retried when the active model fails with a transient upstream/provider error
+- instructionsFilePath (string, optional): local instructions file whose contents are prepended to the OpenClaw wake message before the Paperclip workflow instructions
 - payloadTemplate (object, optional): additional fields merged into gateway agent params
 - workspaceRuntime (object, optional): reserved workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 - timeoutSec (number, optional): adapter timeout in seconds (default 120)
@@ -39,7 +42,7 @@ Request behavior fields:
 - claimedApiKeyPath (string, optional): path to the claimed API key JSON file read by the agent at wake time (default ~/.openclaw/workspace/paperclip-claimed-api-key.json)
 
 Session routing fields:
-- sessionKeyStrategy (string, optional): issue (default), fixed, or run
+- sessionKeyStrategy (string, optional): issue (default), fixed, or run; issue uses paperclip:issue:<issueId> when an issue id is present and falls back to a fresh run-scoped session when it is not
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
 Standard outbound payload additions:

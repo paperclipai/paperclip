@@ -42,6 +42,7 @@
             "group": "Board Operator",
             "pages": [
               "guides/board-operator/dashboard",
+              "guides/board-operator/project-system-view",
               "guides/board-operator/creating-a-company",
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",

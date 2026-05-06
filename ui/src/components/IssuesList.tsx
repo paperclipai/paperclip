@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -60,7 +60,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2 } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, Trash2 } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
@@ -68,6 +68,7 @@ import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import type { BulkIssueAction } from "../api/issues";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -587,6 +588,7 @@ export function IssuesList({
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
@@ -617,6 +619,8 @@ export function IssuesList({
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
+  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(() => new Set());
+  const [bulkActionMessage, setBulkActionMessage] = useState<string | null>(null);
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
@@ -947,6 +951,70 @@ export function IssuesList({
     liveIssueIds,
     issueFilterWorkspaceContext,
   ]);
+  const filteredIssueIds = useMemo(() => filtered.map((issue) => issue.id), [filtered]);
+  const filteredIssueIdSet = useMemo(() => new Set(filteredIssueIds), [filteredIssueIds]);
+  const selectedIssueCount = selectedIssueIds.size;
+  const selectedFilteredIssueCount = useMemo(
+    () => filteredIssueIds.filter((issueId) => selectedIssueIds.has(issueId)).length,
+    [filteredIssueIds, selectedIssueIds],
+  );
+  const allFilteredIssuesSelected = filteredIssueIds.length > 0 && selectedFilteredIssueCount === filteredIssueIds.length;
+
+  useEffect(() => {
+    setSelectedIssueIds((current) => {
+      const next = new Set([...current].filter((issueId) => filteredIssueIdSet.has(issueId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [filteredIssueIdSet]);
+
+  const bulkIssueMutation = useMutation({
+    mutationFn: (action: BulkIssueAction) => {
+      if (!selectedCompanyId) throw new Error("Select a company before running bulk actions.");
+      return issuesApi.bulkAction(selectedCompanyId, { issueIds: [...selectedIssueIds], action });
+    },
+    onSuccess: async (result) => {
+      setBulkActionMessage(
+        result.failed > 0
+          ? `Bulk action completed: ${result.succeeded} succeeded, ${result.failed} failed.`
+          : `Bulk action completed for ${result.succeeded} issue${result.succeeded === 1 ? "" : "s"}.`,
+      );
+      setSelectedIssueIds(new Set(result.errors.map((entry) => entry.issueId)));
+      await queryClient.invalidateQueries({ queryKey: ["issues"] });
+      await queryClient.invalidateQueries({ queryKey: ["routines"] });
+    },
+    onError: (mutationError) => {
+      setBulkActionMessage(mutationError instanceof Error ? mutationError.message : "Bulk action failed.");
+    },
+  });
+
+  const toggleIssueSelected = useCallback((issueId: string, checked: boolean) => {
+    setBulkActionMessage(null);
+    setSelectedIssueIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(issueId);
+      else next.delete(issueId);
+      return next;
+    });
+  }, []);
+
+  const toggleAllFilteredIssues = useCallback(() => {
+    setBulkActionMessage(null);
+    setSelectedIssueIds((current) => {
+      if (allFilteredIssuesSelected) {
+        const next = new Set(current);
+        for (const issueId of filteredIssueIds) next.delete(issueId);
+        return next;
+      }
+      return new Set([...current, ...filteredIssueIds]);
+    });
+  }, [allFilteredIssuesSelected, filteredIssueIds]);
+
+  const runBulkIssueAction = useCallback((action: BulkIssueAction, confirmation?: string) => {
+    if (selectedIssueIds.size === 0 || bulkIssueMutation.isPending) return;
+    if (confirmation && !window.confirm(confirmation)) return;
+    setBulkActionMessage(null);
+    bulkIssueMutation.mutate(action);
+  }, [bulkIssueMutation, selectedIssueIds.size]);
 
   const progressSummary = useMemo(
     () => shouldRenderSubIssueProgressSummary(showProgressSummary, issues.length)
@@ -1255,6 +1323,11 @@ export function IssuesList({
               onSearchChange?.(nextSearch);
             }}
           />
+          {viewState.viewMode === "list" && filteredIssueIds.length > 0 ? (
+            <Button size="sm" variant="outline" onClick={toggleAllFilteredIssues}>
+              {allFilteredIssuesSelected ? "Clear visible" : "Select visible"}
+            </Button>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
@@ -1392,6 +1465,48 @@ export function IssuesList({
           )}
         </div>
       </div>
+
+      {selectedIssueCount > 0 ? (
+        <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">{selectedIssueCount} selected</span>
+            <Button size="xs" variant="outline" onClick={() => setSelectedIssueIds(new Set())} disabled={bulkIssueMutation.isPending}>
+              Clear
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button size="xs" variant="outline" disabled={bulkIssueMutation.isPending} onClick={() => runBulkIssueAction({ type: "update", status: "todo" })}>
+              Move to todo
+            </Button>
+            <Button size="xs" variant="outline" disabled={bulkIssueMutation.isPending} onClick={() => runBulkIssueAction({ type: "update", status: "done" })}>
+              <Check className="h-3.5 w-3.5" />
+              Mark done
+            </Button>
+            <Button size="xs" variant="outline" disabled={bulkIssueMutation.isPending} onClick={() => runBulkIssueAction({ type: "update", status: "cancelled" })}>
+              Cancel
+            </Button>
+            <Button size="xs" variant="outline" disabled={bulkIssueMutation.isPending} onClick={() => runBulkIssueAction({ type: "update", assigneeAgentId: null, assigneeUserId: null })}>
+              Clear assignee
+            </Button>
+            <Button size="xs" variant="outline" disabled={bulkIssueMutation.isPending} onClick={() => runBulkIssueAction({ type: "hide" })}>
+              Hide
+            </Button>
+            <Button
+              size="xs"
+              variant="destructive"
+              disabled={bulkIssueMutation.isPending}
+              onClick={() => runBulkIssueAction(
+                { type: "delete" },
+                `Delete ${selectedIssueCount} selected issue${selectedIssueCount === 1 ? "" : "s"} permanently? This cannot be undone.`,
+              )}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete selected
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {bulkActionMessage ? <p className="text-xs text-muted-foreground">{bulkActionMessage}</p> : null}
 
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -1565,6 +1680,17 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        selected={selectedIssueIds.has(issue.id)}
+                        selectionControl={(
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-border"
+                            checked={selectedIssueIds.has(issue.id)}
+                            aria-label={`Select ${issue.identifier ?? issue.title}`}
+                            onChange={(event) => toggleIssueSelected(issue.id, event.currentTarget.checked)}
+                            onClick={(event) => event.stopPropagation()}
+                          />
+                        )}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}

@@ -12,9 +12,24 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
+function parseModelList(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .split(/[\n,]/)
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
   if (v.url) ac.url = v.url;
+  if (v.instructionsFilePath?.trim()) ac.instructionsFilePath = v.instructionsFilePath.trim();
+  if (v.model?.trim()) ac.model = v.model.trim();
+  const fallbackModels = parseModelList(v.fallbackModelsText ?? "");
+  if (fallbackModels.length > 0) ac.fallbackModels = fallbackModels;
   ac.timeoutSec = 120;
   ac.waitTimeoutMs = 120000;
   ac.sessionKeyStrategy = "issue";

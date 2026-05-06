@@ -89,6 +89,10 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  listOpenClawGatewayModels,
+  refreshOpenClawGatewayModels,
+} from "./openclaw-models.js";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -120,6 +124,11 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { agentZeroBridgeAdapter } from "./agent-zero-bridge/index.js";
+import { cloudflareWorkersAiAdapter } from "./cloudflare-workers-ai/index.js";
+import { customLlmLocalAdapter } from "./custom-llm-local/index.js";
+import { ollamaLocalAdapter } from "./ollama-local/index.js";
+import { ollamaHttpAdapter } from "./ollama-http/index.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -328,6 +337,8 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
+  listModels: listOpenClawGatewayModels,
+  refreshModels: refreshOpenClawGatewayModels,
   supportsLocalAgentJwt: false,
   supportsInstructionsBundle: false,
   requiresMaterializedRuntimeSkills: false,
@@ -453,16 +464,21 @@ const pausedOverrides = new Set<string>();
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
+    agentZeroBridgeAdapter,
     claudeLocalAdapter,
+    cloudflareWorkersAiAdapter,
     codexLocalAdapter,
+    customLlmLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    ollamaLocalAdapter,
     processAdapter,
     httpAdapter,
+    ollamaHttpAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
   }

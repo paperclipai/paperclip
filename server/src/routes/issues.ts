@@ -17,6 +17,8 @@ import {
   checkoutIssueSchema,
   createChildIssueSchema,
   createIssueSchema,
+  ISSUE_PRIORITIES,
+  ISSUE_STATUSES,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -59,6 +61,7 @@ import {
   issueService,
   clampIssueListLimit,
   documentService,
+  enqueueProjectProgressSync,
   logActivity,
   projectService,
   routineService,
@@ -102,6 +105,36 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+});
+const bulkIssueUpdateActionSchema = z
+  .object({
+    type: z.literal("update"),
+    status: z.enum(ISSUE_STATUSES).optional(),
+    priority: z.enum(ISSUE_PRIORITIES).optional(),
+    assigneeAgentId: z.string().uuid().nullable().optional(),
+    assigneeUserId: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.status === undefined &&
+      value.priority === undefined &&
+      value.assigneeAgentId === undefined &&
+      value.assigneeUserId === undefined
+    ) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "At least one update field is required" });
+    }
+    if (value.assigneeAgentId && value.assigneeUserId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Issue can only have one assignee" });
+    }
+  });
+const bulkIssueActionSchema = z.object({
+  issueIds: z.array(z.string().uuid()).min(1).max(500),
+  action: z.union([
+    z.object({ type: z.literal("delete") }).strict(),
+    z.object({ type: z.literal("hide") }).strict(),
+    bulkIssueUpdateActionSchema,
+  ]),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -766,6 +799,19 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  function queueProjectProgressSync(projectId: string | null | undefined, reason: string) {
+    enqueueProjectProgressSync(db, projectId, reason);
+  }
+
+  function queueIssueProjectProgressSync(
+    issue: { projectId?: string | null },
+    reason: string,
+    previousProjectId?: string | null,
+  ) {
+    const projectIds = new Set([issue.projectId ?? null, previousProjectId ?? null]);
+    for (const projectId of projectIds) queueProjectProgressSync(projectId, reason);
+  }
+
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -1969,6 +2015,7 @@ export function issueRoutes(
       entityId: issue.id,
       details: { workProductId: product.id, type: product.type, provider: product.provider },
     });
+    queueIssueProjectProgressSync(issue, "issue_work_product_created");
     res.status(201).json(product);
   });
 
@@ -2003,6 +2050,7 @@ export function issueRoutes(
       entityId: existing.issueId,
       details: { workProductId: product.id, changedKeys: Object.keys(req.body).sort() },
     });
+    queueIssueProjectProgressSync(issue, "issue_work_product_updated");
     res.json(product);
   });
 
@@ -2037,6 +2085,7 @@ export function issueRoutes(
       entityId: existing.issueId,
       details: { workProductId: removed.id, type: removed.type },
     });
+    queueIssueProjectProgressSync(issue, "issue_work_product_deleted");
     res.json(removed);
   });
 
@@ -2243,6 +2292,167 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  router.post("/companies/:companyId/issues/bulk", validate(bulkIssueActionSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const issueIds = [...new Set(req.body.issueIds as string[])];
+    const action = req.body.action as z.infer<typeof bulkIssueActionSchema>["action"];
+    const changedIssues: Array<NonNullable<Awaited<ReturnType<typeof svc.getById>>>> = [];
+    const errors: Array<{ issueId: string; error: string; status?: number }> = [];
+
+    if (
+      action.type === "update" &&
+      (action.assigneeAgentId !== undefined || action.assigneeUserId !== undefined)
+    ) {
+      await assertCanAssignTasks(req, companyId);
+    }
+
+    for (const issueId of issueIds) {
+      try {
+        const existing = await svc.getById(issueId);
+        if (!existing || existing.companyId !== companyId) {
+          errors.push({ issueId, error: "Issue not found", status: 404 });
+          continue;
+        }
+
+        if (action.type === "delete") {
+          const runToCancel = await resolveActiveIssueRun(existing);
+          if (runToCancel) {
+            const cancelled = await heartbeat.cancelRun(runToCancel.id);
+            if (cancelled) {
+              await logActivity(db, {
+                companyId: cancelled.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "heartbeat.cancelled",
+                entityType: "heartbeat_run",
+                entityId: cancelled.id,
+                details: { agentId: cancelled.agentId, source: "issue_bulk_delete", issueId: existing.id },
+              });
+            }
+          }
+
+          const attachments = await svc.listAttachments(issueId);
+          const removed = await svc.remove(issueId);
+          if (!removed) {
+            errors.push({ issueId, error: "Issue not found", status: 404 });
+            continue;
+          }
+          for (const attachment of attachments) {
+            try {
+              await storage.deleteObject(attachment.companyId, attachment.objectKey);
+            } catch (err) {
+              logger.warn({ err, issueId, attachmentId: attachment.id }, "failed to delete attachment object during bulk issue delete");
+            }
+          }
+          await logActivity(db, {
+            companyId: removed.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.deleted",
+            entityType: "issue",
+            entityId: removed.id,
+            details: { source: "bulk_action", identifier: removed.identifier },
+          });
+          changedIssues.push(removed);
+          continue;
+        }
+
+        const patch: Record<string, unknown> = action.type === "hide"
+          ? { hiddenAt: new Date() }
+          : {
+              ...(action.status !== undefined ? { status: action.status } : {}),
+              ...(action.priority !== undefined ? { priority: action.priority } : {}),
+              ...(action.assigneeAgentId !== undefined
+                ? { assigneeAgentId: await normalizeIssueAssigneeAgentReference(companyId, action.assigneeAgentId) }
+                : {}),
+              ...(action.assigneeUserId !== undefined ? { assigneeUserId: action.assigneeUserId } : {}),
+            };
+        if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null) {
+          patch.assigneeUserId = null;
+        }
+        if (patch.assigneeUserId !== undefined && patch.assigneeUserId !== null) {
+          patch.assigneeAgentId = null;
+        }
+
+        const runToCancel = action.type === "update" && existing.status !== "cancelled" && patch.status === "cancelled"
+          ? await resolveActiveIssueRun(existing)
+          : null;
+        const updated = await svc.update(issueId, {
+          ...patch,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        if (!updated) {
+          errors.push({ issueId, error: "Issue not found", status: 404 });
+          continue;
+        }
+        let cancelledStatusRunId: string | null = null;
+        if (runToCancel) {
+          const cancelled = await heartbeat.cancelRun(runToCancel.id);
+          if (cancelled) {
+            cancelledStatusRunId = cancelled.id;
+            await logActivity(db, {
+              companyId: cancelled.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "heartbeat.cancelled",
+              entityType: "heartbeat_run",
+              entityId: cancelled.id,
+              details: { agentId: cancelled.agentId, source: "issue_bulk_status_cancelled", issueId: existing.id },
+            });
+          }
+        }
+        await routinesSvc.syncRunStatusForIssue(updated.id);
+        await logActivity(db, {
+          companyId: updated.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: updated.id,
+          details: {
+            ...patch,
+            identifier: updated.identifier,
+            source: action.type === "hide" ? "bulk_hide" : "bulk_update",
+            ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
+          },
+        });
+        changedIssues.push(updated);
+      } catch (err) {
+        const status = err instanceof HttpError ? err.status : undefined;
+        errors.push({ issueId, error: err instanceof Error ? err.message : String(err), status });
+      }
+    }
+
+    for (const projectId of new Set(changedIssues.map((issue) => issue.projectId).filter((id): id is string => Boolean(id)))) {
+      queueProjectProgressSync(projectId, `issue_bulk_${action.type}`);
+    }
+
+    res.json({
+      action: action.type,
+      requested: issueIds.length,
+      succeeded: changedIssues.length,
+      failed: errors.length,
+      issues: changedIssues,
+      errors,
+    });
+  });
+
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -2291,6 +2501,7 @@ export function issueRoutes(
         }),
       },
     });
+    queueIssueProjectProgressSync(issue, "issue_created");
 
     if (executionPolicy?.monitor) {
       await logActivity(db, {
@@ -2379,6 +2590,7 @@ export function issueRoutes(
         ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
       },
     });
+    queueIssueProjectProgressSync(issue, "issue_child_created");
 
     if (executionPolicy?.monitor) {
       await logActivity(db, {
@@ -2841,6 +3053,7 @@ export function issueRoutes(
         ),
       },
     });
+    queueIssueProjectProgressSync(issue, "issue_updated", existing.projectId);
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
       await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])
@@ -3341,6 +3554,7 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
     });
+    queueIssueProjectProgressSync(issue, "issue_deleted");
 
     res.json(issue);
   });
@@ -4167,6 +4381,7 @@ export function issueRoutes(
         }),
       },
     });
+    queueIssueProjectProgressSync(currentIssue, "issue_comment_added");
 
     const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
       currentIssue,

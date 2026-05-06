@@ -23,6 +23,7 @@ interface IssueRowProps {
   mobileMeta?: ReactNode;
   desktopTrailing?: ReactNode;
   trailingMeta?: ReactNode;
+  selectionControl?: ReactNode;
   titleSuffix?: ReactNode;
   titleClassName?: string;
   checklistStepNumber?: number | string | null;
@@ -46,6 +47,7 @@ export function IssueRow({
   mobileMeta,
   desktopTrailing,
   trailingMeta,
+  selectionControl,
   titleSuffix,
   titleClassName,
   checklistStepNumber = null,
@@ -109,6 +111,11 @@ export function IssueRow({
         className,
       )}
     >
+      {selectionControl ? (
+        <span className="shrink-0 self-center" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+          {selectionControl}
+        </span>
+      ) : null}
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
         {productivityReviewIndicator}

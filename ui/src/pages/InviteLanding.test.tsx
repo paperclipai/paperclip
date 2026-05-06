@@ -654,4 +654,164 @@ describe("InviteLandingPage", () => {
       root.unmount();
     });
   });
+
+  it("allows OpenClaw Gateway selection for agent invites", async () => {
+    getInviteMock.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-1",
+      companyName: "Acme Robotics",
+      companyLogoUrl: "/api/invites/pcp_invite_test/logo",
+      companyBrandColor: "#114488",
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      humanRole: null,
+      expiresAt: "2027-03-07T00:10:00.000Z",
+      inviteMessage: "Welcome aboard.",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const adapterSelect = container.querySelector("select") as HTMLSelectElement | null;
+    expect(adapterSelect).not.toBeNull();
+
+    const openClawOption = Array.from(adapterSelect?.options ?? []).find(
+      (option) => option.value === "openclaw_gateway",
+    );
+
+    expect(openClawOption).toBeDefined();
+    expect(openClawOption?.disabled).toBe(false);
+    expect(openClawOption?.textContent).toBe("OpenClaw Gateway (gateway)");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("submits required gateway defaults for OpenClaw Gateway agent invites", async () => {
+    getInviteMock.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-1",
+      companyName: "Acme Robotics",
+      companyLogoUrl: "/api/invites/pcp_invite_test/logo",
+      companyBrandColor: "#114488",
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      humanRole: null,
+      expiresAt: "2027-03-07T00:10:00.000Z",
+      inviteMessage: "Welcome aboard.",
+    });
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "agent",
+      status: "pending_approval",
+      claimSecret: "claim-secret-123",
+      claimApiKeyPath: "/api/join-requests/join-1/claim-api-key",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const adapterSelect = container.querySelector('select[name="adapterType"]') as HTMLSelectElement | null;
+    const agentNameInput = container.querySelector('input[name="agentName"]') as HTMLInputElement | null;
+    const gatewayUrlInput = () => container.querySelector('input[name="gatewayUrl"]') as HTMLInputElement | null;
+    const gatewayTokenInput = () => container.querySelector('input[name="gatewayToken"]') as HTMLInputElement | null;
+    const paperclipApiUrlInput = () =>
+      container.querySelector('input[name="gatewayPaperclipApiUrl"]') as HTMLInputElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Submit request",
+    ) as HTMLButtonElement | undefined;
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    expect(inputValueSetter).toBeTypeOf("function");
+    expect(adapterSelect).not.toBeNull();
+    expect(agentNameInput).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    await act(async () => {
+      adapterSelect!.value = "openclaw_gateway";
+      adapterSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[data-testid="invite-openclaw-gateway-fields"]')).not.toBeNull();
+    expect(submitButton?.disabled).toBe(true);
+
+    await act(async () => {
+      inputValueSetter!.call(agentNameInput, "OpenClaw Agent");
+      agentNameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      agentNameInput!.dispatchEvent(new Event("change", { bubbles: true }));
+
+      inputValueSetter!.call(gatewayUrlInput(), "ws://127.0.0.1:18789");
+      gatewayUrlInput()!.dispatchEvent(new Event("input", { bubbles: true }));
+      gatewayUrlInput()!.dispatchEvent(new Event("change", { bubbles: true }));
+
+      inputValueSetter!.call(gatewayTokenInput(), "gateway-token-1234567890");
+      gatewayTokenInput()!.dispatchEvent(new Event("input", { bubbles: true }));
+      gatewayTokenInput()!.dispatchEvent(new Event("change", { bubbles: true }));
+
+      inputValueSetter!.call(paperclipApiUrlInput(), "https://paperclip.example.test");
+      paperclipApiUrlInput()!.dispatchEvent(new Event("input", { bubbles: true }));
+      paperclipApiUrlInput()!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(submitButton?.disabled).toBe(false);
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", {
+      requestType: "agent",
+      agentName: "OpenClaw Agent",
+      adapterType: "openclaw_gateway",
+      capabilities: null,
+      agentDefaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "x-openclaw-token": "gateway-token-1234567890",
+        },
+        paperclipApiUrl: "https://paperclip.example.test",
+      },
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

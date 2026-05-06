@@ -236,6 +236,36 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(0);
   });
 
+  it("ignores control-plane recovery issues when detecting liveness incidents", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(issues)
+      .set({
+        title: "Recover stalled issue FAC-390",
+        originKind: "stranded_issue_recovery",
+      })
+      .where(eq(issues.id, blockedIssueId));
+    await db
+      .update(issues)
+      .set({
+        title: "Review productivity for FAC-390",
+        originKind: "issue_productivity_review",
+      })
+      .where(eq(issues.id, blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+  });
+
   it("suppresses liveness escalation when the source issue is under an active pause hold", async () => {
     await enableAutoRecovery();
     const { companyId, blockedIssueId } = await seedBlockedChain();

@@ -18,7 +18,7 @@
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -182,10 +182,43 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   },
 ];
 
+function hasBundledPluginInstallArtifacts(localPath: string): boolean {
+  const packageJsonPath = path.join(localPath, "package.json");
+  if (!existsSync(packageJsonPath)) return false;
+
+  try {
+    const pkgJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+      paperclipPlugin?: {
+        manifest?: unknown;
+        worker?: unknown;
+        ui?: unknown;
+      };
+    };
+    const manifestRelPath = pkgJson.paperclipPlugin?.manifest;
+    const workerRelPath = pkgJson.paperclipPlugin?.worker;
+    const uiRelPath = pkgJson.paperclipPlugin?.ui;
+
+    if (typeof manifestRelPath !== "string" || typeof workerRelPath !== "string") {
+      return false;
+    }
+
+    const requiredPaths = [manifestRelPath, workerRelPath];
+    if (typeof uiRelPath === "string") {
+      requiredPaths.push(uiRelPath);
+    }
+
+    return requiredPaths.every((relativePath) => existsSync(path.resolve(localPath, relativePath)));
+  } catch {
+    return false;
+  }
+}
+
 function listBundledPluginExamples(): AvailablePluginExample[] {
   return BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
     const absoluteLocalPath = path.resolve(REPO_ROOT, plugin.localPath);
-    if (!existsSync(absoluteLocalPath)) return [];
+    if (!existsSync(absoluteLocalPath) || !hasBundledPluginInstallArtifacts(absoluteLocalPath)) {
+      return [];
+    }
     return [{ ...plugin, localPath: absoluteLocalPath }];
   });
 }

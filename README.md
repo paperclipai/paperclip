@@ -219,6 +219,8 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 **Workspaces & Runtime** — Project workspaces, isolated execution workspaces (git worktrees, operator branches), and runtime services (dev servers, preview URLs). Agents work in the right directory with the right context every time.
 
+Project operators can open a project's **System** tab to see live agent work, workspace/runtime status, project-level deployments and outputs, and a built-in files manager in one place.
+
 </td>
 <td>
 

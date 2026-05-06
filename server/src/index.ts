@@ -30,8 +30,11 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
+  getProjectProgressSyncIntervalMs,
   heartbeatService,
   instanceSettingsService,
+  projectProgressGithubSyncEnabled,
+  projectProgressSyncService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -687,7 +690,8 @@ export async function startServer(): Promise<StartedServer> {
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.successfulRunHandoffEscalated > 0 ||
-          reconciled.escalated > 0
+          reconciled.escalated > 0 ||
+          reconciled.metaClosed > 0
         ) {
           logger.warn(
             { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
@@ -753,7 +757,8 @@ export async function startServer(): Promise<StartedServer> {
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
             reconciled.successfulRunHandoffEscalated > 0 ||
-            reconciled.escalated > 0
+            reconciled.escalated > 0 ||
+            reconciled.metaClosed > 0
           ) {
             logger.warn(
               { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
@@ -783,6 +788,39 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+  }
+
+  if (projectProgressGithubSyncEnabled()) {
+    const projectProgressSync = projectProgressSyncService(db as any);
+    const projectProgressSyncIntervalMs = getProjectProgressSyncIntervalMs();
+    const runProjectProgressSync = (reason: string) => {
+      void projectProgressSync
+        .syncAllProjectsProgressToGitHub({ reason })
+        .then((result) => {
+          if (result.synced > 0 || result.failed > 0 || result.deployed > 0) {
+            logger.info(
+              {
+                reason,
+                scanned: result.scanned,
+                synced: result.synced,
+                skipped: result.skipped,
+                failed: result.failed,
+                deployed: result.deployed,
+              },
+              "project progress GitHub sync completed",
+            );
+          }
+        })
+        .catch((err) => {
+          logger.warn({ err, reason }, "project progress GitHub sync failed");
+        });
+    };
+
+    runProjectProgressSync("startup");
+    const projectProgressSyncInterval = setInterval(() => {
+      runProjectProgressSync("scheduled");
+    }, projectProgressSyncIntervalMs);
+    projectProgressSyncInterval.unref?.();
   }
   
   if (config.databaseBackupEnabled) {

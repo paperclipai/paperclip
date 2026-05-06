@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueWorkProducts } from "@paperclipai/db";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import { issueWorkProducts, issues } from "@paperclipai/db";
+import type { IssueWorkProduct, ProjectWorkProduct } from "@paperclipai/shared";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 
@@ -30,6 +30,18 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
   };
 }
 
+function toProjectWorkProduct(
+  row: IssueWorkProductRow,
+  issue: { title: string; identifier: string | null; status: string },
+): ProjectWorkProduct {
+  return {
+    ...toIssueWorkProduct(row),
+    issueTitle: issue.title,
+    issueIdentifier: issue.identifier,
+    issueStatus: issue.status,
+  };
+}
+
 export function workProductService(db: Db) {
   return {
     listForIssue: async (issueId: string) => {
@@ -39,6 +51,34 @@ export function workProductService(db: Db) {
         .where(eq(issueWorkProducts.issueId, issueId))
         .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt));
       return rows.map(toIssueWorkProduct);
+    },
+
+    listForProject: async (companyId: string, projectId: string) => {
+      const rows = await db
+        .select({
+          workProduct: issueWorkProducts,
+          issueTitle: issues.title,
+          issueIdentifier: issues.identifier,
+          issueStatus: issues.status,
+        })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issueWorkProducts.issueId, issues.id))
+        .where(
+          and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issues.companyId, companyId),
+            eq(issues.projectId, projectId),
+          ),
+        )
+        .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt));
+
+      return rows.map((row) =>
+        toProjectWorkProduct(row.workProduct, {
+          title: row.issueTitle,
+          identifier: row.issueIdentifier,
+          status: row.issueStatus,
+        }),
+      );
     },
 
     getById: async (id: string) => {

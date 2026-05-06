@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -36,7 +36,19 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
+const PRODUCTIVITY_REVIEW_IGNORED_ORIGIN_KINDS = [
+  "routine_execution",
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+  RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+  RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+] as const;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+
+function productivityReviewIssuesDisabled() {
+  const value = process.env.PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_ISSUES?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -763,6 +775,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     companyId?: string;
     thresholds?: Partial<ProductivityReviewThresholds>;
   }) {
+    if (productivityReviewIssuesDisabled()) {
+      return {
+        scanned: 0,
+        created: 0,
+        updated: 0,
+        existing: 0,
+        snoozed: 0,
+        creationCapped: 0,
+        skipped: 0,
+        failed: 0,
+        reviewIssueIds: [] as string[],
+        failedIssueIds: [] as string[],
+      };
+    }
+
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
     const candidates = await db
@@ -775,7 +802,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
-          sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          or(
+            isNull(issues.originKind),
+            notInArray(issues.originKind, [...PRODUCTIVITY_REVIEW_IGNORED_ORIGIN_KINDS]),
+          ),
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
@@ -855,6 +885,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     now?: Date;
     thresholds?: Partial<ProductivityReviewThresholds>;
   }) {
+    if (productivityReviewIssuesDisabled()) return { held: false as const };
+
     const now = input.now ?? new Date();
     const thresholds = buildThresholds(input.thresholds);
     const [sourceIssue, sourceAgent, openReview] = await Promise.all([

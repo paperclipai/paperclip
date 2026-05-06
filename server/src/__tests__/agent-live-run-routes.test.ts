@@ -320,6 +320,25 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("returns an empty log payload when the run exists but the persisted log is missing", async () => {
+    const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockHeartbeatService.readLog.mockRejectedValueOnce(new HttpError(404, "Run log not found"));
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=0&limitBytes=64"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      content: "",
+    });
+  });
+
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,

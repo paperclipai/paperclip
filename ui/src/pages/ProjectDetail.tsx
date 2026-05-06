@@ -21,6 +21,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ProjectSystemView } from "../components/ProjectSystemView";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
@@ -28,12 +29,13 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
+import { FolderOpen } from "lucide-react";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "system" | "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -46,6 +48,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const projectsIdx = segments.indexOf("projects");
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
+  if (tab === "system") return "system";
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
@@ -444,6 +447,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
+    if (activeTab === "system") {
+      navigate(`/projects/${canonicalProjectRef}/system`, { replace: true });
+      return;
+    }
     if (activeTab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
       return;
@@ -583,6 +590,9 @@ export function ProjectDetail() {
     if (cachedTab === "overview") {
       return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
     }
+    if (cachedTab === "system") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/system`} replace />;
+    }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
@@ -617,7 +627,9 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
       return;
     }
-    if (tab === "overview") {
+    if (tab === "system") {
+      navigate(`/projects/${canonicalProjectRef}/system`);
+    } else if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
@@ -642,12 +654,19 @@ export function ProjectDetail() {
           />
         </div>
         <div className="min-w-0 space-y-2">
-          <InlineEditor
-            value={project.name}
-            onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
-          />
+          <div className="flex items-center gap-2 min-w-0">
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="text-xl font-bold min-w-0"
+            />
+            <Button asChild size="icon" variant="ghost" className="h-8 w-8 shrink-0" title="Open files manager">
+              <Link to={`/projects/${canonicalProjectRef}/system#project-files-manager`} aria-label="Open files manager">
+                <FolderOpen className="size-4" />
+              </Link>
+            </Button>
+          </div>
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
@@ -698,6 +717,7 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "list", label: "Issues" },
+            { value: "system", label: "System" },
             { value: "overview", label: "Overview" },
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
@@ -713,6 +733,10 @@ export function ProjectDetail() {
           onValueChange={(value) => handleTabChange(value as ProjectTab)}
         />
       </Tabs>
+
+      {activeTab === "system" && resolvedCompanyId ? (
+        <ProjectSystemView project={project} companyId={resolvedCompanyId} projectRef={canonicalProjectRef} />
+      ) : null}
 
       {activeTab === "overview" && (
         <OverviewContent

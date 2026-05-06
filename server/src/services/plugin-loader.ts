@@ -78,6 +78,8 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 );
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
+const TYPESCRIPT_MODULE_EXTENSIONS = new Set([".ts", ".mts", ".cts"]);
+const SOURCE_WORKER_ENTRY_EXTENSIONS = [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"] as const;
 
 // ---------------------------------------------------------------------------
 // Discovery result types
@@ -1826,11 +1828,11 @@ export function pluginLoader(
         },
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      // TypeScript worker entrypoints (including source fallbacks such as
+      // src/worker.ts for first-party examples) need the tsx loader.
+      const workerExecArgv = resolveWorkerProcessExecArgv(workerEntrypoint);
+      if (workerExecArgv) {
+        workerOptions.execArgv = workerExecArgv;
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
@@ -1973,7 +1975,7 @@ export function pluginLoader(
  *
  * @see PLUGIN_SPEC.md §10 — Package Contract
  */
-function resolveWorkerEntrypoint(
+export function resolveWorkerEntrypoint(
   plugin: PluginRecord & { packagePath?: string | null },
   localPluginDir: string,
 ): string {
@@ -1985,6 +1987,10 @@ function resolveWorkerEntrypoint(
     const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
     if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
       return entrypoint;
+    }
+    const sourceEntrypoint = resolveSourceWorkerEntrypoint(plugin.packagePath, workerRelPath);
+    if (sourceEntrypoint) {
+      return sourceEntrypoint;
     }
   }
 
@@ -2015,6 +2021,11 @@ function resolveWorkerEntrypoint(
 
     if (existsSync(entrypoint)) {
       return entrypoint;
+    }
+
+    const sourceEntrypoint = resolveSourceWorkerEntrypoint(dir, workerRelPath);
+    if (sourceEntrypoint) {
+      return sourceEntrypoint;
     }
   }
 
@@ -2063,4 +2074,45 @@ function isPathInsideDir(candidatePath: string, parentDir: string): boolean {
   const resolvedParent = path.resolve(parentDir);
   const relative = path.relative(resolvedParent, resolvedCandidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isTypeScriptModulePath(filePath: string): boolean {
+  return TYPESCRIPT_MODULE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function resolveSourceWorkerEntrypoint(packageRoot: string, workerRelPath: string): string | null {
+  const resolvedPackageRoot = path.resolve(packageRoot);
+  const normalizedRelPath = workerRelPath.replace(/^\.?[\\/]/, "");
+  const workerBaseName = path.basename(normalizedRelPath, path.extname(normalizedRelPath)) || "worker";
+  const workerDir = path.dirname(normalizedRelPath);
+  const candidateDirs = new Set<string>();
+
+  if (workerDir && workerDir !== ".") {
+    candidateDirs.add(workerDir);
+    const workerDirSegments = workerDir.split(/[\\/]+/).filter(Boolean);
+    if (workerDirSegments[0] === "dist") {
+      candidateDirs.add(path.join("src", ...workerDirSegments.slice(1)));
+    }
+  }
+
+  candidateDirs.add("src");
+  candidateDirs.add("");
+
+  for (const candidateDir of candidateDirs) {
+    for (const ext of SOURCE_WORKER_ENTRY_EXTENSIONS) {
+      const entrypoint = path.resolve(packageRoot, candidateDir, `${workerBaseName}${ext}`);
+      if (!isPathInsideDir(entrypoint, resolvedPackageRoot) || !existsSync(entrypoint)) continue;
+      if (isTypeScriptModulePath(entrypoint) && !existsSync(DEV_TSX_LOADER_PATH)) continue;
+      return entrypoint;
+    }
+  }
+
+  return null;
+}
+
+export function resolveWorkerProcessExecArgv(entrypointPath: string): string[] | undefined {
+  if (!isTypeScriptModulePath(entrypointPath) || !existsSync(DEV_TSX_LOADER_PATH)) {
+    return undefined;
+  }
+  return ["--import", DEV_TSX_LOADER_PATH];
 }

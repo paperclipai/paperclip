@@ -30,6 +30,11 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
+  "agent_zero_bridge",
+  "cloudflare_workers_ai",
+  "custom_llm_local",
+  "ollama_http",
+  "ollama_local",
   "acpx_local",
   "claude_local",
   "codex_local",

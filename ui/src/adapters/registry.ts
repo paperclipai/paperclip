@@ -1,12 +1,17 @@
 import type { UIAdapterModule } from "./types";
 import { acpxLocalUIAdapter } from "./acpx-local";
+import { agentZeroBridgeUIAdapter } from "./agent-zero-bridge";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
+import { cloudflareWorkersAiUIAdapter } from "./cloudflare-workers-ai";
+import { customLlmLocalUIAdapter } from "./custom-llm-local";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
+import { ollamaLocalUIAdapter } from "./ollama-local";
+import { ollamaHttpUIAdapter } from "./ollama-http";
 import { hermesLocalUIAdapter } from "./hermes-local";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
@@ -51,14 +56,19 @@ setDynamicParserResultNotifier(notifyAdapterChange);
 function registerBuiltInUIAdapters() {
   for (const adapter of [
     acpxLocalUIAdapter,
+    agentZeroBridgeUIAdapter,
     claudeLocalUIAdapter,
+    cloudflareWorkersAiUIAdapter,
     codexLocalUIAdapter,
+    customLlmLocalUIAdapter,
     geminiLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,
     openClawGatewayUIAdapter,
+    ollamaLocalUIAdapter,
+    ollamaHttpUIAdapter,
     processUIAdapter,
     httpUIAdapter,
   ]) {

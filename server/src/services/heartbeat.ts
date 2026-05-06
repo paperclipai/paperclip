@@ -46,7 +46,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import { findActiveServerAdapter, getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -225,6 +225,9 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+const CLAUDE_QUOTA_FALLBACK_RE =
+  /(?:you['’]ve\s+hit\s+your\s+limit|usage\s+limit\s+reached|usage\s+cap\s+reached|out\s+of\s+extra\s+usage|extra\s+usage|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached|resets?\s+at)/i;
+const CLAUDE_QUOTA_FALLBACK_CODING_ROLES = new Set(["engineer", "qa", "devops", "security", "cto"]);
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -306,6 +309,200 @@ function mergeAdapterRecoveryMetadata(input: {
           transientRetryNotBefore: retryNotBefore,
         }
       : {}),
+  };
+}
+
+type HeartbeatQuotaFallbackConfig = {
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  requestedAdapterType: string | null;
+  normalizationReason: string | null;
+};
+
+function normalizeQuotaFallbackUrl(value: string): string {
+  const trimmed = value.trim();
+  if (/^https:\/[^/]/i.test(trimmed)) return trimmed.replace(/^https:\//i, "https://");
+  if (/^http:\/[^/]/i.test(trimmed)) return trimmed.replace(/^http:\//i, "http://");
+  return trimmed;
+}
+
+function resolveQuotaFallbackAdapterType(input: {
+  requestedAdapterType: string;
+  adapterConfig: Record<string, unknown>;
+}): { adapterType: string; normalizationReason: string | null } {
+  if (input.requestedAdapterType !== "openclaw_gateway") {
+    return {
+      adapterType: input.requestedAdapterType,
+      normalizationReason: null,
+    };
+  }
+
+  const configuredUrl = [
+    readNonEmptyString(input.adapterConfig.baseUrl),
+    readNonEmptyString(input.adapterConfig.url),
+    readNonEmptyString(input.adapterConfig.tagsUrl),
+    readNonEmptyString(input.adapterConfig.chatUrl),
+  ]
+    .map((value) => (value ? normalizeQuotaFallbackUrl(value) : null))
+    .find((value): value is string => Boolean(value));
+
+  if (!configuredUrl || !/^https?:\/\//i.test(configuredUrl)) {
+    return {
+      adapterType: input.requestedAdapterType,
+      normalizationReason: null,
+    };
+  }
+
+  return {
+    adapterType: "ollama_http",
+    normalizationReason:
+      `Configured Claude quota fallback adapter "${input.requestedAdapterType}" with an HTTP Ollama endpoint; ` +
+      `using "ollama_http" instead of the WebSocket-only OpenClaw gateway adapter.`,
+  };
+}
+
+function readBooleanEnvFlag(name: string): boolean | null {
+  const value = readNonEmptyString(process.env[name]);
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+}
+
+function readJsonObjectEnv(name: string): Record<string, unknown> {
+  const value = readNonEmptyString(process.env[name]);
+  if (!value) return {};
+  try {
+    return parseObject(JSON.parse(value));
+  } catch {
+    return {};
+  }
+}
+
+function resolveClaudeQuotaFallbackConfig(runtimeConfig: unknown): HeartbeatQuotaFallbackConfig | null {
+  const heartbeatConfig = parseObject(parseObject(runtimeConfig).heartbeat);
+  const quotaFallback = parseObject(heartbeatConfig.quotaFallback);
+  const explicitEnabled = typeof quotaFallback.enabled === "boolean" ? quotaFallback.enabled : null;
+  const envEnabled = readBooleanEnvFlag("PAPERCLIP_CLAUDE_QUOTA_FALLBACK_ENABLED");
+  const requestedAdapterType =
+    readNonEmptyString(quotaFallback.adapterType)
+    ?? readNonEmptyString(process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_ADAPTER_TYPE)
+    ?? "ollama_http";
+
+  const envAdapterConfigJson = readJsonObjectEnv("PAPERCLIP_CLAUDE_QUOTA_FALLBACK_ADAPTER_CONFIG_JSON");
+  const envHeaders = readJsonObjectEnv("PAPERCLIP_CLAUDE_QUOTA_FALLBACK_HEADERS_JSON");
+  const mergedEnvHeaders = {
+    ...parseObject(envAdapterConfigJson.headers),
+    ...envHeaders,
+  };
+  const envAdapterConfig: Record<string, unknown> = {
+    ...envAdapterConfigJson,
+    ...(readNonEmptyString(process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_BASE_URL)
+      ? { baseUrl: process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_BASE_URL }
+      : {}),
+    ...(readNonEmptyString(process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_URL)
+      ? { url: process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_URL }
+      : {}),
+    ...(readNonEmptyString(process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_TAGS_URL)
+      ? { tagsUrl: process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_TAGS_URL }
+      : {}),
+    ...(readNonEmptyString(process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_MODEL)
+      ? { model: process.env.PAPERCLIP_CLAUDE_QUOTA_FALLBACK_MODEL }
+      : {}),
+    ...(Object.keys(mergedEnvHeaders).length > 0 ? { headers: mergedEnvHeaders } : {}),
+  };
+  const configuredAdapterConfig = parseObject(quotaFallback.adapterConfig);
+  const inlineAdapterConfig: Record<string, unknown> = {
+    ...(readNonEmptyString(quotaFallback.baseUrl) ? { baseUrl: quotaFallback.baseUrl } : {}),
+    ...(readNonEmptyString(quotaFallback.url) ? { url: quotaFallback.url } : {}),
+    ...(readNonEmptyString(quotaFallback.tagsUrl) ? { tagsUrl: quotaFallback.tagsUrl } : {}),
+    ...(readNonEmptyString(quotaFallback.chatUrl) ? { chatUrl: quotaFallback.chatUrl } : {}),
+    ...(readNonEmptyString(quotaFallback.model) ? { model: quotaFallback.model } : {}),
+    ...(readNonEmptyString(quotaFallback.modelPreference)
+      ? { modelPreference: quotaFallback.modelPreference }
+      : {}),
+    ...(typeof quotaFallback.timeoutSec === "number" ? { timeoutSec: quotaFallback.timeoutSec } : {}),
+    ...(typeof quotaFallback.timeoutMs === "number" ? { timeoutMs: quotaFallback.timeoutMs } : {}),
+    ...(Object.keys(parseObject(quotaFallback.headers)).length > 0 ? { headers: parseObject(quotaFallback.headers) } : {}),
+  };
+  const adapterConfig = {
+    ...envAdapterConfig,
+    ...configuredAdapterConfig,
+    ...inlineAdapterConfig,
+  };
+  const { adapterType, normalizationReason } = resolveQuotaFallbackAdapterType({
+    requestedAdapterType,
+    adapterConfig,
+  });
+  const enabled = explicitEnabled ?? envEnabled ?? Object.keys(adapterConfig).length > 0;
+  if (!enabled) return null;
+
+  return {
+    adapterType,
+    adapterConfig,
+    requestedAdapterType: requestedAdapterType === adapterType ? null : requestedAdapterType,
+    normalizationReason,
+  };
+}
+
+function buildAdapterFailureHaystack(result: AdapterExecutionResult): string {
+  const resultJson = parseObject(result.resultJson);
+  const parts = [
+    readNonEmptyString(result.errorMessage),
+    readNonEmptyString(result.errorCode),
+    readNonEmptyString(result.retryNotBefore),
+    readNonEmptyString(resultJson.result),
+    readNonEmptyString(resultJson.message),
+    readNonEmptyString(resultJson.error),
+    readNonEmptyString(resultJson.stderr),
+    readNonEmptyString(resultJson.stdout),
+  ].filter((value): value is string => Boolean(value));
+  return parts.join("\n");
+}
+
+function isClaudeQuotaFallbackEligible(input: {
+  primaryAdapterType: string;
+  result: AdapterExecutionResult;
+}) {
+  if (input.primaryAdapterType !== "claude_local") return false;
+  if (input.result.errorCode !== "claude_transient_upstream" && input.result.errorFamily !== "transient_upstream") {
+    return false;
+  }
+  const haystack = buildAdapterFailureHaystack(input.result);
+  if (!haystack) return false;
+  if (CLAUDE_QUOTA_FALLBACK_RE.test(haystack)) return true;
+  return Boolean(input.result.retryNotBefore) && /(?:limit|usage|reset|extra\s+usage)/i.test(haystack);
+}
+
+function inferQuotaFallbackModelPreference(agent: Pick<typeof agents.$inferSelect, "role">) {
+  return CLAUDE_QUOTA_FALLBACK_CODING_ROLES.has(agent.role) ? "coding" : "general";
+}
+
+function mergeQuotaFallbackResultJson(input: {
+  resultJson: Record<string, unknown> | null | undefined;
+  primaryAdapterType: string;
+  primaryResult: AdapterExecutionResult;
+  fallbackAdapterType: string;
+  fallbackSucceeded: boolean;
+  fallbackModel?: string | null;
+  fallbackErrorMessage?: string | null;
+}) {
+  return {
+    ...(input.resultJson ?? {}),
+    quotaFallback: {
+      triggered: true,
+      primaryAdapterType: input.primaryAdapterType,
+      primaryErrorCode: input.primaryResult.errorCode ?? null,
+      primaryErrorFamily: input.primaryResult.errorFamily ?? null,
+      primaryErrorMessage: input.primaryResult.errorMessage ?? null,
+      primaryModel: input.primaryResult.model ?? null,
+      primaryRetryNotBefore: input.primaryResult.retryNotBefore ?? null,
+      fallbackAdapterType: input.fallbackAdapterType,
+      fallbackSucceeded: input.fallbackSucceeded,
+      fallbackModel: input.fallbackModel ?? null,
+      fallbackErrorMessage: input.fallbackErrorMessage ?? null,
+    },
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
@@ -7370,7 +7567,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
+      let effectiveAdapterType = agent.adapterType;
+      let usageSessionIdOverride: string | null | undefined;
+      let adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
@@ -7395,10 +7594,257 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         authToken: authToken ?? undefined,
       });
+      if (isClaudeQuotaFallbackEligible({ primaryAdapterType: agent.adapterType, result: adapterResult })) {
+        const quotaFallback = resolveClaudeQuotaFallbackConfig(agent.runtimeConfig);
+        if (quotaFallback) {
+          if (quotaFallback.normalizationReason) {
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: quotaFallback.normalizationReason,
+              payload: {
+                primaryAdapterType: agent.adapterType,
+                requestedFallbackAdapterType: quotaFallback.requestedAdapterType,
+                fallbackAdapterType: quotaFallback.adapterType,
+              },
+            });
+          }
+          const fallbackAdapter = findActiveServerAdapter(quotaFallback.adapterType);
+          if (!fallbackAdapter) {
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: `Configured quota fallback adapter \"${quotaFallback.adapterType}\" is unavailable; keeping primary failure result`,
+              payload: {
+                primaryAdapterType: agent.adapterType,
+                primaryErrorCode: adapterResult.errorCode,
+              },
+            });
+          } else if (quotaFallback.adapterType === agent.adapterType) {
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: `Ignoring quota fallback because adapter \"${quotaFallback.adapterType}\" matches the primary adapter`,
+              payload: {
+                primaryAdapterType: agent.adapterType,
+              },
+            });
+          } else {
+            const primaryAdapterResult = adapterResult;
+            const fallbackAdapterConfig: Record<string, unknown> = {
+              ...quotaFallback.adapterConfig,
+            };
+            if (
+              !Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "promptTemplate")
+              && typeof effectiveResolvedConfig.promptTemplate === "string"
+            ) {
+              fallbackAdapterConfig.promptTemplate = effectiveResolvedConfig.promptTemplate;
+            }
+            if (
+              !Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "bootstrapPromptTemplate")
+              && typeof effectiveResolvedConfig.bootstrapPromptTemplate === "string"
+            ) {
+              fallbackAdapterConfig.bootstrapPromptTemplate = effectiveResolvedConfig.bootstrapPromptTemplate;
+            }
+            if (
+              !Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "instructionsFilePath")
+              && typeof effectiveResolvedConfig.instructionsFilePath === "string"
+            ) {
+              fallbackAdapterConfig.instructionsFilePath = effectiveResolvedConfig.instructionsFilePath;
+            }
+            if (
+              !Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "cwd")
+              && typeof effectiveResolvedConfig.cwd === "string"
+            ) {
+              fallbackAdapterConfig.cwd = effectiveResolvedConfig.cwd;
+            }
+            const hasFallbackTimeoutSec = Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "timeoutSec");
+            const hasFallbackTimeoutMs = Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "timeoutMs");
+            if (quotaFallback.adapterType === "ollama_http") {
+              if (
+                hasFallbackTimeoutSec
+                && typeof fallbackAdapterConfig.timeoutSec === "number"
+                && fallbackAdapterConfig.timeoutSec > 0
+              ) {
+                fallbackAdapterConfig.timeoutSec = Math.max(300, fallbackAdapterConfig.timeoutSec);
+              }
+              if (
+                hasFallbackTimeoutMs
+                && typeof fallbackAdapterConfig.timeoutMs === "number"
+                && fallbackAdapterConfig.timeoutMs > 0
+              ) {
+                fallbackAdapterConfig.timeoutMs = Math.max(300_000, fallbackAdapterConfig.timeoutMs);
+              }
+              if (!hasFallbackTimeoutSec && !hasFallbackTimeoutMs) {
+                if (
+                  typeof effectiveResolvedConfig.timeoutSec === "number"
+                  && effectiveResolvedConfig.timeoutSec > 0
+                ) {
+                  fallbackAdapterConfig.timeoutSec = Math.max(300, effectiveResolvedConfig.timeoutSec);
+                } else if (
+                  typeof effectiveResolvedConfig.timeoutMs === "number"
+                  && effectiveResolvedConfig.timeoutMs > 0
+                ) {
+                  fallbackAdapterConfig.timeoutMs = Math.max(300_000, effectiveResolvedConfig.timeoutMs);
+                }
+              }
+            } else {
+              if (
+                !hasFallbackTimeoutSec
+                && typeof effectiveResolvedConfig.timeoutSec === "number"
+              ) {
+                fallbackAdapterConfig.timeoutSec = effectiveResolvedConfig.timeoutSec;
+              }
+              if (
+                !hasFallbackTimeoutMs
+                && typeof effectiveResolvedConfig.timeoutMs === "number"
+              ) {
+                fallbackAdapterConfig.timeoutMs = effectiveResolvedConfig.timeoutMs;
+              }
+            }
+            if (
+              quotaFallback.adapterType === "ollama_http"
+              && !Object.prototype.hasOwnProperty.call(fallbackAdapterConfig, "modelPreference")
+            ) {
+              fallbackAdapterConfig.modelPreference = inferQuotaFallbackModelPreference(agent);
+            }
+
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: `Primary adapter hit a Claude quota/usage limit; invoking fallback adapter \"${quotaFallback.adapterType}\"`,
+              payload: {
+                primaryAdapterType: agent.adapterType,
+                primaryErrorCode: primaryAdapterResult.errorCode,
+                retryNotBefore: primaryAdapterResult.retryNotBefore ?? null,
+                fallbackAdapterType: quotaFallback.adapterType,
+              },
+            });
+
+            const fallbackAuthToken = fallbackAdapter.supportsLocalAgentJwt
+              ? createLocalAgentJwt(agent.id, agent.companyId, quotaFallback.adapterType, run.id)
+              : null;
+            const fallbackAgent = {
+              ...agent,
+              adapterType: quotaFallback.adapterType,
+              adapterConfig: fallbackAdapterConfig,
+            };
+            const fallbackRuntime = {
+              sessionId: null,
+              sessionParams: null,
+              sessionDisplayId: null,
+              taskKey,
+            };
+
+            let fallbackResult: AdapterExecutionResult;
+            try {
+              fallbackResult = await fallbackAdapter.execute({
+                runId: run.id,
+                agent: fallbackAgent,
+                runtime: fallbackRuntime,
+                config: fallbackAdapterConfig,
+                context,
+                executionTarget,
+                executionTransport: remoteExecution
+                  ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+                  : undefined,
+                onLog,
+                onMeta: async (meta) => {
+                  await onAdapterMeta({
+                    ...meta,
+                    commandNotes: [
+                      ...(meta.commandNotes ?? []),
+                      `Invoked as quota fallback after ${agent.adapterType} reported a provider usage limit.`,
+                    ],
+                  });
+                },
+                onSpawn: async (meta) => {
+                  await persistRunProcessMetadata(run.id, {
+                    pid: meta.pid,
+                    processGroupId:
+                      "processGroupId" in meta && typeof meta.processGroupId === "number"
+                        ? meta.processGroupId
+                        : null,
+                    startedAt: meta.startedAt,
+                  });
+                },
+                authToken: fallbackAuthToken ?? undefined,
+              });
+            } catch (fallbackErr) {
+              const fallbackMessage = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+              fallbackResult = {
+                exitCode: 1,
+                signal: null,
+                timedOut: false,
+                errorCode: "quota_fallback_failed",
+                errorMessage:
+                  `Claude quota fallback via ${quotaFallback.adapterType} failed: ${fallbackMessage}. ` +
+                  `Original error: ${primaryAdapterResult.errorMessage ?? primaryAdapterResult.errorCode ?? "claude_transient_upstream"}`,
+                errorFamily: primaryAdapterResult.errorFamily ?? null,
+                retryNotBefore: primaryAdapterResult.retryNotBefore ?? null,
+                resultJson: {
+                  quotaFallbackFailure: {
+                    fallbackAdapterType: quotaFallback.adapterType,
+                    error: fallbackMessage,
+                  },
+                },
+              };
+            }
+
+            const fallbackFailed =
+              fallbackResult.timedOut ||
+              (fallbackResult.exitCode ?? 0) !== 0 ||
+              Boolean(fallbackResult.errorMessage);
+            adapterResult = {
+              ...fallbackResult,
+              sessionId: undefined,
+              sessionParams: undefined,
+              sessionDisplayId: undefined,
+              clearSession: false,
+              errorFamily: fallbackFailed
+                ? (fallbackResult.errorFamily ?? primaryAdapterResult.errorFamily ?? null)
+                : fallbackResult.errorFamily,
+              retryNotBefore: fallbackFailed
+                ? (fallbackResult.retryNotBefore ?? primaryAdapterResult.retryNotBefore ?? null)
+                : fallbackResult.retryNotBefore,
+              resultJson: mergeQuotaFallbackResultJson({
+                resultJson: fallbackResult.resultJson ?? null,
+                primaryAdapterType: agent.adapterType,
+                primaryResult: primaryAdapterResult,
+                fallbackAdapterType: quotaFallback.adapterType,
+                fallbackSucceeded: !fallbackFailed,
+                fallbackModel: fallbackResult.model ?? null,
+                fallbackErrorMessage: fallbackResult.errorMessage ?? null,
+              }),
+            };
+            effectiveAdapterType = quotaFallback.adapterType;
+            usageSessionIdOverride = null;
+
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: fallbackFailed ? "error" : "info",
+              message: fallbackFailed
+                ? `Quota fallback adapter \"${quotaFallback.adapterType}\" failed`
+                : `Quota fallback adapter \"${quotaFallback.adapterType}\" succeeded`,
+              payload: {
+                primaryAdapterType: agent.adapterType,
+                fallbackAdapterType: quotaFallback.adapterType,
+                fallbackErrorCode: adapterResult.errorCode ?? null,
+                fallbackModel: adapterResult.model ?? null,
+              },
+            });
+          }
+        }
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: effectiveAdapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -7454,7 +7900,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const sessionUsageResolution = await resolveNormalizedUsageForSession({
         agentId: agent.id,
         runId: run.id,
-        sessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        sessionId: usageSessionIdOverride !== undefined
+          ? usageSessionIdOverride
+          : (nextSessionState.displayId ?? nextSessionState.legacySessionId),
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
@@ -8603,6 +9051,92 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+          const unresolvedBlockers = await listUnresolvedBlockerSummaries(
+            tx,
+            issue.companyId,
+            issue.id,
+            dependencyReadiness.unresolvedBlockerIssueIds,
+          );
+          const blockerWakeups: Array<{ agentId: string; runId: string; wakeupRequestId: string; issueId: string }> = [];
+
+          for (const blocker of unresolvedBlockers) {
+            if (!blocker.assigneeAgentId) continue;
+            if (["done", "cancelled"].includes(blocker.status)) continue;
+
+            const existingBlockerRun = await tx
+              .select({ id: heartbeatRuns.id })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, issue.companyId),
+                  eq(heartbeatRuns.agentId, blocker.assigneeAgentId),
+                  inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blocker.id}`,
+                ),
+              )
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (existingBlockerRun) continue;
+
+            const blockerContextSnapshot = {
+              issueId: blocker.id,
+              taskId: blocker.id,
+              taskKey: blocker.id,
+              wakeReason: "dependency_blocker_unblock_dispatch",
+              wakeSource: "automation",
+              wakeTriggerDetail: "system",
+              dependentIssueId: issue.id,
+            };
+            const blockerAgent = blocker.assigneeAgentId === agent.id ? agent : await getAgent(blocker.assigneeAgentId);
+            if (!blockerAgent) continue;
+            const blockerWakeupRequest = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: issue.companyId,
+                agentId: blocker.assigneeAgentId,
+                source: "automation",
+                triggerDetail: "system",
+                reason: "dependency_blocker_unblock_dispatch",
+                payload: {
+                  issueId: blocker.id,
+                  mutation: "dependency_blocker_unblock_dispatch",
+                  dependentIssueId: issue.id,
+                },
+                status: "queued",
+                requestedByActorType: opts.requestedByActorType ?? "system",
+                requestedByActorId: opts.requestedByActorId ?? null,
+              })
+              .returning()
+              .then((rows) => rows[0]);
+
+            const blockerRun = await tx
+              .insert(heartbeatRuns)
+              .values({
+                companyId: issue.companyId,
+                agentId: blocker.assigneeAgentId,
+                invocationSource: "automation",
+                triggerDetail: "system",
+                status: "queued",
+                wakeupRequestId: blockerWakeupRequest.id,
+                contextSnapshot: blockerContextSnapshot,
+                sessionIdBefore: await resolveSessionBeforeForWakeup(blockerAgent, blocker.id),
+              })
+              .returning()
+              .then((rows) => rows[0]);
+
+            await tx
+              .update(agentWakeupRequests)
+              .set({ runId: blockerRun.id, updatedAt: new Date() })
+              .where(eq(agentWakeupRequests.id, blockerWakeupRequest.id));
+
+            blockerWakeups.push({
+              agentId: blocker.assigneeAgentId,
+              issueId: blocker.id,
+              runId: blockerRun.id,
+              wakeupRequestId: blockerWakeupRequest.id,
+            });
+          }
+
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
@@ -8613,6 +9147,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(payload ?? {}),
               issueId,
               unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+              queuedBlockerIssueIds: blockerWakeups.map((entry) => entry.issueId),
+              queuedBlockerRunIds: blockerWakeups.map((entry) => entry.runId),
             },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
@@ -8620,6 +9156,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
+          if (blockerWakeups.length > 0) {
+            return {
+              kind: "dependency_blocked" as const,
+              blockerAgentIds: [...new Set(blockerWakeups.map((entry) => entry.agentId))],
+            };
+          }
           return { kind: "skipped" as const };
         }
 
@@ -8784,6 +9326,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
+      if (outcome.kind === "dependency_blocked") {
+        for (const blockerAgentId of outcome.blockerAgentIds) {
+          await startNextQueuedRunForAgent(blockerAgentId);
+        }
+        return null;
+      }
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);

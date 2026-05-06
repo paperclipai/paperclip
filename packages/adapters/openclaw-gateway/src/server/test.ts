@@ -47,6 +47,20 @@ function toStringArray(value: unknown): string[] {
   return [];
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function parseBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") return true;
+    if (normalized === "false" || normalized === "0") return false;
+  }
+  return fallback;
+}
+
 function headerMapGetIgnoreCase(headers: Record<string, string>, key: string): string | null {
   const match = Object.entries(headers).find(([entryKey]) => entryKey.toLowerCase() === key.toLowerCase());
   return match ? match[1] : null;
@@ -73,6 +87,12 @@ function resolveAuthToken(config: Record<string, unknown>, headers: Record<strin
   return tokenFromAuthHeader(authHeader);
 }
 
+type ProbeGatewayResult = "ok" | "challenge_only" | "failed" | "missing_scope";
+
+function isGatewayPasswordRequiredResult(result: ProbeGatewayResult): boolean {
+  return result === "challenge_only" || result === "failed";
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -94,10 +114,15 @@ async function probeGateway(input: {
   url: string;
   headers: Record<string, string>;
   authToken: string | null;
+  password: string | null;
   role: string;
   scopes: string[];
   timeoutMs: number;
-}): Promise<"ok" | "challenge_only" | "failed"> {
+  postConnectRequest?: {
+    method: string;
+    params?: Record<string, unknown>;
+  };
+}): Promise<ProbeGatewayResult> {
   return await new Promise((resolve) => {
     const ws = new WebSocket(input.url, { headers: input.headers, maxPayload: 2 * 1024 * 1024 });
     const timeout = setTimeout(() => {
@@ -110,8 +135,10 @@ async function probeGateway(input: {
     }, input.timeoutMs);
 
     let completed = false;
+    let connectRequestId: string | null = null;
+    let postConnectRequestId: string | null = null;
 
-    const finish = (status: "ok" | "challenge_only" | "failed") => {
+    const finish = (status: ProbeGatewayResult) => {
       if (completed) return;
       completed = true;
       clearTimeout(timeout);
@@ -130,6 +157,7 @@ async function probeGateway(input: {
       } catch {
         return;
       }
+
       const event = asRecord(parsed);
       if (event?.type === "event" && event.event === "connect.challenge") {
         const nonce = nonEmpty(asRecord(event.payload)?.nonce);
@@ -139,6 +167,7 @@ async function probeGateway(input: {
         }
 
         const connectId = randomUUID();
+        connectRequestId = connectId;
         ws.send(
           JSON.stringify({
             type: "req",
@@ -155,10 +184,11 @@ async function probeGateway(input: {
               },
               role: input.role,
               scopes: input.scopes,
-              ...(input.authToken
+              ...(input.authToken || input.password
                 ? {
                     auth: {
-                      token: input.authToken,
+                      ...(input.authToken ? { token: input.authToken } : {}),
+                      ...(input.password ? { password: input.password } : {}),
                     },
                   }
                 : {}),
@@ -168,12 +198,48 @@ async function probeGateway(input: {
         return;
       }
 
-      if (event?.type === "res") {
+      if (event?.type !== "res") return;
+
+      if (event.id === connectRequestId) {
+        if (event.ok !== true) {
+          finish("challenge_only");
+          return;
+        }
+
+        if (!input.postConnectRequest) {
+          finish("ok");
+          return;
+        }
+
+        const requestId = randomUUID();
+        postConnectRequestId = requestId;
+        ws.send(
+          JSON.stringify({
+            type: "req",
+            id: requestId,
+            method: input.postConnectRequest.method,
+            params: input.postConnectRequest.params ?? {},
+          }),
+        );
+        return;
+      }
+
+      if (event.id === postConnectRequestId) {
         if (event.ok === true) {
           finish("ok");
-        } else {
-          finish("challenge_only");
+          return;
         }
+
+        const errorRecord = asRecord(event.error);
+        const message =
+          nonEmpty(errorRecord?.message) ??
+          nonEmpty(errorRecord?.code) ??
+          "gateway request failed";
+        if (/missing scope:\s*operator\.pairing/i.test(message)) {
+          finish("missing_scope");
+          return;
+        }
+        finish("failed");
       }
     });
 
@@ -185,6 +251,29 @@ async function probeGateway(input: {
       if (!completed) finish("failed");
     });
   });
+}
+
+async function probeGatewayWithPasswordFallback(input: {
+  url: string;
+  headers: Record<string, string>;
+  authToken: string | null;
+  password: string | null;
+  role: string;
+  scopes: string[];
+  timeoutMs: number;
+  postConnectRequest?: {
+    method: string;
+    params?: Record<string, unknown>;
+  };
+}): Promise<ProbeGatewayResult> {
+  const initialResult = await probeGateway(input);
+  if (isGatewayPasswordRequiredResult(initialResult) && !input.password && input.authToken) {
+    return probeGateway({
+      ...input,
+      password: input.authToken,
+    });
+  }
+  return initialResult;
 }
 
 export async function testEnvironment(
@@ -251,6 +340,7 @@ export async function testEnvironment(
   const password = nonEmpty(config.password);
   const role = nonEmpty(config.role) ?? "operator";
   const scopes = toStringArray(config.scopes);
+  const disableDeviceAuth = parseBoolean(config.disableDeviceAuth, false);
 
   if (authToken || password) {
     checks.push({
@@ -269,22 +359,64 @@ export async function testEnvironment(
 
   if (url && (url.protocol === "ws:" || url.protocol === "wss:")) {
     try {
-      const probeResult = await probeGateway({
+      const effectiveProbeResult = await probeGatewayWithPasswordFallback({
         url: url.toString(),
         headers,
         authToken,
+        password,
         role,
         scopes: scopes.length > 0 ? scopes : ["operator.admin"],
         timeoutMs: 3_000,
       });
 
-      if (probeResult === "ok") {
+      if (effectiveProbeResult === "ok") {
         checks.push({
           code: "openclaw_gateway_probe_ok",
           level: "info",
           message: "Gateway connect probe succeeded.",
         });
-      } else if (probeResult === "challenge_only") {
+
+        if (!disableDeviceAuth && (authToken || password)) {
+          const pairingScopeProbe = await probeGatewayWithPasswordFallback({
+            url: url.toString(),
+            headers,
+            authToken,
+            password,
+            role,
+            scopes: uniqueStrings([...(scopes.length > 0 ? scopes : ["operator.admin"]), "operator.pairing"]),
+            timeoutMs: 3_000,
+            postConnectRequest: {
+              method: "device.pair.list",
+              params: {},
+            },
+          });
+
+          if (pairingScopeProbe === "ok") {
+            checks.push({
+              code: "openclaw_gateway_pairing_scope_ok",
+              level: "info",
+              message: "Gateway credentials can access device pairing methods.",
+            });
+          } else if (pairingScopeProbe === "missing_scope") {
+            checks.push({
+              code: "openclaw_gateway_pairing_scope_missing",
+              level: "warn",
+              message:
+                "Gateway connect probe succeeded, but device pairing methods were rejected for missing scope: operator.pairing.",
+              hint:
+                "Auto-pair on first connect will fail unless the gateway grants operator.pairing. Use credentials that can request operator.pairing, approve the device manually once, or disable device auth.",
+            });
+          } else {
+            checks.push({
+              code: "openclaw_gateway_pairing_scope_unverified",
+              level: "warn",
+              message: "Gateway connect probe succeeded, but Paperclip could not verify access to device pairing methods.",
+              hint:
+                "If runs fail with pairing errors, ensure the gateway grants operator.pairing or approve the device manually once.",
+            });
+          }
+        }
+      } else if (effectiveProbeResult === "challenge_only") {
         checks.push({
           code: "openclaw_gateway_probe_challenge_only",
           level: "warn",

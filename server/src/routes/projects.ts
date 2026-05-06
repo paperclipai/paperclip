@@ -1,5 +1,10 @@
+import { execFile as execFileCallback } from "node:child_process";
+import fs from "node:fs/promises";
+import { promisify } from "node:util";
+import { and, desc, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
+import { activityLog } from "@paperclipai/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -13,8 +18,8 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
-import { conflict, forbidden } from "../errors.js";
+import { projectProgressSyncService, projectService, logActivity, workspaceOperationService, workProductService } from "../services/index.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -34,13 +39,23 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import {
+  WorkspaceFileBrowserError,
+  listWorkspaceFiles,
+  readWorkspaceFileContent,
+  resolveWorkspaceFileForDownload,
+} from "../services/workspace-file-browser.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
+const execFile = promisify(execFileCallback);
+const COMMAND_OUTPUT_MAX_BUFFER = 512 * 1024;
 
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const workProducts = workProductService(db);
+  const projectProgressSync = projectProgressSyncService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
@@ -80,12 +95,189 @@ export function projectRoutes(db: Db) {
   async function normalizeProjectReference(req: Request, rawId: string) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
-    if (!companyId) return rawId;
+    if (!companyId) throw notFound("Project not found");
     const resolved = await svc.resolveByReference(companyId, rawId);
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }
-    return resolved.project?.id ?? rawId;
+    if (!resolved.project) throw notFound("Project not found");
+    return resolved.project.id;
+  }
+
+  function tryHandleWorkspaceBrowserError(res: Response, error: unknown) {
+    if (error instanceof WorkspaceFileBrowserError) {
+      res.status(error.status).json({ error: error.message });
+      return true;
+    }
+    return false;
+  }
+
+  function readWorkspaceBrowserPath(req: Request) {
+    const pathQuery = req.query.path;
+    return typeof pathQuery === "string" ? pathQuery : "";
+  }
+
+  function resolveProjectWorkspaceBrowserRoot(project: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, workspaceId: string, cwd: string | null) {
+    return cwd ?? (project.codebase.workspaceId === workspaceId ? project.codebase.effectiveLocalFolder : null);
+  }
+
+  async function pathExists(pathValue: string | null | undefined) {
+    if (!pathValue) return false;
+    return fs.access(pathValue).then(() => true, () => false);
+  }
+
+  async function runCommand(command: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+    try {
+      const result = await execFile(command, args, {
+        cwd: opts.cwd,
+        env: opts.env ?? process.env,
+        timeout: 60_000,
+        maxBuffer: COMMAND_OUTPUT_MAX_BUFFER,
+      });
+      return {
+        ok: true as const,
+        stdout: result.stdout?.toString() ?? "",
+        stderr: result.stderr?.toString() ?? "",
+      };
+    } catch (error) {
+      const err = error as Error & { stdout?: string | Buffer; stderr?: string | Buffer; code?: number | string };
+      return {
+        ok: false as const,
+        code: err.code ?? null,
+        stdout: err.stdout?.toString() ?? "",
+        stderr: err.stderr?.toString() ?? err.message,
+      };
+    }
+  }
+
+  async function readGitIntegrationStatus(project: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    const rootPath = project.codebase.effectiveLocalFolder;
+    const localPathAvailable = await pathExists(rootPath);
+    const base = {
+      connected: Boolean(project.codebase.repoUrl),
+      repoUrl: project.codebase.repoUrl,
+      repoName: project.codebase.repoName,
+      rootPath,
+      localPathAvailable,
+      isGitCheckout: false,
+      branch: null as string | null,
+      commitSha: null as string | null,
+      remoteUrl: null as string | null,
+      upstream: null as string | null,
+      ahead: null as number | null,
+      behind: null as number | null,
+      dirty: null as boolean | null,
+      synced: false,
+      status: localPathAvailable ? "not_git_checkout" : "missing_local_path",
+      message: localPathAvailable ? "Local path exists but is not a Git checkout." : "Local project files are not available on this host yet.",
+    };
+    if (!localPathAvailable) return base;
+
+    const inside = await runCommand("git", ["-C", rootPath, "rev-parse", "--is-inside-work-tree"]);
+    if (!inside.ok || inside.stdout.trim() !== "true") return base;
+
+    const [branch, commit, remote, upstream, porcelain] = await Promise.all([
+      runCommand("git", ["-C", rootPath, "branch", "--show-current"]),
+      runCommand("git", ["-C", rootPath, "rev-parse", "HEAD"]),
+      runCommand("git", ["-C", rootPath, "remote", "get-url", "origin"]),
+      runCommand("git", ["-C", rootPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+      runCommand("git", ["-C", rootPath, "status", "--porcelain"]),
+    ]);
+    let ahead: number | null = null;
+    let behind: number | null = null;
+    const upstreamName = upstream.ok ? upstream.stdout.trim() || null : null;
+    if (upstreamName) {
+      const counts = await runCommand("git", ["-C", rootPath, "rev-list", "--left-right", "--count", `${upstreamName}...HEAD`]);
+      if (counts.ok) {
+        const [behindRaw, aheadRaw] = counts.stdout.trim().split(/\s+/);
+        behind = Number.isFinite(Number(behindRaw)) ? Number(behindRaw) : null;
+        ahead = Number.isFinite(Number(aheadRaw)) ? Number(aheadRaw) : null;
+      }
+    }
+    const dirty = porcelain.ok ? porcelain.stdout.trim().length > 0 : null;
+    const synced = Boolean(project.codebase.repoUrl) && dirty === false && (ahead ?? 0) === 0;
+    return {
+      ...base,
+      isGitCheckout: true,
+      branch: branch.ok ? branch.stdout.trim() || null : null,
+      commitSha: commit.ok ? commit.stdout.trim() || null : null,
+      remoteUrl: remote.ok ? remote.stdout.trim() || null : null,
+      upstream: upstreamName,
+      ahead,
+      behind,
+      dirty,
+      synced,
+      status: synced ? "synced" : "needs_sync",
+      message: synced
+        ? "Local checkout is clean and has no unpushed commits."
+        : "Local checkout has uncommitted changes, unpushed commits, or no upstream tracking branch.",
+    };
+  }
+
+  async function readVercelIntegrationStatus(companyId: string, projectId: string) {
+    const products = await workProducts.listForProject(companyId, projectId);
+    const deployments = products.filter((product) => {
+      const provider = product.provider.toLowerCase();
+      const url = product.url?.toLowerCase() ?? "";
+      return provider.includes("vercel") || url.includes("vercel.app");
+    });
+    const latestActivityDeployment = await db
+      .select({ details: activityLog.details, createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "project"),
+          eq(activityLog.entityId, projectId),
+          eq(activityLog.action, "project.vercel_deployed"),
+        ),
+      )
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const activityDeploymentUrl =
+      latestActivityDeployment?.details && typeof latestActivityDeployment.details === "object"
+        ? (latestActivityDeployment.details as Record<string, unknown>).deploymentUrl
+        : null;
+    const latest = deployments[0] ?? (
+      typeof activityDeploymentUrl === "string" && activityDeploymentUrl.trim().length > 0
+        ? {
+            id: `activity:${latestActivityDeployment!.createdAt.toISOString()}`,
+            companyId,
+            projectId,
+            issueId: null,
+            executionWorkspaceId: null,
+            runtimeServiceId: null,
+            type: "preview_url",
+            provider: "vercel",
+            externalId: null,
+            title: "Vercel deployment",
+            url: activityDeploymentUrl,
+            status: "deployed",
+            reviewState: "not_requested",
+            isPrimary: true,
+            healthStatus: null,
+            summary: "Deployment triggered by Paperclip automation.",
+            metadata: null,
+            createdByRunId: null,
+            createdAt: latestActivityDeployment!.createdAt,
+            updatedAt: latestActivityDeployment!.createdAt,
+            issueTitle: "Project deployment",
+            issueIdentifier: null,
+            issueStatus: "done",
+          }
+        : null
+    );
+    return {
+      deployed: Boolean(latest?.url),
+      latestDeployment: latest,
+      deploymentCount: deployments.length,
+      hasToken: Boolean(process.env.VERCEL_TOKEN),
+      status: latest?.url ? "deployed" : "not_deployed",
+      message: latest?.url
+        ? "Latest Vercel deployment was found in project work products."
+        : "No Vercel deployment URL is attached to this project yet.",
+    };
   }
 
   router.param("id", async (req, _res, next, rawId) => {
@@ -113,6 +305,313 @@ export function projectRoutes(db: Db) {
     }
     assertCompanyAccess(req, project.companyId);
     res.json(project);
+  });
+
+  router.get("/projects/:id/work-products", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    res.json(await workProducts.listForProject(project.companyId, project.id));
+  });
+
+  router.get("/projects/:id/integration-status", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    const [github, vercel] = await Promise.all([
+      readGitIntegrationStatus(project),
+      readVercelIntegrationStatus(project.companyId, project.id),
+    ]);
+    res.json({ github, vercel });
+  });
+
+  router.post("/projects/:id/github/:action", async (req, res) => {
+    const id = req.params.id as string;
+    const action = String(req.params.action ?? "").trim().toLowerCase();
+    if (action !== "pull" && action !== "push" && action !== "sync-progress") {
+      res.status(404).json({ error: "GitHub action not found" });
+      return;
+    }
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only the board can run project GitHub sync actions" });
+      return;
+    }
+    if (action === "sync-progress") {
+      const result = await projectProgressSync.syncProjectProgressToGitHub(project.id, {
+        reason: "manual_project_system_action",
+        force: true,
+      });
+      if (result.status === "failed") {
+        res.status(422).json({ error: result.message, result, github: await readGitIntegrationStatus(project) });
+        return;
+      }
+      res.json({ action, result, stdout: "", stderr: "", github: await readGitIntegrationStatus(project) });
+      return;
+    }
+    const status = await readGitIntegrationStatus(project);
+    if (!status.localPathAvailable || !status.isGitCheckout) {
+      res.status(422).json({ error: "Project codebase is not available as a local Git checkout" });
+      return;
+    }
+    const result = action === "pull"
+      ? await runCommand("git", ["-C", status.rootPath, "pull", "--ff-only"])
+      : await runCommand("git", ["-C", status.rootPath, "push"]);
+    if (!result.ok) {
+      res.status(422).json({ error: result.stderr || result.stdout || `git ${action} failed`, stdout: result.stdout, stderr: result.stderr });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: `project.github_${action}`,
+      entityType: "project",
+      entityId: project.id,
+      details: {
+        rootPath: status.rootPath,
+        branch: status.branch,
+        repoUrl: status.repoUrl,
+      },
+    });
+
+    res.json({ action, stdout: result.stdout, stderr: result.stderr, github: await readGitIntegrationStatus(project) });
+  });
+
+  router.post("/projects/:id/vercel/deploy", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only the board can deploy projects to Vercel" });
+      return;
+    }
+    const rootPath = project.codebase.effectiveLocalFolder;
+    if (!await pathExists(rootPath)) {
+      res.status(422).json({ error: "Project codebase is not available on this host yet" });
+      return;
+    }
+    if (!process.env.VERCEL_TOKEN) {
+      res.status(422).json({ error: "VERCEL_TOKEN is required before Paperclip can deploy this project to Vercel" });
+      return;
+    }
+    const prod = Boolean((req.body as { production?: unknown } | undefined)?.production);
+    const args = ["deploy", "--yes", "--token", process.env.VERCEL_TOKEN, ...(prod ? ["--prod"] : [])];
+    const result = await runCommand("vercel", args, { cwd: rootPath, env: process.env });
+    if (!result.ok) {
+      res.status(422).json({ error: result.stderr || result.stdout || "Vercel deploy failed", stdout: result.stdout, stderr: result.stderr });
+      return;
+    }
+    const deploymentUrl = [...result.stdout.matchAll(/https:\/\/[^\s]+/g)].map((match) => match[0]).at(-1) ?? null;
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.vercel_deployed",
+      entityType: "project",
+      entityId: project.id,
+      details: {
+        rootPath,
+        production: prod,
+        deploymentUrl,
+      },
+    });
+
+    res.json({ deploymentUrl, stdout: result.stdout, stderr: result.stderr, vercel: await readVercelIntegrationStatus(project.companyId, project.id) });
+  });
+
+  router.get("/projects/:id/codebase/files", async (req, res, next) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    try {
+      res.json(
+        await listWorkspaceFiles({
+          workspaceKind: "project_codebase",
+          workspaceId: project.id,
+          workspaceName: `${project.name} codebase`,
+          rootPath: project.codebase.effectiveLocalFolder,
+          relativePath: readWorkspaceBrowserPath(req),
+        }),
+      );
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/projects/:id/codebase/file-content", async (req, res, next) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    try {
+      res.json(
+        await readWorkspaceFileContent({
+          workspaceKind: "project_codebase",
+          workspaceId: project.id,
+          workspaceName: `${project.name} codebase`,
+          rootPath: project.codebase.effectiveLocalFolder,
+          relativePath: readWorkspaceBrowserPath(req),
+        }),
+      );
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/projects/:id/codebase/file-raw", async (req, res, next) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    try {
+      const file = await resolveWorkspaceFileForDownload({
+        rootPath: project.codebase.effectiveLocalFolder,
+        relativePath: readWorkspaceBrowserPath(req),
+      });
+      if (file.contentType) res.type(file.contentType);
+      res.sendFile(file.absolutePath);
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/projects/:id/workspaces/:workspaceId/files", async (req, res, next) => {
+    const id = req.params.id as string;
+    const workspaceId = req.params.workspaceId as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
+    if (!workspace) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return;
+    }
+    const rootPath = resolveProjectWorkspaceBrowserRoot(project, workspace.id, workspace.cwd);
+    if (!rootPath) {
+      res.status(422).json({ error: "Project workspace needs a local path before Paperclip can browse files" });
+      return;
+    }
+
+    try {
+      res.json(
+        await listWorkspaceFiles({
+          workspaceKind: "project_workspace",
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          rootPath,
+          relativePath: readWorkspaceBrowserPath(req),
+        }),
+      );
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/projects/:id/workspaces/:workspaceId/file-content", async (req, res, next) => {
+    const id = req.params.id as string;
+    const workspaceId = req.params.workspaceId as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
+    if (!workspace) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return;
+    }
+    const rootPath = resolveProjectWorkspaceBrowserRoot(project, workspace.id, workspace.cwd);
+    if (!rootPath) {
+      res.status(422).json({ error: "Project workspace needs a local path before Paperclip can browse files" });
+      return;
+    }
+
+    try {
+      res.json(
+        await readWorkspaceFileContent({
+          workspaceKind: "project_workspace",
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          rootPath,
+          relativePath: readWorkspaceBrowserPath(req),
+        }),
+      );
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/projects/:id/workspaces/:workspaceId/file-raw", async (req, res, next) => {
+    const id = req.params.id as string;
+    const workspaceId = req.params.workspaceId as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
+    if (!workspace) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return;
+    }
+    const rootPath = resolveProjectWorkspaceBrowserRoot(project, workspace.id, workspace.cwd);
+    if (!rootPath) {
+      res.status(422).json({ error: "Project workspace needs a local path before Paperclip can browse files" });
+      return;
+    }
+
+    try {
+      const file = await resolveWorkspaceFileForDownload({
+        rootPath,
+        relativePath: readWorkspaceBrowserPath(req),
+      });
+      if (file.contentType) res.type(file.contentType);
+      res.sendFile(file.absolutePath);
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {

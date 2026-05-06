@@ -23,6 +23,12 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
+import {
+  WorkspaceFileBrowserError,
+  listWorkspaceFiles,
+  readWorkspaceFileContent,
+  resolveWorkspaceFileForDownload,
+} from "../services/workspace-file-browser.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -37,6 +43,19 @@ export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
   const svc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+
+  function tryHandleWorkspaceBrowserError(res: Response, error: unknown) {
+    if (error instanceof WorkspaceFileBrowserError) {
+      res.status(error.status).json({ error: error.message });
+      return true;
+    }
+    return false;
+  }
+
+  function readWorkspaceBrowserPath(req: Request) {
+    const pathQuery = req.query.path;
+    return typeof pathQuery === "string" ? pathQuery : "";
+  }
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -91,6 +110,87 @@ export function executionWorkspaceRoutes(db: Db) {
     assertCompanyAccess(req, workspace.companyId);
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
+  });
+
+  router.get("/execution-workspaces/:id/files", async (req, res, next) => {
+    const id = req.params.id as string;
+    const workspace = await svc.getById(id);
+    if (!workspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, workspace.companyId);
+    if (!workspace.cwd) {
+      res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can browse files" });
+      return;
+    }
+
+    try {
+      res.json(
+        await listWorkspaceFiles({
+          workspaceKind: "execution_workspace",
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          rootPath: workspace.cwd,
+          relativePath: readWorkspaceBrowserPath(req),
+        }),
+      );
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/execution-workspaces/:id/file-content", async (req, res, next) => {
+    const id = req.params.id as string;
+    const workspace = await svc.getById(id);
+    if (!workspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, workspace.companyId);
+    if (!workspace.cwd) {
+      res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can browse files" });
+      return;
+    }
+
+    try {
+      res.json(
+        await readWorkspaceFileContent({
+          workspaceKind: "execution_workspace",
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          rootPath: workspace.cwd,
+          relativePath: readWorkspaceBrowserPath(req),
+        }),
+      );
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
+  });
+
+  router.get("/execution-workspaces/:id/file-raw", async (req, res, next) => {
+    const id = req.params.id as string;
+    const workspace = await svc.getById(id);
+    if (!workspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, workspace.companyId);
+    if (!workspace.cwd) {
+      res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can browse files" });
+      return;
+    }
+
+    try {
+      const file = await resolveWorkspaceFileForDownload({
+        rootPath: workspace.cwd,
+        relativePath: readWorkspaceBrowserPath(req),
+      });
+      if (file.contentType) res.type(file.contentType);
+      res.sendFile(file.absolutePath);
+    } catch (error) {
+      if (!tryHandleWorkspaceBrowserError(res, error)) next(error);
+    }
   });
 
   async function handleExecutionWorkspaceRuntimeCommand(req: Request, res: Response) {

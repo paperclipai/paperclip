@@ -44,6 +44,7 @@ import {
 } from "./agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
+import { validateAdapterEnvironmentTestInput } from "./agent-config-test-validation";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
@@ -190,6 +191,50 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
+const remoteConfigurableAdapterTypes = new Set([
+  "agent_zero_bridge",
+  "openclaw_gateway",
+  "ollama_http",
+  "custom_llm_local",
+  "ollama_local",
+  "cloudflare_workers_ai",
+]);
+
+const adaptersWithBuiltInModelSelector = new Set([
+  "openclaw_gateway",
+  "ollama_http",
+  "custom_llm_local",
+  "ollama_local",
+  "cloudflare_workers_ai",
+]);
+
+const requiredModelAdapterTypes = new Set(["opencode_local", "custom_llm_local", "ollama_local"]);
+
+const groupedModelProviderAdapterTypes = new Set(["opencode_local", "openclaw_gateway"]);
+
+const refreshableModelAdapterTypes = new Set(["codex_local", "openclaw_gateway", "ollama_http", "ollama_local"]);
+const configAwareModelAdapterTypes = new Set(["ollama_http", "ollama_local"]);
+
+function buildConfigAwareModelPreviewSignature(
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+): string | null {
+  if (!configAwareModelAdapterTypes.has(adapterType)) return null;
+
+  const baseUrl = typeof adapterConfig.baseUrl === "string"
+    ? adapterConfig.baseUrl.trim()
+    : typeof adapterConfig.url === "string"
+      ? adapterConfig.url.trim()
+      : "";
+  const tagsUrl = typeof adapterConfig.tagsUrl === "string" ? adapterConfig.tagsUrl.trim() : "";
+
+  if (adapterType === "ollama_http" && !baseUrl) {
+    return null;
+  }
+
+  return `${baseUrl || "__default__"}|${tagsUrl || "__auto_tags__"}`;
+}
+
 
 /* ---- Form ---- */
 
@@ -261,6 +306,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const isDirty = !isCreate && isOverlayDirty(overlay);
 
+  // Create mode helpers
+  const val = isCreate ? props.values : null;
+  const set = isCreate
+    ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
+    : null;
+
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
 
   /** Read effective value: overlay if dirty, else original */
@@ -315,7 +366,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     : overlay.adapterType ?? props.agent.adapterType;
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
-  const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+  const isRemoteConfigurableAdapter = remoteConfigurableAdapterTypes.has(adapterType);
+  const isLocal = !isRemoteConfigurableAdapter && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
+  const showAdapterConfigurationSection = isLocal || isRemoteConfigurableAdapter;
+  const showModelSelector = isLocal || adaptersWithBuiltInModelSelector.has(adapterType);
   
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
@@ -324,10 +378,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
     [adapterType],
   );
-  const val = isCreate ? props.values : null;
-  const set = isCreate
-    ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
-    : null;
   const currentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
@@ -344,20 +394,56 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }),
     [environments, supportedEnvironmentDrivers],
   );
+  const testAdapterConfig = useMemo<Record<string, unknown>>(() => {
+    if (isCreate) {
+      return uiAdapter.buildAdapterConfig(val!);
+    }
+
+    const base = config as Record<string, unknown>;
+    const next = { ...base, ...overlay.adapterConfig };
+    if (adapterType === "hermes_local") {
+      const hermesCommand =
+        typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
+          ? next.hermesCommand
+          : typeof next.command === "string" && next.command.length > 0
+            ? next.command
+            : undefined;
+      if (hermesCommand) {
+        next.hermesCommand = hermesCommand;
+      }
+    }
+    return next;
+  }, [adapterType, config, isCreate, overlay.adapterConfig, uiAdapter, val]);
+  const usesConfigAwareModelQuery = configAwareModelAdapterTypes.has(adapterType);
+  const configAwareModelPreviewSignature = useMemo(
+    () => buildConfigAwareModelPreviewSignature(adapterType, testAdapterConfig),
+    [adapterType, testAdapterConfig],
+  );
 
   // Fetch adapter models for the effective adapter type
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
+    ? usesConfigAwareModelQuery
+      ? queryKeys.agents.adapterModelsPreview(
+          selectedCompanyId,
+          adapterType,
+          configAwareModelPreviewSignature ?? "__disabled__",
+        )
+      : queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
     error: fetchedModelsError,
   } = useQuery({
     queryKey: modelQueryKey,
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
-      environmentId: currentDefaultEnvironmentId || null,
-    }),
-    enabled: Boolean(selectedCompanyId),
+    queryFn: () => agentsApi.adapterModels(
+      selectedCompanyId!,
+      adapterType,
+      usesConfigAwareModelQuery
+        ? { adapterConfig: testAdapterConfig }
+        : { environmentId: currentDefaultEnvironmentId || null },
+    ),
+    enabled: Boolean(selectedCompanyId)
+      && (!usesConfigAwareModelQuery || Boolean(configAwareModelPreviewSignature)),
   });
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
@@ -442,25 +528,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return typeof value === "string" ? value : "";
   }, [adapterCheapDefault]);
 
-  function buildAdapterConfigForTest(): Record<string, unknown> {
-    if (isCreate) {
-      return uiAdapter.buildAdapterConfig(val!);
-    }
-    const base = config as Record<string, unknown>;
-    const next = { ...base, ...overlay.adapterConfig };
-    if (adapterType === "hermes_local") {
-      const hermesCommand =
-        typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
-          ? next.hermesCommand
-          : typeof next.command === "string" && next.command.length > 0
-            ? next.command
-            : undefined;
-      if (hermesCommand) {
-        next.hermesCommand = hermesCommand;
-      }
-    }
-    return next;
-  }
+  const testEnvironmentPreflightError = validateAdapterEnvironmentTestInput(adapterType, testAdapterConfig);
 
   const testEnvironment = useMutation({
     mutationFn: async () => {
@@ -468,12 +536,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         throw new Error("Select a company to test adapter environment");
       }
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
-        adapterConfig: buildAdapterConfigForTest(),
+        adapterConfig: testAdapterConfig,
         environmentId: currentDefaultEnvironmentId || null,
       });
     },
   });
-  const testEnvironmentDisabled = testEnvironment.isPending || !selectedCompanyId;
+  const testEnvironmentDisabled = testEnvironment.isPending || !selectedCompanyId || Boolean(testEnvironmentPreflightError);
   const triggerTestEnvironment = useCallback(() => {
     if (testEnvironmentDisabled) return;
     testEnvironment.mutate();
@@ -506,17 +574,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   useEffect(() => {
     if (!props.onTestFeedbackChange) return;
     props.onTestFeedbackChange({
-      errorMessage: testEnvironment.error instanceof Error
-        ? testEnvironment.error.message
-        : testEnvironment.error
-          ? "Environment test failed"
-          : null,
-      result: testEnvironment.data ?? null,
+      errorMessage: testEnvironmentPreflightError
+        ?? (testEnvironment.error instanceof Error
+          ? testEnvironment.error.message
+          : testEnvironment.error
+            ? "Environment test failed"
+            : null),
+      result: testEnvironmentPreflightError ? null : (testEnvironment.data ?? null),
     });
     return () => {
       props.onTestFeedbackChange?.({ errorMessage: null, result: null });
     };
-  }, [props.onTestFeedbackChange, testEnvironment.data, testEnvironment.error]);
+  }, [props.onTestFeedbackChange, testEnvironment.data, testEnvironment.error, testEnvironmentPreflightError]);
 
   // Current model for display
   const currentModelId = isCreate
@@ -528,7 +597,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      const refreshed = await agentsApi.adapterModels(
+        selectedCompanyId,
+        adapterType,
+        usesConfigAwareModelQuery
+          ? { refresh: true, adapterConfig: testAdapterConfig }
+          : { refresh: true },
+      );
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -576,7 +651,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : adapterType === "opencode_local"
             ? eff("adapterConfig", "variant", String(config.variant ?? ""))
             : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local";
+  const showThinkingEffort = isLocal && adapterType !== "gemini_local";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -895,7 +970,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.error && (
+          {showInlineAdapterTestEnvironmentFeedback && testEnvironmentPreflightError && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {testEnvironmentPreflightError}
+            </div>
+          )}
+
+          {showInlineAdapterTestEnvironmentFeedback && !testEnvironmentPreflightError && testEnvironment.error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testEnvironment.error instanceof Error
                 ? testEnvironment.error.message
@@ -903,7 +984,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </div>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
+          {showInlineAdapterTestEnvironmentFeedback && !testEnvironmentPreflightError && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
@@ -938,13 +1019,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       </div>
 
       {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
+      {showAdapterConfigurationSection && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+            ? <h3 className="text-sm font-medium mb-3">{isLocal ? "Permissions & Configuration" : "Configuration"}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{isLocal ? "Permissions & Configuration" : "Configuration"}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+              {isLocal && (
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -979,48 +1061,58 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 />
               </Field>
+              )}
 
               {supportsModelProfiles && (
                 <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
               )}
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-                creatable
-                detectedModel={detectedModel}
-                detectedModelCandidates={[]}
-                onDetectModel={adapterType === "opencode_local"
-                  ? undefined
-                  : async () => {
+              {showModelSelector && (
+                <>
+                  <ModelDropdown
+                    models={models}
+                    value={currentModelId}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ model: v })
+                        : mark("adapterConfig", "model", v || undefined)
+                    }
+                    open={modelOpen}
+                    onOpenChange={setModelOpen}
+                    allowDefault={!requiredModelAdapterTypes.has(adapterType)}
+                    required={requiredModelAdapterTypes.has(adapterType)}
+                    groupByProvider={groupedModelProviderAdapterTypes.has(adapterType)}
+                    creatable
+                    detectedModel={detectedModel}
+                    detectedModelCandidates={[]}
+                    onDetectModel={isLocal ? async () => {
                       const result = await refetchDetectedModel();
                       return result.data?.model ?? null;
-                    }}
-                onRefreshModels={
-                  adapterType === "codex_local" || adapterType === "acpx_local"
-                    ? handleRefreshModels
-                    : undefined
-                }
-                refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
-                emptyDetectHint="No model detected. Select or enter one manually."
-              />
-              {(refreshModelsError || fetchedModelsError) && (
-                <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (fetchedModelsError instanceof Error
-                      ? fetchedModelsError.message
-                      : "Failed to load adapter models.")}
-                </p>
+                    } : undefined}
+                    onRefreshModels={refreshableModelAdapterTypes.has(adapterType) ? handleRefreshModels : undefined}
+                    refreshingModels={refreshingModels}
+                    detectModelLabel="Detect model"
+                    emptyDetectHint={adapterType === "ollama_http"
+                      ? "No model catalog is loaded in the UI for this adapter yet. Leave the model blank to auto-select from /api/tags, or type a model ID manually."
+                      : adapterType === "custom_llm_local"
+                        ? "This adapter usually relies on a manually entered upstream model ID. Type the exact model your endpoint expects."
+                        : adapterType === "ollama_local"
+                          ? "No models are cached yet. Refresh /api/tags from your Ollama server or type a model ID manually."
+                          : "No model detected. Select or enter one manually."}
+                    defaultLabel={adapterType === "ollama_http"
+                      ? "Auto-select from /api/tags"
+                      : adapterType === "cloudflare_workers_ai"
+                        ? "Qwen 3 Max (default)"
+                        : undefined}
+                  />
+                  {(refreshModelsError || fetchedModelsError) && (
+                    <p className="text-xs text-destructive">
+                      {refreshModelsError
+                        ?? (fetchedModelsError instanceof Error
+                          ? fetchedModelsError.message
+                          : "Failed to load adapter models.")}
+                    </p>
+                  )}
+                </>
               )}
               {adapterType === "opencode_local"
                 && currentDefaultEnvironment
@@ -1097,6 +1189,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
               <uiAdapter.ConfigFields {...adapterFieldProps} />
 
+              {isLocal && (
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
                   value={
@@ -1114,7 +1207,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   placeholder="e.g. --verbose, --foo=bar"
                 />
               </Field>
+              )}
 
+              {isLocal && (
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvVarEditor
                   value={
@@ -1135,9 +1230,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 />
               </Field>
+              )}
 
               {/* Edit-only: timeout + grace period */}
-              {!isCreate && (
+              {!isCreate && isLocal && (
                 <>
                   <Field label="Timeout (sec)" hint={help.timeoutSec}>
                     <DraftNumberInput

@@ -24,6 +24,7 @@ const ENABLED_INVITE_ADAPTERS = new Set([
   "codex_local",
   "gemini_local",
   "opencode_local",
+  "openclaw_gateway",
   "pi_local",
   "cursor",
 ]);
@@ -225,6 +226,9 @@ export function InviteLandingPage() {
   const [agentName, setAgentName] = useState("");
   const [adapterType, setAdapterType] = useState<AgentAdapterType>("claude_local");
   const [capabilities, setCapabilities] = useState("");
+  const [gatewayUrl, setGatewayUrl] = useState("");
+  const [gatewayToken, setGatewayToken] = useState("");
+  const [gatewayPaperclipApiUrl, setGatewayPaperclipApiUrl] = useState("");
   const [result, setResult] = useState<{ kind: "bootstrap" | "join"; payload: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
@@ -297,6 +301,7 @@ export function InviteLandingPage() {
     !sessionQuery.data &&
     invite?.allowedJoinTypes !== "agent";
   const showsAgentForm = invite?.inviteType !== "bootstrap_ceo" && invite?.allowedJoinTypes === "agent";
+  const requiresGatewayDefaults = showsAgentForm && adapterType === "openclaw_gateway";
   const shouldAutoAcceptHumanInvite =
     Boolean(sessionQuery.data) &&
     !showsAgentForm &&
@@ -315,6 +320,9 @@ export function InviteLandingPage() {
     email.trim().length > 0 &&
     password.trim().length > 0 &&
     (authMode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
+  const gatewayCanSubmit =
+    !requiresGatewayDefaults ||
+    (gatewayUrl.trim().length > 0 && gatewayToken.trim().length > 0);
 
   const acceptMutation = useMutation({
     mutationFn: async () => {
@@ -328,11 +336,37 @@ export function InviteLandingPage() {
       if (invite.inviteType === "bootstrap_ceo" || invite.allowedJoinTypes !== "agent") {
         return accessApi.acceptInvite(token, { requestType: "human" });
       }
+
+      const trimmedGatewayUrl = gatewayUrl.trim();
+      const trimmedGatewayToken = gatewayToken.trim();
+      const trimmedGatewayPaperclipApiUrl = gatewayPaperclipApiUrl.trim();
+      if (adapterType === "openclaw_gateway") {
+        if (!trimmedGatewayUrl) {
+          throw new Error("OpenClaw Gateway URL is required.");
+        }
+        if (!trimmedGatewayToken) {
+          throw new Error("OpenClaw gateway token is required.");
+        }
+      }
+
       return accessApi.acceptInvite(token, {
         requestType: "agent",
         agentName: agentName.trim(),
         adapterType,
         capabilities: capabilities.trim() || null,
+        ...(adapterType === "openclaw_gateway"
+          ? {
+              agentDefaultsPayload: {
+                url: trimmedGatewayUrl,
+                headers: {
+                  "x-openclaw-token": trimmedGatewayToken,
+                },
+                ...(trimmedGatewayPaperclipApiUrl
+                  ? { paperclipApiUrl: trimmedGatewayPaperclipApiUrl }
+                  : {}),
+              },
+            }
+          : {}),
       });
     },
     onSuccess: async (payload) => {
@@ -613,17 +647,25 @@ export function InviteLandingPage() {
                 <label className="block text-sm">
                   <span className="mb-1 block text-zinc-400">Agent name</span>
                   <input
+                    name="agentName"
                     className={fieldClassName}
                     value={agentName}
-                    onChange={(event) => setAgentName(event.target.value)}
+                    onChange={(event) => {
+                      setAgentName(event.target.value);
+                      setError(null);
+                    }}
                   />
                 </label>
                 <label className="block text-sm">
                   <span className="mb-1 block text-zinc-400">Adapter type</span>
                   <select
+                    name="adapterType"
                     className={fieldClassName}
                     value={adapterType}
-                    onChange={(event) => setAdapterType(event.target.value as AgentAdapterType)}
+                    onChange={(event) => {
+                      setAdapterType(event.target.value as AgentAdapterType);
+                      setError(null);
+                    }}
                   >
                     {joinAdapterOptions.map((type) => (
                       <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
@@ -632,19 +674,74 @@ export function InviteLandingPage() {
                     ))}
                   </select>
                 </label>
+                {requiresGatewayDefaults ? (
+                  <div className="space-y-4 border border-zinc-800 p-4" data-testid="invite-openclaw-gateway-fields">
+                    <div>
+                      <h3 className="text-sm font-medium text-zinc-100">OpenClaw Gateway settings</h3>
+                      <p className="mt-1 text-xs leading-5 text-zinc-500">
+                        OpenClaw gateway joins need the runtime&apos;s WebSocket URL and gateway token so Paperclip can
+                        save a working adapter configuration from the start.
+                      </p>
+                    </div>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-zinc-400">Gateway URL</span>
+                      <input
+                        name="gatewayUrl"
+                        className={fieldClassName}
+                        value={gatewayUrl}
+                        onChange={(event) => {
+                          setGatewayUrl(event.target.value);
+                          setError(null);
+                        }}
+                        placeholder="ws://127.0.0.1:18789"
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-zinc-400">Gateway token</span>
+                      <input
+                        name="gatewayToken"
+                        type="password"
+                        className={fieldClassName}
+                        value={gatewayToken}
+                        onChange={(event) => {
+                          setGatewayToken(event.target.value);
+                          setError(null);
+                        }}
+                        placeholder="OpenClaw gateway token"
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-zinc-400">Paperclip API URL override (optional)</span>
+                      <input
+                        name="gatewayPaperclipApiUrl"
+                        className={fieldClassName}
+                        value={gatewayPaperclipApiUrl}
+                        onChange={(event) => {
+                          setGatewayPaperclipApiUrl(event.target.value);
+                          setError(null);
+                        }}
+                        placeholder="https://paperclip.example"
+                      />
+                    </label>
+                  </div>
+                ) : null}
                 <label className="block text-sm">
                   <span className="mb-1 block text-zinc-400">Capabilities</span>
                   <textarea
+                    name="capabilities"
                     className={fieldClassName}
                     rows={4}
                     value={capabilities}
-                    onChange={(event) => setCapabilities(event.target.value)}
+                    onChange={(event) => {
+                      setCapabilities(event.target.value);
+                      setError(null);
+                    }}
                   />
                 </label>
                 {error ? <p className="text-xs text-red-400">{error}</p> : null}
                 <Button
                   className="w-full rounded-none"
-                  disabled={acceptMutation.isPending || agentName.trim().length === 0}
+                  disabled={acceptMutation.isPending || agentName.trim().length === 0 || !gatewayCanSubmit}
                   onClick={() => acceptMutation.mutate()}
                 >
                   {acceptMutation.isPending ? "Working..." : joinButtonLabel}

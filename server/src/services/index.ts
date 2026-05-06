@@ -14,6 +14,13 @@ export {
 } from "./issue-continuation-summary.js";
 export { projectService } from "./projects.js";
 export {
+  enqueueProjectProgressSync,
+  getProjectProgressSyncIntervalMs,
+  projectProgressGithubSyncEnabled,
+  projectProgressSyncService,
+  projectProgressVercelAutoDeployEnabled,
+} from "./project-progress-sync.js";
+export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,

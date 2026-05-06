@@ -101,6 +101,13 @@ export type {
 } from "./search.js";
 export { COMPANY_SEARCH_SCOPES } from "./search.js";
 export type {
+  WorkspaceBrowserKind,
+  WorkspaceFileBrowserEntry,
+  WorkspaceFileBrowserListing,
+  WorkspaceFileBrowserContent,
+  ProjectWorkProduct,
+} from "./project-system.js";
+export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceConfig,

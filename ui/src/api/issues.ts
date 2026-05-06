@@ -26,6 +26,26 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type BulkIssueAction =
+  | { type: "delete" }
+  | { type: "hide" }
+  | {
+      type: "update";
+      status?: Issue["status"];
+      priority?: Issue["priority"];
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+    };
+
+export type BulkIssueActionResponse = {
+  action: BulkIssueAction["type"];
+  requested: number;
+  succeeded: number;
+  failed: number;
+  issues: Issue[];
+  errors: Array<{ issueId: string; error: string; status?: number }>;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -93,6 +113,8 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  bulkAction: (companyId: string, data: { issueIds: string[]; action: BulkIssueAction }) =>
+    api.post<BulkIssueActionResponse>(`/companies/${companyId}/issues/bulk`, data),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>

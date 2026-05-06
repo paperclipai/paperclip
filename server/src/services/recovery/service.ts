@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -61,9 +62,32 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const DISABLE_STRANDED_ISSUE_RECOVERY_ISSUES =
+  process.env.PAPERCLIP_DISABLE_STRANDED_ISSUE_RECOVERY_ISSUES === "true";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const EXPECTED_ROUTING_CANCELLATION_ERROR_CODES = new Set([
+  "issue_assignee_changed",
+  "issue_dependencies_blocked",
+  "issue_not_found",
+  "issue_review_participant_changed",
+  "issue_terminal_status",
+]);
+const STALE_META_ISSUE_TERMINAL_ORIGIN_KINDS = new Set<string>([
+  ROUTINE_EXECUTION_ORIGIN_KIND,
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+  RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+]);
+const ISSUE_GRAPH_LIVENESS_IGNORED_ORIGIN_KINDS = [
+  ROUTINE_EXECUTION_ORIGIN_KIND,
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+  RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+  RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+] as const;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -135,6 +159,9 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ) {
   if (!latestRun) return false;
+  if (latestRun.status === "cancelled" && EXPECTED_ROUTING_CANCELLATION_ERROR_CODES.has(latestRun.errorCode ?? "")) {
+    return false;
+  }
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
@@ -237,6 +264,10 @@ function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) 
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
+}
+
+function isStaleAutomationMetaIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
+  return typeof issue.originKind === "string" && STALE_META_ISSUE_TERMINAL_ORIGIN_KINDS.has(issue.originKind);
 }
 
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
@@ -1349,6 +1380,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
+  async function resolveRealIssueRecoveryWakeAgentId(issue: typeof issues.$inferSelect) {
+    if (!issue.assigneeAgentId) return null;
+
+    const assignee = await getAgent(issue.assigneeAgentId);
+    if (!assignee || assignee.companyId !== issue.companyId || !isAgentInvokable(assignee)) {
+      return null;
+    }
+
+    const budgetBlock = await budgets.getInvocationBlock(issue.companyId, assignee.id, {
+      issueId: issue.id,
+      projectId: issue.projectId,
+    });
+    return budgetBlock ? null : assignee.id;
+  }
+
   function buildStrandedIssueRecoveryDescription(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -1428,6 +1474,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    if (DISABLE_STRANDED_ISSUE_RECOVERY_ISSUES) return null;
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
@@ -1579,6 +1626,174 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  function buildStaleAutomationMetaIssueClosureComment(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+    prefix: string;
+  }) {
+    const runLink = input.latestRun
+      ? runUiLink({ id: input.latestRun.id, agentId: input.latestRun.agentId }, input.prefix)
+      : "none";
+    const retryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot)?.retryReason) ?? "none";
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+
+    return [
+      "Paperclip closed this stale automation/control-plane issue instead of creating more recovery work for it.",
+      "",
+      `- Issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Origin kind: \`${input.issue.originKind ?? "unknown"}\``,
+      `- Previous status: \`${input.previousStatus}\``,
+      `- Latest run: ${runLink}`,
+      `- Latest run status: \`${input.latestRun?.status ?? "unknown"}\``,
+      `- Retry reason: \`${retryReason}\``,
+      failureSummary ? `- Failure: ${failureSummary.trim()}` : "- Failure: none recorded",
+      "- Guard: routine, review, watchdog, and liveness-control issues do not create `stranded_issue_recovery` issues.",
+      "",
+      "Next action: continue from the real project/source issue. If this automation item exposed a real delivery blocker, create or assign that blocker on the source project issue instead of reviving this meta issue.",
+    ].join("\n");
+  }
+
+  async function closeStaleAutomationMetaIssue(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+  }) {
+    const terminalStatus = input.issue.originKind === RECOVERY_ORIGIN_KINDS.issueProductivityReview
+      ? "done"
+      : "cancelled";
+    const updated = await issuesSvc.update(input.issue.id, { status: terminalStatus });
+    if (!updated) return null;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    await issuesSvc.addComment(
+      input.issue.id,
+      buildStaleAutomationMetaIssueClosureComment({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        prefix,
+      }),
+      {},
+    );
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: terminalStatus,
+        previousStatus: input.previousStatus,
+        source: "recovery.close_stale_automation_meta_issue",
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        originKind: input.issue.originKind,
+        originId: input.issue.originId,
+      },
+    });
+
+    return updated;
+  }
+
+  async function resolveStrandedRecoverySourceIssue(issue: typeof issues.$inferSelect) {
+    if (!isStrandedIssueRecoveryIssue(issue)) return null;
+    const sourceIssueId = readNonEmptyString(issue.originId) ?? issue.parentId;
+    if (!sourceIssueId) return null;
+    return db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, sourceIssueId), isNull(issues.hiddenAt)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function buildNestedAutomationMetaRecoveryClosureComment(input: {
+    issue: typeof issues.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+    prefix: string;
+  }) {
+    const runLink = input.latestRun
+      ? runUiLink({ id: input.latestRun.id, agentId: input.latestRun.agentId }, input.prefix)
+      : "none";
+    const retryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot)?.retryReason) ?? "none";
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+
+    return [
+      "Paperclip closed this nested recovery issue because its source is automation/control-plane work.",
+      "",
+      `- Recovery issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Source issue: ${issueUiLink({ identifier: input.sourceIssue.identifier, id: input.sourceIssue.id }, input.prefix)}`,
+      `- Source origin kind: \`${input.sourceIssue.originKind ?? "unknown"}\``,
+      `- Previous recovery status: \`${input.previousStatus}\``,
+      `- Latest recovery run: ${runLink}`,
+      `- Latest recovery run status: \`${input.latestRun?.status ?? "unknown"}\``,
+      `- Retry reason: \`${retryReason}\``,
+      failureSummary ? `- Failure: ${failureSummary.trim()}` : "- Failure: none recorded",
+      "- Guard: recovery issues for routine, productivity-review, watchdog, or liveness-control issues do not create more recovery/control-plane work.",
+      "",
+      "Next action: continue from the real project/source issue. If there is a real delivery blocker, assign or unblock that project issue directly instead of reviving this recovery issue.",
+    ].join("\n");
+  }
+
+  async function closeNestedAutomationMetaRecoveryIssue(input: {
+    issue: typeof issues.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+  }) {
+    const updated = await issuesSvc.update(input.issue.id, { status: "cancelled" });
+    if (!updated) return null;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    await issuesSvc.addComment(
+      input.issue.id,
+      buildNestedAutomationMetaRecoveryClosureComment({
+        issue: input.issue,
+        sourceIssue: input.sourceIssue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        prefix,
+      }),
+      {},
+    );
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "cancelled",
+        previousStatus: input.previousStatus,
+        source: "recovery.close_nested_automation_meta_recovery_issue",
+        sourceIssueId: input.sourceIssue.id,
+        sourceIdentifier: input.sourceIssue.identifier,
+        sourceOriginKind: input.sourceIssue.originKind,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        originKind: input.issue.originKind,
+        originId: input.issue.originId,
+      },
+    });
+
+    return updated;
+  }
+
   async function existingBlockerIssueIds(companyId: string, issueId: string) {
     return db
       .select({ blockerIssueId: issueRelations.issueId })
@@ -1609,6 +1824,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.relatedIssueId, issueId),
           eq(issueRelations.type, "blocks"),
+          isNull(issues.hiddenAt),
+          notInArray(issues.originKind, [...ISSUE_GRAPH_LIVENESS_IGNORED_ORIGIN_KINDS]),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
@@ -1642,8 +1859,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]
       : blockerIds;
+    const nextStatus = nextBlockerIds.length > 0 ? "blocked" : input.previousStatus;
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: nextStatus,
       blockedByIssueIds: nextBlockerIds,
     });
     if (!updated) return null;
@@ -1676,8 +1894,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ].join("\n")
       : [
         "",
-        "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
-        "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
+        DISABLE_STRANDED_ISSUE_RECOVERY_ISSUES
+          ? "- Recovery issue: disabled by guardrail; Paperclip will not create `Recover stalled issue` blockers."
+          : "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
+        "- Next action: Paperclip will route the real source issue back through an AI wakeup instead of blocking it on recovery/control-plane work.",
       ].join("\n");
 
     if (notice) {
@@ -1688,6 +1908,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     } else {
       await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {});
+    }
+
+    if (!recoveryIssue && nextBlockerIds.length === 0) {
+      const ownerAgentId = await resolveRealIssueRecoveryWakeAgentId(input.issue);
+      if (ownerAgentId) {
+        await deps.enqueueWakeup(ownerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: input.previousStatus === "todo" ? "issue_assigned" : "issue_continuation_needed",
+          payload: {
+            issueId: input.issue.id,
+            stalledRunId: input.latestRun?.id ?? null,
+            mutation: "real_issue_unblock_without_recovery_blocker",
+          },
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: {
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            wakeReason: input.previousStatus === "todo" ? "issue_assigned" : "issue_continuation_needed",
+            source: "issue.real_unblock_without_recovery_blocker",
+            retryReason: input.previousStatus === "todo" ? "assignment_recovery" : "issue_continuation_needed",
+            stalledRunId: input.latestRun?.id ?? null,
+            guardrail: "do_not_create_recover_stalled_issue_blockers",
+          },
+        });
+      }
     }
 
     await logActivity(db, {
@@ -1703,7 +1950,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: nextStatus,
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
@@ -1714,6 +1961,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRunErrorCode: input.latestRun?.errorCode ?? null,
         recoveryIssueId: recoveryIssue?.id ?? null,
         blockerIssueIds: nextBlockerIds,
+        recoveryIssueCreationDisabled: DISABLE_STRANDED_ISSUE_RECOVERY_ISSUES,
       },
     });
 
@@ -1741,6 +1989,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
+      metaClosed: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -1769,6 +2018,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (isStaleAutomationMetaIssue(issue)) {
+        if (!latestRun && await hasQueuedIssueWake(issue.companyId, issue.id)) {
+          result.skipped += 1;
+          continue;
+        }
+        const updated = await closeStaleAutomationMetaIssue({
+          issue,
+          previousStatus: issue.status as "todo" | "in_progress",
+          latestRun,
+        });
+        if (updated) {
+          result.metaClosed += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      const strandedRecoverySourceIssue = await resolveStrandedRecoverySourceIssue(issue);
+      if (strandedRecoverySourceIssue && isStaleAutomationMetaIssue(strandedRecoverySourceIssue)) {
+        const updated = await closeNestedAutomationMetaRecoveryIssue({
+          issue,
+          sourceIssue: strandedRecoverySourceIssue,
+          previousStatus: issue.status as "todo" | "in_progress",
+          latestRun,
+        });
+        if (updated) {
+          result.metaClosed += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -1977,6 +2262,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function collectIssueGraphLivenessFindings() {
+    const recoverySourceIssues = alias(issues, "recovery_source_issue");
     const [
       issueRows,
       relationRows,
@@ -2011,7 +2297,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             isNull(issues.hiddenAt),
-            notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
+            or(
+              isNull(issues.originKind),
+              notInArray(issues.originKind, [...ISSUE_GRAPH_LIVENESS_IGNORED_ORIGIN_KINDS]),
+            ),
           ),
         ),
       db
@@ -2054,7 +2343,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             isNull(issues.hiddenAt),
-            notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
+            or(
+              isNull(issues.originKind),
+              notInArray(issues.originKind, [...ISSUE_GRAPH_LIVENESS_IGNORED_ORIGIN_KINDS]),
+            ),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
           ),
         ),
@@ -2092,11 +2384,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           originId: issues.originId,
         })
         .from(issues)
+        .innerJoin(
+          recoverySourceIssues,
+          and(
+            eq(recoverySourceIssues.companyId, issues.companyId),
+            sql`${recoverySourceIssues.id}::text = ${issues.originId}`,
+          ),
+        )
         .where(
           and(
             isNull(issues.hiddenAt),
             eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
             notInArray(issues.status, ["done", "cancelled"]),
+            isNull(recoverySourceIssues.hiddenAt),
+            or(
+              isNull(recoverySourceIssues.originKind),
+              notInArray(recoverySourceIssues.originKind, [...ISSUE_GRAPH_LIVENESS_IGNORED_ORIGIN_KINDS]),
+            ),
           ),
         ),
     ]);

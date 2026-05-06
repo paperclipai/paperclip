@@ -261,4 +261,51 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
+
+  it("rejects openclaw gateway agents without a websocket url", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Broken OpenClaw",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            headers: {
+              "x-openclaw-token": "gateway-token-1234567890",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      "Invalid openclaw_gateway adapterConfig: adapterConfig.url is required",
+    );
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects openclaw gateway agents with non-websocket urls", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Broken OpenClaw",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: "https://gateway.example.test",
+            headers: {
+              "x-openclaw-token": "gateway-token-1234567890",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      "Invalid openclaw_gateway adapterConfig: adapterConfig.url must use ws:// or wss://",
+    );
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
 });

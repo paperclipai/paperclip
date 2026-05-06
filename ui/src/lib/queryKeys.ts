@@ -25,6 +25,8 @@ export const queryKeys = {
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string, environmentId?: string | null) =>
       ["agents", companyId, "adapter-models", adapterType, environmentId ?? null] as const,
+    adapterModelsPreview: (companyId: string, adapterType: string, signature: string) =>
+      ["agents", companyId, "adapter-models", adapterType, "preview", signature] as const,
     adapterModelProfiles: (companyId: string, adapterType: string) =>
       ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
@@ -84,6 +86,8 @@ export const queryKeys = {
     detail: (id: string) => ["execution-workspaces", "detail", id] as const,
     closeReadiness: (id: string) => ["execution-workspaces", "close-readiness", id] as const,
     workspaceOperations: (id: string) => ["execution-workspaces", "workspace-operations", id] as const,
+    files: (id: string, relativePath: string) => ["execution-workspaces", "files", id, relativePath] as const,
+    fileContent: (id: string, relativePath: string) => ["execution-workspaces", "file-content", id, relativePath] as const,
   },
   environments: {
     list: (companyId: string) => ["environments", companyId] as const,
@@ -91,6 +95,11 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    workProducts: (id: string) => ["projects", "work-products", id] as const,
+    workspaceFiles: (projectId: string, workspaceId: string, relativePath: string) =>
+      ["projects", projectId, "workspace-files", workspaceId, relativePath] as const,
+    workspaceFileContent: (projectId: string, workspaceId: string, relativePath: string) =>
+      ["projects", projectId, "workspace-file-content", workspaceId, relativePath] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,

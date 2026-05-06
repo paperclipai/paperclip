@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
 import {
   buildOpenClawGatewayConfig,
@@ -172,14 +172,12 @@ async function createMockGatewayServer(options?: {
   };
 }
 
-async function createMockGatewayServerWithPairing() {
+async function createMockGatewayServerWithPasswordAuth() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
-  let approved = false;
-  let pendingRequestId = "req-1";
-  let lastSeenDeviceId: string | null = null;
+  const connectAuths: Array<Record<string, unknown> | null> = [];
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -202,6 +200,177 @@ async function createMockGatewayServerWithPairing() {
       if (frame.type !== "req") return;
 
       if (frame.method === "connect") {
+        const auth =
+          frame.params && typeof frame.params.auth === "object" && frame.params.auth !== null
+            ? frame.params.auth as Record<string, unknown>
+            : null;
+        connectAuths.push(auth);
+        const password = typeof auth?.password === "string" ? auth.password : null;
+
+        if (password !== "gateway-password") {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "UNAUTHORIZED",
+                message: "unauthorized: gateway password missing (provide gateway auth password)",
+              },
+            }),
+          );
+          socket.close(1008, "password missing");
+          return;
+        }
+
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              server: { version: "test", connId: "conn-password" },
+              features: {
+                methods: ["connect", "agent", "agent.wait", "device.pair.list"],
+                events: ["agent"],
+              },
+              snapshot: { version: 1, ts: Date.now() },
+              policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "device.pair.list") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              pending: [],
+              paired: [],
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent") {
+        agentPayload = frame.params ?? null;
+        const runId =
+          typeof frame.params?.idempotencyKey === "string"
+            ? frame.params.idempotencyKey
+            : "run-123";
+
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId,
+              status: "accepted",
+              acceptedAt: Date.now(),
+            },
+          }),
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "event",
+            event: "agent",
+            payload: {
+              runId,
+              seq: 1,
+              stream: "assistant",
+              ts: Date.now(),
+              data: { delta: "password-ok" },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent.wait") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId: frame.params?.runId,
+              status: "ok",
+              startedAt: 1,
+              endedAt: 2,
+            },
+          }),
+        );
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to resolve test server address");
+  }
+
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    getAgentPayload: () => agentPayload,
+    getConnectAuths: () => connectAuths,
+    close: async () => {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function createMockGatewayServerWithPairing() {
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+
+  let agentPayload: Record<string, unknown> | null = null;
+  let approved = false;
+  let pendingRequestId = "req-1";
+  let lastSeenDeviceId: string | null = null;
+  const connectionScopes = new WeakMap<WebSocket, string[]>();
+  const connectScopes: string[][] = [];
+
+  wss.on("connection", (socket) => {
+    socket.send(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-123" },
+      }),
+    );
+
+    socket.on("message", (raw) => {
+      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+      const frame = JSON.parse(text) as {
+        type: string;
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+
+      if (frame.type !== "req") return;
+
+      if (frame.method === "connect") {
+        const scopes = Array.isArray(frame.params?.scopes)
+          ? frame.params.scopes.filter((entry): entry is string => typeof entry === "string")
+          : [];
+        connectionScopes.set(socket, scopes);
+        connectScopes.push(scopes);
+
         const device = frame.params?.device as Record<string, unknown> | undefined;
         const deviceId = typeof device?.id === "string" ? device.id : null;
         if (deviceId) {
@@ -251,6 +420,19 @@ async function createMockGatewayServerWithPairing() {
       }
 
       if (frame.method === "device.pair.list") {
+        const scopes = connectionScopes.get(socket) ?? [];
+        if (!scopes.includes("operator.pairing")) {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: { code: "FORBIDDEN", message: "missing scope: operator.pairing" },
+            }),
+          );
+          return;
+        }
+
         socket.send(
           JSON.stringify({
             type: "res",
@@ -273,6 +455,19 @@ async function createMockGatewayServerWithPairing() {
       }
 
       if (frame.method === "device.pair.approve") {
+        const scopes = connectionScopes.get(socket) ?? [];
+        if (!scopes.includes("operator.pairing")) {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: { code: "FORBIDDEN", message: "missing scope: operator.pairing" },
+            }),
+          );
+          return;
+        }
+
         const requestId = frame.params?.requestId;
         if (requestId !== pendingRequestId) {
           socket.send(
@@ -367,6 +562,7 @@ async function createMockGatewayServerWithPairing() {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayload: () => agentPayload,
+    getConnectScopes: () => connectScopes,
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -502,14 +698,51 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+      expect(String(payload?.message ?? "")).toContain("Structured Paperclip context JSON:");
+      expect(String(payload?.message ?? "")).toContain("\"latestCommentId\": \"comment-2\"");
+      expect(String(payload?.message ?? "")).toContain("\"workspace\": {");
+      expect(payload).not.toHaveProperty("paperclip");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("drops unsupported root agent params while preserving supported ones", async () => {
+    const gateway = await createMockGatewayServer();
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+              lane: "ops",
+              metadata: { team: "platform" },
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload).toBeTruthy();
+      expect(payload?.lane).toBe("ops");
+      expect(payload).not.toHaveProperty("metadata");
+      expect(logs.some((entry) => entry.includes("dropped unsupported agent params: metadata"))).toBe(true);
+      expect(String(payload?.message ?? "")).toContain("Structured Paperclip context JSON:");
     } finally {
       await gateway.close();
     }
@@ -569,7 +802,7 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
-  it("auto-approves pairing once and retries the run", async () => {
+  it("auto-approves pairing once and retries the run when approval needs operator.pairing", async () => {
     const gateway = await createMockGatewayServerWithPairing();
     const logs: string[] = [];
 
@@ -581,6 +814,7 @@ describe("openclaw gateway adapter execute", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            scopes: ["operator.admin"],
             payloadTemplate: {
               message: "wake now",
             },
@@ -600,6 +834,47 @@ describe("openclaw gateway adapter execute", () => {
         true,
       );
       expect(logs.some((entry) => entry.includes("auto-approved pairing request"))).toBe(true);
+      expect(gateway.getConnectScopes()).toHaveLength(3);
+      expect(gateway.getConnectScopes()[0]).toEqual(["operator.admin"]);
+      expect(gateway.getConnectScopes()[1]).toEqual(["operator.admin", "operator.pairing"]);
+      expect(gateway.getConnectScopes()[2]).toEqual(["operator.admin"]);
+      expect(gateway.getAgentPayload()).toBeTruthy();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("retries with password auth when a gateway requires password mode", async () => {
+    const gateway = await createMockGatewayServerWithPasswordAuth();
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-password",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toContain("password-ok");
+      expect(logs.some((entry) => entry.includes("gateway requested password auth; retrying"))).toBe(true);
+      expect(gateway.getConnectAuths()).toHaveLength(2);
+      expect(gateway.getConnectAuths()[0]).toMatchObject({ token: "gateway-password" });
+      expect(gateway.getConnectAuths()[1]).toMatchObject({
+        token: "gateway-password",
+        password: "gateway-password",
+      });
       expect(gateway.getAgentPayload()).toBeTruthy();
     } finally {
       await gateway.close();
@@ -673,5 +948,37 @@ describe("openclaw gateway testEnvironment", () => {
 
     expect(result.status).toBe("fail");
     expect(result.checks.some((check) => check.code === "openclaw_gateway_url_missing")).toBe(true);
+  });
+
+  it("retries with password auth during gateway probes when only x-openclaw-token is configured", async () => {
+    const gateway = await createMockGatewayServerWithPasswordAuth();
+
+    try {
+      const result = await testEnvironment({
+        companyId: "company-123",
+        adapterType: "openclaw_gateway",
+        config: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-password",
+          },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "openclaw_gateway_probe_ok")).toBe(true);
+      expect(result.checks.some((check) => check.code === "openclaw_gateway_pairing_scope_ok")).toBe(true);
+      expect(gateway.getConnectAuths()).toHaveLength(4);
+      expect(gateway.getConnectAuths()[1]).toMatchObject({
+        token: "gateway-password",
+        password: "gateway-password",
+      });
+      expect(gateway.getConnectAuths()[3]).toMatchObject({
+        token: "gateway-password",
+        password: "gateway-password",
+      });
+    } finally {
+      await gateway.close();
+    }
   });
 });

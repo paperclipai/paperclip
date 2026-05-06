@@ -66,7 +66,6 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
-import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -300,15 +299,14 @@ async function listIssueDependencyReadinessMap(
         eq(issueRelations.companyId, companyId),
         eq(issueRelations.type, "blocks"),
         inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+        realIssueBlockerCondition(),
       ),
     );
 
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    if (!PRODUCTIVITY_REVIEW_TERMINAL_STATUSES.includes(row.blockerStatus)) {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -334,8 +332,7 @@ async function listUnresolvedBlockerIssueIds(
       and(
         eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
-        // Cancelled blockers intentionally remain unresolved until the relation changes.
-        ne(issues.status, "done"),
+        realIssueBlockerCondition(),
       ),
     )
     .then((rows) => rows.map((row) => row.id));
@@ -713,8 +710,15 @@ const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"];
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
-const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
+const ISSUE_RELATION_IGNORED_BLOCKER_ORIGIN_KINDS = [
+  "routine_execution",
+  "stranded_issue_recovery",
+  "issue_productivity_review",
+  "stale_active_run_evaluation",
+  "harness_liveness_escalation",
+] as const;
+const IGNORE_CONTROL_PLANE_BLOCKERS = process.env.PAPERCLIP_IGNORE_CONTROL_PLANE_BLOCKERS === "true";
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
   "issue.productivity_review_created",
@@ -725,7 +729,6 @@ const PRODUCTIVITY_REVIEW_TRIGGERS: readonly IssueProductivityReviewTrigger[] = 
   "long_active_duration",
   "high_churn",
 ];
-const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
 const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
@@ -764,6 +767,27 @@ type IssueBlockerAttentionAgentRow = {
   companyId: string;
   status: string;
 };
+
+function realIssueBlockerCondition() {
+  if (!IGNORE_CONTROL_PLANE_BLOCKERS) return undefined;
+  return and(
+    isNull(issues.hiddenAt),
+    notInArray(issues.status, ["done", "cancelled"]),
+    or(
+      isNull(issues.originKind),
+      notInArray(issues.originKind, [...ISSUE_RELATION_IGNORED_BLOCKER_ORIGIN_KINDS]),
+    ),
+  );
+}
+
+function isEffectiveBlockedByIssue(issue: { status: string; originKind: string | null; hiddenAt: Date | null }) {
+  if (!IGNORE_CONTROL_PLANE_BLOCKERS) return true;
+  return issue.hiddenAt === null &&
+    !PRODUCTIVITY_REVIEW_TERMINAL_STATUSES.includes(issue.status) &&
+    !ISSUE_RELATION_IGNORED_BLOCKER_ORIGIN_KINDS.includes(
+      issue.originKind as (typeof ISSUE_RELATION_IGNORED_BLOCKER_ORIGIN_KINDS)[number],
+    );
+}
 
 async function activeRunMapForIssues(
   dbOrTx: any,
@@ -890,7 +914,7 @@ async function terminalExplicitBlockersByRoot(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            realIssueBlockerCondition(),
           ),
         );
 
@@ -1091,7 +1115,7 @@ async function listIssueBlockerAttentionMap(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            realIssueBlockerCondition(),
           ),
         );
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
@@ -1113,7 +1137,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            realIssueBlockerCondition(),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
@@ -1236,27 +1260,8 @@ async function listIssueBlockerAttentionMap(
       for (const row of approvalRows) explicitWaitingIssueIds.add(row.issueId);
     }
 
-    // Recovery rows are intentionally company-wide: a liveness escalation for
-    // the same leaf blocker represents an active waiting path even when that
-    // blocker is reached through another blocked graph.
-    const recoveryRows: Array<{ id: string; originId: string | null }> = await dbOrTx
-      .select({ id: issues.id, originId: issues.originId })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
-          isNull(issues.hiddenAt),
-          notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
-        ),
-      );
-    for (const row of recoveryRows) {
-      const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
-      if (!parsed || parsed.companyId !== companyId) continue;
-      explicitWaitingIssueIds.add(row.id);
-      explicitWaitingIssueIds.add(parsed.issueId);
-      explicitWaitingIssueIds.add(parsed.leafIssueId);
-    }
+    // Control-plane/recovery rows no longer count as a covered waiting path;
+    // real project blockers must have their own active run, wake, approval, or interaction.
   }
 
   const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
@@ -1635,6 +1640,7 @@ async function blockedByMapForIssues(
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.type, "blocks"),
           inArray(issueRelations.relatedIssueId, issueIdChunk),
+          realIssueBlockerCondition(),
         ),
       );
 
@@ -1904,6 +1910,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+            realIssueBlockerCondition(),
           ),
         ),
       dbOrTx
@@ -1924,6 +1931,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.issueId, uniqueIssueIds),
+            realIssueBlockerCondition(),
           ),
         ),
     ]);
@@ -2005,6 +2013,7 @@ export function issueService(db: Db) {
       throw unprocessable("Issue cannot be blocked by itself");
     }
 
+    let effectiveBlockerIds = deduped;
     if (deduped.length > 0) {
       const lockedIssueIds = [issueId, ...deduped].sort();
       await dbOrTx.execute(
@@ -2013,14 +2022,27 @@ export function issueService(db: Db) {
             ORDER BY ${issues.id}
             FOR UPDATE`,
       );
-      const relatedIssues = await dbOrTx
-        .select({ id: issues.id })
+      const relatedIssues: Array<{
+        id: string;
+        status: string;
+        originKind: string | null;
+        hiddenAt: Date | null;
+      }> = await dbOrTx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          originKind: issues.originKind,
+          hiddenAt: issues.hiddenAt,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
       if (relatedIssues.length !== deduped.length) {
         throw unprocessable("Blocked-by issues must belong to the same company");
       }
-      await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
+      effectiveBlockerIds = relatedIssues
+        .filter(isEffectiveBlockedByIssue)
+        .map((issue) => issue.id);
+      await assertNoBlockingCycles(companyId, issueId, effectiveBlockerIds, dbOrTx);
     }
 
     await dbOrTx
@@ -2033,10 +2055,10 @@ export function issueService(db: Db) {
         ),
       );
 
-    if (deduped.length === 0) return;
+    if (effectiveBlockerIds.length === 0) return;
 
     await dbOrTx.insert(issueRelations).values(
-      deduped.map((blockerIssueId) => ({
+      effectiveBlockerIds.map((blockerIssueId) => ({
         companyId,
         issueId: blockerIssueId,
         relatedIssueId: issueId,

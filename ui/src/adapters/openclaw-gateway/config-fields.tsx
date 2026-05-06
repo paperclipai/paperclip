@@ -56,6 +56,26 @@ function parseScopes(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function formatModelList(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry): entry is string => typeof entry === "string")
+      .join(", ");
+  }
+  return typeof value === "string" ? value : "";
+}
+
+function parseModelList(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 export function OpenClawGatewayConfigFields({
   isCreate,
   values,
@@ -63,6 +83,7 @@ export function OpenClawGatewayConfigFields({
   config,
   eff,
   mark,
+  hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
   const configuredHeaders =
     config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
@@ -98,7 +119,10 @@ export function OpenClawGatewayConfigFields({
 
   return (
     <>
-      <Field label="Gateway URL" hint={help.webhookUrl}>
+      <Field
+        label="Gateway URL"
+        hint="WebSocket endpoint for the OpenClaw gateway. Use ws://host:port for local gateways or wss://host/path for TLS-enabled gateways."
+      >
         <DraftInput
           value={
             isCreate
@@ -113,6 +137,57 @@ export function OpenClawGatewayConfigFields({
           immediate
           className={inputClass}
           placeholder="ws://127.0.0.1:18789"
+        />
+      </Field>
+
+      {!hideInstructionsFile && (
+        <Field
+          label="Instructions file"
+          hint="Optional path to a local instructions file whose contents are prepended to every OpenClaw wake message."
+        >
+          <DraftInput
+            value={
+              isCreate
+                ? values!.instructionsFilePath ?? ""
+                : eff("adapterConfig", "instructionsFilePath", String(config.instructionsFilePath ?? ""))
+            }
+            onCommit={(v) =>
+              isCreate
+                ? set!({ instructionsFilePath: v })
+                : mark("adapterConfig", "instructionsFilePath", v || undefined)
+            }
+            immediate
+            className={inputClass}
+            placeholder="/absolute/path/to/AGENTS.md"
+          />
+        </Field>
+      )}
+
+      <Field
+        label="Fallback models"
+        hint="Optional OpenClaw model IDs to try in order when the primary model fails with a transient upstream error such as rate limits or overload. Use commas or new lines."
+      >
+        <DraftInput
+          value={
+            isCreate
+              ? values!.fallbackModelsText ?? ""
+              : formatModelList(eff("adapterConfig", "fallbackModels", config.fallbackModels ?? []))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ fallbackModelsText: v })
+              : mark(
+                  "adapterConfig",
+                  "fallbackModels",
+                  (() => {
+                    const parsed = parseModelList(v);
+                    return parsed.length > 0 ? parsed : undefined;
+                  })(),
+                )
+          }
+          immediate
+          className={inputClass}
+          placeholder="ollama/qwen3.5:cloud, ollama/gemini-3-flash-preview:cloud, ollama/gemma3:27b-cloud"
         />
       </Field>
 

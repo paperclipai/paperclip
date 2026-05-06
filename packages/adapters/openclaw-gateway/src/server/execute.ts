@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -87,7 +88,7 @@ type GatewayClientRequestOptions = {
 };
 
 const PROTOCOL_VERSION = 3;
-const DEFAULT_SCOPES = ["operator.admin"];
+const DEFAULT_SCOPES = ["operator.admin", "operator.pairing"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
@@ -96,7 +97,61 @@ const DEFAULT_ROLE = "operator";
 const SENSITIVE_LOG_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
 
+const GATEWAY_TRANSIENT_UPSTREAM_RE =
+  /(?:rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|quota(?:\s+exceeded|\s+reached)?|usage\s+limit\s+reached|usage\s+cap\s+reached|credits?\s+exhausted|resource[_\s-]?exhausted)/i;
+const GATEWAY_TRANSIENT_ERROR_CODE_RE =
+  /(?:rate|quota|overload|unavailable|thrott|exhaust|usage[_-]?limit|retry[_-]?later|temporary)/i;
+const GATEWAY_PASSWORD_REQUIRED_RE =
+  /gateway password missing|provide gateway auth password/i;
+
+const SUPPORTED_AGENT_PARAM_KEYS = new Set([
+  "message",
+  "agentId",
+  "provider",
+  "model",
+  "to",
+  "replyTo",
+  "sessionId",
+  "sessionKey",
+  "thinking",
+  "deliver",
+  "attachments",
+  "channel",
+  "replyChannel",
+  "accountId",
+  "replyAccountId",
+  "threadId",
+  "groupId",
+  "groupChannel",
+  "groupSpace",
+  "timeout",
+  "bestEffortDeliver",
+  "lane",
+  "cleanupBundleMcpOnRunEnd",
+  "modelRun",
+  "promptMode",
+  "extraSystemPrompt",
+  "bootstrapContextMode",
+  "bootstrapContextRunKind",
+  "acpTurnSource",
+  "internalEvents",
+  "inputProvenance",
+  "voiceWakeTrigger",
+  "idempotencyKey",
+  "label",
+]);
+
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+type GatewayFallbackAttemptReport = {
+  model: string | null;
+  status: "succeeded" | "failed";
+  transient: boolean;
+  timedOut: boolean;
+  errorCode: string | null;
+  errorMessage: string | null;
+  retryNotBefore: string | null;
+};
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -146,13 +201,17 @@ export function resolveSessionKey(input: {
   runId: string;
   issueId: string | null;
 }): string {
-  const fallback = input.configuredSessionKey ?? "paperclip";
   if (input.strategy === "run") {
     return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId);
   }
-  if (input.strategy === "issue" && input.issueId) {
-    return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
+  if (input.strategy === "issue") {
+    if (input.issueId) {
+      return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
+    }
+    return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId);
   }
+
+  const fallback = input.configuredSessionKey ?? "paperclip";
   return prefixSessionKeyForAgent(fallback, input.agentId);
 }
 
@@ -184,6 +243,10 @@ function toStringArray(value: unknown): string[] {
       .filter(Boolean);
   }
   return [];
+}
+
+function parseModelList(value: unknown): string[] {
+  return Array.from(new Set(toStringArray(value)));
 }
 
 function normalizeScopes(value: unknown): string[] {
@@ -299,6 +362,164 @@ function stringifyForLog(value: unknown, maxChars: number): string {
   return `${text.slice(0, maxChars)}... [truncated ${text.length - maxChars} chars]`;
 }
 
+function modelAttemptLabel(model: string | null): string {
+  return model ?? "<gateway-default-model>";
+}
+
+function collectGatewayStrings(value: unknown, out: string[] = [], depth = 0): string[] {
+  if (depth > 6 || value == null) return out;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) out.push(trimmed);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectGatewayStrings(entry, out, depth + 1));
+    return out;
+  }
+  if (typeof value === "object") {
+    Object.values(value as Record<string, unknown>).forEach((entry) => collectGatewayStrings(entry, out, depth + 1));
+  }
+  return out;
+}
+
+function toIsoTimestamp(value: unknown): string | null {
+  if (!(typeof value === "string" || typeof value === "number" || value instanceof Date)) {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function extractGatewayRetryNotBefore(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value == null) return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const nested = extractGatewayRetryNotBefore(entry, depth + 1);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["retryNotBefore", "transientRetryNotBefore", "retryAfter", "retry_after", "resetAt", "resetsAt"]) {
+    const nested = toIsoTimestamp(record[key]);
+    if (nested) return nested;
+  }
+
+  for (const entry of Object.values(record)) {
+    const nested = extractGatewayRetryNotBefore(entry, depth + 1);
+    if (nested) return nested;
+  }
+
+  return null;
+}
+
+function classifyGatewayTransientFailure(input: {
+  errorMessage: string | null;
+  errorCode?: string | null;
+  resultPayload?: unknown;
+  timedOut?: boolean;
+}) {
+  if (input.timedOut) {
+    return { transient: false, retryNotBefore: null as string | null };
+  }
+
+  const retryNotBefore = extractGatewayRetryNotBefore(input.resultPayload);
+  if (retryNotBefore) {
+    return { transient: true, retryNotBefore };
+  }
+
+  const haystack = [
+    input.errorCode ?? "",
+    input.errorMessage ?? "",
+    ...collectGatewayStrings(input.resultPayload),
+  ]
+    .join("\n")
+    .trim();
+  if (!haystack) {
+    return { transient: false, retryNotBefore: null as string | null };
+  }
+
+  const transient =
+    GATEWAY_TRANSIENT_UPSTREAM_RE.test(haystack) ||
+    (input.errorCode != null && GATEWAY_TRANSIENT_ERROR_CODE_RE.test(input.errorCode));
+
+  return {
+    transient,
+    retryNotBefore: transient ? extractGatewayRetryNotBefore(input.resultPayload) : null,
+  };
+}
+
+function isGatewayPasswordRequiredMessage(message: string): boolean {
+  return GATEWAY_PASSWORD_REQUIRED_RE.test(message);
+}
+
+function buildGatewayFallbackMetadata(input: {
+  configuredModel: string | null;
+  fallbackModels: string[];
+  attempts: GatewayFallbackAttemptReport[];
+}) {
+  if (input.fallbackModels.length === 0 || input.attempts.length === 0) return null;
+  const selectedAttempt = [...input.attempts].reverse().find((attempt) => attempt.status === "succeeded") ?? input.attempts[input.attempts.length - 1] ?? null;
+  return {
+    configuredModel: input.configuredModel,
+    fallbackModels: input.fallbackModels,
+    fallbackTriggered: input.attempts.length > 1,
+    selectedModel: selectedAttempt?.model ?? null,
+    attempts: input.attempts,
+  };
+}
+
+function mergeGatewayFallbackResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+  fallbackMetadata: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!resultJson && !fallbackMetadata) return null;
+  if (!fallbackMetadata) return resultJson ?? null;
+  return {
+    ...(resultJson ?? {}),
+    paperclipGatewayFallback: fallbackMetadata,
+  };
+}
+
+function appendJsonSection(baseText: string, heading: string, jsonText: string): string {
+  const sections = [
+    baseText.trim(),
+    heading.trim(),
+    "```json",
+    jsonText,
+    "```",
+  ].filter((entry) => entry.trim().length > 0);
+  return sections.join("\n");
+}
+
+function filterSupportedAgentParams(params: Record<string, unknown>): {
+  supported: Record<string, unknown>;
+  droppedKeys: string[];
+} {
+  const supported: Record<string, unknown> = {};
+  const droppedKeys: string[] = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (SUPPORTED_AGENT_PARAM_KEYS.has(key)) {
+      supported[key] = value;
+      continue;
+    }
+    droppedKeys.push(key);
+  }
+  return { supported, droppedKeys };
+}
+
+function buildInstructionsPrefix(instructionsFilePath: string, contents: string): string {
+  return [
+    contents.trim(),
+    `The above agent instructions were loaded from ${instructionsFilePath}. Resolve relative file references from ${instructionsFilePath}.`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
   const { runId, agent, context } = ctx;
   return {
@@ -364,9 +585,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
+  claimedApiKeyPath: string,
   structuredWakePrompt: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -1088,10 +1309,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
+  const fallbackModels = parseModelList(ctx.config.fallbackModels);
 
   const headers = toStringRecord(ctx.config.headers);
   const authToken = resolveAuthToken(parseObject(ctx.config), headers);
-  const password = nonEmpty(ctx.config.password);
+  let password = nonEmpty(ctx.config.password);
   const deviceToken = nonEmpty(ctx.config.deviceToken);
 
   if (authToken && !headerMapHasIgnoreCase(headers, "authorization")) {
@@ -1105,17 +1327,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const scopes = normalizeScopes(ctx.config.scopes);
   const deviceFamily = nonEmpty(ctx.config.deviceFamily);
   const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
+  const configuredModel = nonEmpty(ctx.config.model);
+  const dedupedFallbackModels = fallbackModels.filter((entry) => entry !== configuredModel);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
+  const instructionsFilePath = nonEmpty(ctx.config.instructionsFilePath);
+  let instructionsPrefix = "";
+  if (instructionsFilePath) {
+    try {
+      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      instructionsPrefix = buildInstructionsPrefix(instructionsFilePath, instructionsContents);
+    } catch (err) {
+      await ctx.onLog(
+        "stderr",
+        `[openclaw-gateway] warning: could not read instructions file \"${instructionsFilePath}\": ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  const paperclipPayloadJson = JSON.stringify(paperclipPayload, null, 2);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const structuredPromptWithWakePayload = structuredWakeJson
+    ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
+    : structuredWakePrompt;
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
-    structuredWakeJson
-      ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
-      : structuredWakePrompt,
+    claimedApiKeyPath,
+    appendJsonSection(
+      structuredPromptWithWakePayload,
+      "Structured Paperclip context JSON:",
+      paperclipPayloadJson,
+    ),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1129,25 +1375,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  const baseMessage = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const message = instructionsPrefix ? `${instructionsPrefix}\n\n${baseMessage}` : baseMessage;
 
-  const agentParams: Record<string, unknown> = {
+  const rawAgentParams: Record<string, unknown> = {
     ...payloadTemplate,
     message,
     sessionKey,
-    idempotencyKey: ctx.runId,
   };
-  delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  delete rawAgentParams.text;
+  delete rawAgentParams.paperclip;
+  const { supported: baseAgentParams, droppedKeys: droppedAgentParamKeys } = filterSupportedAgentParams(rawAgentParams);
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
-  if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
-    agentParams.agentId = configuredAgentId;
+  if (configuredAgentId && !nonEmpty(baseAgentParams.agentId)) {
+    baseAgentParams.agentId = configuredAgentId;
   }
 
-  if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = waitTimeoutMs;
+  if (typeof baseAgentParams.timeout !== "number") {
+    baseAgentParams.timeout = waitTimeoutMs;
   }
 
   if (ctx.onMeta) {
@@ -1166,9 +1412,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   await ctx.onLog(
     "stdout",
-    `[openclaw-gateway] outbound payload (redacted): ${stringifyForLog(redactForLog(agentParams), 12_000)}\n`,
+    `[openclaw-gateway] outbound payload template (redacted): ${stringifyForLog(redactForLog(baseAgentParams), 12_000)}\n`,
   );
+  if (droppedAgentParamKeys.length > 0) {
+    await ctx.onLog(
+      "stdout",
+      `[openclaw-gateway] dropped unsupported agent params: ${droppedAgentParamKeys.sort().join(", ")}\n`,
+    );
+  }
   await ctx.onLog("stdout", `[openclaw-gateway] outbound header keys: ${outboundHeaderKeys.join(", ")}\n`);
+  if (dedupedFallbackModels.length > 0) {
+    await ctx.onLog(
+      "stdout",
+      `[openclaw-gateway] configured fallback models: ${dedupedFallbackModels.join(", ")}\n`,
+    );
+  }
   if (transportHint) {
     await ctx.onLog(
       "stdout",
@@ -1184,13 +1442,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
-  let latestResultPayload: unknown = null;
+  const modelAttempts = [configuredModel, ...dedupedFallbackModels].filter(
+    (value, index, arr) => index === arr.findIndex((entry) => entry === value),
+  );
+  if (modelAttempts.length === 0) {
+    modelAttempts.push(null);
+  }
+  const fallbackAttemptReports: GatewayFallbackAttemptReport[] = [];
 
-  while (true) {
+  attemptLoop: for (let modelAttemptIndex = 0; modelAttemptIndex < modelAttempts.length; modelAttemptIndex += 1) {
+    const activeModel = modelAttempts[modelAttemptIndex] ?? null;
+    let latestResultPayload: unknown = null;
+
+    while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
+    const agentParams: Record<string, unknown> = {
+      ...baseAgentParams,
+      idempotencyKey:
+        modelAttemptIndex === 0
+          ? ctx.runId
+          : `${ctx.runId}:fallback:${modelAttemptIndex}`,
+    };
+    if (activeModel) {
+      agentParams.model = activeModel;
+    } else {
+      delete agentParams.model;
+    }
+
+    await ctx.onLog(
+      "stdout",
+      `[openclaw-gateway] attempting model ${modelAttemptLabel(activeModel)} (${modelAttemptIndex + 1}/${modelAttempts.length})\n`,
+    );
+    await ctx.onLog(
+      "stdout",
+      `[openclaw-gateway] outbound payload for attempt ${modelAttemptIndex + 1} (redacted): ${stringifyForLog(redactForLog(agentParams), 12_000)}\n`,
+    );
 
     const onEvent = async (frame: GatewayEventFrame) => {
       if (frame.event !== "agent") {
@@ -1331,13 +1620,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (acceptedStatus === "error") {
         const errorMessage =
           nonEmpty(acceptedPayload?.summary) ?? lifecycleError ?? "OpenClaw gateway agent request failed";
+        const transientFailure = classifyGatewayTransientFailure({
+          errorMessage,
+          errorCode: "openclaw_gateway_agent_error",
+          resultPayload: acceptedPayload,
+        });
+        fallbackAttemptReports.push({
+          model: activeModel,
+          status: "failed",
+          transient: transientFailure.transient,
+          timedOut: false,
+          errorCode: "openclaw_gateway_agent_error",
+          errorMessage,
+          retryNotBefore: transientFailure.retryNotBefore,
+        });
+        if (transientFailure.transient && modelAttemptIndex < modelAttempts.length - 1) {
+          await ctx.onLog(
+            "stderr",
+            `[openclaw-gateway] transient provider failure on ${modelAttemptLabel(activeModel)}; falling back to ${modelAttemptLabel(modelAttempts[modelAttemptIndex + 1] ?? null)}\n`,
+          );
+          continue attemptLoop;
+        }
         return {
           exitCode: 1,
           signal: null,
           timedOut: false,
           errorMessage,
           errorCode: "openclaw_gateway_agent_error",
-          resultJson: acceptedPayload,
+          errorFamily: transientFailure.transient ? "transient_upstream" : null,
+          retryNotBefore: transientFailure.retryNotBefore,
+          resultJson: mergeGatewayFallbackResultJson(
+            acceptedPayload,
+            buildGatewayFallbackMetadata({
+              configuredModel,
+              fallbackModels: dedupedFallbackModels,
+              attempts: fallbackAttemptReports,
+            }),
+          ),
         };
       }
 
@@ -1352,38 +1671,116 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
         const waitStatus = nonEmpty(waitPayload?.status)?.toLowerCase() ?? "";
         if (waitStatus === "timeout") {
+          fallbackAttemptReports.push({
+            model: activeModel,
+            status: "failed",
+            transient: false,
+            timedOut: true,
+            errorCode: "openclaw_gateway_wait_timeout",
+            errorMessage: `OpenClaw gateway run timed out after ${waitTimeoutMs}ms`,
+            retryNotBefore: null,
+          });
           return {
             exitCode: 1,
             signal: null,
             timedOut: true,
             errorMessage: `OpenClaw gateway run timed out after ${waitTimeoutMs}ms`,
             errorCode: "openclaw_gateway_wait_timeout",
-            resultJson: waitPayload,
+            resultJson: mergeGatewayFallbackResultJson(
+              waitPayload,
+              buildGatewayFallbackMetadata({
+                configuredModel,
+                fallbackModels: dedupedFallbackModels,
+                attempts: fallbackAttemptReports,
+              }),
+            ),
           };
         }
 
         if (waitStatus === "error") {
+          const errorMessage =
+            nonEmpty(waitPayload?.error) ??
+            lifecycleError ??
+            "OpenClaw gateway run failed";
+          const transientFailure = classifyGatewayTransientFailure({
+            errorMessage,
+            errorCode: "openclaw_gateway_wait_error",
+            resultPayload: waitPayload,
+          });
+          fallbackAttemptReports.push({
+            model: activeModel,
+            status: "failed",
+            transient: transientFailure.transient,
+            timedOut: false,
+            errorCode: "openclaw_gateway_wait_error",
+            errorMessage,
+            retryNotBefore: transientFailure.retryNotBefore,
+          });
+          if (transientFailure.transient && modelAttemptIndex < modelAttempts.length - 1) {
+            await ctx.onLog(
+              "stderr",
+              `[openclaw-gateway] transient provider failure on ${modelAttemptLabel(activeModel)}; falling back to ${modelAttemptLabel(modelAttempts[modelAttemptIndex + 1] ?? null)}\n`,
+            );
+            continue attemptLoop;
+          }
           return {
             exitCode: 1,
             signal: null,
             timedOut: false,
-            errorMessage:
-              nonEmpty(waitPayload?.error) ??
-              lifecycleError ??
-              "OpenClaw gateway run failed",
+            errorMessage,
             errorCode: "openclaw_gateway_wait_error",
-            resultJson: waitPayload,
+            errorFamily: transientFailure.transient ? "transient_upstream" : null,
+            retryNotBefore: transientFailure.retryNotBefore,
+            resultJson: mergeGatewayFallbackResultJson(
+              waitPayload,
+              buildGatewayFallbackMetadata({
+                configuredModel,
+                fallbackModels: dedupedFallbackModels,
+                attempts: fallbackAttemptReports,
+              }),
+            ),
           };
         }
 
         if (waitStatus && waitStatus !== "ok") {
+          const errorMessage = `Unexpected OpenClaw gateway agent.wait status: ${waitStatus}`;
+          const transientFailure = classifyGatewayTransientFailure({
+            errorMessage,
+            errorCode: "openclaw_gateway_wait_status_unexpected",
+            resultPayload: waitPayload,
+          });
+          fallbackAttemptReports.push({
+            model: activeModel,
+            status: "failed",
+            transient: transientFailure.transient,
+            timedOut: false,
+            errorCode: "openclaw_gateway_wait_status_unexpected",
+            errorMessage,
+            retryNotBefore: transientFailure.retryNotBefore,
+          });
+          if (transientFailure.transient && modelAttemptIndex < modelAttempts.length - 1) {
+            await ctx.onLog(
+              "stderr",
+              `[openclaw-gateway] transient provider failure on ${modelAttemptLabel(activeModel)}; falling back to ${modelAttemptLabel(modelAttempts[modelAttemptIndex + 1] ?? null)}\n`,
+            );
+            continue attemptLoop;
+          }
           return {
             exitCode: 1,
             signal: null,
             timedOut: false,
-            errorMessage: `Unexpected OpenClaw gateway agent.wait status: ${waitStatus}`,
+            errorMessage,
             errorCode: "openclaw_gateway_wait_status_unexpected",
-            resultJson: waitPayload,
+            errorFamily: transientFailure.transient ? "transient_upstream" : null,
+            retryNotBefore: transientFailure.retryNotBefore,
+            resultJson: mergeGatewayFallbackResultJson(
+              waitPayload,
+              buildGatewayFallbackMetadata({
+                configuredModel,
+                fallbackModels: dedupedFallbackModels,
+                attempts: fallbackAttemptReports,
+              }),
+            ),
           };
         }
       }
@@ -1419,6 +1816,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[openclaw-gateway] run completed runId=${Array.from(trackedRunIds).join(",")} status=ok\n`,
       );
+      fallbackAttemptReports.push({
+        model: activeModel,
+        status: "succeeded",
+        transient: false,
+        timedOut: false,
+        errorCode: null,
+        errorMessage: null,
+        retryNotBefore: null,
+      });
 
       return {
         exitCode: 0,
@@ -1428,7 +1834,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(model ? { model } : {}),
         ...(usage ? { usage } : {}),
         ...(costUsd > 0 ? { costUsd } : {}),
-        resultJson: asRecord(latestResultPayload),
+        resultJson: mergeGatewayFallbackResultJson(
+          asRecord(latestResultPayload),
+          buildGatewayFallbackMetadata({
+            configuredModel,
+            fallbackModels: dedupedFallbackModels,
+            attempts: fallbackAttemptReports,
+          }),
+        ),
         ...(runtimeServices.length > 0 ? { runtimeServices } : {}),
         ...(summary ? { summary } : {}),
       };
@@ -1436,6 +1849,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const message = err instanceof Error ? err.message : String(err);
       const lower = message.toLowerCase();
       const timedOut = lower.includes("timeout");
+      const passwordRequired = isGatewayPasswordRequiredMessage(message);
+
+      if (passwordRequired && !password && authToken) {
+        password = authToken;
+        await ctx.onLog(
+          "stdout",
+          "[openclaw-gateway] gateway requested password auth; retrying with the configured gateway secret as auth.password\n",
+        );
+        continue;
+      }
+
       const pairingRequired = lower.includes("pairing required");
 
       if (
@@ -1477,23 +1901,77 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const detailedMessage = pairingRequired
         ? `${message}. Approve the pending device in OpenClaw (for example: openclaw devices approve --latest --url <gateway-ws-url> --token <gateway-token>) and retry. Ensure this agent has a persisted adapterConfig.devicePrivateKeyPem so approvals are reused.`
         : message;
+      const resolvedErrorCode = timedOut
+        ? "openclaw_gateway_timeout"
+        : pairingRequired
+          ? "openclaw_gateway_pairing_required"
+          : "openclaw_gateway_request_failed";
+      const transientFailure = classifyGatewayTransientFailure({
+        errorMessage: detailedMessage,
+        errorCode: resolvedErrorCode,
+        resultPayload: latestResultPayload,
+        timedOut,
+      });
 
       await ctx.onLog("stderr", `[openclaw-gateway] request failed: ${detailedMessage}\n`);
+      fallbackAttemptReports.push({
+        model: activeModel,
+        status: "failed",
+        transient: transientFailure.transient,
+        timedOut,
+        errorCode: resolvedErrorCode,
+        errorMessage: detailedMessage,
+        retryNotBefore: transientFailure.retryNotBefore,
+      });
+      if (transientFailure.transient && modelAttemptIndex < modelAttempts.length - 1) {
+        await ctx.onLog(
+          "stderr",
+          `[openclaw-gateway] transient provider failure on ${modelAttemptLabel(activeModel)}; falling back to ${modelAttemptLabel(modelAttempts[modelAttemptIndex + 1] ?? null)}\n`,
+        );
+        continue attemptLoop;
+      }
 
       return {
         exitCode: 1,
         signal: null,
         timedOut,
         errorMessage: detailedMessage,
-        errorCode: timedOut
-          ? "openclaw_gateway_timeout"
-          : pairingRequired
-            ? "openclaw_gateway_pairing_required"
-            : "openclaw_gateway_request_failed",
-        resultJson: asRecord(latestResultPayload),
+        errorCode: resolvedErrorCode,
+        errorFamily: transientFailure.transient ? "transient_upstream" : null,
+        retryNotBefore: transientFailure.retryNotBefore,
+        resultJson: mergeGatewayFallbackResultJson(
+          asRecord(latestResultPayload),
+          buildGatewayFallbackMetadata({
+            configuredModel,
+            fallbackModels: dedupedFallbackModels,
+            attempts: fallbackAttemptReports,
+          }),
+        ),
       };
     } finally {
       client.close();
     }
   }
+  }
+
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage: "OpenClaw gateway fallback resolution exhausted without a terminal result",
+    errorCode: "openclaw_gateway_fallback_exhausted",
+    errorFamily: fallbackAttemptReports.some((attempt) => attempt.transient) ? "transient_upstream" : null,
+    retryNotBefore:
+      [...fallbackAttemptReports]
+        .reverse()
+        .find((attempt) => attempt.retryNotBefore)?.retryNotBefore ?? null,
+    resultJson: mergeGatewayFallbackResultJson(
+      null,
+      buildGatewayFallbackMetadata({
+        configuredModel,
+        fallbackModels: dedupedFallbackModels,
+        attempts: fallbackAttemptReports,
+      }),
+    ),
+  };
 }

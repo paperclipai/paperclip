@@ -470,6 +470,7 @@ export interface CreateConfigValues {
   promptTemplate: string;
   model: string;
   thinkingEffort: string;
+  fallbackModelsText?: string;
   /**
    * Optional cheap model profile config for new agents on adapters that
    * support model profiles. Persisted under
