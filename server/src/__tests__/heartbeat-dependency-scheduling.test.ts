@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -797,6 +797,333 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         interaction: true,
       },
     });
+  });
+
+  it("suppresses replayed blocked-relay comments when the blocker fingerprint is unchanged", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    const firstCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: firstCommentId,
+      companyId,
+      issueId: blockedIssueId,
+      authorUserId: "board-user",
+      body: "First blocked follow-up",
+    });
+
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: blockedIssueId, commentId: firstCommentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        commentId: firstCommentId,
+        wakeCommentId: firstCommentId,
+        wakeReason: "issue_commented",
+      },
+    });
+    expect(firstRun).not.toBeNull();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, firstRun!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const secondCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: secondCommentId,
+      companyId,
+      issueId: blockedIssueId,
+      authorUserId: "board-user",
+      body: "Second blocked follow-up",
+    });
+
+    const secondRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: blockedIssueId, commentId: secondCommentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        commentId: secondCommentId,
+        wakeCommentId: secondCommentId,
+        wakeReason: "issue_commented",
+      },
+    });
+    expect(secondRun).not.toBeNull();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondRun!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const relayComments = await db
+      .select({
+        id: issueComments.id,
+        createdByRunId: issueComments.createdByRunId,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, blockedIssueId)))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    const runRelayComments = relayComments.filter((comment) => comment.createdByRunId != null);
+    expect(runRelayComments).toHaveLength(1);
+    expect(runRelayComments[0]?.createdByRunId).toBe(firstRun!.id);
+
+    const [firstPersistedRun, secondPersistedRun] = await Promise.all([
+      db
+        .select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, firstRun!.id))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondRun!.id))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    const firstResult = firstPersistedRun?.resultJson as Record<string, unknown> | null;
+    const secondResult = secondPersistedRun?.resultJson as Record<string, unknown> | null;
+
+    expect(firstResult?.blockedRelayCommentDeduped).toBe(false);
+    expect(typeof firstResult?.blockedRelayStateFingerprint).toBe("string");
+    expect(secondResult?.blockedRelayCommentDeduped).toBe(true);
+    expect(secondResult?.blockedRelayStateFingerprint).toBe(firstResult?.blockedRelayStateFingerprint);
+  });
+
+  it("emits blocked-relay comments again when the blocker fingerprint changes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerAssigneeId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+      {
+        id: blockerAssigneeId,
+        companyId,
+        name: "BlockerOwner",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    const firstCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: firstCommentId,
+      companyId,
+      issueId: blockedIssueId,
+      authorUserId: "board-user",
+      body: "First blocked follow-up",
+    });
+
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: blockedIssueId, commentId: firstCommentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        commentId: firstCommentId,
+        wakeCommentId: firstCommentId,
+        wakeReason: "issue_commented",
+      },
+    });
+    expect(firstRun).not.toBeNull();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, firstRun!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const bumpedMonitorAt = new Date(Date.now() + 60_000);
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: blockerAssigneeId,
+        status: "in_progress",
+        monitorNextCheckAt: bumpedMonitorAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, blockerId));
+
+    const secondCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: secondCommentId,
+      companyId,
+      issueId: blockedIssueId,
+      authorUserId: "board-user",
+      body: "Second blocked follow-up",
+    });
+
+    const secondRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: blockedIssueId, commentId: secondCommentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        commentId: secondCommentId,
+        wakeCommentId: secondCommentId,
+        wakeReason: "issue_commented",
+      },
+    });
+    expect(secondRun).not.toBeNull();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondRun!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const relayComments = await db
+      .select({
+        id: issueComments.id,
+        createdByRunId: issueComments.createdByRunId,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, blockedIssueId)))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    const runRelayComments = relayComments.filter((comment) => comment.createdByRunId != null);
+    expect(runRelayComments).toHaveLength(2);
+    expect(runRelayComments[0]?.createdByRunId).toBe(firstRun!.id);
+    expect(runRelayComments[1]?.createdByRunId).toBe(secondRun!.id);
+
+    const [firstPersistedRun, secondPersistedRun] = await Promise.all([
+      db
+        .select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, firstRun!.id))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondRun!.id))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    const firstResult = firstPersistedRun?.resultJson as Record<string, unknown> | null;
+    const secondResult = secondPersistedRun?.resultJson as Record<string, unknown> | null;
+
+    expect(firstResult?.blockedRelayCommentDeduped).toBe(false);
+    expect(secondResult?.blockedRelayCommentDeduped).toBe(false);
+    expect(firstResult?.blockedRelayStateFingerprint).not.toBe(secondResult?.blockedRelayStateFingerprint);
   });
 
   it("allows comment interaction wakes when a legacy hold has a full_pause note", async () => {
