@@ -675,6 +675,26 @@ function IssueChatMatrix() {
               composerDisabledReason="This issue is in review. Request changes or approve it from the review controls."
             />
           </ScenarioCard>
+          <ScenarioCard
+            title="Planning mode composer"
+            description="Issue is in planning mode. The composer turns amber and surfaces a Planning chip next to the paperclip — clicking it stages a Standard submission without immediately changing the issue mode."
+          >
+            <IssueChatThread
+              comments={[]}
+              timelineEvents={[]}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              issueWorkMode="planning"
+              onWorkModeChange={() => undefined}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              emptyMessage="Planning mode reply box example."
+            />
+          </ScenarioCard>
         </div>
       </div>
     </Section>
