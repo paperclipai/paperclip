@@ -10,13 +10,14 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "../components/EmptyState";
-import { listUIAdapters } from "../adapters/registry";
+import { listUIAdapters, getUIAdapter } from "../adapters";
 import type {
   BuilderMessage,
   BuilderProviderSettings,
   BuilderSession,
   BuilderSessionDetail,
 } from "@paperclipai/shared";
+import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 /**
  * Company AI Builder page.
@@ -42,38 +43,13 @@ function getAvailableBuilderAdapters(supportedAdapterTypes: string[]) {
 
 // Get models for a specific adapter type
 async function getAdapterModels(adapterType: string): Promise<Array<{ id: string; label: string }>> {
+  const adapter = getUIAdapter(adapterType);
+  if (!adapter) return [];
+  // Access models from the adapter module if available
   try {
-    // Dynamically import the adapter module to get its models
-    switch (adapterType) {
-      case "claude_local": {
-        const claude = await import("@paperclipai/adapter-claude-local");
-        return claude.models || [];
-      }
-      case "codex_local": {
-        const codex = await import("@paperclipai/adapter-codex-local");
-        return codex.models || [];
-      }
-      case "opencode_local": {
-        const opencode = await import("@paperclipai/adapter-opencode-local");
-        return opencode.models || [];
-      }
-      case "cursor_local": {
-        const cursor = await import("@paperclipai/adapter-cursor-local");
-        return cursor.models || [];
-      }
-      case "gemini_local": {
-        const gemini = await import("@paperclipai/adapter-gemini-local");
-        return gemini.models || [];
-      }
-      case "pi_local": {
-        const pi = await import("@paperclipai/adapter-pi-local");
-        return pi.models || [];
-      }
-      default:
-        return [];
-    }
-  } catch (err) {
-    console.warn(`Failed to load models for ${adapterType}:`, err);
+    const module = await import(/* @vite-ignore */ `@paperclipai/adapter-${adapterType.replace(/_/g, '-')}`);
+    return module.models || [];
+  } catch {
     return [];
   }
 }
@@ -149,71 +125,64 @@ function MessageBubble({
           isUser ? "bg-primary text-primary-foreground" : "bg-muted"
         }`}
       >
-        <div className="text-[11px] uppercase tracking-wide opacity-60 mb-1">
-          {formatRoleLabel(message.role)}
-        </div>
-        {text && <div className="whitespace-pre-wrap">{text}</div>}
+        <div className="whitespace-pre-wrap">{text}</div>
         {toolCalls.length > 0 && (
-          <div className="mt-2 space-y-1">
+          <div className="mt-1 space-y-1">
             {toolCalls.map((call) => (
               <div
                 key={call.id}
-                className="rounded border border-border/50 bg-background/40 px-2 py-1 text-xs font-mono"
+                className="rounded bg-black/5 px-2 py-1 text-xs dark:bg-white/10"
               >
-                → {call.name}({JSON.stringify(call.arguments)})
+                <span className="font-semibold">{call.name}</span>
+                <pre className="mt-0.5 overflow-x-auto text-[10px] opacity-80">
+                  {JSON.stringify(call.arguments, null, 2)}
+                </pre>
               </div>
             ))}
           </div>
         )}
         {toolResult && (
-          <div className="mt-1 rounded border border-border/50 bg-background/40 px-2 py-1 text-xs">
-            <div className="font-mono opacity-70 mb-1">
-              {toolResult.name} → {toolResult.ok ? "ok" : "error"}
-            </div>
-            <pre className="whitespace-pre-wrap text-[11px] leading-snug">
-              {JSON.stringify(toolResult.result, null, 2).slice(0, 800)}
-            </pre>
-            {approvalBackedProposal && toolResult.proposalStatus === "pending" && approvalId && (
-              <div className="mt-2 rounded border border-amber-400/40 bg-amber-500/10 px-2 py-2 text-[11px] text-amber-900 dark:text-amber-100">
-                <div className="font-medium uppercase tracking-wide text-[10px] opacity-80">
-                  Pending in Approvals
-                </div>
-                <div className="mt-1">
-                  This change was sent to Approvals. Approve or reject it there to execute it.
-                </div>
-                <div className="mt-2">
-                  <Button asChild size="xs" variant="outline">
-                    <Link to={`/approvals/${approvalId}`}>Open approval</Link>
-                  </Button>
-                </div>
-              </div>
+          <div
+            className={`mt-1 rounded px-2 py-1 text-xs ${
+              toolResult.ok
+                ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200"
+                : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200"
+            }`}
+          >
+            {toolResult.ok ? "✓" : "✗"} {toolResult.name}
+            {typeof toolResult.result === "object" && toolResult.result !== null ? (
+              <pre className="mt-0.5 overflow-x-auto text-[10px] opacity-80">
+                {JSON.stringify(toolResult.result, null, 2)}
+              </pre>
+            ) : (
+              <span className="ml-1 opacity-80">{String(toolResult.result ?? "")}</span>
             )}
-            {proposalId && !approvalBackedProposal && toolResult.proposalStatus === "pending" && onApplyProposal && onRejectProposal && (
-              <div className="mt-2 flex items-center gap-2 border-t border-border/40 pt-2">
-                <span className="text-[11px] uppercase opacity-60">Proposal</span>
-                <button
-                  type="button"
-                  className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground disabled:opacity-50"
-                  disabled={proposalActionPending === proposalId}
-                  onClick={() => onApplyProposal(proposalId)}
-                >
-                  Apply
-                </button>
-                <button
-                  type="button"
-                  className="rounded border border-border px-2 py-0.5 text-[11px] disabled:opacity-50"
-                  disabled={proposalActionPending === proposalId}
-                  onClick={() => onRejectProposal(proposalId)}
-                >
-                  Reject
-                </button>
-              </div>
-            )}
-            {proposalId && toolResult.proposalStatus && toolResult.proposalStatus !== "pending" && (
-              <div className="mt-2 border-t border-border/40 pt-2">
-                <span className="text-[11px] uppercase opacity-60">
-                  Proposal {toolResult.proposalStatus}
-                </span>
+            {proposalId && (
+              <div className="mt-1.5 flex items-center gap-2">
+                <span className="text-[10px] opacity-70">Proposal #{proposalId.slice(0, 8)}</span>
+                {onApplyProposal && onRejectProposal && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onApplyProposal(proposalId)}
+                      disabled={proposalActionPending === proposalId}
+                      className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    >
+                      {proposalActionPending === proposalId ? "Applying…" : "Apply"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRejectProposal(proposalId)}
+                      disabled={proposalActionPending === proposalId}
+                      className="rounded border border-border px-2 py-0.5 text-[10px] hover:bg-muted disabled:opacity-50"
+                    >
+                      Reject
+                    </button>
+                  </>
+                )}
+                {approvalBackedProposal && (
+                  <span className="text-[10px] opacity-70">→ Approvals queue</span>
+                )}
               </div>
             )}
           </div>
@@ -225,13 +194,62 @@ function MessageBubble({
 
 interface SettingsFormState {
   adapterType: string;
-  model: string;
+  // Form values for the adapter's ConfigFields component
+  formValues: CreateConfigValues;
 }
 
 function deriveFormFromSettings(settings: BuilderProviderSettings | null): SettingsFormState {
+  const adapterConfig = settings?.adapterConfig ?? {};
   return {
     adapterType: settings?.adapterType ?? "claude_local",
-    model: (settings?.adapterConfig?.model as string) ?? "",
+    formValues: adapterConfigToFormValues(adapterConfig),
+  };
+}
+
+/** Convert stored adapterConfig to form values for CreateConfigValues shape */
+function adapterConfigToFormValues(config: Record<string, unknown>): CreateConfigValues {
+  return {
+    // Common fields
+    adapterType: "",
+    model: (config.model as string) ?? "",
+    instructionsFilePath: (config.instructionsFilePath as string) ?? "",
+    cwd: (config.cwd as string) ?? "",
+    // Claude-specific
+    thinkingEffort: (config.effort as string) ?? "",
+    chrome: (config.chrome as boolean) ?? false,
+    dangerouslySkipPermissions: (config.dangerouslySkipPermissions as boolean) ?? false,
+    // Timeouts
+    timeoutSec: (config.timeoutSec as number) ?? 0,
+    // Prompt template
+    promptTemplate: (config.promptTemplate as string) ?? "",
+    bootstrapPrompt: (config.bootstrapPromptTemplate as string) ?? "",
+    // Args
+    command: (config.command as string) ?? "",
+    extraArgs: Array.isArray(config.extraArgs) ? config.extraArgs.join(", ") : "",
+    args: Array.isArray(config.args) ? config.args.join(", ") : "",
+    // Env bindings (for EnvVarEditor)
+    envBindings: (config.env as Record<string, unknown>) ?? {},
+    envVars: "",
+    // Codex/OpenCode specific
+    search: (config.search as boolean) ?? false,
+    fastMode: (config.fastMode as boolean) ?? false,
+    dangerouslyBypassSandbox: (config.dangerouslyBypassSandbox as boolean) ?? false,
+    // OpenClaw
+    url: (config.url as string) ?? "",
+    accessToken: (config.accessToken as string) ?? undefined,
+    apiKey: (config.apiKey as string) ?? undefined,
+    // Workspace settings
+    workspaceStrategyType: (config.workspaceStrategyType as string) ?? undefined,
+    workspaceBaseRef: (config.workspaceBaseRef as string) ?? undefined,
+    workspaceBranchTemplate: (config.workspaceBranchTemplate as string) ?? undefined,
+    worktreeParentDir: (config.worktreeParentDir as string) ?? undefined,
+    payloadTemplateJson: (config.payloadTemplateJson as string) ?? undefined,
+    runtimeServicesJson: (config.runtimeServicesJson as string) ?? undefined,
+    artifactOutputsJson: (config.artifactOutputsJson as string) ?? undefined,
+    maxTurnsPerRun: (config.maxTurnsPerRun as number) ?? 10,
+    // Heartbeat (runtime config)
+    heartbeatEnabled: false,
+    intervalSec: 300,
   };
 }
 
@@ -249,6 +267,8 @@ function SettingsPanel({ companyId }: { companyId: string }) {
   const [form, setForm] = useState<SettingsFormState | null>(null);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; label: string }>>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  // Track dirty config fields (edited but not saved)
+  const [dirtyConfig, setDirtyConfig] = useState<Record<string, unknown>>({});
 
   // Get available Builder-compatible adapters dynamically
   const availableAdapters = useMemo(
@@ -256,9 +276,17 @@ function SettingsPanel({ companyId }: { companyId: string }) {
     [toolsQuery.data?.supportedAdapterTypes],
   );
 
+  // Get current adapter module
+  const uiAdapter = useMemo(() => {
+    if (!form?.adapterType) return null;
+    return getUIAdapter(form.adapterType);
+  }, [form?.adapterType]);
+
   useEffect(() => {
     if (settingsQuery.data) {
-      setForm(deriveFormFromSettings(settingsQuery.data.settings));
+      const derived = deriveFormFromSettings(settingsQuery.data.settings);
+      setForm(derived);
+      setDirtyConfig({}); // Clear dirty state when loading saved settings
     }
   }, [settingsQuery.data]);
 
@@ -270,12 +298,19 @@ function SettingsPanel({ companyId }: { companyId: string }) {
         .then((models) => {
           setAvailableModels(models);
           // If no model is set and models are available, select the first one
-          if (!form.model && models.length > 0) {
-            setForm((prev) => prev ? { ...prev, model: models[0].id } : null);
+          if (!form.formValues.model && models.length > 0) {
+            setForm((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    formValues: { ...prev.formValues, model: models[0].id },
+                  }
+                : null,
+            );
           }
         })
         .catch((err) => {
-          console.error('Failed to load models:', err);
+          console.error("Failed to load models:", err);
           setAvailableModels([]);
         })
         .finally(() => {
@@ -286,17 +321,20 @@ function SettingsPanel({ companyId }: { companyId: string }) {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      if (!form) return null;
-      
+      if (!form || !uiAdapter) return null;
+
+      // Build final adapter config using the adapter's own buildAdapterConfig
+      const baseConfig = uiAdapter.buildAdapterConfig(form.formValues);
+      const mergedConfig = { ...baseConfig, ...dirtyConfig };
+
       return builderApi.updateSettings(companyId, {
         adapterType: form.adapterType,
-        adapterConfig: {
-          model: form.model.trim(),
-        },
+        adapterConfig: mergedConfig,
       });
     },
     onSuccess: async () => {
       toast.pushToast({ title: "Builder settings saved", tone: "success" });
+      setDirtyConfig({}); // Clear dirty state after save
       await queryClient.invalidateQueries({ queryKey: [...QUERY_KEY, "settings", companyId] });
     },
     onError: (err) => {
@@ -314,19 +352,45 @@ function SettingsPanel({ companyId }: { companyId: string }) {
 
   const selectedAdapter = availableAdapters.find((a) => a.type === form.adapterType);
 
+  // Build props for the adapter's ConfigFields component
+  // We treat this like "create mode" for simplicity - we manage formValues ourselves
+  const adapterFieldProps = {
+    mode: "create" as const,
+    isCreate: true,
+    adapterType: form.adapterType,
+    values: form.formValues,
+    set: (patch: Partial<CreateConfigValues>) => {
+      setForm((prev) =>
+        prev ? { ...prev, formValues: { ...prev.formValues, ...patch } } : null,
+      );
+    },
+    config: settingsQuery.data?.settings?.adapterConfig ?? {},
+    eff: ((_group: "adapterConfig", _field: string, original: string) => original) as any,
+    mark: (_group: "adapterConfig", _field: string, _value: unknown) => {
+      // Builder saves in one go, so we don't need granular dirty tracking per field
+    },
+    models: availableModels,
+    hideInstructionsFile: true, // Builder doesn't need instructions file
+  };
+
   return (
-    <div className="space-y-3 text-sm">
+    <div className="space-y-4 text-sm">
       <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
         <SettingsIcon className="h-3.5 w-3.5" /> Configuration
       </div>
-      
+
       <label className="block text-xs">
         Adapter Type
         <select
           className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
           value={form.adapterType}
           onChange={(e) => {
-            setForm({ ...form, adapterType: e.target.value, model: "" });
+            const newAdapterType = e.target.value;
+            setForm({
+              adapterType: newAdapterType,
+              formValues: adapterConfigToFormValues({}),
+            });
+            setDirtyConfig({});
           }}
         >
           {availableAdapters.map((adapter) => (
@@ -341,32 +405,13 @@ function SettingsPanel({ companyId }: { companyId: string }) {
           </div>
         )}
       </label>
-      
-      <label className="block text-xs">
-        Model
-        {loadingModels ? (
-          <div className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm text-muted-foreground">
-            Loading models...
-          </div>
-        ) : (
-          <select
-            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm font-mono"
-            value={form.model}
-            onChange={(e) => setForm({ ...form, model: e.target.value })}
-          >
-            {!form.model && <option value="">-- Select a model --</option>}
-            {availableModels.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-        )}
-      </label>
-      
+
+      {/* Render the adapter's own ConfigFields component */}
+      {uiAdapter && <uiAdapter.ConfigFields {...adapterFieldProps} />}
+
       <Button
         onClick={() => mutation.mutate()}
-        disabled={mutation.isPending || !form.model.trim()}
+        disabled={mutation.isPending || !form.formValues.model?.trim()}
         size="sm"
         className="w-full"
       >
@@ -416,8 +461,7 @@ function ChatPanel({
   const toast = useToastActions();
   const queryClient = useQueryClient();
   const mutation = useMutation({
-    mutationFn: async (text: string) =>
-      builderApi.sendMessage(companyId, session.id, { text }),
+    mutationFn: async (text: string) => builderApi.sendMessage(companyId, session.id, { text }),
     onSuccess: async () => {
       setInput("");
       await queryClient.invalidateQueries({
@@ -442,10 +486,18 @@ function ChatPanel({
     try {
       if (action === "apply") {
         await builderApi.applyProposal(companyId, proposalId);
-        toast.pushToast({ title: "Proposal applied", tone: "success" });
+        toast.pushToast({
+          title: "Proposal applied",
+          body: "The proposal has been applied to your company.",
+          tone: "success",
+        });
       } else {
         await builderApi.rejectProposal(companyId, proposalId);
-        toast.pushToast({ title: "Proposal rejected", tone: "info" });
+        toast.pushToast({
+          title: "Proposal rejected",
+          body: "The proposal has been rejected.",
+          tone: "info",
+        });
       }
       await queryClient.invalidateQueries({
         queryKey: [...QUERY_KEY, "session", companyId, session.id],
