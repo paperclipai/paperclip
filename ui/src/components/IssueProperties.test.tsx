@@ -559,6 +559,25 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows full date and time for issue metadata timestamps", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdAt: new Date(2026, 3, 6, 12, 34),
+        startedAt: new Date(2026, 3, 6, 12, 35),
+        completedAt: new Date(2026, 3, 6, 12, 36),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toMatch(/CreatedApr 6, 2026, \d{1,2}:34 (AM|PM)/);
+    expect(container.textContent).toMatch(/StartedApr 6, 2026, \d{1,2}:35 (AM|PM)/);
+    expect(container.textContent).toMatch(/CompletedApr 6, 2026, \d{1,2}:36 (AM|PM)/);
+
+    act(() => root.unmount());
+  });
+
   it("shows a workspace tasks link for non-default workspaces when isolated workspaces are enabled", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
