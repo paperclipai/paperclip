@@ -1,1 +1,221 @@
-{}
+{
+  "title": "Витрати",
+  "description": "Витрати на інференс, комісії платформи, кредити та поточні ліміти квот.",
+  "tabs": {
+    "overview": "Огляд",
+    "budgets": "Бюджети",
+    "providers": "Провайдери",
+    "billers": "Білери",
+    "finance": "Фінанси",
+    "all_providers": "Всі провайдери",
+    "all_billers": "Всі білери"
+  },
+  "presets": {
+    "mtd": "З початку місяця",
+    "7d": "Останні 7 днів",
+    "30d": "Останні 30 днів",
+    "ytd": "З початку року",
+    "all": "За весь час",
+    "custom": "Довільний"
+  },
+  "date_range": {
+    "to": "до"
+  },
+  "metrics": {
+    "inference_spend": "Витрати на інференс",
+    "budget": "Бюджет",
+    "finance_net": "Фінансовий підсумок",
+    "finance_events": "Фінансові події",
+    "debits": "Дебети",
+    "credits": "Кредити",
+    "net": "Підсумок",
+    "estimated": "Оцінка",
+    "active_incidents": "Активні інциденти",
+    "pending_approvals": "Очікують погодження",
+    "paused_agents": "Призупинені агенти",
+    "paused_projects": "Призупинені проєкти",
+    "open": "Відкрито",
+    "no_monthly_cap": "Місячний ліміт не налаштовано",
+    "unlimited_budget": "Необмежений бюджет"
+  },
+  "subtitles": {
+    "tokens_across_events": "токенів у подіях запитів",
+    "agents_paused_projects_paused": "{{agentCount}} агентів призупинено · {{projectCount}} проєктів призупинено",
+    "monthly_utilized": "{{percent}}% місячного бюджету витрачено за цей період.",
+    "refunds_offsets": "Повернення, коригування та кредити",
+    "debit_minus_credit": "Дебет мінус кредит за обраний період",
+    "estimated_debits": "Оцінкові дебети, що ще не підтверджені рахунком",
+    "threshold_crossings": "Відкриті м'які або жорсткі перевищення порогів",
+    "budget_approvals_awaiting": "Запити на перевищення бюджету очікують рішення ради",
+    "heartbeats_blocked": "Моніторинг агентів заблоковано бюджетом",
+    "execution_blocked": "Виконання проєкту заблоковано бюджетом",
+    "estimated_in_range": "оцінка за період",
+    "debits_credits": "{{debits}} дебетів · {{credits}} кредитів",
+    "events_in_range_one": "{{count}} подія за період",
+    "events_in_range_other": "{{count}} подій за період"
+  },
+  "budget": {
+    "of": "{{spend}} з {{budget}}",
+    "budget_label": "Бюджет {{amount}}"
+  },
+  "labels": {
+    "usage": "використання",
+    "tok": "ток",
+    "in_out_tokens": "вх {{inTokens}} · вих {{outTokens}}",
+    "api_runs": "{{count}} api",
+    "subscription_runs": "{{count}} підписка"
+  },
+  "cards": {
+    "inference_ledger": "Реєстр інференсу",
+    "inference_ledger_desc": "Витрати на інференс у межах запитів за обраний період.",
+    "finance_ledger": "Фінансовий реєстр",
+    "finance_ledger_desc": "Нарахування на рівні акаунту, не прив'язані до конкретного запиту.",
+    "by_agent": "За агентом",
+    "by_agent_desc": "Що витратив кожен агент за обраний період.",
+    "by_project": "За проєктом",
+    "by_project_desc": "Витрати, атрибутовані через задачі, пов'язані з проєктом.",
+    "by_biller": "За білером",
+    "by_biller_desc": "Фінансові події на рівні акаунту, згруповані за ініціатором.",
+    "budget_control": "Управління бюджетом",
+    "budget_control_desc": "Жорсткі ліміти витрат для агентів і проєктів. Квота підписки провайдера ведеться окремо і відображається в розділі Провайдери."
+  },
+  "budgets": {
+    "company_policy": "Загальна місячна політика компанії.",
+    "agent_policy": "Щомісячні ліміти витрат для окремих агентів.",
+    "project_policy": "Ліміти витрат на весь термін для проєктів з виконанням.",
+    "active_incidents_title": "Активні інциденти",
+    "resolve_hard_stops": "Вирішуйте жорсткі зупинки тут, підвищивши бюджет або явно залишивши область призупиненою.",
+    "unattributed": "Без атрибуції",
+    "company_budgets_title": "Бюджети компанії",
+    "agent_budgets_title": "Бюджети агентів",
+    "project_budgets_title": "Бюджети проєктів"
+  },
+  "incident_card": {
+    "project_paused": "Виконання проєкту призупинено. Нова робота в цьому проєкті не розпочнеться, доки ви не вирішите бюджетний інцидент.",
+    "scope_paused": "Ця область призупинена. Нові запуски моніторингу не розпочнуться, доки ви не вирішите бюджетний інцидент.",
+    "applying": "Застосування...",
+    "raise_budget": "Підвищити бюджет і відновити",
+    "keep_paused": "Залишити призупиненим",
+    "budget_must_exceed": "Новий бюджет має перевищувати поточні спостережені витрати."
+  },
+  "policy_card": {
+    "lifetime_budget": "Бюджет на весь термін",
+    "monthly_budget": "Місячний бюджет (UTC)",
+    "of_limit": "{{percent}}% від ліміту",
+    "no_cap": "Ліміт не налаштовано",
+    "disabled": "Вимкнено",
+    "unlimited": "Необмежено",
+    "project_paused": "Виконання проєкту призупинено до підвищення бюджету або закриття інциденту.",
+    "scope_paused": "Моніторинг призупинено до підвищення бюджету або закриття інциденту.",
+    "saving": "Збереження...",
+    "update_budget": "Оновити бюджет",
+    "set_budget": "Встановити бюджет",
+    "status_paused": "Призупинено",
+    "status_warning": "Попередження",
+    "status_hard_stop": "Жорстка зупинка",
+    "status_healthy": "В нормі",
+    "observed": "Спостережено",
+    "budget": "Бюджет",
+    "soft_alert": "М'яке сповіщення при {{percent}}%",
+    "soft_alert_with_pause": "М'яке сповіщення при {{percent}}% · пауза {{reason}}",
+    "remaining": "Залишок",
+    "budget_usd": "Бюджет (USD)"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "Призупинено через бюджет"
+  },
+  "empty": {
+    "select_company": "Оберіть компанію для перегляду витрат.",
+    "no_cost_events": "Подій витрат ще немає.",
+    "no_project_costs": "Витрат, атрибутованих проєкту, ще немає.",
+    "no_finance_events": "Фінансових подій ще немає. Додайте нарахування на рівні акаунту після отримання рахунків або кредитів.",
+    "no_finance_events_overview": "Фінансових подій ще немає. Додайте нарахування на рівні акаунту після отримання рахунків або кредитів.",
+    "no_cost_events_period": "Подій витрат за цей період немає.",
+    "no_billable_events": "Тарифікованих подій за цей період немає.",
+    "select_date_range": "Оберіть дату початку і кінця для завантаження даних.",
+    "no_budget_policies": "Бюджетних політик ще немає. Встановіть бюджети агентів і проєктів на їхніх сторінках або скористайтеся наявним місячним контролем бюджету компанії."
+  },
+  "finance_timeline": {
+    "title": "Нещодавні фінансові події",
+    "description": "Поповнення, комісії, кредити, зобов'язання та інші нарахування поза запитами.",
+    "no_events": "Фінансових подій за цей період немає.",
+    "invoice": "рахунок {{id}}",
+    "region": "регіон {{region}}",
+    "tier": "рівень {{tier}}",
+    "estimated": "оцінка"
+  },
+  "quota_card": {
+    "period_spend": "Витрати за період",
+    "of_allocation": "{{percent}}% від розподілу",
+    "this_week": "Цього тижня",
+    "per_week": "~{{amount}} / тиж",
+    "rolling_windows": "Ковзні вікна",
+    "subscription_quota": "Квота підписки",
+    "in_label": "вх",
+    "out_label": "вих",
+    "api_sub_runs": "~{{apiRuns}} api / ~{{subRuns}} підп. запусків",
+    "api_runs_only": "~{{apiRuns}} api запусків",
+    "sub_runs_only": "~{{subRuns}} підп. запусків",
+    "percent_used": "{{percent}}% використано",
+    "resets": "оновлюється {{date}}"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} тарифікований запуск",
+    "metered_runs_few": "{{count}} тарифікованих запуски",
+    "metered_runs_many": "{{count}} тарифікованих запусків",
+    "metered_runs_other": "{{count}} тарифікованих запусків",
+    "subscription_runs_one": "{{count}} запуск за підпискою",
+    "subscription_runs_few": "{{count}} запуски за підпискою",
+    "subscription_runs_many": "{{count}} запусків за підпискою",
+    "subscription_runs_other": "{{count}} запусків за підпискою",
+    "this_week": "цього тижня",
+    "billing_types": "Типи тарифікації",
+    "upstream_providers": "Провайдери"
+  },
+  "finance_kind": {
+    "title": "Структура фінансових подій",
+    "description": "Нарахування на рівні акаунту, згруповані за типом події.",
+    "no_events": "Фінансових подій за цей період немає.",
+    "events_one": "{{count}} подія",
+    "events_few": "{{count}} події",
+    "events_many": "{{count}} подій",
+    "events_other": "{{count}} подій",
+    "billers_one": "{{count}} білер",
+    "billers_few": "{{count}} білери",
+    "billers_many": "{{count}} білерів",
+    "billers_other": "{{count}} білерів",
+    "debits": "дебети"
+  },
+  "subscription_panel": {
+    "title": "Підписка Anthropic",
+    "subtitle": "Поточні вікна квот Claude.",
+    "runs": "запусків",
+    "total": "всього",
+    "in_label": "вх",
+    "out_label": "вих",
+    "sub_share": "{{percent}}% використання токенів через підписку",
+    "subscription": "Підписка",
+    "resets": "Оновлюється {{date}}",
+    "percent_used": "{{percent}}% використано"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Плата за інференс",
+    "platform_fee": "Платформна комісія",
+    "credit_purchase": "Купівля кредитів",
+    "credit_refund": "Повернення кредитів",
+    "credit_expiry": "Закінчення кредитів",
+    "byok_fee": "Комісія BYOK",
+    "gateway_overhead": "Накладні витрати шлюзу",
+    "log_storage_charge": "Зберігання журналів",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Зарезервована ємність",
+    "training_charge": "Навчання",
+    "custom_model_import_charge": "Імпорт моделі",
+    "custom_model_storage_charge": "Зберігання моделі",
+    "manual_adjustment": "Ручне коригування"
+  },
+  "finance_direction": {
+    "credit": "Кредит",
+    "debit": "Дебет"
+  }
+}

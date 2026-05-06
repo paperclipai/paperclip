@@ -1,1 +1,61 @@
-{}
+{
+  "title": "Posteingang",
+  "tabs": {
+    "mine": "Meine",
+    "board": "Board",
+    "recent": "Aktuell",
+    "unread": "Ungelesen",
+    "all": "Alle"
+  },
+  "actions": {
+    "retry": "Erneut versuchen",
+    "retrying": "Wird wiederholt…",
+    "mark_as_read": "Als gelesen markieren",
+    "dismiss": "Verwerfen",
+    "mark_all_read": "Alle als gelesen markieren",
+    "marking": "Wird markiert…"
+  },
+  "group": {
+    "none": "Keine",
+    "type": "Typ",
+    "workspace": "Arbeitsbereich",
+    "archived": "Archiviert",
+    "other": "Andere Ergebnisse",
+    "group": "Gruppe",
+    "earlier": "Früher"
+  },
+  "search": {
+    "placeholder": "Posteingang durchsuchen…"
+  },
+  "filters": {
+    "category": "Kategorie",
+    "approval_status": "Genehmigungsstatus",
+    "category_everything": "Alle Kategorien",
+    "category_issues_i_touched": "Meine letzten Aufgaben",
+    "category_join_requests": "Beitrittsanfragen",
+    "category_approvals": "Genehmigungen",
+    "category_alerts": "Benachrichtigungen",
+    "status_all": "Alle Genehmigungsstatus",
+    "status_actionable": "Aktion erforderlich",
+    "status_resolved": "Erledigt"
+  },
+  "placeholders": {
+    "category": "Kategorie",
+    "approval_status": "Genehmigungsstatus"
+  },
+  "misc": {
+    "human_join_request": "Menschliche Beitrittsanfrage",
+    "run_error": "Ausführung mit Fehler beendet.",
+    "enable_nesting": "Eltern-Kind-Verschachtelung aktivieren",
+    "disable_nesting": "Eltern-Kind-Verschachtelung deaktivieren",
+    "choose_columns": "Wählen Sie, welche Posteingang-Spalten sichtbar bleiben"
+  },
+  "empty": {
+    "select_company": "Wählen Sie ein Unternehmen, um den Posteingang anzuzeigen.",
+    "no_search_match": "Keine Posteingang-Elemente entsprechen Ihrer Suche.",
+    "inbox_zero": "Posteingang leer.",
+    "no_new": "Keine neuen Posteingang-Elemente.",
+    "no_recent": "Keine aktuellen Posteingang-Elemente.",
+    "no_match_filters": "Keine Posteingang-Elemente entsprechen diesen Filtern."
+  }
+}

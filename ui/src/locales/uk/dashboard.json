@@ -1,1 +1,39 @@
-{}
+{
+  "title": "Панель",
+  "empty": {
+    "welcome": "Ласкаво просимо до Paperclip. Створіть першу компанію та агента, щоб розпочати.",
+    "get_started": "Почати",
+    "select_company": "Створіть або оберіть компанію для перегляду панелі.",
+    "no_tasks": "Задач ще немає."
+  },
+  "budget": {
+    "active_incidents_one": "{{count}} активний бюджетний інцидент",
+    "active_incidents_few": "{{count}} активні бюджетні інциденти",
+    "active_incidents_many": "{{count}} активних бюджетних інцидентів",
+    "active_incidents_other": "{{count}} активні бюджетні інциденти",
+    "paused_summary": "{{agents}} агентів призупинено · {{projects}} проєктів призупинено · {{approvals}} очікують погодження бюджету",
+    "open_budgets": "Відкрити бюджети"
+  },
+  "metrics": {
+    "agents_enabled": "Активних агентів",
+    "agents_description": "{{running}} працюють, {{paused}} призупинено, {{errors}} помилок",
+    "tasks_in_progress": "Задач у роботі",
+    "tasks_description": "{{open}} відкритих, {{blocked}} заблоковано",
+    "month_spend": "Витрати за місяць",
+    "budget_utilization": "{{percent}}% від бюджету {{budget}}",
+    "pending_approvals": "Очікують погодження",
+    "budget_overrides_pending_one": "{{count}} перевищення бюджету очікує рішення ради",
+    "budget_overrides_pending_few": "{{count}} перевищення бюджету очікують рішення ради",
+    "budget_overrides_pending_many": "{{count}} перевищень бюджету очікують рішення ради",
+    "budget_overrides_pending_other": "{{count}} перевищення бюджету очікують рішення ради",
+    "unlimited_budget": "Безлімітний бюджет",
+    "awaiting_board": "Очікує рішення ради"
+  },
+  "charts": {
+    "run_activity": "Активність запусків",
+    "issues_by_priority": "Задачі за пріоритетом",
+    "issues_by_status": "Задачі за статусом",
+    "success_rate": "Відсоток успіху",
+    "last_14_days": "Останні 14 днів"
+  }
+}

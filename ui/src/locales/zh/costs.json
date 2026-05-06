@@ -1,1 +1,213 @@
-{}
+{
+  "title": "费用",
+  "description": "推理消耗、平台费用、额度及实时配额窗口。",
+  "tabs": {
+    "overview": "概览",
+    "budgets": "预算",
+    "providers": "提供商",
+    "billers": "计费方",
+    "finance": "财务",
+    "all_providers": "所有提供商",
+    "all_billers": "所有计费方"
+  },
+  "presets": {
+    "mtd": "本月至今",
+    "7d": "近 7 天",
+    "30d": "近 30 天",
+    "ytd": "本年至今",
+    "all": "所有时间",
+    "custom": "自定义"
+  },
+  "date_range": {
+    "to": "到"
+  },
+  "metrics": {
+    "inference_spend": "推理消耗",
+    "budget": "预算",
+    "finance_net": "财务净额",
+    "finance_events": "财务事件",
+    "debits": "借项",
+    "credits": "贷项",
+    "net": "净额",
+    "estimated": "估算",
+    "active_incidents": "活跃事件",
+    "pending_approvals": "待处理审批",
+    "paused_agents": "已暂停智能体",
+    "paused_projects": "已暂停项目",
+    "open": "开放",
+    "no_monthly_cap": "未配置月度上限",
+    "unlimited_budget": "无限预算"
+  },
+  "subtitles": {
+    "tokens_across_events": "个 token，跨请求范围事件",
+    "agents_paused_projects_paused": "{{agentCount}} 个智能体已暂停 · {{projectCount}} 个项目已暂停",
+    "monthly_utilized": "此范围内已消耗月度预算的 {{percent}}%。",
+    "refunds_offsets": "退款、抵扣和信用返还",
+    "debit_minus_credit": "所选时段的借项减贷项",
+    "estimated_debits": "尚未形成发票权威的估算借项",
+    "threshold_crossings": "开放的软性或硬性阈值突破",
+    "budget_approvals_awaiting": "等待系统用户操作的预算覆盖审批",
+    "heartbeats_blocked": "因预算阻塞的智能体心跳检测",
+    "execution_blocked": "因预算阻塞的项目执行",
+    "estimated_in_range": "范围内估算",
+    "debits_credits": "{{debits}} 借项 · {{credits}} 贷项",
+    "events_in_range_one": "范围内 {{count}} 个事件",
+    "events_in_range_other": "范围内 {{count}} 个事件"
+  },
+  "budget": {
+    "of": "{{spend}} / {{budget}}",
+    "budget_label": "预算 {{amount}}"
+  },
+  "labels": {
+    "usage": "用量",
+    "tok": "tok",
+    "in_out_tokens": "输入 {{inTokens}} · 输出 {{outTokens}}",
+    "api_runs": "{{count}} 次 API",
+    "subscription_runs": "{{count}} 次订阅"
+  },
+  "cards": {
+    "inference_ledger": "推理账本",
+    "inference_ledger_desc": "所选时段的请求范围推理消耗。",
+    "finance_ledger": "财务账本",
+    "finance_ledger_desc": "不映射到单个推理请求的账户级费用。",
+    "by_agent": "按智能体",
+    "by_agent_desc": "每个智能体在所选时段的消耗。",
+    "by_project": "按项目",
+    "by_project_desc": "通过项目关联任务归因的运行费用。",
+    "by_biller": "按计费方",
+    "by_biller_desc": "按收费或贷记方分组的账户级财务事件。",
+    "budget_control": "预算控制平面",
+    "budget_control_desc": "智能体和项目的硬性消耗限制。提供商订阅配额单独保留，显示在提供商下。"
+  },
+  "budgets": {
+    "company_policy": "全公司月度策略。",
+    "agent_policy": "各智能体的周期性月度消耗策略。",
+    "project_policy": "执行绑定项目的终身消耗策略。",
+    "active_incidents_title": "活跃事件",
+    "resolve_hard_stops": "通过提高预算或明确保持范围暂停来解决此处的硬性停止。",
+    "unattributed": "未归因",
+    "company_budgets_title": "公司预算",
+    "agent_budgets_title": "智能体预算",
+    "project_budgets_title": "项目预算"
+  },
+  "incident_card": {
+    "project_paused": "项目执行已暂停。在您解决预算事件之前，此项目中的新工作将不会开始。",
+    "scope_paused": "此范围已暂停。在您解决预算事件之前，新的心跳检测将不会开始。",
+    "applying": "应用中...",
+    "raise_budget": "提高预算并恢复",
+    "keep_paused": "保持暂停",
+    "budget_must_exceed": "新预算必须超过当前已观测的消耗。"
+  },
+  "policy_card": {
+    "lifetime_budget": "终身预算",
+    "monthly_budget": "每月 UTC 预算",
+    "of_limit": "限额的 {{percent}}%",
+    "no_cap": "未配置上限",
+    "disabled": "已禁用",
+    "unlimited": "无限制",
+    "project_paused": "此项目执行已暂停，直到提高预算或关闭事件。",
+    "scope_paused": "此范围的心跳检测已暂停，直到提高预算或关闭事件。",
+    "saving": "保存中...",
+    "update_budget": "更新预算",
+    "set_budget": "设置预算",
+    "status_paused": "已暂停",
+    "status_warning": "警告",
+    "status_hard_stop": "硬性停止",
+    "status_healthy": "健康",
+    "observed": "已观测",
+    "budget": "预算",
+    "soft_alert": "软性警报在 {{percent}}%",
+    "soft_alert_with_pause": "软性警报在 {{percent}}% · {{reason}} 暂停",
+    "remaining": "剩余",
+    "budget_usd": "预算（USD）"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "因预算暂停"
+  },
+  "empty": {
+    "select_company": "请选择公司以查看费用。",
+    "no_cost_events": "暂无费用事件。",
+    "no_project_costs": "暂无项目归因的运行费用。",
+    "no_finance_events": "暂无财务事件。计费方发票或信用到账后可添加账户级费用。",
+    "no_finance_events_overview": "暂无财务事件。计费方发票或信用到账后可添加账户级费用。",
+    "no_cost_events_period": "此时段内没有费用事件。",
+    "no_billable_events": "此时段内没有可计费事件。",
+    "select_date_range": "请选择开始和结束日期以加载数据。",
+    "no_budget_policies": "暂无预算策略。请从智能体和项目的详情页面设置各自的预算，或使用现有的公司月度预算控制。"
+  },
+  "finance_timeline": {
+    "title": "最近财务事件",
+    "description": "充值、费用、信用、承诺及其他非请求费用。",
+    "no_events": "此时段内没有财务事件。",
+    "invoice": "发票 {{id}}",
+    "region": "地区 {{region}}",
+    "tier": "层级 {{tier}}",
+    "estimated": "估算"
+  },
+  "quota_card": {
+    "period_spend": "时段消耗",
+    "of_allocation": "分配额的 {{percent}}%",
+    "this_week": "本周",
+    "per_week": "约 {{amount}} / 周",
+    "rolling_windows": "滚动窗口",
+    "subscription_quota": "订阅配额",
+    "in_label": "输入",
+    "out_label": "输出",
+    "api_sub_runs": "约 {{apiRuns}} 次 API / 约 {{subRuns}} 次订阅运行",
+    "api_runs_only": "约 {{apiRuns}} 次 API 运行",
+    "sub_runs_only": "约 {{subRuns}} 次订阅运行",
+    "percent_used": "已使用 {{percent}}%",
+    "resets": "{{date}} 重置"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} 次按量计费运行",
+    "metered_runs_other": "{{count}} 次按量计费运行",
+    "subscription_runs_one": "{{count}} 次订阅运行",
+    "subscription_runs_other": "{{count}} 次订阅运行",
+    "this_week": "本周",
+    "billing_types": "计费类型",
+    "upstream_providers": "上游提供商"
+  },
+  "finance_kind": {
+    "title": "财务事件构成",
+    "description": "按事件类型分组的账户级费用。",
+    "no_events": "此时段内没有财务事件。",
+    "events_one": "{{count}} 个事件",
+    "events_other": "{{count}} 个事件",
+    "billers_one": "{{count}} 个计费方",
+    "billers_other": "{{count}} 个计费方",
+    "debits": "借项"
+  },
+  "subscription_panel": {
+    "title": "Anthropic 订阅",
+    "subtitle": "实时 Claude 配额窗口。",
+    "runs": "次运行",
+    "total": "总计",
+    "in_label": "输入",
+    "out_label": "输出",
+    "sub_share": "{{percent}}% 的 token 使用通过订阅",
+    "subscription": "订阅",
+    "resets": "{{date}} 重置",
+    "percent_used": "已使用 {{percent}}%"
+  },
+  "finance_event_kind": {
+    "inference_charge": "推理费用",
+    "platform_fee": "平台费用",
+    "credit_purchase": "购买额度",
+    "credit_refund": "额度退款",
+    "credit_expiry": "额度过期",
+    "byok_fee": "BYOK 费用",
+    "gateway_overhead": "网关开销",
+    "log_storage_charge": "日志存储",
+    "logpush_charge": "日志推送",
+    "provisioned_capacity_charge": "预留容量",
+    "training_charge": "训练",
+    "custom_model_import_charge": "模型导入",
+    "custom_model_storage_charge": "模型存储",
+    "manual_adjustment": "手动调整"
+  },
+  "finance_direction": {
+    "credit": "贷项",
+    "debit": "借项"
+  }
+}

@@ -1,1 +1,61 @@
-{}
+{
+  "title": "收件箱",
+  "tabs": {
+    "mine": "我的",
+    "board": "系统用户",
+    "recent": "最近",
+    "unread": "未读",
+    "all": "全部"
+  },
+  "actions": {
+    "retry": "重试",
+    "retrying": "重试中…",
+    "mark_as_read": "标为已读",
+    "dismiss": "关闭",
+    "mark_all_read": "全部标为已读",
+    "marking": "标记中…"
+  },
+  "group": {
+    "none": "无",
+    "type": "类型",
+    "workspace": "工作空间",
+    "archived": "已归档",
+    "other": "其他结果",
+    "group": "分组",
+    "earlier": "更早"
+  },
+  "search": {
+    "placeholder": "搜索收件箱…"
+  },
+  "filters": {
+    "category": "分类",
+    "approval_status": "审批状态",
+    "category_everything": "所有分类",
+    "category_issues_i_touched": "我最近的任务",
+    "category_join_requests": "加入请求",
+    "category_approvals": "审批",
+    "category_alerts": "提醒",
+    "status_all": "所有审批状态",
+    "status_actionable": "需要操作",
+    "status_resolved": "已解决"
+  },
+  "placeholders": {
+    "category": "分类",
+    "approval_status": "审批状态"
+  },
+  "misc": {
+    "human_join_request": "人员加入请求",
+    "run_error": "运行以错误退出。",
+    "enable_nesting": "启用父子嵌套",
+    "disable_nesting": "禁用父子嵌套",
+    "choose_columns": "选择显示的收件箱列"
+  },
+  "empty": {
+    "select_company": "请选择公司以查看收件箱。",
+    "no_search_match": "没有收件箱项目匹配您的搜索。",
+    "inbox_zero": "收件箱已清空。",
+    "no_new": "没有新的收件箱项目。",
+    "no_recent": "没有最近的收件箱项目。",
+    "no_match_filters": "没有收件箱项目匹配这些筛选条件。"
+  }
+}

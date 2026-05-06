@@ -1,1 +1,49 @@
-{}
+{
+  "title": "Цілі",
+  "projects_title": "Проєкти",
+  "actions": {
+    "add_goal": "Додати ціль",
+    "new_goal": "Нова ціль",
+    "add_project": "Додати проєкт"
+  },
+  "empty": {
+    "select_company": "Оберіть компанію для перегляду цілей.",
+    "no_goals": "Цілей ще немає.",
+    "select_company_projects": "Оберіть компанію для перегляду проєктів.",
+    "no_projects": "Проєктів ще немає."
+  },
+  "properties": {
+    "label_status": "Статус",
+    "label_level": "Рівень",
+    "label_owner": "Власник",
+    "label_parent": "Батьківська ціль",
+    "label_created": "Створено",
+    "label_updated": "Оновлено",
+    "no_owner": "Немає"
+  },
+  "new_goal_dialog": {
+    "new_sub_goal": "Нова підціль",
+    "new_goal": "Нова ціль",
+    "title_placeholder": "Назва цілі",
+    "description_placeholder": "Додайте опис...",
+    "level_company": "Компанія",
+    "level_team": "Команда",
+    "level_agent": "Агент",
+    "level_task": "Задача",
+    "parent_goal": "Батьківська ціль",
+    "no_parent": "Без батьківської",
+    "creating": "Створення…",
+    "create_sub_goal": "Створити підціль",
+    "create_goal": "Створити ціль"
+  },
+  "detail": {
+    "goal_fallback": "Ціль",
+    "show_properties": "Показати властивості",
+    "description_placeholder": "Додайте опис...",
+    "tab_sub_goals": "Підцілі ({{count}})",
+    "tab_projects": "Проєкти ({{count}})",
+    "add_sub_goal": "Підціль",
+    "no_sub_goals": "Підцілей немає.",
+    "no_linked_projects": "Пов'язаних проєктів немає."
+  }
+}

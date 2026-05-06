@@ -1,1 +1,35 @@
-{}
+{
+  "title": "Dashboard",
+  "empty": {
+    "welcome": "Bem-vindo ao Paperclip. Configure sua primeira empresa e agente para começar.",
+    "get_started": "Começar",
+    "select_company": "Crie ou selecione uma empresa para ver o dashboard.",
+    "no_tasks": "Nenhuma tarefa ainda."
+  },
+  "budget": {
+    "active_incidents_one": "{{count}} incidente de orçamento ativo",
+    "active_incidents_other": "{{count}} incidentes de orçamento ativos",
+    "paused_summary": "{{agents}} agentes pausados · {{projects}} projetos pausados · {{approvals}} aprovações de orçamento pendentes",
+    "open_budgets": "Abrir orçamentos"
+  },
+  "metrics": {
+    "agents_enabled": "Agentes Habilitados",
+    "agents_description": "{{running}} em execução, {{paused}} pausados, {{errors}} erros",
+    "tasks_in_progress": "Tarefas em Andamento",
+    "tasks_description": "{{open}} abertas, {{blocked}} bloqueadas",
+    "month_spend": "Gasto do Mês",
+    "budget_utilization": "{{percent}}% do orçamento de {{budget}}",
+    "pending_approvals": "Aprovações Pendentes",
+    "budget_overrides_pending_one": "{{count}} substituição de orçamento aguardando revisão do conselho",
+    "budget_overrides_pending_other": "{{count}} substituições de orçamento aguardando revisão do conselho",
+    "unlimited_budget": "Orçamento ilimitado",
+    "awaiting_board": "Aguardando revisão do conselho"
+  },
+  "charts": {
+    "run_activity": "Atividade de Execução",
+    "issues_by_priority": "Tarefas por Prioridade",
+    "issues_by_status": "Tarefas por Status",
+    "success_rate": "Taxa de Sucesso",
+    "last_14_days": "Últimos 14 dias"
+  }
+}

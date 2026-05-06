@@ -1,1 +1,49 @@
-{}
+{
+  "title": "Στόχοι",
+  "projects_title": "Έργα",
+  "actions": {
+    "add_goal": "Προσθήκη στόχου",
+    "new_goal": "Νέος στόχος",
+    "add_project": "Προσθήκη έργου"
+  },
+  "empty": {
+    "select_company": "Επιλέξτε μια εταιρία για προβολή στόχων.",
+    "no_goals": "Δεν υπάρχουν ακόμα στόχοι.",
+    "select_company_projects": "Επιλέξτε μια εταιρία για προβολή έργων.",
+    "no_projects": "Δεν υπάρχουν ακόμα έργα."
+  },
+  "properties": {
+    "label_status": "Κατάσταση",
+    "label_level": "Επίπεδο",
+    "label_owner": "Ιδιοκτήτης",
+    "label_parent": "Γονικός στόχος",
+    "label_created": "Δημιουργήθηκε",
+    "label_updated": "Ενημερώθηκε",
+    "no_owner": "Κανένας"
+  },
+  "new_goal_dialog": {
+    "new_sub_goal": "Νέος υπο-στόχος",
+    "new_goal": "Νέος στόχος",
+    "title_placeholder": "Τίτλος στόχου",
+    "description_placeholder": "Προσθέστε περιγραφή...",
+    "level_company": "Εταιρία",
+    "level_team": "Ομάδα",
+    "level_agent": "Πράκτορας",
+    "level_task": "Εργασία",
+    "parent_goal": "Γονικός στόχος",
+    "no_parent": "Χωρίς γονέα",
+    "creating": "Δημιουργία…",
+    "create_sub_goal": "Δημιουργία υπο-στόχου",
+    "create_goal": "Δημιουργία στόχου"
+  },
+  "detail": {
+    "goal_fallback": "Στόχος",
+    "show_properties": "Εμφάνιση ιδιοτήτων",
+    "description_placeholder": "Προσθέστε μια περιγραφή...",
+    "tab_sub_goals": "Υπο-στόχοι ({{count}})",
+    "tab_projects": "Έργα ({{count}})",
+    "add_sub_goal": "Υπο-στόχος",
+    "no_sub_goals": "Δεν υπάρχουν υπο-στόχοι.",
+    "no_linked_projects": "Δεν υπάρχουν συνδεδεμένα έργα."
+  }
+}

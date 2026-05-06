@@ -1,1 +1,213 @@
-{}
+{
+  "title": "Κόστη",
+  "description": "Δαπάνες inference, χρεώσεις πλατφόρμας, πιστώσεις και τρέχοντα παράθυρα ποσόστωσης.",
+  "tabs": {
+    "overview": "Επισκόπηση",
+    "budgets": "Προϋπολογισμοί",
+    "providers": "Πάροχοι",
+    "billers": "Χρεώστες",
+    "finance": "Οικονομικά",
+    "all_providers": "Όλοι οι πάροχοι",
+    "all_billers": "Όλοι οι χρεώστες"
+  },
+  "presets": {
+    "mtd": "Μήνας μέχρι σήμερα",
+    "7d": "Τελευταίες 7 ημέρες",
+    "30d": "Τελευταίες 30 ημέρες",
+    "ytd": "Έτος μέχρι σήμερα",
+    "all": "Όλη η ώρα",
+    "custom": "Προσαρμοσμένο"
+  },
+  "date_range": {
+    "to": "έως"
+  },
+  "metrics": {
+    "inference_spend": "Δαπάνη inference",
+    "budget": "Προϋπολογισμός",
+    "finance_net": "Καθαρά οικονομικά",
+    "finance_events": "Οικονομικά γεγονότα",
+    "debits": "Χρεώσεις",
+    "credits": "Πιστώσεις",
+    "net": "Καθαρά",
+    "estimated": "Εκτιμώμενο",
+    "active_incidents": "Ενεργά περιστατικά",
+    "pending_approvals": "Εκκρεμείς εγκρίσεις",
+    "paused_agents": "Πράκτορες σε παύση",
+    "paused_projects": "Έργα σε παύση",
+    "open": "Ανοιχτά",
+    "no_monthly_cap": "Δεν έχει ρυθμιστεί μηνιαίο ανώτατο όριο",
+    "unlimited_budget": "Απεριόριστος προϋπολογισμός"
+  },
+  "subtitles": {
+    "tokens_across_events": "tokens σε γεγονότα με εμβέλεια αίτησης",
+    "agents_paused_projects_paused": "{{agentCount}} πράκτορες σε παύση · {{projectCount}} έργα σε παύση",
+    "monthly_utilized": "{{percent}}% του μηνιαίου προϋπολογισμού χρησιμοποιήθηκε σε αυτήν την περίοδο.",
+    "refunds_offsets": "Επιστροφές, συμψηφισμοί και επιστροφές πιστώσεων",
+    "debit_minus_credit": "Χρεώσεις μείον πιστώσεις για την επιλεγμένη περίοδο",
+    "estimated_debits": "Εκτιμώμενες χρεώσεις που δεν είναι ακόμα έγκυρες για τιμολόγιο",
+    "threshold_crossings": "Ανοιχτές διαβάσεις μαλακού ή σκληρού ορίου",
+    "budget_approvals_awaiting": "Εγκρίσεις παράκαμψης προϋπολογισμού που αναμένουν ενέργεια board",
+    "heartbeats_blocked": "Heartbeats πρακτόρων αποκλεισμένα από προϋπολογισμό",
+    "execution_blocked": "Εκτέλεση έργου αποκλεισμένη από προϋπολογισμό",
+    "estimated_in_range": "εκτιμώμενο στην περίοδο",
+    "debits_credits": "{{debits}} χρεώσεις · {{credits}} πιστώσεις",
+    "events_in_range_one": "{{count}} γεγονός στην περίοδο",
+    "events_in_range_other": "{{count}} γεγονότα στην περίοδο"
+  },
+  "budget": {
+    "of": "{{spend}} από {{budget}}",
+    "budget_label": "Προϋπολογισμός {{amount}}"
+  },
+  "labels": {
+    "usage": "χρήση",
+    "tok": "tok",
+    "in_out_tokens": "εισ {{inTokens}} · εξ {{outTokens}}",
+    "api_runs": "{{count}} api",
+    "subscription_runs": "{{count}} συνδρομή"
+  },
+  "cards": {
+    "inference_ledger": "Καθολικό inference",
+    "inference_ledger_desc": "Δαπάνη inference με εμβέλεια αίτησης για την επιλεγμένη περίοδο.",
+    "finance_ledger": "Οικονομικό καθολικό",
+    "finance_ledger_desc": "Χρεώσεις επιπέδου λογαριασμού που δεν αντιστοιχούν σε μεμονωμένη αίτηση inference.",
+    "by_agent": "Ανά πράκτορα",
+    "by_agent_desc": "Τι κατανάλωσε κάθε πράκτορας στην επιλεγμένη περίοδο.",
+    "by_project": "Ανά έργο",
+    "by_project_desc": "Κόστη εκτέλεσης που αποδόθηκαν μέσω ζητημάτων συνδεδεμένων με έργο.",
+    "by_biller": "Ανά χρεώστη",
+    "by_biller_desc": "Οικονομικά γεγονότα επιπέδου λογαριασμού ομαδοποιημένα ανά χρεώστη.",
+    "budget_control": "Επίπεδο ελέγχου προϋπολογισμού",
+    "budget_control_desc": "Σκληρά όρια δαπάνης για πράκτορες και έργα. Η ποσόστωση συνδρομής παρόχου παραμένει ξεχωριστή και εμφανίζεται στην ενότητα Πάροχοι."
+  },
+  "budgets": {
+    "company_policy": "Μηνιαία πολιτική για ολόκληρη την εταιρία.",
+    "agent_policy": "Επαναλαμβανόμενες μηνιαίες πολιτικές δαπανών για μεμονωμένους πράκτορες.",
+    "project_policy": "Πολιτικές δαπανών διάρκειας ζωής για έργα με εκτέλεση.",
+    "active_incidents_title": "Ενεργά περιστατικά",
+    "resolve_hard_stops": "Επιλύστε σκληρές διακοπές εδώ αυξάνοντας τον προϋπολογισμό ή κρατώντας ρητά την εμβέλεια σε παύση.",
+    "unattributed": "Μη αποδοθέν",
+    "company_budgets_title": "Προϋπολογισμοί εταιρίας",
+    "agent_budgets_title": "Προϋπολογισμοί πρακτόρων",
+    "project_budgets_title": "Προϋπολογισμοί έργων"
+  },
+  "incident_card": {
+    "project_paused": "Η εκτέλεση έργου είναι σε παύση. Νέες εργασίες σε αυτό το έργο δεν θα ξεκινήσουν μέχρι να επιλύσετε το περιστατικό προϋπολογισμού.",
+    "scope_paused": "Αυτή η εμβέλεια είναι σε παύση. Νέα heartbeats δεν θα ξεκινήσουν μέχρι να επιλύσετε το περιστατικό προϋπολογισμού.",
+    "applying": "Εφαρμογή...",
+    "raise_budget": "Αύξηση προϋπολογισμού & συνέχεια",
+    "keep_paused": "Παραμονή σε παύση",
+    "budget_must_exceed": "Ο νέος προϋπολογισμός πρέπει να υπερβαίνει την τρέχουσα παρατηρηθείσα δαπάνη."
+  },
+  "policy_card": {
+    "lifetime_budget": "Προϋπολογισμός διάρκειας ζωής",
+    "monthly_budget": "Μηνιαίος προϋπολογισμός UTC",
+    "of_limit": "{{percent}}% του ορίου",
+    "no_cap": "Δεν έχει ρυθμιστεί ανώτατο όριο",
+    "disabled": "Απενεργοποιημένο",
+    "unlimited": "Απεριόριστο",
+    "project_paused": "Η εκτέλεση είναι σε παύση για αυτό το έργο μέχρι να αυξηθεί ο προϋπολογισμός ή να απορριφθεί το περιστατικό.",
+    "scope_paused": "Τα heartbeats είναι σε παύση για αυτήν την εμβέλεια μέχρι να αυξηθεί ο προϋπολογισμός ή να απορριφθεί το περιστατικό.",
+    "saving": "Αποθήκευση...",
+    "update_budget": "Ενημέρωση προϋπολογισμού",
+    "set_budget": "Ορισμός προϋπολογισμού",
+    "status_paused": "Σε παύση",
+    "status_warning": "Προειδοποίηση",
+    "status_hard_stop": "Σκληρή διακοπή",
+    "status_healthy": "Υγιές",
+    "observed": "Παρατηρήθηκε",
+    "budget": "Προϋπολογισμός",
+    "soft_alert": "Μαλακή ειδοποίηση στο {{percent}}%",
+    "soft_alert_with_pause": "Μαλακή ειδοποίηση στο {{percent}}% · παύση {{reason}}",
+    "remaining": "Υπόλοιπο",
+    "budget_usd": "Προϋπολογισμός (USD)"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "Σε παύση λόγω προϋπολογισμού"
+  },
+  "empty": {
+    "select_company": "Επιλέξτε μια εταιρία για προβολή κόστους.",
+    "no_cost_events": "Δεν υπάρχουν ακόμα γεγονότα κόστους.",
+    "no_project_costs": "Δεν υπάρχουν ακόμα κόστη εκτέλεσης αποδοθέντα σε έργο.",
+    "no_finance_events": "Δεν υπάρχουν ακόμα οικονομικά γεγονότα. Προσθέστε χρεώσεις επιπέδου λογαριασμού όταν φτάσουν τιμολόγια χρεωστή ή πιστώσεις.",
+    "no_finance_events_overview": "Δεν υπάρχουν ακόμα οικονομικά γεγονότα. Προσθέστε χρεώσεις επιπέδου λογαριασμού όταν φτάσουν τιμολόγια χρεωστή ή πιστώσεις.",
+    "no_cost_events_period": "Δεν υπάρχουν γεγονότα κόστους σε αυτήν την περίοδο.",
+    "no_billable_events": "Δεν υπάρχουν χρεώσιμα γεγονότα σε αυτήν την περίοδο.",
+    "select_date_range": "Επιλέξτε ημερομηνία έναρξης και λήξης για φόρτωση δεδομένων.",
+    "no_budget_policies": "Δεν υπάρχουν ακόμα πολιτικές προϋπολογισμού. Ορίστε προϋπολογισμούς πρακτόρων και έργων από τις σελίδες λεπτομερειών τους, ή χρησιμοποιήστε τον υπάρχοντα μηνιαίο έλεγχο προϋπολογισμού εταιρίας."
+  },
+  "finance_timeline": {
+    "title": "Πρόσφατα οικονομικά γεγονότα",
+    "description": "Ανανεώσεις, χρεώσεις, πιστώσεις, δεσμεύσεις και άλλες μη αίτησης χρεώσεις.",
+    "no_events": "Δεν υπάρχουν οικονομικά γεγονότα σε αυτήν την περίοδο.",
+    "invoice": "τιμολόγιο {{id}}",
+    "region": "περιοχή {{region}}",
+    "tier": "επίπεδο {{tier}}",
+    "estimated": "εκτιμώμενο"
+  },
+  "quota_card": {
+    "period_spend": "Δαπάνη περιόδου",
+    "of_allocation": "{{percent}}% της κατανομής",
+    "this_week": "Αυτή την εβδομάδα",
+    "per_week": "~{{amount}} / εβδ",
+    "rolling_windows": "Κυλιόμενα παράθυρα",
+    "subscription_quota": "Ποσόστωση συνδρομής",
+    "in_label": "εισ",
+    "out_label": "εξ",
+    "api_sub_runs": "~{{apiRuns}} api / ~{{subRuns}} sub εκτελέσεις",
+    "api_runs_only": "~{{apiRuns}} εκτελέσεις api",
+    "sub_runs_only": "~{{subRuns}} εκτελέσεις sub",
+    "percent_used": "{{percent}}% χρησιμοποιήθηκε",
+    "resets": "επαναφορά {{date}}"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} μετρημένη εκτέλεση",
+    "metered_runs_other": "{{count}} μετρημένες εκτελέσεις",
+    "subscription_runs_one": "{{count}} εκτέλεση συνδρομής",
+    "subscription_runs_other": "{{count}} εκτελέσεις συνδρομής",
+    "this_week": "αυτή την εβδομάδα",
+    "billing_types": "Τύποι χρέωσης",
+    "upstream_providers": "Ανοδικοί πάροχοι"
+  },
+  "finance_kind": {
+    "title": "Μείγμα οικονομικών γεγονότων",
+    "description": "Χρεώσεις επιπέδου λογαριασμού ομαδοποιημένες ανά είδος γεγονότος.",
+    "no_events": "Δεν υπάρχουν οικονομικά γεγονότα σε αυτήν την περίοδο.",
+    "events_one": "{{count}} γεγονός",
+    "events_other": "{{count}} γεγονότα",
+    "billers_one": "{{count}} χρεώστης",
+    "billers_other": "{{count}} χρεώστες",
+    "debits": "χρεώσεις"
+  },
+  "subscription_panel": {
+    "title": "Συνδρομή Anthropic",
+    "subtitle": "Τρέχοντα παράθυρα ποσόστωσης Claude.",
+    "runs": "εκτελέσεις",
+    "total": "σύνολο",
+    "in_label": "εισ",
+    "out_label": "εξ",
+    "sub_share": "{{percent}}% χρήσης token μέσω συνδρομής",
+    "subscription": "Συνδρομή",
+    "resets": "Επαναφορά {{date}}",
+    "percent_used": "{{percent}}% χρησιμοποιήθηκε"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Χρέωση inference",
+    "platform_fee": "Χρέωση πλατφόρμας",
+    "credit_purchase": "Αγορά πίστωσης",
+    "credit_refund": "Επιστροφή πίστωσης",
+    "credit_expiry": "Λήξη πίστωσης",
+    "byok_fee": "Χρέωση BYOK",
+    "gateway_overhead": "Επιβάρυνση gateway",
+    "log_storage_charge": "Αποθήκευση καταγραφών",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Παρεχόμενη χωρητικότητα",
+    "training_charge": "Εκπαίδευση",
+    "custom_model_import_charge": "Εισαγωγή μοντέλου",
+    "custom_model_storage_charge": "Αποθήκευση μοντέλου",
+    "manual_adjustment": "Χειροκίνητη προσαρμογή"
+  },
+  "finance_direction": {
+    "credit": "Πίστωση",
+    "debit": "Χρέωση"
+  }
+}

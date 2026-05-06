@@ -1,1 +1,213 @@
-{}
+{
+  "title": "Kosten",
+  "description": "Inferenzausgaben, Plattformgebühren, Gutschriften und Live-Kontingentfenster.",
+  "tabs": {
+    "overview": "Übersicht",
+    "budgets": "Budgets",
+    "providers": "Anbieter",
+    "billers": "Abrechner",
+    "finance": "Finanzen",
+    "all_providers": "Alle Anbieter",
+    "all_billers": "Alle Abrechner"
+  },
+  "presets": {
+    "mtd": "Monat bis heute",
+    "7d": "Letzte 7 Tage",
+    "30d": "Letzte 30 Tage",
+    "ytd": "Jahr bis heute",
+    "all": "Gesamtzeitraum",
+    "custom": "Benutzerdefiniert"
+  },
+  "date_range": {
+    "to": "bis"
+  },
+  "metrics": {
+    "inference_spend": "Inferenzausgaben",
+    "budget": "Budget",
+    "finance_net": "Finanz-Netto",
+    "finance_events": "Finanzereignisse",
+    "debits": "Belastungen",
+    "credits": "Gutschriften",
+    "net": "Netto",
+    "estimated": "Geschätzt",
+    "active_incidents": "Aktive Vorfälle",
+    "pending_approvals": "Ausstehende Genehmigungen",
+    "paused_agents": "Pausierte Agenten",
+    "paused_projects": "Pausierte Projekte",
+    "open": "Offen",
+    "no_monthly_cap": "Kein monatliches Limit konfiguriert",
+    "unlimited_budget": "Unbegrenztes Budget"
+  },
+  "subtitles": {
+    "tokens_across_events": "Token über anfragegefasste Ereignisse",
+    "agents_paused_projects_paused": "{{agentCount}} Agenten pausiert · {{projectCount}} Projekte pausiert",
+    "monthly_utilized": "{{percent}}% des monatlichen Budgets in diesem Zeitraum verbraucht.",
+    "refunds_offsets": "Rückerstattungen, Verrechnungen und Gutschriftenrückgaben",
+    "debit_minus_credit": "Belastungen minus Gutschriften für den gewählten Zeitraum",
+    "estimated_debits": "Geschätzte Belastungen, die noch nicht rechnungsverbindlich sind",
+    "threshold_crossings": "Offene weiche oder harte Schwellenwertüberschreitungen",
+    "budget_approvals_awaiting": "Budget-Überschreitungsgenehmigungen, die auf Board-Maßnahmen warten",
+    "heartbeats_blocked": "Agenten-Heartbeats durch Budget blockiert",
+    "execution_blocked": "Projektausführung durch Budget blockiert",
+    "estimated_in_range": "geschätzt im Zeitraum",
+    "debits_credits": "{{debits}} Belastungen · {{credits}} Gutschriften",
+    "events_in_range_one": "{{count}} Ereignis im Zeitraum",
+    "events_in_range_other": "{{count}} Ereignisse im Zeitraum"
+  },
+  "budget": {
+    "of": "{{spend}} von {{budget}}",
+    "budget_label": "Budget {{amount}}"
+  },
+  "labels": {
+    "usage": "Nutzung",
+    "tok": "Tok",
+    "in_out_tokens": "ein {{inTokens}} · aus {{outTokens}}",
+    "api_runs": "{{count}} API",
+    "subscription_runs": "{{count}} Abo"
+  },
+  "cards": {
+    "inference_ledger": "Inferenz-Hauptbuch",
+    "inference_ledger_desc": "Anfragegefasste Inferenzausgaben für den gewählten Zeitraum.",
+    "finance_ledger": "Finanz-Hauptbuch",
+    "finance_ledger_desc": "Kontoebene-Gebühren, die keiner einzelnen Inferenzanfrage zugeordnet werden.",
+    "by_agent": "Nach Agent",
+    "by_agent_desc": "Was jeder Agent im gewählten Zeitraum verbraucht hat.",
+    "by_project": "Nach Projekt",
+    "by_project_desc": "Ausführungskosten, die über projektverknüpfte Aufgaben zugeordnet werden.",
+    "by_biller": "Nach Abrechner",
+    "by_biller_desc": "Kontoebene-Finanzereignisse, gruppiert nach Belastungs- oder Gutschriftsquelle.",
+    "budget_control": "Budget-Kontrollebene",
+    "budget_control_desc": "Harte Ausgabenlimits für Agenten und Projekte. Das Anbieter-Abonnementkontingent bleibt separat und erscheint unter Anbieter."
+  },
+  "budgets": {
+    "company_policy": "Unternehmensweite Monatsrichtlinie.",
+    "agent_policy": "Wiederkehrende monatliche Ausgabenrichtlinien für einzelne Agenten.",
+    "project_policy": "Lebenszeit-Ausgabenrichtlinien für ausführungsgebundene Projekte.",
+    "active_incidents_title": "Aktive Vorfälle",
+    "resolve_hard_stops": "Lösen Sie harte Stopps hier, indem Sie das Budget erhöhen oder den Bereich explizit pausiert halten.",
+    "unattributed": "Nicht zugeordnet",
+    "company_budgets_title": "Unternehmensbudgets",
+    "agent_budgets_title": "Agentenbudgets",
+    "project_budgets_title": "Projektbudgets"
+  },
+  "incident_card": {
+    "project_paused": "Projektausführung ist pausiert. Neue Arbeit in diesem Projekt wird erst gestartet, wenn Sie den Budget-Vorfall lösen.",
+    "scope_paused": "Dieser Bereich ist pausiert. Neue Heartbeats werden erst gestartet, wenn Sie den Budget-Vorfall lösen.",
+    "applying": "Wird angewendet...",
+    "raise_budget": "Budget erhöhen & fortsetzen",
+    "keep_paused": "Pausiert lassen",
+    "budget_must_exceed": "Das neue Budget muss die aktuell beobachteten Ausgaben übersteigen."
+  },
+  "policy_card": {
+    "lifetime_budget": "Lebenszeit-Budget",
+    "monthly_budget": "Monatliches UTC-Budget",
+    "of_limit": "{{percent}}% des Limits",
+    "no_cap": "Kein Limit konfiguriert",
+    "disabled": "Deaktiviert",
+    "unlimited": "Unbegrenzt",
+    "project_paused": "Ausführung für dieses Projekt ist pausiert, bis das Budget erhöht oder der Vorfall abgewiesen wird.",
+    "scope_paused": "Heartbeats für diesen Bereich sind pausiert, bis das Budget erhöht oder der Vorfall abgewiesen wird.",
+    "saving": "Wird gespeichert...",
+    "update_budget": "Budget aktualisieren",
+    "set_budget": "Budget festlegen",
+    "status_paused": "Pausiert",
+    "status_warning": "Warnung",
+    "status_hard_stop": "Harter Stopp",
+    "status_healthy": "Gesund",
+    "observed": "Beobachtet",
+    "budget": "Budget",
+    "soft_alert": "Weiche Warnung bei {{percent}}%",
+    "soft_alert_with_pause": "Weiche Warnung bei {{percent}}% · {{reason}} Pause",
+    "remaining": "Verbleibend",
+    "budget_usd": "Budget (USD)"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "Durch Budget pausiert"
+  },
+  "empty": {
+    "select_company": "Wählen Sie ein Unternehmen, um Kosten anzuzeigen.",
+    "no_cost_events": "Noch keine Kostenereignisse.",
+    "no_project_costs": "Noch keine projektzugeordneten Ausführungskosten.",
+    "no_finance_events": "Noch keine Finanzereignisse. Fügen Sie Kontoebene-Gebühren hinzu, sobald Abrechnungen oder Gutschriften eingehen.",
+    "no_finance_events_overview": "Noch keine Finanzereignisse. Fügen Sie Kontoebene-Gebühren hinzu, sobald Abrechnungen oder Gutschriften eingehen.",
+    "no_cost_events_period": "Keine Kostenereignisse in diesem Zeitraum.",
+    "no_billable_events": "Keine abrechenbaren Ereignisse in diesem Zeitraum.",
+    "select_date_range": "Wählen Sie ein Start- und Enddatum, um Daten zu laden.",
+    "no_budget_policies": "Noch keine Budgetrichtlinien. Legen Sie Agenten- und Projektbudgets auf deren Detailseiten fest oder nutzen Sie die vorhandene monatliche Unternehmens-Budget-Kontrolle."
+  },
+  "finance_timeline": {
+    "title": "Aktuelle Finanzereignisse",
+    "description": "Aufladungen, Gebühren, Gutschriften, Verpflichtungen und andere Nicht-Anfrage-Gebühren.",
+    "no_events": "Keine Finanzereignisse in diesem Zeitraum.",
+    "invoice": "Rechnung {{id}}",
+    "region": "Region {{region}}",
+    "tier": "Stufe {{tier}}",
+    "estimated": "geschätzt"
+  },
+  "quota_card": {
+    "period_spend": "Zeitraumausgaben",
+    "of_allocation": "{{percent}}% der Zuweisung",
+    "this_week": "Diese Woche",
+    "per_week": "~{{amount}} / Wo",
+    "rolling_windows": "Rollierende Fenster",
+    "subscription_quota": "Abonnement-Kontingent",
+    "in_label": "ein",
+    "out_label": "aus",
+    "api_sub_runs": "~{{apiRuns}} API / ~{{subRuns}} Abo-Ausführungen",
+    "api_runs_only": "~{{apiRuns}} API-Ausführungen",
+    "sub_runs_only": "~{{subRuns}} Abo-Ausführungen",
+    "percent_used": "{{percent}}% genutzt",
+    "resets": "zurückgesetzt {{date}}"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} gemessene Ausführung",
+    "metered_runs_other": "{{count}} gemessene Ausführungen",
+    "subscription_runs_one": "{{count}} Abo-Ausführung",
+    "subscription_runs_other": "{{count}} Abo-Ausführungen",
+    "this_week": "diese Woche",
+    "billing_types": "Abrechnungstypen",
+    "upstream_providers": "Vorgelagerte Anbieter"
+  },
+  "finance_kind": {
+    "title": "Finanzereignis-Mix",
+    "description": "Kontoebene-Gebühren gruppiert nach Ereignisart.",
+    "no_events": "Keine Finanzereignisse in diesem Zeitraum.",
+    "events_one": "{{count}} Ereignis",
+    "events_other": "{{count}} Ereignisse",
+    "billers_one": "{{count}} Abrechner",
+    "billers_other": "{{count}} Abrechner",
+    "debits": "Belastungen"
+  },
+  "subscription_panel": {
+    "title": "Anthropic-Abonnement",
+    "subtitle": "Live Claude-Kontingentfenster.",
+    "runs": "Ausführungen",
+    "total": "Gesamt",
+    "in_label": "ein",
+    "out_label": "aus",
+    "sub_share": "{{percent}}% der Token-Nutzung per Abonnement",
+    "subscription": "Abonnement",
+    "resets": "Zurückgesetzt {{date}}",
+    "percent_used": "{{percent}}% genutzt"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Inferenzgebühr",
+    "platform_fee": "Plattformgebühr",
+    "credit_purchase": "Gutschriftenkauf",
+    "credit_refund": "Gutschriftenrückerstattung",
+    "credit_expiry": "Gutschriftenablauf",
+    "byok_fee": "BYOK-Gebühr",
+    "gateway_overhead": "Gateway-Overhead",
+    "log_storage_charge": "Protokollspeicher",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Bereitgestellte Kapazität",
+    "training_charge": "Training",
+    "custom_model_import_charge": "Modell-Import",
+    "custom_model_storage_charge": "Modellspeicher",
+    "manual_adjustment": "Manuelle Anpassung"
+  },
+  "finance_direction": {
+    "credit": "Gutschrift",
+    "debit": "Belastung"
+  }
+}

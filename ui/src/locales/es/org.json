@@ -1,1 +1,17 @@
-{}
+{
+  "title": "Organigrama",
+  "empty": {
+    "select_company": "Seleccione una empresa para ver el organigrama.",
+    "no_agents": "No hay agentes en la organización. Cree agentes para construir su organigrama.",
+    "no_org_hierarchy": "No hay jerarquía organizacional definida."
+  },
+  "actions": {
+    "import_company": "Importar empresa",
+    "export_company": "Exportar empresa",
+    "fit_to_screen": "Ajustar",
+    "zoom_in": "Acercar",
+    "zoom_out": "Alejar",
+    "fit_to_screen_title": "Ajustar a la pantalla"
+  },
+  "breadcrumb": "Organigrama"
+}

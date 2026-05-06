@@ -1,1 +1,87 @@
-{}
+{
+  "title": "Genehmigungen",
+  "tabs": {
+    "pending": "Ausstehend",
+    "all": "Alle"
+  },
+  "empty": {
+    "select_company": "Wählen Sie zuerst ein Unternehmen.",
+    "no_pending": "Keine ausstehenden Genehmigungen.",
+    "no_approvals": "Noch keine Genehmigungen."
+  },
+  "card": {
+    "requested_by": "Angefordert von",
+    "created_ago": "Genehmigungsanfrage erstellt {{time}}",
+    "decision_note": "Entscheidungsnotiz.",
+    "approve": "Genehmigen",
+    "approving": "Wird genehmigt...",
+    "reject": "Ablehnen",
+    "rejecting": "Wird abgelehnt...",
+    "view_details": "Details anzeigen"
+  },
+  "status": {
+    "approved": "Genehmigt",
+    "pending": "Ausstehend",
+    "rejected": "Abgelehnt",
+    "revision_requested": "Überarbeitung angefordert"
+  },
+  "payload": {
+    "type_hire_agent": "Agent einstellen",
+    "type_approve_ceo_strategy": "CEO-Strategie",
+    "type_budget_override_required": "Budget-Überschreitung",
+    "type_request_board_approval": "Board-Genehmigung",
+    "type_ceo_strategy": "CEO-Strategie",
+    "type_budget_override": "Budget-Überschreitung",
+    "type_board_approval": "Board-Genehmigung",
+    "field_name": "Name",
+    "field_role": "Rolle",
+    "field_title": "Titel",
+    "field_icon": "Symbol",
+    "field_capabilities": "Fähigkeiten",
+    "field_adapter": "Adapter",
+    "field_skills": "Skills",
+    "field_scope": "Bereich",
+    "field_window": "Zeitfenster",
+    "field_metric": "Kennzahl",
+    "limit_observed": "Limit {{limit}} · Beobachtet {{observed}}",
+    "board_title": "Titel",
+    "board_summary": "Zusammenfassung",
+    "board_recommended_action": "Empfohlene Maßnahme",
+    "board_on_approval": "Bei Genehmigung",
+    "board_risks": "Risiken",
+    "board_proposed_comment": "Vorgeschlagener Kommentar"
+  },
+  "detail": {
+    "approval_fallback": "Genehmigung",
+    "not_found": "Genehmigung nicht gefunden.",
+    "approval_confirmed": "Genehmigung bestätigt",
+    "approval_confirmed_desc": "Der anfragende Agent wurde benachrichtigt, diese Genehmigung und verknüpfte Aufgaben zu überprüfen.",
+    "see_full_request": "Vollständige Anfrage anzeigen",
+    "decision_note_prefix": "Entscheidungsnotiz",
+    "linked_issues": "Verknüpfte Aufgaben",
+    "linked_issues_note": "Verknüpfte Aufgaben bleiben offen, bis der anfragende Agent sie nachverfolgt und schließt.",
+    "budget_resolve_prefix": "Lösen Sie diesen Budget-Stop von den Budget-Kontrollen auf",
+    "budget_resolve_suffix": ".",
+    "request_revision": "Überarbeitung anfordern",
+    "mark_resubmitted": "Als erneut eingereicht markieren",
+    "delete_agent_confirm": "Diesen abgelehnten Agenten löschen? Dies kann nicht rückgängig gemacht werden.",
+    "delete_disapproved_agent": "Abgelehnten Agenten löschen",
+    "comments": "Kommentare ({{count}})",
+    "comment_placeholder": "Einen Kommentar hinzufügen...",
+    "posting": "Wird gepostet…",
+    "post_comment": "Kommentar posten",
+    "review_linked_issues": "Verknüpfte Aufgaben überprüfen",
+    "review_linked_issue": "Verknüpfte Aufgabe überprüfen",
+    "open_hired_agent": "Eingestellten Agenten öffnen",
+    "back_to_approvals": "Zurück zu Genehmigungen",
+    "board_author": "Board"
+  },
+  "errors": {
+    "approve_failed": "Genehmigung fehlgeschlagen",
+    "reject_failed": "Ablehnung fehlgeschlagen",
+    "revision_failed": "Überarbeitung konnte nicht angefordert werden",
+    "resubmit_failed": "Erneutes Einreichen fehlgeschlagen",
+    "comment_failed": "Kommentar konnte nicht gepostet werden",
+    "delete_failed": "Agent konnte nicht gelöscht werden"
+  }
+}

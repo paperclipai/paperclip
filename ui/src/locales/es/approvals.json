@@ -1,1 +1,87 @@
-{}
+{
+  "title": "Aprobaciones",
+  "tabs": {
+    "pending": "Pendientes",
+    "all": "Todas"
+  },
+  "empty": {
+    "select_company": "Seleccione una empresa primero.",
+    "no_pending": "No hay aprobaciones pendientes.",
+    "no_approvals": "Aún no hay aprobaciones."
+  },
+  "card": {
+    "requested_by": "Solicitado por",
+    "created_ago": "Solicitud de aprobación creada {{time}}",
+    "decision_note": "Nota de decisión.",
+    "approve": "Aprobar",
+    "approving": "Aprobando...",
+    "reject": "Rechazar",
+    "rejecting": "Rechazando...",
+    "view_details": "Ver detalles"
+  },
+  "status": {
+    "approved": "Aprobado",
+    "pending": "Pendiente",
+    "rejected": "Rechazado",
+    "revision_requested": "Revisión solicitada"
+  },
+  "payload": {
+    "type_hire_agent": "Contratar agente",
+    "type_approve_ceo_strategy": "Estrategia del CEO",
+    "type_budget_override_required": "Excepción de presupuesto",
+    "type_request_board_approval": "Aprobación del consejo",
+    "type_ceo_strategy": "Estrategia del CEO",
+    "type_budget_override": "Excepción de presupuesto",
+    "type_board_approval": "Aprobación del consejo",
+    "field_name": "Nombre",
+    "field_role": "Rol",
+    "field_title": "Título",
+    "field_icon": "Icono",
+    "field_capabilities": "Capacidades",
+    "field_adapter": "Adaptador",
+    "field_skills": "Habilidades",
+    "field_scope": "Ámbito",
+    "field_window": "Ventana",
+    "field_metric": "Métrica",
+    "limit_observed": "Límite {{limit}} · Observado {{observed}}",
+    "board_title": "Título",
+    "board_summary": "Resumen",
+    "board_recommended_action": "Acción recomendada",
+    "board_on_approval": "Al aprobar",
+    "board_risks": "Riesgos",
+    "board_proposed_comment": "Comentario propuesto"
+  },
+  "detail": {
+    "approval_fallback": "Aprobación",
+    "not_found": "Aprobación no encontrada.",
+    "approval_confirmed": "Aprobación confirmada",
+    "approval_confirmed_desc": "Se notificó al agente solicitante para revisar esta aprobación y las tareas vinculadas.",
+    "see_full_request": "Ver solicitud completa",
+    "decision_note_prefix": "Nota de decisión",
+    "linked_issues": "Tareas vinculadas",
+    "linked_issues_note": "Las tareas vinculadas permanecen abiertas hasta que el agente solicitante las cierre.",
+    "budget_resolve_prefix": "Resuelva esta parada de presupuesto desde los controles de presupuesto en",
+    "budget_resolve_suffix": ".",
+    "request_revision": "Solicitar revisión",
+    "mark_resubmitted": "Marcar como reenviado",
+    "delete_agent_confirm": "¿Eliminar este agente rechazado? Esta acción no se puede deshacer.",
+    "delete_disapproved_agent": "Eliminar agente rechazado",
+    "comments": "Comentarios ({{count}})",
+    "comment_placeholder": "Añadir un comentario...",
+    "posting": "Publicando…",
+    "post_comment": "Publicar comentario",
+    "review_linked_issues": "Revisar tareas vinculadas",
+    "review_linked_issue": "Revisar tarea vinculada",
+    "open_hired_agent": "Abrir agente contratado",
+    "back_to_approvals": "Volver a aprobaciones",
+    "board_author": "Board"
+  },
+  "errors": {
+    "approve_failed": "Error al aprobar",
+    "reject_failed": "Error al rechazar",
+    "revision_failed": "Error al solicitar revisión",
+    "resubmit_failed": "Error al reenviar",
+    "comment_failed": "Error al publicar el comentario",
+    "delete_failed": "Error al eliminar el agente"
+  }
+}

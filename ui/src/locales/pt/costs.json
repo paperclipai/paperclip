@@ -1,1 +1,213 @@
-{}
+{
+  "title": "Custos",
+  "description": "Gastos com inferência, tarifas de plataforma, créditos e janelas de cota ao vivo.",
+  "tabs": {
+    "overview": "Visão geral",
+    "budgets": "Orçamentos",
+    "providers": "Provedores",
+    "billers": "Faturadores",
+    "finance": "Financeiro",
+    "all_providers": "Todos os provedores",
+    "all_billers": "Todos os faturadores"
+  },
+  "presets": {
+    "mtd": "Mês até hoje",
+    "7d": "Últimos 7 dias",
+    "30d": "Últimos 30 dias",
+    "ytd": "Ano até hoje",
+    "all": "Todo o período",
+    "custom": "Personalizado"
+  },
+  "date_range": {
+    "to": "até"
+  },
+  "metrics": {
+    "inference_spend": "Gastos com inferência",
+    "budget": "Orçamento",
+    "finance_net": "Resultado financeiro líquido",
+    "finance_events": "Eventos financeiros",
+    "debits": "Débitos",
+    "credits": "Créditos",
+    "net": "Líquido",
+    "estimated": "Estimado",
+    "active_incidents": "Incidentes ativos",
+    "pending_approvals": "Aprovações pendentes",
+    "paused_agents": "Agentes pausados",
+    "paused_projects": "Projetos pausados",
+    "open": "Aberto",
+    "no_monthly_cap": "Nenhum teto mensal configurado",
+    "unlimited_budget": "Orçamento ilimitado"
+  },
+  "subtitles": {
+    "tokens_across_events": "tokens em eventos com escopo de requisição",
+    "agents_paused_projects_paused": "{{agentCount}} agentes pausados · {{projectCount}} projetos pausados",
+    "monthly_utilized": "{{percent}}% do orçamento mensal consumido neste período.",
+    "refunds_offsets": "Reembolsos, compensações e devoluções de crédito",
+    "debit_minus_credit": "Débito menos crédito para o período selecionado",
+    "estimated_debits": "Débitos estimados que ainda não são autoritativos de fatura",
+    "threshold_crossings": "Cruzamentos de limites suaves ou rígidos abertos",
+    "budget_approvals_awaiting": "Aprovações de substituição de orçamento aguardando ação do conselho",
+    "heartbeats_blocked": "Heartbeats de agentes bloqueados por orçamento",
+    "execution_blocked": "Execução do projeto bloqueada por orçamento",
+    "estimated_in_range": "estimado no período",
+    "debits_credits": "{{debits}} débitos · {{credits}} créditos",
+    "events_in_range_one": "{{count}} evento no período",
+    "events_in_range_other": "{{count}} eventos no período"
+  },
+  "budget": {
+    "of": "{{spend}} de {{budget}}",
+    "budget_label": "Orçamento {{amount}}"
+  },
+  "labels": {
+    "usage": "uso",
+    "tok": "tok",
+    "in_out_tokens": "entrada {{inTokens}} · saída {{outTokens}}",
+    "api_runs": "{{count}} api",
+    "subscription_runs": "{{count}} assinatura"
+  },
+  "cards": {
+    "inference_ledger": "Razão de inferência",
+    "inference_ledger_desc": "Gastos com inferência com escopo de requisição para o período selecionado.",
+    "finance_ledger": "Razão financeiro",
+    "finance_ledger_desc": "Cobranças no nível de conta que não mapeiam para uma única requisição de inferência.",
+    "by_agent": "Por agente",
+    "by_agent_desc": "O que cada agente consumiu no período selecionado.",
+    "by_project": "Por projeto",
+    "by_project_desc": "Custos de execução atribuídos através de tarefas vinculadas ao projeto.",
+    "by_biller": "Por faturador",
+    "by_biller_desc": "Eventos financeiros no nível de conta agrupados por quem os cobrou ou creditou.",
+    "budget_control": "Plano de controle de orçamento",
+    "budget_control_desc": "Limites de gasto com parada forçada para agentes e projetos. A cota de assinatura do provedor permanece separada e aparece em Provedores."
+  },
+  "budgets": {
+    "company_policy": "Política mensal para toda a empresa.",
+    "agent_policy": "Políticas de gasto mensal recorrentes para agentes individuais.",
+    "project_policy": "Políticas de gasto vitalício para projetos vinculados a execução.",
+    "active_incidents_title": "Incidentes ativos",
+    "resolve_hard_stops": "Resolva paradas forçadas aqui aumentando o orçamento ou mantendo explicitamente o escopo pausado.",
+    "unattributed": "Não atribuído",
+    "company_budgets_title": "Orçamentos da empresa",
+    "agent_budgets_title": "Orçamentos de agentes",
+    "project_budgets_title": "Orçamentos de projetos"
+  },
+  "incident_card": {
+    "project_paused": "A execução do projeto está pausada. Novos trabalhos neste projeto não serão iniciados até você resolver o incidente de orçamento.",
+    "scope_paused": "Este escopo está pausado. Novos heartbeats não serão iniciados até você resolver o incidente de orçamento.",
+    "applying": "Aplicando...",
+    "raise_budget": "Aumentar orçamento e retomar",
+    "keep_paused": "Manter pausado",
+    "budget_must_exceed": "O novo orçamento deve exceder o gasto atual observado."
+  },
+  "policy_card": {
+    "lifetime_budget": "Orçamento vitalício",
+    "monthly_budget": "Orçamento mensal UTC",
+    "of_limit": "{{percent}}% do limite",
+    "no_cap": "Nenhum teto configurado",
+    "disabled": "Desabilitado",
+    "unlimited": "Ilimitado",
+    "project_paused": "A execução está pausada para este projeto até o orçamento ser aumentado ou o incidente ser descartado.",
+    "scope_paused": "Os heartbeats estão pausados para este escopo até o orçamento ser aumentado ou o incidente ser descartado.",
+    "saving": "Salvando...",
+    "update_budget": "Atualizar orçamento",
+    "set_budget": "Definir orçamento",
+    "status_paused": "Pausado",
+    "status_warning": "Aviso",
+    "status_hard_stop": "Parada forçada",
+    "status_healthy": "Saudável",
+    "observed": "Observado",
+    "budget": "Orçamento",
+    "soft_alert": "Alerta suave em {{percent}}%",
+    "soft_alert_with_pause": "Alerta suave em {{percent}}% · pausa por {{reason}}",
+    "remaining": "Restante",
+    "budget_usd": "Orçamento (USD)"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "Pausado por orçamento"
+  },
+  "empty": {
+    "select_company": "Selecione uma empresa para ver os custos.",
+    "no_cost_events": "Nenhum evento de custo ainda.",
+    "no_project_costs": "Nenhum custo de execução atribuído ao projeto ainda.",
+    "no_finance_events": "Nenhum evento financeiro ainda. Adicione cobranças no nível de conta quando faturas ou créditos do faturador chegarem.",
+    "no_finance_events_overview": "Nenhum evento financeiro ainda. Adicione cobranças no nível de conta quando faturas ou créditos do faturador chegarem.",
+    "no_cost_events_period": "Nenhum evento de custo neste período.",
+    "no_billable_events": "Nenhum evento faturável neste período.",
+    "select_date_range": "Selecione uma data de início e fim para carregar dados.",
+    "no_budget_policies": "Nenhuma política de orçamento ainda. Defina orçamentos de agentes e projetos nas páginas de detalhes deles, ou use o controle de orçamento mensal da empresa existente."
+  },
+  "finance_timeline": {
+    "title": "Eventos financeiros recentes",
+    "description": "Recargas, tarifas, créditos, compromissos e outras cobranças que não são de requisição.",
+    "no_events": "Nenhum evento financeiro neste período.",
+    "invoice": "fatura {{id}}",
+    "region": "região {{region}}",
+    "tier": "nível {{tier}}",
+    "estimated": "estimado"
+  },
+  "quota_card": {
+    "period_spend": "Gasto do período",
+    "of_allocation": "{{percent}}% da alocação",
+    "this_week": "Esta semana",
+    "per_week": "~{{amount}} / sem",
+    "rolling_windows": "Janelas contínuas",
+    "subscription_quota": "Cota de assinatura",
+    "in_label": "entrada",
+    "out_label": "saída",
+    "api_sub_runs": "~{{apiRuns}} execuções api / ~{{subRuns}} assinatura",
+    "api_runs_only": "~{{apiRuns}} execuções api",
+    "sub_runs_only": "~{{subRuns}} execuções por assinatura",
+    "percent_used": "{{percent}}% usado",
+    "resets": "reinicia {{date}}"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} execução medida",
+    "metered_runs_other": "{{count}} execuções medidas",
+    "subscription_runs_one": "{{count}} execução por assinatura",
+    "subscription_runs_other": "{{count}} execuções por assinatura",
+    "this_week": "esta semana",
+    "billing_types": "Tipos de cobrança",
+    "upstream_providers": "Provedores upstream"
+  },
+  "finance_kind": {
+    "title": "Composição dos eventos financeiros",
+    "description": "Cobranças no nível de conta agrupadas por tipo de evento.",
+    "no_events": "Nenhum evento financeiro neste período.",
+    "events_one": "{{count}} evento",
+    "events_other": "{{count}} eventos",
+    "billers_one": "{{count}} faturador",
+    "billers_other": "{{count}} faturadores",
+    "debits": "débitos"
+  },
+  "subscription_panel": {
+    "title": "Assinatura Anthropic",
+    "subtitle": "Janelas de cota do Claude ao vivo.",
+    "runs": "execuções",
+    "total": "total",
+    "in_label": "entrada",
+    "out_label": "saída",
+    "sub_share": "{{percent}}% do uso de tokens via assinatura",
+    "subscription": "Assinatura",
+    "resets": "Reinicia {{date}}",
+    "percent_used": "{{percent}}% usado"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Cobrança de inferência",
+    "platform_fee": "Taxa de plataforma",
+    "credit_purchase": "Compra de crédito",
+    "credit_refund": "Reembolso de crédito",
+    "credit_expiry": "Vencimento de crédito",
+    "byok_fee": "Taxa BYOK",
+    "gateway_overhead": "Sobrecarga de gateway",
+    "log_storage_charge": "Armazenamento de logs",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Capacidade provisionada",
+    "training_charge": "Treinamento",
+    "custom_model_import_charge": "Importação de modelo",
+    "custom_model_storage_charge": "Armazenamento de modelo",
+    "manual_adjustment": "Ajuste manual"
+  },
+  "finance_direction": {
+    "credit": "Crédito",
+    "debit": "Débito"
+  }
+}

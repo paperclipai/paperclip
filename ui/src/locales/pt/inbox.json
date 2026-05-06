@@ -1,1 +1,61 @@
-{}
+{
+  "title": "Caixa de Entrada",
+  "tabs": {
+    "mine": "Minhas",
+    "board": "Sistema",
+    "recent": "Recentes",
+    "unread": "Não lidas",
+    "all": "Todas"
+  },
+  "actions": {
+    "retry": "Tentar novamente",
+    "retrying": "Tentando novamente…",
+    "mark_as_read": "Marcar como lido",
+    "dismiss": "Dispensar",
+    "mark_all_read": "Marcar todas como lidas",
+    "marking": "Marcando…"
+  },
+  "group": {
+    "none": "Nenhum",
+    "type": "Tipo",
+    "workspace": "Espaço de trabalho",
+    "archived": "Arquivado",
+    "other": "Outros resultados",
+    "group": "Grupo",
+    "earlier": "Anteriores"
+  },
+  "search": {
+    "placeholder": "Pesquisar na caixa de entrada…"
+  },
+  "filters": {
+    "category": "Categoria",
+    "approval_status": "Status de aprovação",
+    "category_everything": "Todas as categorias",
+    "category_issues_i_touched": "Minhas tarefas recentes",
+    "category_join_requests": "Solicitações de adesão",
+    "category_approvals": "Aprovações",
+    "category_alerts": "Alertas",
+    "status_all": "Todos os status de aprovação",
+    "status_actionable": "Requer ação",
+    "status_resolved": "Resolvido"
+  },
+  "placeholders": {
+    "category": "Categoria",
+    "approval_status": "Status de aprovação"
+  },
+  "misc": {
+    "human_join_request": "Solicitação de adesão humana",
+    "run_error": "Execução encerrou com erro.",
+    "enable_nesting": "Habilitar aninhamento pai-filho",
+    "disable_nesting": "Desabilitar aninhamento pai-filho",
+    "choose_columns": "Escolher quais colunas da caixa de entrada permanecem visíveis"
+  },
+  "empty": {
+    "select_company": "Selecione uma empresa para ver a caixa de entrada.",
+    "no_search_match": "Nenhum item da caixa de entrada corresponde à sua pesquisa.",
+    "inbox_zero": "Caixa de entrada vazia.",
+    "no_new": "Nenhum novo item na caixa de entrada.",
+    "no_recent": "Nenhum item recente na caixa de entrada.",
+    "no_match_filters": "Nenhum item da caixa de entrada corresponde a estes filtros."
+  }
+}

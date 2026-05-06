@@ -1,1 +1,61 @@
-{}
+{
+  "title": "Bandeja de entrada",
+  "tabs": {
+    "mine": "Mía",
+    "board": "Board",
+    "recent": "Reciente",
+    "unread": "No leídos",
+    "all": "Todos"
+  },
+  "actions": {
+    "retry": "Reintentar",
+    "retrying": "Reintentando…",
+    "mark_as_read": "Marcar como leído",
+    "dismiss": "Descartar",
+    "mark_all_read": "Marcar todo como leído",
+    "marking": "Marcando…"
+  },
+  "group": {
+    "none": "Ninguno",
+    "type": "Tipo",
+    "workspace": "Espacio de trabajo",
+    "archived": "Archivado",
+    "other": "Otros resultados",
+    "group": "Grupo",
+    "earlier": "Anterior"
+  },
+  "search": {
+    "placeholder": "Buscar en bandeja de entrada…"
+  },
+  "filters": {
+    "category": "Categoría",
+    "approval_status": "Estado de aprobación",
+    "category_everything": "Todas las categorías",
+    "category_issues_i_touched": "Mis tareas recientes",
+    "category_join_requests": "Solicitudes de unión",
+    "category_approvals": "Aprobaciones",
+    "category_alerts": "Alertas",
+    "status_all": "Todos los estados de aprobación",
+    "status_actionable": "Requiere acción",
+    "status_resolved": "Resuelto"
+  },
+  "placeholders": {
+    "category": "Categoría",
+    "approval_status": "Estado de aprobación"
+  },
+  "misc": {
+    "human_join_request": "Solicitud de unión humana",
+    "run_error": "La ejecución terminó con un error.",
+    "enable_nesting": "Habilitar anidamiento padre-hijo",
+    "disable_nesting": "Deshabilitar anidamiento padre-hijo",
+    "choose_columns": "Elegir qué columnas de la bandeja permanecen visibles"
+  },
+  "empty": {
+    "select_company": "Seleccione una empresa para ver la bandeja de entrada.",
+    "no_search_match": "Ningún elemento de la bandeja coincide con su búsqueda.",
+    "inbox_zero": "Bandeja vacía.",
+    "no_new": "No hay nuevos elementos en la bandeja.",
+    "no_recent": "No hay elementos recientes en la bandeja.",
+    "no_match_filters": "Ningún elemento de la bandeja coincide con estos filtros."
+  }
+}

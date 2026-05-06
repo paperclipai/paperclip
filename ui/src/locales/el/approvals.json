@@ -1,1 +1,87 @@
-{}
+{
+  "title": "Εγκρίσεις",
+  "tabs": {
+    "pending": "Σε εκκρεμότητα",
+    "all": "Όλες"
+  },
+  "empty": {
+    "select_company": "Επιλέξτε πρώτα μια εταιρία.",
+    "no_pending": "Δεν υπάρχουν εκκρεμείς εγκρίσεις.",
+    "no_approvals": "Δεν υπάρχουν ακόμα εγκρίσεις."
+  },
+  "card": {
+    "requested_by": "Ζητήθηκε από",
+    "created_ago": "Αίτηση έγκρισης δημιουργήθηκε {{time}}",
+    "decision_note": "Σημείωση απόφασης.",
+    "approve": "Έγκριση",
+    "approving": "Έγκριση...",
+    "reject": "Απόρριψη",
+    "rejecting": "Απόρριψη...",
+    "view_details": "Προβολή λεπτομερειών"
+  },
+  "status": {
+    "approved": "Εγκρίθηκε",
+    "pending": "Σε εκκρεμότητα",
+    "rejected": "Απορρίφθηκε",
+    "revision_requested": "Ζητήθηκε αναθεώρηση"
+  },
+  "payload": {
+    "type_hire_agent": "Πρόσληψη πράκτορα",
+    "type_approve_ceo_strategy": "Στρατηγική CEO",
+    "type_budget_override_required": "Παράκαμψη προϋπολογισμού",
+    "type_request_board_approval": "Έγκριση Board",
+    "type_ceo_strategy": "Στρατηγική CEO",
+    "type_budget_override": "Παράκαμψη προϋπολογισμού",
+    "type_board_approval": "Έγκριση Board",
+    "field_name": "Όνομα",
+    "field_role": "Ρόλος",
+    "field_title": "Τίτλος",
+    "field_icon": "Εικονίδιο",
+    "field_capabilities": "Δυνατότητες",
+    "field_adapter": "Προσαρμογέας",
+    "field_skills": "Δεξιότητες",
+    "field_scope": "Εμβέλεια",
+    "field_window": "Παράθυρο",
+    "field_metric": "Μέτρηση",
+    "limit_observed": "Όριο {{limit}} · Παρατηρήθηκε {{observed}}",
+    "board_title": "Τίτλος",
+    "board_summary": "Περίληψη",
+    "board_recommended_action": "Συνιστώμενη ενέργεια",
+    "board_on_approval": "Κατά την έγκριση",
+    "board_risks": "Κίνδυνοι",
+    "board_proposed_comment": "Προτεινόμενο σχόλιο"
+  },
+  "detail": {
+    "approval_fallback": "Έγκριση",
+    "not_found": "Η έγκριση δεν βρέθηκε.",
+    "approval_confirmed": "Η έγκριση επιβεβαιώθηκε",
+    "approval_confirmed_desc": "Ο πράκτορας που αιτήθηκε ειδοποιήθηκε να επανεξετάσει αυτήν την έγκριση και τα συνδεδεμένα ζητήματα.",
+    "see_full_request": "Δείτε πλήρη αίτηση",
+    "decision_note_prefix": "Σημείωση απόφασης",
+    "linked_issues": "Συνδεδεμένα ζητήματα",
+    "linked_issues_note": "Τα συνδεδεμένα ζητήματα παραμένουν ανοιχτά μέχρι ο πράκτορας που αιτήθηκε να συνεχίσει και να τα κλείσει.",
+    "budget_resolve_prefix": "Επιλύστε αυτήν τη διακοπή προϋπολογισμού από τους ελέγχους προϋπολογισμού στο",
+    "budget_resolve_suffix": ".",
+    "request_revision": "Αίτηση αναθεώρησης",
+    "mark_resubmitted": "Σήμανση ως εκ νέου υποβληθέν",
+    "delete_agent_confirm": "Διαγραφή αυτού του μη εγκεκριμένου πράκτορα; Αυτό δεν μπορεί να αναιρεθεί.",
+    "delete_disapproved_agent": "Διαγραφή μη εγκεκριμένου πράκτορα",
+    "comments": "Σχόλια ({{count}})",
+    "comment_placeholder": "Προσθέστε ένα σχόλιο...",
+    "posting": "Αποστολή…",
+    "post_comment": "Δημοσίευση σχολίου",
+    "review_linked_issues": "Επανεξέταση συνδεδεμένων ζητημάτων",
+    "review_linked_issue": "Επανεξέταση συνδεδεμένου ζητήματος",
+    "open_hired_agent": "Άνοιγμα προσληφθέντος πράκτορα",
+    "back_to_approvals": "Επιστροφή στις εγκρίσεις",
+    "board_author": "Board"
+  },
+  "errors": {
+    "approve_failed": "Η έγκριση απέτυχε",
+    "reject_failed": "Η απόρριψη απέτυχε",
+    "revision_failed": "Αδυναμία αίτησης αναθεώρησης",
+    "resubmit_failed": "Η εκ νέου υποβολή απέτυχε",
+    "comment_failed": "Αδυναμία δημοσίευσης σχολίου",
+    "delete_failed": "Αδυναμία διαγραφής πράκτορα"
+  }
+}

@@ -1,1 +1,49 @@
-{}
+{
+  "title": "Objetivos",
+  "projects_title": "Proyectos",
+  "actions": {
+    "add_goal": "Añadir objetivo",
+    "new_goal": "Nuevo objetivo",
+    "add_project": "Añadir proyecto"
+  },
+  "empty": {
+    "select_company": "Seleccione una empresa para ver los objetivos.",
+    "no_goals": "Aún no hay objetivos.",
+    "select_company_projects": "Seleccione una empresa para ver los proyectos.",
+    "no_projects": "Aún no hay proyectos."
+  },
+  "properties": {
+    "label_status": "Estado",
+    "label_level": "Nivel",
+    "label_owner": "Propietario",
+    "label_parent": "Objetivo principal",
+    "label_created": "Creado",
+    "label_updated": "Actualizado",
+    "no_owner": "Ninguno"
+  },
+  "new_goal_dialog": {
+    "new_sub_goal": "Nuevo subobjetivo",
+    "new_goal": "Nuevo objetivo",
+    "title_placeholder": "Título del objetivo",
+    "description_placeholder": "Añadir descripción...",
+    "level_company": "Empresa",
+    "level_team": "Equipo",
+    "level_agent": "Agente",
+    "level_task": "Tarea",
+    "parent_goal": "Objetivo principal",
+    "no_parent": "Sin objetivo principal",
+    "creating": "Creando…",
+    "create_sub_goal": "Crear subobjetivo",
+    "create_goal": "Crear objetivo"
+  },
+  "detail": {
+    "goal_fallback": "Objetivo",
+    "show_properties": "Mostrar propiedades",
+    "description_placeholder": "Añadir una descripción...",
+    "tab_sub_goals": "Subobjetivos ({{count}})",
+    "tab_projects": "Proyectos ({{count}})",
+    "add_sub_goal": "Subobjetivo",
+    "no_sub_goals": "No hay subobjetivos.",
+    "no_linked_projects": "No hay proyectos vinculados."
+  }
+}

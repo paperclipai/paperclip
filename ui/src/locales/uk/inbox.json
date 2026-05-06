@@ -1,1 +1,61 @@
-{}
+{
+  "title": "Вхідні",
+  "tabs": {
+    "mine": "Мої",
+    "board": "Рада",
+    "recent": "Нещодавні",
+    "unread": "Непрочитані",
+    "all": "Всі"
+  },
+  "actions": {
+    "retry": "Повторити",
+    "retrying": "Повторення…",
+    "mark_as_read": "Позначити прочитаним",
+    "dismiss": "Закрити",
+    "mark_all_read": "Позначити всі прочитаними",
+    "marking": "Позначення…"
+  },
+  "group": {
+    "none": "Немає",
+    "type": "Тип",
+    "workspace": "Простір",
+    "archived": "Архів",
+    "other": "Інші результати",
+    "group": "Група",
+    "earlier": "Раніше"
+  },
+  "search": {
+    "placeholder": "Пошук у вхідних…"
+  },
+  "filters": {
+    "category": "Категорія",
+    "approval_status": "Статус погодження",
+    "category_everything": "Всі категорії",
+    "category_issues_i_touched": "Мої нещодавні задачі",
+    "category_join_requests": "Запити на вступ",
+    "category_approvals": "Погодження",
+    "category_alerts": "Сповіщення",
+    "status_all": "Всі статуси погодження",
+    "status_actionable": "Потрібна дія",
+    "status_resolved": "Вирішено"
+  },
+  "placeholders": {
+    "category": "Категорія",
+    "approval_status": "Статус погодження"
+  },
+  "misc": {
+    "human_join_request": "Запит людини на вступ",
+    "run_error": "Запуск завершився з помилкою.",
+    "enable_nesting": "Увімкнути вкладеність задач",
+    "disable_nesting": "Вимкнути вкладеність задач",
+    "choose_columns": "Обрати видимі стовпці вхідних"
+  },
+  "empty": {
+    "select_company": "Оберіть компанію для перегляду вхідних.",
+    "no_search_match": "Жоден елемент вхідних не відповідає пошуку.",
+    "inbox_zero": "Вхідні порожні.",
+    "no_new": "Нових елементів немає.",
+    "no_recent": "Нещодавніх елементів немає.",
+    "no_match_filters": "Жоден елемент вхідних не відповідає фільтрам."
+  }
+}
