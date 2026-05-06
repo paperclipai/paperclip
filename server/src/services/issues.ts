@@ -715,6 +715,12 @@ const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
+const SYSTEM_HARNESS_CHILD_ORIGIN_KINDS: string[] = [
+  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND,
+  "stranded_issue_recovery",
+  "stale_active_run_evaluation",
+];
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
   "issue.productivity_review_created",
@@ -2638,7 +2644,13 @@ export function issueService(db: Db) {
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parentIssueId)))
+        .where(
+          and(
+            eq(issues.companyId, parent.companyId),
+            eq(issues.parentId, parentIssueId),
+            notInArray(issues.originKind, SYSTEM_HARNESS_CHILD_ORIGIN_KINDS),
+          ),
+        )
         .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
       if (children.length === 0) return null;
       if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {

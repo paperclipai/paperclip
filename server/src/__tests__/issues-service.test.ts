@@ -2322,6 +2322,82 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("does not wake parent when all children are harness-generated system issues", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const productivityChildId = randomUUID();
+    const livenessChildId = randomUUID();
+    const strandedChildId = randomUUID();
+    const staleRunChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: productivityChildId,
+        companyId,
+        parentId,
+        title: "Productivity review",
+        status: "done",
+        priority: "medium",
+        originKind: "issue_productivity_review",
+      },
+      {
+        id: livenessChildId,
+        companyId,
+        parentId,
+        title: "Liveness escalation",
+        status: "done",
+        priority: "medium",
+        originKind: "harness_liveness_escalation",
+      },
+      {
+        id: strandedChildId,
+        companyId,
+        parentId,
+        title: "Stranded recovery",
+        status: "done",
+        priority: "medium",
+        originKind: "stranded_issue_recovery",
+      },
+      {
+        id: staleRunChildId,
+        companyId,
+        parentId,
+        title: "Stale run evaluation",
+        status: "done",
+        priority: "medium",
+        originKind: "stale_active_run_evaluation",
+      },
+    ]);
+
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
