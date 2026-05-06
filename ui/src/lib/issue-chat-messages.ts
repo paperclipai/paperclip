@@ -45,6 +45,7 @@ export interface IssueChatLinkedRun {
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
+  resultJson?: Record<string, unknown> | null;
 }
 
 export interface IssueChatTranscriptEntry {
@@ -304,11 +305,13 @@ function createCommentMessage(args: {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
   const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap);
+  const isSystemNotice = comment.authorType === "system";
   const custom = {
-    kind: "comment",
+    kind: isSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
+    authorType: comment.authorType,
     authorAgentId: comment.authorAgentId,
     authorUserId: comment.authorUserId,
     companyId: companyId ?? comment.companyId,
@@ -321,7 +324,20 @@ function createCommentMessage(args: {
     queueReason: comment.queueReason ?? null,
     interruptedRunId: comment.interruptedRunId ?? null,
     followUpRequested: comment.followUpRequested === true,
+    presentation: comment.presentation ?? null,
+    commentMetadata: comment.metadata ?? null,
   };
+
+  if (isSystemNotice) {
+    const message: ThreadSystemMessage = {
+      id: comment.id,
+      role: "system",
+      createdAt,
+      content: [{ type: "text", text: comment.body }],
+      metadata: { custom },
+    };
+    return message;
+  }
 
   if (comment.authorAgentId) {
     const message: ThreadAssistantMessage = {
@@ -484,11 +500,13 @@ function runDurationLabel(run: {
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
+  resultJson?: Record<string, unknown> | null;
 }) {
   const start = run.startedAt ?? run.createdAt;
   const end = run.finishedAt ?? null;
   const durationMs = end ? Math.max(0, toTimestamp(end) - toTimestamp(start)) : null;
   const durationText = formatDurationWords(durationMs);
+  const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
   switch (run.status) {
     case "succeeded":
       return durationText ? `Worked for ${durationText}` : "Finished work";
@@ -498,6 +516,9 @@ function runDurationLabel(run: {
     case "timed_out":
       return durationText ? `Timed out after ${durationText}` : "Run timed out";
     case "cancelled":
+      if (stopReason === "paused") {
+        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+      }
       return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
     case "queued":
       return "Queued";

@@ -11,6 +11,7 @@ release_date=""
 dry_run=false
 skip_verify=false
 print_version_only=false
+allow_canary_latest=false
 tag_name=""
 
 cleanup_on_exit=false
@@ -18,11 +19,12 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
+  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--allow-canary-latest]
 
 Examples:
   ./scripts/release.sh canary
   ./scripts/release.sh canary --date 2026-03-17 --dry-run
+  ./scripts/release.sh canary --allow-canary-latest
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
   ./scripts/release.sh stable --date 2026-03-18 --print-version
@@ -32,6 +34,9 @@ Notes:
     zero-padded UTC day, and P is the same-day stable patch slot.
   - Canary releases publish YYYY.MDD.P-canary.N under the npm dist-tag
     "canary" and create the git tag canary/vYYYY.MDD.P-canary.N.
+  - Canary releases fail by default if npm leaves the "latest" dist-tag
+    pointing at any canary. Pass --allow-canary-latest only when that is an
+    intentional first-publish or migration state.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
   - Stable release notes must already exist at releases/vYYYY.MDD.P.md.
@@ -99,6 +104,7 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=true ;;
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
+    --allow-canary-latest) allow_canary_latest=true ;;
     -h|--help)
       usage
       exit 0
@@ -114,6 +120,10 @@ done
   usage
   exit 1
 }
+
+if [ "$allow_canary_latest" = true ] && [ "$channel" != "canary" ]; then
+  release_fail "--allow-canary-latest can only be used with the canary channel."
+fi
 
 PUBLISH_REMOTE="$(resolve_release_remote)"
 fetch_release_remote "$PUBLISH_REMOTE"
@@ -187,6 +197,11 @@ release_info "  Release date (UTC): $RELEASE_DATE"
 release_info "  Target stable version: $TARGET_STABLE_VERSION"
 if [ "$channel" = "canary" ]; then
   release_info "  Canary version: $TARGET_PUBLISH_VERSION"
+  if [ "$allow_canary_latest" = true ]; then
+    release_info "  latest dist-tag policy: allow canary"
+  else
+    release_info "  latest dist-tag policy: fail if npm leaves latest on a canary"
+  fi
 else
   release_info "  Stable version: $TARGET_PUBLISH_VERSION"
 fi
@@ -263,7 +278,7 @@ release_info ""
 if [ "$dry_run" = true ]; then
   release_info "==> Step 6/7: Skipping npm verification in dry-run mode..."
 else
-  release_info "==> Step 6/7: Confirming npm package availability..."
+  release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
   VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
   MISSING_PUBLISHED_PACKAGES=""
@@ -285,6 +300,21 @@ else
   [ -z "$MISSING_PUBLISHED_PACKAGES" ] || release_fail "publish completed but npm never exposed: $MISSING_PUBLISHED_PACKAGES"
 
   release_info "  ✓ Verified all versioned packages are available on npm"
+
+  verify_args=(
+    --channel "$channel"
+    --dist-tag "$DIST_TAG"
+    --target-version "$TARGET_PUBLISH_VERSION"
+  )
+  if [ "$allow_canary_latest" = true ]; then
+    verify_args+=(--allow-canary-latest)
+  fi
+  while IFS=$'\t' read -r _pkg_dir pkg_name _pkg_version; do
+    [ -z "$pkg_name" ] && continue
+    verify_args+=(--package "$pkg_name")
+  done <<< "$VERSIONED_PACKAGE_INFO"
+
+  node "$REPO_ROOT/scripts/verify-release-registry-state.mjs" "${verify_args[@]}"
 fi
 
 release_info ""

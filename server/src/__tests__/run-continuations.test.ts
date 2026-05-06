@@ -76,10 +76,12 @@ describe("run liveness continuations", () => {
       continuationAttempt: 1,
       maxContinuationAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
       instruction: "Take the first concrete action now.",
+      modelProfile: "cheap",
     });
     expect(decision.contextSnapshot).toMatchObject({
       issueId,
       wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
+      modelProfile: "cheap",
       livenessContinuationAttempt: 1,
       livenessContinuationMaxAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
       livenessContinuationSourceRunId: runId,
@@ -104,6 +106,24 @@ describe("run liveness continuations", () => {
     expect(decision.kind).toBe("enqueue");
     if (decision.kind !== "enqueue") return;
     expect(decision.nextAttempt).toBe(2);
+  });
+
+  it("leaves advanced terminal runs to stranded issue recovery instead of bounded liveness continuation", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "advanced",
+      livenessReason: "Run produced concrete action evidence: created an issue comment",
+      nextAction: "Resume the implementation from the remaining acceptance criteria.",
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "liveness state is not actionable for continuation",
+    });
   });
 
   it("does not enqueue a third continuation and returns an exhaustion comment", () => {
