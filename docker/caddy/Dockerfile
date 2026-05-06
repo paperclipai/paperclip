@@ -23,12 +23,9 @@ COPY <<'CADDYFILE' /etc/caddy/Caddyfile
 
 app.ops.binelek.io {
 	jwtauth {
-		sign_key       {$SESSION_JWT_SECRET}
-		sign_alg       HS256
-		from_cookies   jaban_session
-		issuer_allow   ops-portal-vercel
-		audience_allow paperclip-ops-caddy
-		user_claims    email sub
+		sign_key     {$SESSION_JWT_SECRET}
+		sign_alg     HS256
+		from_cookies jaban_session
 	}
 
 	handle_errors 401 {
