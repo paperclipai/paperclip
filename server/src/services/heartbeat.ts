@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  createIssueWorkProductSchema,
   parseIssueArtifactWorkProductMetadata,
   type BillingType,
   type EnvironmentLeaseStatus,
@@ -3816,23 +3817,6 @@ export function heartbeatService(db: Db) {
         createdByAgentId: input.agent.id,
       });
 
-      await logActivity(db, {
-        companyId: input.run.companyId,
-        actorType: "agent",
-        actorId: input.agent.id,
-        agentId: input.agent.id,
-        runId: input.run.id,
-        action: "issue.attachment_added",
-        entityType: "issue",
-        entityId: issueId,
-        details: {
-          attachmentId: attachment.id,
-          originalFilename: attachment.originalFilename,
-          contentType: attachment.contentType,
-          byteSize: attachment.byteSize,
-        },
-      });
-
       const metadata = {
         attachmentId: attachment.id,
         contentPath: `/api/attachments/${attachment.id}/content`,
@@ -3848,8 +3832,7 @@ export function heartbeatService(db: Db) {
       const existing = await workProductsSvc.findByExternalIdForIssue(issueId, input.run.companyId, externalId);
       const previousMetadata = existing ? parseIssueArtifactWorkProductMetadata(existing) : null;
       const isUpdate = existing !== null;
-
-      const upserted = await workProductsSvc.upsertByExternalId(issueId, input.run.companyId, {
+      const parsedWorkProduct = createIssueWorkProductSchema.safeParse({
         projectId: issue.projectId ?? null,
         executionWorkspaceId: issue.executionWorkspaceId ?? null,
         runtimeServiceId: null,
@@ -3865,6 +3848,34 @@ export function heartbeatService(db: Db) {
         summary: artifact.summary ?? null,
         metadata,
         createdByRunId: input.run.id,
+      });
+      if (!parsedWorkProduct.success) {
+        try {
+          const removedAttachment = await issuesSvc.removeAttachment(attachment.id);
+          if (removedAttachment) {
+            await storage.deleteObject(removedAttachment.companyId, removedAttachment.objectKey).catch((err) => {
+              logger.warn(
+                { err, attachmentId: removedAttachment.id, objectKey: removedAttachment.objectKey },
+                "failed to delete invalid artifact attachment object",
+              );
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, attachmentId: attachment.id, sourcePath: artifact.sourcePath, runId: input.run.id },
+            "failed to remove invalid artifact attachment after validation failure",
+          );
+        }
+        logger.warn(
+          { issues: parsedWorkProduct.error.issues, sourcePath: artifact.sourcePath, runId: input.run.id },
+          "constructed artifact work product payload failed validation — skipping artifact",
+        );
+        continue;
+      }
+
+      const upserted = await workProductsSvc.upsertByExternalId(issueId, input.run.companyId, {
+        ...parsedWorkProduct.data,
+        externalId,
       });
 
       // Re-read the authoritative state to detect a concurrent-run race where
@@ -3886,6 +3897,24 @@ export function heartbeatService(db: Db) {
           });
         }
       } else {
+        if (upserted) {
+          await logActivity(db, {
+            companyId: input.run.companyId,
+            actorType: "agent",
+            actorId: input.agent.id,
+            agentId: input.agent.id,
+            runId: input.run.id,
+            action: "issue.attachment_added",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              attachmentId: attachment.id,
+              originalFilename: attachment.originalFilename,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+            },
+          });
+        }
         // Normal path: clean up the previous attachment if it was replaced.
         if (isUpdate && previousMetadata?.attachmentId && previousMetadata.attachmentId !== attachment.id) {
           const removed = await issuesSvc.removeAttachment(previousMetadata.attachmentId);

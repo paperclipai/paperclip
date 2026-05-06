@@ -493,7 +493,10 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
-export { parseIssueArtifactWorkProductMetadata } from "./types/index.js";
+export {
+  isIssueArtifactWorkProductMetadata,
+  parseIssueArtifactWorkProductMetadata,
+} from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,
@@ -653,6 +656,10 @@ export {
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
+  issueArtifactWorkProductMetadataSchema,
+  getStoredIssueArtifactWorkProductValidationIssues,
+  sanitizeStoredIssueArtifactWorkProductMetadata,
+  getIssueArtifactWorkProductValidationIssues,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
