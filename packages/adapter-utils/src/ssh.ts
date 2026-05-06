@@ -721,6 +721,7 @@ export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
   options: {
+    env?: Record<string, string>;
     timeoutMs?: number;
     maxBuffer?: number;
   } = {},
@@ -730,12 +731,33 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const envEntries = Object.entries(options.env ?? {})
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+    for (const [key] of envEntries) {
+      if (!isValidShellEnvKey(key)) {
+        throw new Error(`Invalid SSH environment variable key: ${key}`);
+      }
+    }
+
+    // Mirror buildSshSpawnTarget: source login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
+    // a profile re-exports. Without this, a remote profile that resets HOME
+    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
+    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const remoteScript = [
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      envArgs.length > 0
+        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
+        : `exec sh -c ${shellQuote(remoteCommand)}`,
+    ].join(" && ");
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      remoteCommand,
+      `sh -lc ${shellQuote(remoteScript)}`,
     );
 
     return await execFileText("ssh", sshArgs, {
