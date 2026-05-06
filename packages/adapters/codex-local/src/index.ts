@@ -73,7 +73,8 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
-- effort (string, optional): legacy alias for modelReasoningEffort; use modelReasoningEffort instead
+- reasoningEffort (string, optional): compatibility alias for modelReasoningEffort; used only when modelReasoningEffort is absent
+- effort (string, optional): legacy alias for modelReasoningEffort; used only when modelReasoningEffort and reasoningEffort are absent
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5, GPT-5.4, GPT-5.4-mini, and passed through for manual model IDs

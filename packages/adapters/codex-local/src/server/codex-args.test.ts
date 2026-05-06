@@ -48,20 +48,18 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("preserves fast mode for newly promoted known models", () => {
-    for (const model of ["gpt-5.5", "gpt-5.4-mini"]) {
-      const result = buildCodexExecArgs({
-        model,
-        fastMode: true,
-      });
+  it.each(["gpt-5.5", "gpt-5.4-mini"])("preserves fast mode for newly promoted known model %s", (model) => {
+    const result = buildCodexExecArgs({
+      model,
+      fastMode: true,
+    });
 
-      expect(result.fastModeRequested).toBe(true);
-      expect(result.fastModeApplied).toBe(true);
-      expect(result.fastModeIgnoredReason).toBeNull();
-      expect(result.args).toContain(model);
-      expect(result.args).toContain('service_tier="fast"');
-      expect(result.args).toContain("features.fast_mode=true");
-    }
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(true);
+    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.args).toContain(model);
+    expect(result.args).toContain('service_tier="fast"');
+    expect(result.args).toContain("features.fast_mode=true");
   });
 
   it("passes modelReasoningEffort to codex -c flag", () => {
@@ -85,6 +83,12 @@ describe("buildCodexExecArgs", () => {
   it("prefers modelReasoningEffort over effort alias", () => {
     const result = buildCodexExecArgs({ modelReasoningEffort: "high", effort: "low" });
     expect(result.args).toContain('model_reasoning_effort="high"');
+    expect(result.args).not.toContain('model_reasoning_effort="low"');
+  });
+
+  it("prefers reasoningEffort over effort alias", () => {
+    const result = buildCodexExecArgs({ reasoningEffort: "medium", effort: "low" });
+    expect(result.args).toContain('model_reasoning_effort="medium"');
     expect(result.args).not.toContain('model_reasoning_effort="low"');
   });
 
