@@ -60,7 +60,7 @@ function paperclipApiUrl(config: HermesProfileAdapterConfig): string {
   return raw.endsWith("/api") ? raw : raw.replace(/\/+$/, "") + "/api";
 }
 
-function buildPrompt(ctx: AdapterExecutionContext, config: HermesProfileAdapterConfig): string {
+export function buildPrompt(ctx: AdapterExecutionContext, config: HermesProfileAdapterConfig): string {
   const wakePayload = ctxRecord(ctx, "paperclipWake");
   const task = ctxRecord(ctx, "task") ?? ctxRecord(ctx, "issue") ?? ctxRecord(ctx, "paperclipIssue") ?? recordFrom(wakePayload, "issue", "task");
   const comment = ctxRecord(ctx, "comment") ?? ctxRecord(ctx, "wakeComment") ?? ctxRecord(ctx, "paperclipWakeComment") ?? recordFrom(wakePayload, "latestComment", "comment", "wakeComment");

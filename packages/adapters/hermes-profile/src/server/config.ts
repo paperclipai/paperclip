@@ -60,9 +60,9 @@ export function profileWrapperPath(profile: string): string {
   return path.join(profileHome(profile), "bin", "hermes-profile-wrapper.sh");
 }
 
-export function parseHermesProfileConfig(raw: unknown): HermesProfileAdapterConfig {
+export function parseHermesProfileConfig(raw: unknown, agentNameHint?: string): HermesProfileAdapterConfig {
   const value = objectRecord(raw);
-  const profile = cfgString(value.profile);
+  const profile = cfgString(value.profile) ?? (agentNameHint ? agentNameHint.toLowerCase() : undefined);
   if (!profile || !PROFILE_RE.test(profile)) {
     throw new Error("Invalid hermes_profile adapterConfig.profile");
   }
@@ -92,8 +92,8 @@ export function parseHermesProfileConfig(raw: unknown): HermesProfileAdapterConf
 }
 
 export function parseAdapterConfigFromContext(ctx: {
-  agent?: { adapterConfig?: unknown };
+  agent?: { adapterConfig?: unknown; name?: string };
   config?: unknown;
 }): HermesProfileAdapterConfig {
-  return parseHermesProfileConfig(ctx.agent?.adapterConfig ?? ctx.config);
+  return parseHermesProfileConfig(ctx.agent?.adapterConfig ?? ctx.config, ctx.agent?.name);
 }
