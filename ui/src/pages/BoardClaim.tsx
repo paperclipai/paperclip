@@ -1,12 +1,14 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "@/lib/router";
+import { useTranslation } from "react-i18next";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 
 export function BoardClaimPage() {
+  const { t } = useTranslation("common");
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -41,20 +43,20 @@ export function BoardClaimPage() {
   });
 
   if (!token || !code) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid board claim URL.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">{t("board_claim.invalid_url")}</div>;
   }
 
   if (statusQuery.isLoading || sessionQuery.isLoading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading claim challenge...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{t("board_claim.loading")}</div>;
   }
 
   if (statusQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Claim challenge unavailable</h1>
+          <h1 className="text-lg font-semibold">{t("board_claim.unavailable_title")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            {statusQuery.error instanceof Error ? statusQuery.error.message : "Challenge is invalid or expired."}
+            {statusQuery.error instanceof Error ? statusQuery.error.message : t("board_claim.unavailable_title")}
           </p>
         </div>
       </div>
@@ -63,19 +65,19 @@ export function BoardClaimPage() {
 
   const status = statusQuery.data;
   if (!status) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Claim challenge unavailable.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">{t("board_claim.unavailable_body")}</div>;
   }
 
   if (status.status === "claimed") {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Board ownership claimed</h1>
+          <h1 className="text-lg font-semibold">{t("board_claim.claimed_title")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is now linked to your authenticated user.
+            {t("board_claim.claimed_desc")}
           </p>
           <Button asChild className="mt-4">
-            <Link to="/">Open board</Link>
+            <Link to="/">{t("board_claim.open_board")}</Link>
           </Button>
         </div>
       </div>
@@ -86,12 +88,12 @@ export function BoardClaimPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Sign in required</h1>
+          <h1 className="text-lg font-semibold">{t("board_claim.sign_in_required_title")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Sign in or create an account, then return to this page to claim Board ownership.
+            {t("board_claim.sign_in_required_desc")}
           </p>
           <Button asChild className="mt-4">
-            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
+            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>{t("board_claim.sign_in_btn")}</Link>
           </Button>
         </div>
       </div>
@@ -101,14 +103,14 @@ export function BoardClaimPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Claim Board ownership</h1>
+        <h1 className="text-xl font-semibold">{t("board_claim.claim_title")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This will promote your user to instance admin and migrate company ownership access from local trusted mode.
+          {t("board_claim.claim_desc")}
         </p>
 
         {claimMutation.error && (
           <p className="mt-3 text-sm text-destructive">
-            {claimMutation.error instanceof Error ? claimMutation.error.message : "Failed to claim board ownership"}
+            {claimMutation.error instanceof Error ? claimMutation.error.message : t("board_claim.claim_failed")}
           </p>
         )}
 
@@ -117,7 +119,7 @@ export function BoardClaimPage() {
           onClick={() => claimMutation.mutate()}
           disabled={claimMutation.isPending}
         >
-          {claimMutation.isPending ? "Claiming…" : "Claim ownership"}
+          {claimMutation.isPending ? t("board_claim.claiming") : t("board_claim.claim_btn")}
         </Button>
       </div>
     </div>
