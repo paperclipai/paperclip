@@ -60,13 +60,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse } from "lucide-react";
 import {
   KanbanBoard,
   KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
   KANBAN_COLD_STATUSES,
-  KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT,
-  KANBAN_COLUMN_REVEAL_INCREMENT,
+  KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
+  KANBAN_COLUMN_PAGE_SIZE_OPTIONS,
+  type KanbanColumnPageSize,
 } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
@@ -117,6 +118,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
+export type BoardColumnPageSize = KanbanColumnPageSize;
 
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
@@ -128,6 +130,7 @@ export type IssueViewState = IssueFilterState & {
   collapsedParents: string[];
   boardCardDensity: BoardCardDensity;
   boardColdLaneMode: BoardColdLaneMode;
+  boardColumnPageSize: BoardColumnPageSize;
 };
 
 const defaultViewState: IssueViewState = {
@@ -141,6 +144,7 @@ const defaultViewState: IssueViewState = {
   collapsedParents: [],
   boardCardDensity: "auto",
   boardColdLaneMode: "auto",
+  boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
 };
 
 function normalizeBoardCardDensity(value: unknown): BoardCardDensity {
@@ -149,6 +153,12 @@ function normalizeBoardCardDensity(value: unknown): BoardCardDensity {
 
 function normalizeBoardColdLaneMode(value: unknown): BoardColdLaneMode {
   return value === "collapsed" || value === "expanded" || value === "auto" ? value : "auto";
+}
+
+function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
+  return KANBAN_COLUMN_PAGE_SIZE_OPTIONS.includes(value as BoardColumnPageSize)
+    ? value as BoardColumnPageSize
+    : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 }
 
 function getViewState(key: string): IssueViewState {
@@ -162,6 +172,7 @@ function getViewState(key: string): IssueViewState {
         ...normalizeIssueFilterState(parsed),
         boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
         boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
+        boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
       };
     }
   } catch { /* ignore */ }
@@ -998,7 +1009,10 @@ export function IssuesList({
         : [],
     [boardHighVolume, viewState.boardColdLaneMode],
   );
-  const boardDensityCustomized = viewState.boardCardDensity !== "auto" || viewState.boardColdLaneMode !== "auto";
+  const boardDensityCustomized =
+    viewState.boardCardDensity !== "auto"
+    || viewState.boardColdLaneMode !== "auto"
+    || viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -1286,12 +1300,53 @@ export function IssuesList({
               >
                 <PanelTopClose className="h-3.5 w-3.5" />
               </Button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "h-8 shrink-0 gap-1.5 px-2",
+                      viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
+                    )}
+                    title="Cards per column"
+                  >
+                    <ListCollapse className="h-3.5 w-3.5" />
+                    <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-40 p-0">
+                  <div className="p-2 space-y-0.5">
+                    {KANBAN_COLUMN_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                      <button
+                        key={pageSize}
+                        type="button"
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
+                          viewState.boardColumnPageSize === pageSize
+                            ? "bg-accent/50 text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50",
+                        )}
+                        onClick={() => updateView({ boardColumnPageSize: pageSize })}
+                      >
+                        <span>{pageSize} per column</span>
+                        {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
                 className="h-8 w-8 shrink-0"
-                onClick={() => updateView({ boardCardDensity: "auto", boardColdLaneMode: "auto" })}
+                onClick={() => updateView({
+                  boardCardDensity: "auto",
+                  boardColdLaneMode: "auto",
+                  boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
+                })}
                 disabled={!boardDensityCustomized}
                 title="Reset board density"
               >
@@ -1431,8 +1486,8 @@ export function IssuesList({
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
           collapsedStatuses={boardCollapsedStatuses}
-          initialVisibleCount={KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT}
-          revealIncrement={KANBAN_COLUMN_REVEAL_INCREMENT}
+          initialVisibleCount={viewState.boardColumnPageSize}
+          revealIncrement={viewState.boardColumnPageSize}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
