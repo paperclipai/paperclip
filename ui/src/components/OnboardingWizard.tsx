@@ -415,6 +415,12 @@ export function OnboardingWizard() {
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
+        // Existing behavior: a `fail` test result does NOT block hire — the
+        // adapter probe is advisory. Visible gating happens via the disabled
+        // state on the Step 2 Next button so the user knows they're proceeding
+        // through a failed probe. Tightening this to block in the handler is a
+        // separate decision because the e2e suite proceeds through a failing
+        // probe by design (no Claude binary on the CI runner).
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
@@ -1116,22 +1122,38 @@ export function OnboardingWizard() {
                       {loading ? "Creating..." : "Next"}
                     </Button>
                   )}
-                  {step === 2 && (
-                    <Button
-                      size="sm"
-                      disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
-                      }
-                      onClick={handleStep2Next}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Next"}
-                    </Button>
-                  )}
+                  {step === 2 && (() => {
+                    const testFailed =
+                      isLocalAdapter && adapterEnvResult?.status === "fail";
+                    const testNotRun =
+                      isLocalAdapter && adapterEnvResult === null;
+                    const stepTwoLabel = loading
+                      ? "Creating..."
+                      : testFailed
+                        ? "Fix issues above"
+                        : testNotRun
+                          ? "Test & next"
+                          : "Next";
+                    return (
+                      <Button
+                        size="sm"
+                        disabled={
+                          !agentName.trim()
+                          || loading
+                          || adapterEnvLoading
+                          || testFailed
+                        }
+                        onClick={handleStep2Next}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {stepTwoLabel}
+                      </Button>
+                    );
+                  })()}
                   {step === 3 && (
                     <Button
                       size="sm"
