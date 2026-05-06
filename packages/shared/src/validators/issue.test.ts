@@ -54,6 +54,46 @@ describe("issue validators", () => {
     expect(parsed.body).toBe("Progress update\n\nNext action.");
   });
 
+  it("accepts structured issue comment presentation and metadata", () => {
+    const parsed = addIssueCommentSchema.parse({
+      body: "Paperclip needs a disposition before this issue can continue.",
+      authorType: "system",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Needs disposition",
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Evidence",
+            rows: [
+              { type: "key_value", label: "Cause", value: "successful_run_missing_state" },
+              { type: "issue_link", label: "Source issue", identifier: "PAP-3440" },
+              { type: "run_link", label: "Run", runId: "11111111-1111-4111-8111-111111111111" },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
+    expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+  });
+
+  it("rejects arbitrary issue comment metadata", () => {
+    const parsed = addIssueCommentSchema.safeParse({
+      body: "Hidden details",
+      metadata: {
+        version: 1,
+        transcript: "raw log dump",
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("normalizes escaped line breaks in generated task drafts", () => {
     const parsed = suggestedTaskDraftSchema.parse({
       clientKey: "task-1",

@@ -91,6 +91,11 @@ const mockWorkProductService = vi.hoisted(() => ({
 
 const mockEnvironmentService = vi.hoisted(() => ({}));
 
+const mockDb = vi.hoisted(() => ({
+  select: vi.fn(),
+  execute: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -130,7 +135,7 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -186,6 +191,14 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockDb.select.mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(async () => []),
+        })),
+      })),
+    });
+    mockDb.execute.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
       companyId: "company-1",
