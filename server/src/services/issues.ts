@@ -3878,8 +3878,9 @@ export function issueService(db: Db) {
         .where(eq(issueAttachments.issueId, issueId))
         .orderBy(desc(issueAttachments.createdAt)),
 
-    getAttachmentById: async (id: string) =>
-      db
+    getAttachmentById: async (id: string) => {
+      if (!isUuidLike(id)) return null;
+      return db
         .select({
           id: issueAttachments.id,
           companyId: issueAttachments.companyId,
@@ -3900,7 +3901,8 @@ export function issueService(db: Db) {
         .from(issueAttachments)
         .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
         .where(eq(issueAttachments.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     removeAttachment: async (id: string) =>
       db.transaction(async (tx) => {
