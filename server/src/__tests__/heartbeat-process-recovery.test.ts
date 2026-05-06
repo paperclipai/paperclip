@@ -24,6 +24,8 @@ import {
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -320,6 +322,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRelations);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -344,6 +348,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     await db.delete(agentWakeupRequests);
     await db.delete(budgetPolicies);
+    // routineTriggers → routines must be deleted before agents (FK: routines.assignee_agent_id)
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
       try {
@@ -2357,5 +2364,102 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("skips reconcile when issue has an active routine with a future-scheduled cron trigger (external-dependency wake suppression)", async () => {
+    // Reproduces DGG-5074 pattern: blocked issue + future cron wake = self-feedback loop.
+    // The fix adds a guard in hasActiveExecutionPath that recognises a future routine trigger
+    // linked via routines.parentIssueId, preventing reconcileStrandedAssignedIssues from
+    // re-queuing a recovery wake that would produce a self-comment triggering yet another wake.
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+
+    // Promote the issue to in_progress (the status that triggers reconcile candidates).
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    // Create an active routine whose parentIssueId points at this issue.
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "External-dependency follow-up routine",
+      assigneeAgentId: agentId,
+      parentIssueId: issueId,
+      status: "active",
+    });
+
+    // Attach a cron trigger with nextRunAt in the future.
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // +7 days
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 13 5 *",
+      nextRunAt: futureDate,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Must be skipped — routine schedule satisfies hasActiveExecutionPath.
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    // No recovery wakeup should have been enqueued.
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.companyId, companyId)));
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("still reconciles todo issue when the linked routine trigger nextRunAt is in the past (expired schedule)", async () => {
+    // If the cron trigger already fired (nextRunAt <= now), the future-schedule guard must NOT suppress
+    // reconcile — the issue is genuinely stranded. We use a 'todo' issue with no prior run so reconcile
+    // will attempt assignment dispatch, making the assertion unambiguous.
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    // Keep status as 'todo' (seedAssignedTodoNoRunFixture default) so the assignment dispatch path fires.
+
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Expired routine",
+      assigneeAgentId: agentId,
+      parentIssueId: issueId,
+      status: "active",
+    });
+
+    // Trigger whose nextRunAt is in the past — guard must not fire.
+    const pastDate = new Date(Date.now() - 60 * 1000); // 1 min ago
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "* * * * *",
+      nextRunAt: pastDate,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Should NOT be suppressed — the past-dated trigger is not a live path.
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.companyId, companyId)));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      reason: "issue_assigned",
+      payload: expect.objectContaining({ issueId }),
+    });
   });
 });

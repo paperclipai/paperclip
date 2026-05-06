@@ -19,6 +19,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -333,8 +335,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * Returns true when there is already an active or future-scheduled execution path for the issue,
+   * so reconcileStrandedAssignedIssues can safely skip recovery.
+   *
+   * Paths recognised:
+   * 1. An in-flight heartbeat run (queued / running / scheduled_retry)
+   * 2. A deferred wakeup request keyed to the issue
+   * 3. An active routine with a future-scheduled cron trigger whose parentIssueId matches the issue
+   *    — covers the "blocked + external-dependency" pattern where the issue is intentionally parked
+   *    until a scheduled cron fires (e.g. CEO return date).  Without this guard the reconciler
+   *    repeatedly wakes the issue, which in turn produces a self-comment that triggers another wake.
+   */
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const now = new Date();
+    const [run, deferredWake, futureRoutine] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -359,9 +374,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      // Guard: active routine with a future cron trigger linked to this issue.
+      // The join uses routines.parentIssueId which records the issue the routine was
+      // created to serve (set at routine creation time).
+      db
+        .select({ id: routines.id })
+        .from(routines)
+        .innerJoin(routineTriggers, eq(routineTriggers.routineId, routines.id))
+        .where(
+          and(
+            eq(routines.companyId, companyId),
+            eq(routines.parentIssueId, issueId),
+            eq(routines.status, "active"),
+            eq(routineTriggers.enabled, true),
+            gt(routineTriggers.nextRunAt, now),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || futureRoutine);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
