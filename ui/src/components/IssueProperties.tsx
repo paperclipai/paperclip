@@ -25,6 +25,7 @@ import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects"
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { formatMonitorOffset } from "../lib/issue-monitor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -33,7 +34,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Clock } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -116,6 +117,14 @@ function issuesWorkspaceFilterHref(workspaceId: string) {
   const params = new URLSearchParams();
   params.append("workspace", workspaceId);
   return `/issues?${params.toString()}`;
+}
+
+function toDateTimeLocalValue(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
 interface IssuePropertiesProps {
@@ -219,10 +228,14 @@ export function IssueProperties({
   const [reviewerSearch, setReviewerSearch] = useState("");
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+  const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
+  const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -459,6 +472,145 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  useEffect(() => {
+    setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+    setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
+    setMonitorServiceInput(issue.executionPolicy?.monitor?.serviceName ?? "");
+  }, [
+    issue.executionPolicy?.monitor?.nextCheckAt,
+    issue.executionPolicy?.monitor?.notes,
+    issue.executionPolicy?.monitor?.serviceName,
+  ]);
+
+  const updateMonitor = (nextMonitor: Issue["executionPolicy"] extends infer T
+    ? T extends { monitor?: infer M | null } | null | undefined
+      ? M | null
+      : never
+    : never) => {
+    const basePolicy = buildExecutionPolicy({
+      existingPolicy: issue.executionPolicy ?? null,
+      reviewerValues,
+      approverValues,
+    });
+    if (!basePolicy && !nextMonitor) {
+      onUpdate({ executionPolicy: null });
+      return;
+    }
+    onUpdate({
+      executionPolicy: {
+        mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
+        commentRequired: true,
+        stages: basePolicy?.stages ?? [],
+        ...(nextMonitor ? { monitor: nextMonitor } : {}),
+      },
+    });
+  };
+  const saveMonitor = () => {
+    if (!monitorAtInput) return;
+    const nextCheckAt = new Date(monitorAtInput);
+    if (Number.isNaN(nextCheckAt.getTime())) return;
+    const serviceName = monitorServiceInput.trim() || null;
+    updateMonitor({
+      nextCheckAt: nextCheckAt.toISOString(),
+      notes: monitorNotesInput.trim() || null,
+      scheduledBy: "board",
+      kind: serviceName ? "external_service" : null,
+      serviceName,
+      externalRef: null,
+    });
+    setMonitorOpen(false);
+  };
+  const clearMonitor = () => {
+    updateMonitor(null);
+    setMonitorOpen(false);
+  };
+  const currentMonitorLabel = (() => {
+    if (issue.executionPolicy?.monitor?.nextCheckAt) {
+      return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
+    }
+    if (issue.executionState?.monitor?.status === "cleared") {
+      return "Cleared";
+    }
+    if (issue.monitorLastTriggeredAt) {
+      return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
+    }
+    return "Not scheduled";
+  })();
+  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorTrigger = (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      {monitorNextCheckAt ? (
+        <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      ) : null}
+      <span
+        className={cn(
+          "min-w-0 text-sm break-words",
+          monitorNextCheckAt ? "text-foreground" : "text-muted-foreground",
+        )}
+        title={monitorNextCheckAt ? currentMonitorLabel : undefined}
+      >
+        {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
+      </span>
+      {monitorNextCheckAt ? (
+        <span className="text-xs text-muted-foreground" title={currentMonitorLabel}>
+          {formatDate(new Date(monitorNextCheckAt))}
+        </span>
+      ) : null}
+    </span>
+  );
+  const monitorAttemptBadge = issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
+    <span className="text-xs text-muted-foreground">
+      Attempt {issue.monitorAttemptCount}
+    </span>
+  ) : null;
+  const monitorContent = (
+    <div className="flex w-full flex-col gap-2">
+      <div className="flex flex-col gap-2 md:flex-row">
+        <input
+          type="datetime-local"
+          className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          value={monitorAtInput}
+          onChange={(e) => setMonitorAtInput(e.target.value)}
+        />
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="What should the agent re-check?"
+          value={monitorNotesInput}
+          onChange={(e) => setMonitorNotesInput(e.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-2 md:flex-row">
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="External service"
+          value={monitorServiceInput}
+          onChange={(e) => setMonitorServiceInput(e.target.value)}
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+            disabled={!monitorAtInput}
+            onClick={saveMonitor}
+          >
+            Schedule
+          </button>
+          {issue.executionPolicy?.monitor ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              onClick={clearMonitor}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
   const selectedIssueLabels = useMemo(() => {
     const selectedIds = issue.labelIds ?? [];
     if (selectedIds.length === 0) return issue.labels ?? [];
@@ -1247,6 +1399,19 @@ export function IssueProperties({
             <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
         )}
+
+        <PropertyPicker
+          inline={inline}
+          label="Monitor"
+          open={monitorOpen}
+          onOpenChange={setMonitorOpen}
+          triggerContent={monitorTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+          extra={monitorAttemptBadge}
+        >
+          {monitorContent}
+        </PropertyPicker>
 
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
