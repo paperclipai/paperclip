@@ -23,15 +23,76 @@ export interface SandboxCallbackBridgeRouteRule {
   path: RegExp;
 }
 
+// Routes the in-sandbox heartbeat skill is documented to call. The server
+// still enforces actor-level permissions on top of this allowlist; the list
+// exists to bound the surface area a compromised CLI could reach via the
+// reverse bridge. Keep this in sync with the Paperclip skill in
+// `skills/paperclip/SKILL.md` and `references/api-reference.md`.
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
+  // Identity, inbox, agent self-management
   { method: "GET", path: /^\/api\/agents\/me$/ },
+  { method: "GET", path: /^\/api\/agents\/me\/inbox-lite$/ },
+  { method: "GET", path: /^\/api\/agents\/me\/inbox\/mine$/ },
+  { method: "GET", path: /^\/api\/agents\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/agents\/[^/]+\/skills$/ },
+  { method: "POST", path: /^\/api\/agents\/[^/]+\/skills\/sync$/ },
+  { method: "PATCH", path: /^\/api\/agents\/[^/]+\/instructions-path$/ },
+
+  // Company-level reads used to discover work and context
+  { method: "GET", path: /^\/api\/companies\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/dashboard$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/agents$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/issues$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/projects$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/goals$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/org$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+
+  // Issue lifecycle: read context, checkout, update, comment, document, release
+  { method: "GET", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/heartbeat-context$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/comments(?:\/[^/]+)?$/ },
-  { method: "GET", path: /^\/api\/issues\/[^/]+\/documents(?:\/[^/]+)?$/ },
-  { method: "POST", path: /^\/api\/issues\/[^/]+\/checkout$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/comments$/ },
-  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/documents(?:\/[^/]+)?$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/documents\/[^/]+\/revisions$/ },
+  { method: "PUT", path: /^\/api\/issues\/[^/]+\/documents\/[^/]+$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/checkout$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/release$/ },
   { method: "PATCH", path: /^\/api\/issues\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/approvals$/ },
+
+  // Issue-thread interactions (suggest tasks, ask questions, request confirmation)
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond)$/ },
+
+  // Subtasks / delegation
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
+
+  // Approvals (request, read, comment)
+  { method: "GET", path: /^\/api\/approvals\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/approvals\/[^/]+\/issues$/ },
+  { method: "GET", path: /^\/api\/approvals\/[^/]+\/comments$/ },
+  { method: "POST", path: /^\/api\/approvals\/[^/]+\/comments$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/approvals$/ },
+
+  // Execution workspaces and runtime services (start/stop/restart dev servers)
+  { method: "GET", path: /^\/api\/execution-workspaces\/[^/]+$/ },
+  { method: "POST", path: /^\/api\/execution-workspaces\/[^/]+\/runtime-services\/(?:start|stop|restart)$/ },
+
+  // Routines (agents manage their own routines and triggers)
+  { method: "GET", path: /^\/api\/routines\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/routines\/[^/]+\/runs$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/routines$/ },
+  { method: "PATCH", path: /^\/api\/routines\/[^/]+$/ },
+  { method: "POST", path: /^\/api\/routines\/[^/]+\/run$/ },
+  { method: "POST", path: /^\/api\/routines\/[^/]+\/triggers$/ },
+  { method: "PATCH", path: /^\/api\/routine-triggers\/[^/]+$/ },
+  { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
 ] as const;
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
