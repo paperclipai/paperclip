@@ -69,6 +69,7 @@
 #   PAPERCLIP_INTEGRATION_FORK_OWNER  Fork owner; controls closed-PR removal policy
 #   PAPERCLIP_INTEGRATION_INCLUDE_PRS  Optional comma/space-separated PR numbers to force include
 #   PAPERCLIP_INTEGRATION_EXCLUDE_PRS  Optional comma/space-separated PR numbers to skip
+#   PAPERCLIP_INTEGRATION_PRESERVE_FORK_PATHS  Optional whitespace-separated paths copied from fork branch after compose
 #   PAPERCLIP_GITHUB_TOKEN_UPSTREAM  GitHub API token for upstream PR discovery
 #   PAPERCLIP_GITHUB_TOKEN_FORK  Optional GitHub token for HTTPS push to fork remote
 #   PAPERCLIP_CODEX_RECONCILE  1/true to let Codex resolve integration conflicts after git/rerere fail
@@ -178,6 +179,7 @@ INTEGRATION_FORK_OWNER="${PAPERCLIP_INTEGRATION_FORK_OWNER:-}"
 INTEGRATION_PR_OWNER="${PAPERCLIP_INTEGRATION_PR_OWNER:-$INTEGRATION_FORK_OWNER}"
 INTEGRATION_INCLUDE_PRS="${PAPERCLIP_INTEGRATION_INCLUDE_PRS:-}"
 INTEGRATION_EXCLUDE_PRS="${PAPERCLIP_INTEGRATION_EXCLUDE_PRS:-}"
+INTEGRATION_PRESERVE_FORK_PATHS="${PAPERCLIP_INTEGRATION_PRESERVE_FORK_PATHS:-}"
 INTEGRATION_MAX_PR_PAGES="${PAPERCLIP_INTEGRATION_MAX_PR_PAGES:-20}"
 INTEGRATION_GITHUB_API_URL="${PAPERCLIP_GITHUB_API_URL:-https://api.github.com}"
 GITHUB_TOKEN_UPSTREAM="${PAPERCLIP_GITHUB_TOKEN_UPSTREAM:-${GITHUB_TOKEN:-}}"
@@ -906,6 +908,45 @@ EOF
   fi
 }
 
+preserve_configured_fork_paths() {
+  local fork_ref path changed=0
+
+  [ -n "$INTEGRATION_PRESERVE_FORK_PATHS" ] || return 0
+  fork_ref="$INTEGRATION_FORK_REMOTE/$INTEGRATION_BRANCH"
+  if ! git -C "$REPO_DIR" rev-parse --verify "$fork_ref" >/dev/null 2>&1; then
+    log "WARN: cannot preserve configured fork paths because $fork_ref is unavailable"
+    return 0
+  fi
+
+  for path in $INTEGRATION_PRESERVE_FORK_PATHS; do
+    case "$path" in
+      /*|*..*)
+        log "WARN: refusing unsafe configured fork preserve path: $path"
+        continue
+        ;;
+    esac
+
+    if ! git -C "$REPO_DIR" cat-file -e "$fork_ref:$path" 2>/dev/null; then
+      log "WARN: configured fork preserve path does not exist on $fork_ref: $path"
+      continue
+    fi
+
+    if git -C "$BUILD_DIR" diff --quiet "$fork_ref" -- "$path"; then
+      continue
+    fi
+
+    mkdir -p "$BUILD_DIR/$(dirname "$path")"
+    git -C "$REPO_DIR" show "$fork_ref:$path" > "$BUILD_DIR/$path"
+    git -C "$BUILD_DIR" add "$path"
+    log "Integration: preserved configured fork path from $fork_ref: $path"
+    changed=1
+  done
+
+  if [ "$changed" = "1" ]; then
+    git -C "$BUILD_DIR" commit -m "Preserve configured fork paths" 2>>"$LOG_FILE"
+  fi
+}
+
 find_last_integrated_upstream_sha() {
   if [ -f "$INTEGRATION_MANIFEST_FILE" ]; then
     jq -r '.upstream.sha // .upstreamSha // empty' "$INTEGRATION_MANIFEST_FILE"
@@ -1193,6 +1234,7 @@ prepare_integration_target() {
     exit 7
   fi
   normalize_integration_migrations
+  preserve_configured_fork_paths
 
   TARGET_REF=$(git -C "$BUILD_DIR" rev-parse HEAD)
   if ! verify_target_preserves_live_head "$TARGET_REF"; then
