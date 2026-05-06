@@ -75,9 +75,36 @@
   "claude_local": {
     "instructions_file": "Файл инструкций агента",
     "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Подставляется в системный промпт во время выполнения.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md",
     "enable_chrome": "Включить Chrome",
     "skip_permissions": "Пропустить разрешения",
     "max_turns": "Макс. шагов за запуск"
+  },
+  "codex_local": {
+    "instructions_file": "Файл инструкций агента",
+    "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Подставляется в системный промпт во время выполнения. Примечание: Codex может также автоматически применять файлы AGENTS.md из рабочей директории.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md",
+    "bypass_sandbox": "Обход песочницы",
+    "enable_search": "Включить поиск",
+    "fast_mode": "Быстрый режим",
+    "fast_mode_manual": "Быстрый режим будет передан для этой ручной модели. Если Codex его отклонит, выключите тумблер.",
+    "fast_mode_supported": "Быстрый режим расходует кредиты/токены значительно быстрее обычных запусков Codex.",
+    "fast_mode_unsupported": "Быстрый режим сейчас работает только на {{models}} или ручных идентификаторах моделей. Paperclip будет игнорировать этот тумблер, пока модель не будет переключена."
+  },
+  "cursor": {
+    "instructions_file": "Файл инструкций агента",
+    "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Подставляется в промпт во время выполнения.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md"
+  },
+  "gemini_local": {
+    "instructions_file": "Файл инструкций агента",
+    "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Добавляется в начало промпта Gemini во время выполнения.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md"
+  },
+  "hermes_local": {
+    "instructions_file": "Файл инструкций агента",
+    "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Подставляется в системный промпт во время выполнения.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md"
   },
   "openclaw": {
     "gateway_url": "URL шлюза",
@@ -87,6 +114,9 @@
     "claimed_api_key_path": "Путь к сохранённому API-ключу",
     "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
     "session_strategy": "Стратегия сессии",
+    "session_strategy_fixed": "Фиксированная",
+    "session_strategy_issue": "На каждую задачу",
+    "session_strategy_run": "На каждый запуск",
     "session_key": "Ключ сессии",
     "session_key_placeholder": "paperclip",
     "gateway_auth_token": "Токен аутентификации шлюза (x-openclaw-token)",
@@ -97,7 +127,19 @@
     "scopes_placeholder": "operator.admin",
     "wait_timeout": "Таймаут ожидания (мс)",
     "wait_timeout_placeholder": "120000",
-    "device_auth": "Аутентификация устройства"
+    "device_auth": "Аутентификация устройства",
+    "device_auth_desc": "Всегда включена для агентов шлюза. Paperclip сохраняет ключ устройства во время онбординга, чтобы подтверждения сопряжения оставались стабильными между запусками."
+  },
+  "opencode_local": {
+    "instructions_file": "Файл инструкций агента",
+    "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Подставляется в системный промпт во время выполнения.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md",
+    "skip_permissions": "Пропустить разрешения"
+  },
+  "pi_local": {
+    "instructions_file": "Файл инструкций агента",
+    "instructions_file_hint": "Абсолютный путь к markdown-файлу (напр. AGENTS.md), определяющему поведение агента. Подставляется в системный промпт во время выполнения.",
+    "instructions_placeholder": "/абсолютный/путь/к/AGENTS.md"
   },
   "http": {
     "webhook_url": "URL вебхука",
@@ -108,5 +150,31 @@
     "command_placeholder": "напр. node, python",
     "args": "Аргументы (через запятую)",
     "args_placeholder": "напр. script.js, --flag"
+  },
+  "runtime_json": {
+    "runtime_services_json": "JSON сервисов среды выполнения",
+    "payload_template_json": "JSON шаблона полезной нагрузки"
+  },
+  "path_instructions": {
+    "choose": "Выбрать",
+    "title": "Как получить полный путь",
+    "description_prefix": "Вставьте абсолютный путь (напр.",
+    "description_suffix": ") в поле ввода.",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "Откройте Finder и перейдите к папке.",
+    "mac_step_2": "Кликните правой кнопкой (или Ctrl+клик) по папке.",
+    "mac_step_3": "Удерживайте клавишу Option (⌥) — пункт «Скопировать» сменится на «Скопировать путь».",
+    "mac_step_4": "Нажмите «Скопировать путь» и вставьте сюда.",
+    "mac_tip": "Также можно открыть Terminal, ввести cd, перетащить папку в окно терминала и нажать Enter. Затем введите pwd, чтобы увидеть полный путь.",
+    "windows_step_1": "Откройте Проводник и перейдите к папке.",
+    "windows_step_2": "Кликните по адресной строке наверху — отобразится полный путь.",
+    "windows_step_3": "Скопируйте путь и вставьте сюда.",
+    "windows_tip": "Альтернатива: удерживая Shift, кликните правой кнопкой по папке и выберите «Копировать как путь».",
+    "linux_step_1": "Откройте терминал и перейдите в директорию с помощью cd.",
+    "linux_step_2": "Выполните pwd для вывода полного пути.",
+    "linux_step_3": "Скопируйте вывод и вставьте сюда.",
+    "linux_tip": "В большинстве файловых менеджеров Ctrl+L открывает полный путь в адресной строке."
   }
 }

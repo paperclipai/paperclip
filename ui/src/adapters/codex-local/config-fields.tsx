@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -15,8 +16,6 @@ import {
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
-const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
 
 export function CodexLocalConfigFields({
   mode,
@@ -30,6 +29,7 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation("adapters");
   const bypassEnabled =
     config.dangerouslyBypassApprovalsAndSandbox === true || config.dangerouslyBypassSandbox === true;
   const fastModeEnabled = isCreate
@@ -42,15 +42,18 @@ export function CodexLocalConfigFields({
   const fastModeSupported = isCodexLocalFastModeSupported(currentModel);
   const supportedModelsLabel = CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
   const fastModeMessage = fastModeManualModel
-    ? "Fast mode will be passed through for this manual model. If Codex rejects it, turn the toggle off."
+    ? t("codex_local.fast_mode_manual")
     : fastModeSupported
-      ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
-      : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
+      ? t("codex_local.fast_mode_supported")
+      : t("codex_local.fast_mode_unsupported", { models: supportedModelsLabel });
 
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field
+          label={t("codex_local.instructions_file")}
+          hint={t("codex_local.instructions_file_hint")}
+        >
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -69,14 +72,14 @@ export function CodexLocalConfigFields({
               }
               immediate
               className={inputClass}
-              placeholder="/absolute/path/to/AGENTS.md"
+              placeholder={t("codex_local.instructions_placeholder")}
             />
             <ChoosePathButton />
           </div>
         </Field>
       )}
       <ToggleField
-        label="Bypass sandbox"
+        label={t("codex_local.bypass_sandbox")}
         hint={help.dangerouslyBypassSandbox}
         checked={
           isCreate
@@ -94,7 +97,7 @@ export function CodexLocalConfigFields({
         }
       />
       <ToggleField
-        label="Enable search"
+        label={t("codex_local.enable_search")}
         hint={help.search}
         checked={
           isCreate
@@ -108,7 +111,7 @@ export function CodexLocalConfigFields({
         }
       />
       <ToggleField
-        label="Fast mode"
+        label={t("codex_local.fast_mode")}
         hint={help.fastMode}
         checked={fastModeEnabled}
         onChange={(v) =>

@@ -75,9 +75,36 @@
   "claude_local": {
     "instructions_file": "Agent instructions file",
     "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md",
     "enable_chrome": "Enable Chrome",
     "skip_permissions": "Skip permissions",
     "max_turns": "Max turns per run"
+  },
+  "codex_local": {
+    "instructions_file": "Agent instructions file",
+    "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md",
+    "bypass_sandbox": "Bypass sandbox",
+    "enable_search": "Enable search",
+    "fast_mode": "Fast mode",
+    "fast_mode_manual": "Fast mode will be passed through for this manual model. If Codex rejects it, turn the toggle off.",
+    "fast_mode_supported": "Fast mode consumes credits/tokens much faster than standard Codex runs.",
+    "fast_mode_unsupported": "Fast mode currently only works on {{models}} or manual model IDs. Paperclip will ignore this toggle until the model is switched."
+  },
+  "cursor": {
+    "instructions_file": "Agent instructions file",
+    "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the prompt at runtime.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md"
+  },
+  "gemini_local": {
+    "instructions_file": "Agent instructions file",
+    "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Gemini prompt at runtime.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md"
+  },
+  "hermes_local": {
+    "instructions_file": "Agent instructions file",
+    "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md"
   },
   "openclaw": {
     "gateway_url": "Gateway URL",
@@ -87,6 +114,9 @@
     "claimed_api_key_path": "Claimed API key path",
     "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
     "session_strategy": "Session strategy",
+    "session_strategy_fixed": "Fixed",
+    "session_strategy_issue": "Per issue",
+    "session_strategy_run": "Per run",
     "session_key": "Session key",
     "session_key_placeholder": "paperclip",
     "gateway_auth_token": "Gateway auth token (x-openclaw-token)",
@@ -97,7 +127,19 @@
     "scopes_placeholder": "operator.admin",
     "wait_timeout": "Wait timeout (ms)",
     "wait_timeout_placeholder": "120000",
-    "device_auth": "Device auth"
+    "device_auth": "Device auth",
+    "device_auth_desc": "Always enabled for gateway agents. Paperclip persists a device key during onboarding so pairing approvals remain stable across runs."
+  },
+  "opencode_local": {
+    "instructions_file": "Agent instructions file",
+    "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md",
+    "skip_permissions": "Skip permissions"
+  },
+  "pi_local": {
+    "instructions_file": "Agent instructions file",
+    "instructions_file_hint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.",
+    "instructions_placeholder": "/absolute/path/to/AGENTS.md"
   },
   "http": {
     "webhook_url": "Webhook URL",
@@ -108,5 +150,31 @@
     "command_placeholder": "e.g. node, python",
     "args": "Args (comma-separated)",
     "args_placeholder": "e.g. script.js, --flag"
+  },
+  "runtime_json": {
+    "runtime_services_json": "Runtime services JSON",
+    "payload_template_json": "Payload template JSON"
+  },
+  "path_instructions": {
+    "choose": "Choose",
+    "title": "How to get a full path",
+    "description_prefix": "Paste the absolute path (e.g.",
+    "description_suffix": ") into the input field.",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "Open Finder and navigate to the folder.",
+    "mac_step_2": "Right-click (or Control-click) the folder.",
+    "mac_step_3": "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
+    "mac_step_4": "Click \"Copy as Pathname\", then paste here.",
+    "mac_tip": "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
+    "windows_step_1": "Open File Explorer and navigate to the folder.",
+    "windows_step_2": "Click in the address bar at the top — the full path will appear.",
+    "windows_step_3": "Copy the path, then paste here.",
+    "windows_tip": "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
+    "linux_step_1": "Open a terminal and navigate to the directory with cd.",
+    "linux_step_2": "Run pwd to print the full path.",
+    "linux_step_3": "Copy the output and paste here.",
+    "linux_tip": "In most file managers, Ctrl+L reveals the full path in the address bar."
   }
 }
