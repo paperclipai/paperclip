@@ -36,6 +36,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     if (
       input.adapterType !== "acpx_local" &&
       input.adapterType !== "codex_local" &&
+      input.adapterType !== "copilot_local" &&
       input.adapterType !== "claude_local" &&
       input.adapterType !== "gemini_local" &&
       input.adapterType !== "opencode_local" &&
@@ -108,6 +109,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "codex_local" &&
       input.adapterType !== "acpx_local" &&
       input.adapterType !== "claude_local" &&
+      input.adapterType !== "copilot_local" &&
       input.adapterType !== "gemini_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
