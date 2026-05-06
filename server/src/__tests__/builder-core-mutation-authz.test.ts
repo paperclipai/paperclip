@@ -11,13 +11,21 @@ const mockProjectGetById = vi.hoisted(() => vi.fn());
 const mockProjectCreate = vi.hoisted(() => vi.fn());
 const mockProjectUpdate = vi.hoisted(() => vi.fn());
 const mockAgentGetById = vi.hoisted(() => vi.fn());
+const mockApprovalApprove = vi.hoisted(() => vi.fn());
+const mockApprovalGetById = vi.hoisted(() => vi.fn());
+const mockApprovalReject = vi.hoisted(() => vi.fn());
+const mockBuilderProposalGetByApprovalId = vi.hoisted(() => vi.fn());
 const mockGoalGetById = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: mockAgentGetById,
   }),
-  approvalService: () => ({}),
+  approvalService: () => ({
+    approve: mockApprovalApprove,
+    getById: mockApprovalGetById,
+    reject: mockApprovalReject,
+  }),
   goalService: () => ({
     getById: mockGoalGetById,
   }),
@@ -44,6 +52,12 @@ vi.mock("../middleware/logger.js", () => ({
   logger: {
     warn: mockLoggerWarn,
   },
+}));
+
+vi.mock("../services/builder/proposal-store.js", () => ({
+  builderProposalStore: () => ({
+    getByApprovalId: mockBuilderProposalGetByApprovalId,
+  }),
 }));
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -210,5 +224,63 @@ describe("builder core mutation auth guards", () => {
     ).rejects.toThrow("Goal not found");
 
     expect(mockProjectUpdate).not.toHaveBeenCalled();
+  });
+
+  it("blocks approve_approval for approvals linked to builder proposals", async () => {
+    mockApprovalGetById.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+    });
+    mockBuilderProposalGetByApprovalId.mockResolvedValue({
+      id: "proposal-1",
+      companyId,
+      approvalId: "approval-1",
+    });
+
+    const tool = getTool("approve_approval");
+    expect(isMutationTool(tool)).toBe(true);
+
+    await expect(
+      tool.apply(
+        { approvalId: "approval-1" },
+        {
+          db: {} as never,
+          companyId,
+          decidedByUserId: "user-1",
+        } as never,
+      ),
+    ).rejects.toThrow("This approval must be resolved from the Approvals queue");
+
+    expect(mockApprovalApprove).not.toHaveBeenCalled();
+  });
+
+  it("blocks reject_approval for approvals linked to builder proposals", async () => {
+    mockApprovalGetById.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+    });
+    mockBuilderProposalGetByApprovalId.mockResolvedValue({
+      id: "proposal-1",
+      companyId,
+      approvalId: "approval-1",
+    });
+
+    const tool = getTool("reject_approval");
+    expect(isMutationTool(tool)).toBe(true);
+
+    await expect(
+      tool.apply(
+        { approvalId: "approval-1" },
+        {
+          db: {} as never,
+          companyId,
+          decidedByUserId: "user-1",
+        } as never,
+      ),
+    ).rejects.toThrow("This approval must be resolved from the Approvals queue");
+
+    expect(mockApprovalReject).not.toHaveBeenCalled();
   });
 });

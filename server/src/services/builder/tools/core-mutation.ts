@@ -19,6 +19,7 @@ import {
 } from "../../index.js";
 import { logActivity } from "../../activity-log.js";
 import { logger } from "../../../middleware/logger.js";
+import { builderProposalStore } from "../proposal-store.js";
 import type { BuilderTool } from "../types.js";
 import { defineMutationTool } from "./mutation-tool.js";
 
@@ -58,6 +59,16 @@ async function logBuilderAction(
   }).catch((logErr) =>
     logger.warn({ logErr, entityId: input.entityId, action: input.action }, "builder activity log failed"),
   );
+}
+
+async function assertApprovalIsNotLinkedBuilderGovernedFlow(
+  ctx: { db: any; companyId: string },
+  approvalId: string,
+) {
+  const linkedProposal = await builderProposalStore(ctx.db).getByApprovalId(ctx.companyId, approvalId);
+  if (linkedProposal) {
+    throw new Error("This approval must be resolved from the Approvals queue");
+  }
 }
 
 async function assertGoalIdsBelongToCompany(
@@ -1150,6 +1161,7 @@ const approveApproval = defineMutationTool({
   async apply(payload, ctx) {
     const existing = await approvalService(ctx.db).getById(String(payload.approvalId));
     if (!existing || existing.companyId !== ctx.companyId) throw new Error("Approval not found");
+    await assertApprovalIsNotLinkedBuilderGovernedFlow(ctx, existing.id);
     const result = await approvalService(ctx.db).approve(
       existing.id,
       ctx.decidedByUserId ?? "board",
@@ -1197,6 +1209,7 @@ const rejectApproval = defineMutationTool({
   async apply(payload, ctx) {
     const existing = await approvalService(ctx.db).getById(String(payload.approvalId));
     if (!existing || existing.companyId !== ctx.companyId) throw new Error("Approval not found");
+    await assertApprovalIsNotLinkedBuilderGovernedFlow(ctx, existing.id);
     const result = await approvalService(ctx.db).reject(
       existing.id,
       ctx.decidedByUserId ?? "board",

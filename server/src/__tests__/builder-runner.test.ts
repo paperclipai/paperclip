@@ -123,6 +123,32 @@ describe("builder runner", () => {
     expect(state.totals.inputTokens).toBe(10);
   });
 
+  it("tells provider to wait for tool results and treat proposalId as pending", async () => {
+    const { store } = makeStore();
+    mockExecuteBuilderTurn.mockResolvedValueOnce({
+      text: "hello",
+      toolCalls: [],
+      finishReason: "stop",
+      usage: { inputTokens: 1, outputTokens: 1, costCents: 0 },
+    });
+
+    await runBuilderTurn({
+      db: {} as unknown as Db,
+      adapterConfig: config,
+      sessionId,
+      companyId,
+      actor: { type: "user", id: "user-1" },
+      store: store as unknown as Parameters<typeof runBuilderTurn>[0]["store"],
+      toolCatalog: makeCatalog([]),
+    });
+
+    const firstCall = mockExecuteBuilderTurn.mock.calls[0]?.[0];
+    expect(firstCall.messages[0]).toMatchObject({ role: "system" });
+    expect(firstCall.messages[0].content).toContain("Never tell operator mutation already happened before tool result confirms it.");
+    expect(firstCall.messages[0].content).toContain("If any tool result returns a proposalId");
+    expect(firstCall.messages[0].content).not.toContain("Mutations are deferred only for these core tools:");
+  });
+
   it("invokes a tool and feeds the result back to the model", async () => {
     const { store } = makeStore();
     const toolRun = vi.fn(async () => ({
