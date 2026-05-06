@@ -75,6 +75,10 @@ export function Layout() {
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
+  const previousCompanyRouteSyncState = useRef<{
+    pathname: string;
+    selectedCompanyId: string | null;
+  }>({ pathname: location.pathname, selectedCompanyId });
   const mainContentRef = useRef<HTMLElement | null>(null);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
@@ -111,6 +115,10 @@ export function Layout() {
   }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
 
   useEffect(() => {
+    const routeChangedSinceSelection =
+      previousCompanyRouteSyncState.current.selectedCompanyId === selectedCompanyId &&
+      previousCompanyRouteSyncState.current.pathname !== location.pathname;
+
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
 
     if (!matchedCompany) {
@@ -134,10 +142,15 @@ export function Layout() {
         selectionSource,
         selectedCompanyId,
         routeCompanyId: matchedCompany.id,
+        routeChangedSinceSelection,
       })
     ) {
       setSelectedCompanyId(matchedCompany.id, { source: "route_sync" });
     }
+    previousCompanyRouteSyncState.current = {
+      pathname: location.pathname,
+      selectedCompanyId,
+    };
   }, [
     companyPrefix,
     companies,

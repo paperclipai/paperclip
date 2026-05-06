@@ -22,6 +22,17 @@ describe("shouldSyncCompanySelectionFromRoute", () => {
     ).toBe(false);
   });
 
+  it("syncs to the route company after a manual selection when the route changed", () => {
+    expect(
+      shouldSyncCompanySelectionFromRoute({
+        selectionSource: "manual",
+        selectedCompanyId: "pap",
+        routeCompanyId: "six",
+        routeChangedSinceSelection: true,
+      }),
+    ).toBe(true);
+  });
+
   it("syncs back to the route company for non-manual mismatches", () => {
     expect(
       shouldSyncCompanySelectionFromRoute({
