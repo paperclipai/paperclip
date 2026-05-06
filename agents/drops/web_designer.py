@@ -377,7 +377,8 @@ Responde SOLO con JSON:
     # ── PASO 0a: Imágenes de Pexels ───────────────────────────────────────────
     print(f"\n🖼️  Buscando imágenes en Pexels para: {name}", flush=True)
     images = fetch_pexels_images(name, pexels_key)
-    hero_img    = images.get("hero", [""])[0] if images else ""
+    hero_imgs    = images.get("hero", []) if images else []
+    hero_img     = hero_imgs[0] if hero_imgs else ""
     product_imgs = images.get("product", []) if images else []
     context_imgs = images.get("context", []) if images else []
 
