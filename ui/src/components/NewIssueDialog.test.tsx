@@ -405,6 +405,42 @@ describe("NewIssueDialog", () => {
         goalId: "goal-1",
         projectId: "project-1",
         executionWorkspaceId: "workspace-1",
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("restores the planning mode from dialog defaults", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Planned from defaults",
+      workMode: "planning",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const planningButton = container.querySelector('[data-issue-work-mode="planning"]');
+    expect(planningButton?.className).toContain("bg-accent");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Planned from defaults",
+        workMode: "planning",
       }),
     );
 
@@ -545,6 +581,45 @@ describe("NewIssueDialog", () => {
       expect.objectContaining({
         title: "Typed issue",
         description: "Typed description",
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("submits planning work mode when planning is selected", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Plan this first");
+
+    const planningButton = container.querySelector('[data-issue-work-mode="planning"]');
+    expect(planningButton).not.toBeNull();
+    await act(async () => {
+      planningButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Plan this first",
+        workMode: "planning",
       }),
     );
 
