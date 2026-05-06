@@ -631,6 +631,13 @@
       "when": 1779129600000,
       "tag": "0089_cloud_upstreams",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1778054400000,
+      "tag": "0079_provider_rate_limit_block_members",
+      "breakpoints": true
     }
   ]
 }

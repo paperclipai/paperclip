@@ -344,6 +344,9 @@ export function ProviderQuotaCard({
                       ) : (
                         <p className="text-xs text-muted-foreground">reset time unknown</p>
                       )}
+                      <p className="text-xs text-muted-foreground">
+                        {block.hitCount} hits · last {new Date(block.lastSeenAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                      </p>
                     </div>
                     {onReleaseBlock && (
                       <button
