@@ -218,6 +218,7 @@ describe("successful run handoff decision", () => {
       title: "Missing issue disposition",
       detailsDefaultOpen: false,
     });
+    expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");
     expect(notice.metadata.sections).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: "Required action",
@@ -267,6 +268,7 @@ describe("successful run handoff decision", () => {
       tone: "danger",
       detailsDefaultOpen: false,
     });
+    expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");
     expect(notice.metadata.sections).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: "Recovery owner",

@@ -146,6 +146,7 @@ export function buildSuccessfulRunHandoffRequiredNotice(input: {
     }),
     metadata: {
       version: 1,
+      sourceRunId: input.run.id,
       sections: [
         {
           title: "Required action",
@@ -193,6 +194,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
     }),
     metadata: {
       version: 1,
+      sourceRunId: input.sourceRun?.id ?? null,
       sections: [
         {
           title: "Recovery owner",

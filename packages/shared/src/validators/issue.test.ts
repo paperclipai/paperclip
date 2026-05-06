@@ -65,6 +65,7 @@ describe("issue validators", () => {
       },
       metadata: {
         version: 1,
+        sourceRunId: "11111111-1111-4111-8111-111111111111",
         sections: [
           {
             title: "Evidence",
@@ -79,6 +80,7 @@ describe("issue validators", () => {
     });
 
     expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
+    expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
   });
 
