@@ -12,12 +12,18 @@
     "retrying": "Повтор…",
     "mark_as_read": "Отметить прочитанным",
     "dismiss": "Закрыть",
+    "dismiss_from_inbox": "Убрать из входящих",
     "mark_all_read": "Отметить все прочитанными",
-    "marking": "Отметка…"
+    "marking": "Отметка…",
+    "approve": "Одобрить",
+    "reject": "Отклонить",
+    "cancel": "Отмена"
   },
   "group": {
     "none": "Без группировки",
     "type": "По типу",
+    "assignee": "По исполнителю",
+    "project": "По проекту",
     "workspace": "По рабочему пространству",
     "archived": "Архив",
     "other": "Другие результаты",
@@ -34,6 +40,7 @@
     "category_issues_i_touched": "Мои недавние задачи",
     "category_join_requests": "Запросы на вступление",
     "category_approvals": "Одобрения",
+    "category_failed_runs": "Неудачные запуски",
     "category_alerts": "Оповещения",
     "status_all": "Все статусы одобрений",
     "status_actionable": "Требует действия",
@@ -45,10 +52,24 @@
   },
   "misc": {
     "human_join_request": "Запрос на присоединение",
+    "agent_join_request": "Запрос агента на присоединение",
+    "agent_join_request_named": "Запрос агента на присоединение: {{name}}",
     "run_error": "Запуск завершился с ошибкой.",
     "enable_nesting": "Включить вложенность родитель-потомок",
     "disable_nesting": "Отключить вложенность родитель-потомок",
-    "choose_columns": "Выберите видимые столбцы входящих"
+    "choose_columns": "Выберите видимые столбцы входящих",
+    "failed_run": "Неудачный запуск",
+    "failed_run_named": "Неудачный запуск — {{agent}}",
+    "subtask_count_one": "({{count}} подзадача)",
+    "subtask_count_other": "({{count}} подзадач)",
+    "requested_by": "запрошено {{name}}",
+    "updated_time": "обновлено {{time}}",
+    "requested_time_ip": "запрошено {{time}} с IP {{ip}}",
+    "adapter_label": "адаптер: {{adapter}}",
+    "alerts_heading": "Оповещения",
+    "agent_has_errors_one": "{{count}} агент с ошибками",
+    "agent_has_errors_other": "{{count}} агентов с ошибками",
+    "budget_utilization": "Использование бюджета: {{percent}}% в этом месяце"
   },
   "empty": {
     "select_company": "Выберите компанию для просмотра входящих.",
@@ -57,6 +78,23 @@
     "no_new": "Нет новых входящих.",
     "no_recent": "Нет недавних входящих.",
     "no_match_filters": "Нет элементов, соответствующих фильтрам."
+  },
+  "dialog": {
+    "mark_all_title": "Отметить все прочитанными?",
+    "mark_all_desc_one": "Будет отмечено {{count}} непрочитанный элемент.",
+    "mark_all_desc_other": "Будет отмечено {{count}} непрочитанных элементов."
+  },
+  "errors": {
+    "failed_to_approve": "Не удалось одобрить",
+    "failed_to_reject": "Не удалось отклонить",
+    "failed_to_approve_join": "Не удалось одобрить запрос на присоединение",
+    "failed_to_reject_join": "Не удалось отклонить запрос на присоединение",
+    "failed_to_archive": "Не удалось архивировать задачу",
+    "failed_to_undo_archive": "Не удалось отменить архивирование"
+  },
+  "creators": {
+    "board": "Совет Директоров",
+    "me": "Я"
   },
   "join_queue": {
     "title": "Очередь заявок на вступление",

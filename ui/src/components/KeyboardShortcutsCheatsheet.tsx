@@ -16,37 +16,37 @@ interface ShortcutSection {
 function buildSections(t: TFunction): ShortcutSection[] {
   return [
     {
-      title: "Inbox",
+      title: t("keyboard_shortcuts.section_inbox"),
       shortcuts: [
-        { keys: ["j"], label: "Move down" },
-        { keys: ["↓"], label: "Move down" },
-        { keys: ["k"], label: "Move up" },
-        { keys: ["↑"], label: "Move up" },
-        { keys: ["←"], label: "Collapse selected group" },
-        { keys: ["→"], label: "Expand selected group" },
-        { keys: ["Enter"], label: "Open selected item" },
-        { keys: ["a"], label: "Archive item" },
-        { keys: ["y"], label: "Archive item" },
-        { keys: ["r"], label: "Mark as read" },
-        { keys: ["U"], label: "Mark as unread" },
+        { keys: ["j"], label: t("keyboard_shortcuts.move_down") },
+        { keys: ["↓"], label: t("keyboard_shortcuts.move_down") },
+        { keys: ["k"], label: t("keyboard_shortcuts.move_up") },
+        { keys: ["↑"], label: t("keyboard_shortcuts.move_up") },
+        { keys: ["←"], label: t("keyboard_shortcuts.collapse_group") },
+        { keys: ["→"], label: t("keyboard_shortcuts.expand_group") },
+        { keys: ["Enter"], label: t("keyboard_shortcuts.open_item") },
+        { keys: ["a"], label: t("keyboard_shortcuts.archive_item") },
+        { keys: ["y"], label: t("keyboard_shortcuts.archive_item") },
+        { keys: ["r"], label: t("keyboard_shortcuts.mark_as_read") },
+        { keys: ["U"], label: t("keyboard_shortcuts.mark_as_unread") },
       ],
     },
     {
-      title: "Issue detail",
+      title: t("keyboard_shortcuts.section_issue_detail"),
       shortcuts: [
-        { keys: ["y"], label: "Quick-archive back to inbox" },
-        { keys: ["g", "i"], label: "Go to inbox" },
-        { keys: ["g", "c"], label: "Focus comment composer" },
+        { keys: ["y"], label: t("keyboard_shortcuts.quick_archive") },
+        { keys: ["g", "i"], label: t("keyboard_shortcuts.go_to_inbox") },
+        { keys: ["g", "c"], label: t("keyboard_shortcuts.focus_comment") },
       ],
     },
     {
-      title: "Global",
+      title: t("keyboard_shortcuts.section_global"),
       shortcuts: [
         { keys: ["/"], label: t("keyboard_shortcuts.search_or_quick") },
         { keys: ["c"], label: t("keyboard_shortcuts.new_issue") },
-        { keys: ["["], label: "Toggle sidebar" },
-        { keys: ["]"], label: "Toggle panel" },
-        { keys: ["?"], label: "Show keyboard shortcuts" },
+        { keys: ["["], label: t("keyboard_shortcuts.toggle_sidebar") },
+        { keys: ["]"], label: t("keyboard_shortcuts.toggle_panel") },
+        { keys: ["?"], label: t("keyboard_shortcuts.show_shortcuts") },
       ],
     },
   ];
@@ -81,7 +81,7 @@ export function KeyboardShortcutsCheatsheetContent() {
                   <div className="flex items-center gap-1">
                     {shortcut.keys.map((key, i) => (
                       <span key={key} className="flex items-center gap-1">
-                        {i > 0 && <span className="text-xs text-muted-foreground">then</span>}
+                        {i > 0 && <span className="text-xs text-muted-foreground">{t("keyboard_shortcuts.then")}</span>}
                         <KeyCap>{key}</KeyCap>
                       </span>
                     ))}
@@ -94,7 +94,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       </div>
       <div className="border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">
-          Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
+          {t("keyboard_shortcuts.footer_press")} <KeyCap>Esc</KeyCap> {t("keyboard_shortcuts.footer_to_close")} &middot; {t("keyboard_shortcuts.footer_disabled_in_text")}
         </p>
       </div>
     </>
@@ -108,11 +108,12 @@ export function KeyboardShortcutsCheatsheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation("common");
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden" showCloseButton={false}>
         <DialogHeader className="px-5 pt-5 pb-3">
-          <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
+          <DialogTitle className="text-base">{t("keyboard_shortcuts.title")}</DialogTitle>
         </DialogHeader>
         <KeyboardShortcutsCheatsheetContent />
       </DialogContent>

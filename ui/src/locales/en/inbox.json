@@ -12,12 +12,18 @@
     "retrying": "Retrying…",
     "mark_as_read": "Mark as read",
     "dismiss": "Dismiss",
+    "dismiss_from_inbox": "Dismiss from inbox",
     "mark_all_read": "Mark all as read",
-    "marking": "Marking…"
+    "marking": "Marking…",
+    "approve": "Approve",
+    "reject": "Reject",
+    "cancel": "Cancel"
   },
   "group": {
     "none": "None",
     "type": "Type",
+    "assignee": "Assignee",
+    "project": "Project",
     "workspace": "Workspace",
     "archived": "Archived",
     "other": "Other results",
@@ -34,6 +40,7 @@
     "category_issues_i_touched": "My recent issues",
     "category_join_requests": "Join requests",
     "category_approvals": "Approvals",
+    "category_failed_runs": "Failed runs",
     "category_alerts": "Alerts",
     "status_all": "All approval statuses",
     "status_actionable": "Needs action",
@@ -45,10 +52,24 @@
   },
   "misc": {
     "human_join_request": "Human join request",
+    "agent_join_request": "Agent join request",
+    "agent_join_request_named": "Agent join request: {{name}}",
     "run_error": "Run exited with an error.",
     "enable_nesting": "Enable parent-child nesting",
     "disable_nesting": "Disable parent-child nesting",
-    "choose_columns": "Choose which inbox columns stay visible"
+    "choose_columns": "Choose which inbox columns stay visible",
+    "failed_run": "Failed run",
+    "failed_run_named": "Failed run — {{agent}}",
+    "subtask_count_one": "({{count}} sub-task)",
+    "subtask_count_other": "({{count}} sub-tasks)",
+    "requested_by": "requested by {{name}}",
+    "updated_time": "updated {{time}}",
+    "requested_time_ip": "requested {{time}} from IP {{ip}}",
+    "adapter_label": "adapter: {{adapter}}",
+    "alerts_heading": "Alerts",
+    "agent_has_errors_one": "{{count}} agent has errors",
+    "agent_has_errors_other": "{{count}} agents have errors",
+    "budget_utilization": "Budget at {{percent}}% utilization this month"
   },
   "empty": {
     "select_company": "Select a company to view inbox.",
@@ -57,6 +78,23 @@
     "no_new": "No new inbox items.",
     "no_recent": "No recent inbox items.",
     "no_match_filters": "No inbox items match these filters."
+  },
+  "dialog": {
+    "mark_all_title": "Mark all as read?",
+    "mark_all_desc_one": "This will mark {{count}} unread item as read.",
+    "mark_all_desc_other": "This will mark {{count}} unread items as read."
+  },
+  "errors": {
+    "failed_to_approve": "Failed to approve",
+    "failed_to_reject": "Failed to reject",
+    "failed_to_approve_join": "Failed to approve join request",
+    "failed_to_reject_join": "Failed to reject join request",
+    "failed_to_archive": "Failed to archive issue",
+    "failed_to_undo_archive": "Failed to undo inbox archive"
+  },
+  "creators": {
+    "board": "Board",
+    "me": "Me"
   },
   "join_queue": {
     "title": "Join Request Queue",
