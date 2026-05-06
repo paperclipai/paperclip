@@ -90,6 +90,18 @@ type LatestIssueRun = Pick<
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
+type ProductiveUncommittableDispositionPath = "live_continue" | "waiting_on_dependency" | "terminal_resolved";
+type ProductiveUncommittableDispositionReason =
+  | "needs_followup_implementation"
+  | "blocked_by_dependency"
+  | "acceptance_complete";
+
+type ProductiveUncommittableDisposition = {
+  selectedPath: ProductiveUncommittableDispositionPath;
+  reasonCode: ProductiveUncommittableDispositionReason;
+  boundedRetryCount: number;
+  boundedRetryLimit: number;
+};
 
 type StrandedRecoveryCause = "stranded_assigned_issue" | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
@@ -301,6 +313,20 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function buildProductiveUncommittableDisposition(input: {
+  selectedPath: ProductiveUncommittableDispositionPath;
+  reasonCode: ProductiveUncommittableDispositionReason;
+  boundedRetryCount: number;
+  boundedRetryLimit?: number;
+}): ProductiveUncommittableDisposition {
+  return {
+    selectedPath: input.selectedPath,
+    reasonCode: input.reasonCode,
+    boundedRetryCount: Math.max(0, Math.trunc(input.boundedRetryCount)),
+    boundedRetryLimit: Math.max(1, Math.trunc(input.boundedRetryLimit ?? 1)),
+  };
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -480,6 +506,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     retryReason: "assignment_recovery" | "issue_continuation_needed";
     source: string;
     retryOfRunId?: string | null;
+    disposition?: ProductiveUncommittableDisposition;
   }) {
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
@@ -497,6 +524,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         wakeReason: input.reason,
         retryReason: input.retryReason,
         source: input.source,
+        ...(input.disposition ? { productiveUncommittableDisposition: input.disposition } : {}),
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
       }),
     });
@@ -2147,7 +2175,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             latestRun: successfulRun,
             comment:
               "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-              "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              "made progress, but it still has no live execution path. " +
+              "Disposition: `waiting_on_dependency` (`blocked_by_dependency`) after bounded productive continuation retry was consumed. " +
+              "Moving it to `blocked` so it is visible for intervention.",
           });
           if (updated) {
             result.escalated += 1;
@@ -2170,6 +2200,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           retryReason: "issue_continuation_needed",
           source: "issue.productive_terminal_continuation_recovery",
           retryOfRunId: successfulRun.id,
+          disposition: buildProductiveUncommittableDisposition({
+            selectedPath: "live_continue",
+            reasonCode: "needs_followup_implementation",
+            boundedRetryCount: 1,
+            boundedRetryLimit: 1,
+          }),
         });
         if (queued) {
           result.continuationRequeued += 1;
@@ -2188,6 +2224,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           comment:
             "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
+            "Disposition: `waiting_on_dependency` (`blocked_by_dependency`) because automatic continuation recovery failed. " +
             "Moving it to `blocked` so it is visible for intervention.",
         });
         if (updated) {

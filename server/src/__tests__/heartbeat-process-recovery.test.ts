@@ -2835,6 +2835,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
       modelProfile: "cheap",
+      productiveUncommittableDisposition: {
+        selectedPath: "live_continue",
+        reasonCode: "needs_followup_implementation",
+        boundedRetryCount: 1,
+        boundedRetryLimit: 1,
+      },
     });
 
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
@@ -2872,6 +2878,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("automatically retried continuation");
     expect(comments[0]?.body).toContain("still has no live execution path");
+    expect(comments[0]?.body).toContain("Disposition: `waiting_on_dependency` (`blocked_by_dependency`)");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
@@ -2903,6 +2910,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
       modelProfile: "cheap",
+      productiveUncommittableDisposition: {
+        selectedPath: "live_continue",
+        reasonCode: "needs_followup_implementation",
+        boundedRetryCount: 1,
+        boundedRetryLimit: 1,
+      },
     });
   });
 
@@ -2959,6 +2972,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
       modelProfile: "cheap",
+      productiveUncommittableDisposition: {
+        selectedPath: "live_continue",
+        reasonCode: "needs_followup_implementation",
+        boundedRetryCount: 1,
+        boundedRetryLimit: 1,
+      },
     });
   });
 
