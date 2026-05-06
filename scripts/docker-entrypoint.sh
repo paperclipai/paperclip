@@ -26,4 +26,12 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Railway (and some other runtimes) mount volumes as root after the image
+# layers are applied, so /paperclip may be root-owned even when no UID remap
+# occurred.  Chown just the top-level directory so the node process can create
+# its own subdirectories.  Not recursive — avoids slowdown on large volumes.
+if [ "$(stat -c '%u' /paperclip)" != "$PUID" ]; then
+    chown node:node /paperclip
+fi
+
 exec gosu node "$@"

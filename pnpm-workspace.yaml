@@ -12,3 +12,4 @@ packages:
   - server
   - ui
   - cli
+  - ops-portal
