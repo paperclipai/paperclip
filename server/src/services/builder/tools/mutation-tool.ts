@@ -5,6 +5,7 @@ import type {
 } from "../types.js";
 import type { ProposalApplier } from "../applier-types.js";
 import { builderProposalStore } from "../proposal-store.js";
+import { approvalService } from "../../approvals.js";
 
 /**
  * Helper for declaring a mutation tool whose `run()` simply records a
@@ -82,7 +83,6 @@ export function defineMutationTool(def: MutationToolDef): MutationTool {
         const result = await ctx.db.transaction(async (tx) => {
           let approvalId: string | null = null;
           if (def.approvalType) {
-            const { approvalService } = await import("../../approvals.js");
             const approval = await approvalService(tx as any).create(ctx.companyId, {
               type: def.approvalType,
               requestedByUserId: ctx.actor.type === "user" ? ctx.actor.id : null,
@@ -131,7 +131,6 @@ export function defineMutationTool(def: MutationToolDef): MutationTool {
       // transaction support).
       let approvalId: string | null = null;
       if (def.approvalType) {
-        const { approvalService } = await import("../../approvals.js");
         const approval = await approvalService(ctx.db).create(ctx.companyId, {
           type: def.approvalType,
           requestedByUserId: ctx.actor.type === "user" ? ctx.actor.id : null,
