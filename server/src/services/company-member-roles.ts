@@ -47,13 +47,21 @@ export function grantsForHumanRole(
   }
 }
 
+export function parseExplicitHumanRole(
+  defaultsPayload: Record<string, unknown> | null | undefined
+): HumanCompanyMembershipRole | null {
+  if (!defaultsPayload || typeof defaultsPayload !== "object") return null;
+  const scoped = defaultsPayload.human;
+  if (!scoped || typeof scoped !== "object" || Array.isArray(scoped)) {
+    return null;
+  }
+  const role = (scoped as Record<string, unknown>).role;
+  const normalized = normalizeHumanRole(role, "operator");
+  return role === "member" || normalized === role ? normalized : null;
+}
+
 export function resolveHumanInviteRole(
   defaultsPayload: Record<string, unknown> | null | undefined
 ): HumanCompanyMembershipRole {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return "operator";
-  const scoped = defaultsPayload.human;
-  if (!scoped || typeof scoped !== "object" || Array.isArray(scoped)) {
-    return "operator";
-  }
-  return normalizeHumanRole((scoped as Record<string, unknown>).role, "operator");
+  return parseExplicitHumanRole(defaultsPayload) ?? "operator";
 }

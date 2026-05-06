@@ -67,6 +67,7 @@ import {
 import {
   grantsForHumanRole,
   normalizeHumanRole,
+  parseExplicitHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
@@ -1916,21 +1917,6 @@ function extractInviteHumanRole(invite: typeof invites.$inferSelect) {
   );
 }
 
-function explicitHumanInviteRole(
-  defaultsPayload: Record<string, unknown> | null | undefined
-) {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return null;
-  const scoped = defaultsPayload.human;
-  if (!scoped || typeof scoped !== "object" || Array.isArray(scoped)) {
-    return null;
-  }
-  const role = (scoped as Record<string, unknown>).role;
-  if (!["owner", "admin", "operator", "viewer", "member"].includes(role as string)) {
-    return null;
-  }
-  return normalizeHumanRole(role, "operator");
-}
-
 function isLocalImplicit(req: Request) {
   return req.actor.type === "board" && req.actor.source === "local_implicit";
 }
@@ -3401,7 +3387,7 @@ export function accessRoutes(
         requestType === "human" ? await resolveActorEmail(db, req) : null;
       const autoApproveHumanRole =
         requestType === "human"
-          ? explicitHumanInviteRole(
+          ? parseExplicitHumanRole(
               invite.defaultsPayload as Record<string, unknown> | null
             )
           : null;
@@ -3510,6 +3496,8 @@ export function accessRoutes(
         throw conflict("Join request not found");
       }
 
+      let autoApprovedJoinRequest = false;
+
       if (
         requestType === "human" &&
         autoApproveHumanRole &&
@@ -3555,6 +3543,7 @@ export function accessRoutes(
           entityId: created.id,
           details: { requestType: "human", membershipRole: autoApproveHumanRole }
         });
+        autoApprovedJoinRequest = true;
       }
 
       if (
@@ -3658,27 +3647,29 @@ export function accessRoutes(
         }
       }
 
-      await logActivity(db, {
-        companyId,
-        actorType: req.actor.type === "agent" ? "agent" : "user",
-        actorId:
-          req.actor.type === "agent"
-            ? req.actor.agentId ?? "invite-agent"
-            : req.actor.userId ??
-              (requestType === "agent" ? "invite-anon" : "board"),
-        action: inviteAlreadyAccepted
-          ? "join.request_replayed"
-          : "join.requested",
-        entityType: "join_request",
-        entityId: created.id,
-        details: {
-          requestType,
-          requestIp: requestIp(req),
-          inviteReplay: inviteAlreadyAccepted,
-          reusedExistingJoinRequest:
-            Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
-        }
-      });
+      if (!autoApprovedJoinRequest) {
+        await logActivity(db, {
+          companyId,
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          actorId:
+            req.actor.type === "agent"
+              ? req.actor.agentId ?? "invite-agent"
+              : req.actor.userId ??
+                (requestType === "agent" ? "invite-anon" : "board"),
+          action: inviteAlreadyAccepted
+            ? "join.request_replayed"
+            : "join.requested",
+          entityType: "join_request",
+          entityId: created.id,
+          details: {
+            requestType,
+            requestIp: requestIp(req),
+            inviteReplay: inviteAlreadyAccepted,
+            reusedExistingJoinRequest:
+              Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
+          }
+        });
+      }
 
       const response = toJoinRequestResponse(created);
       if (claimSecret) {

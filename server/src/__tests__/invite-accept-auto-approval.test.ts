@@ -155,6 +155,12 @@ describeEmbeddedPostgres("POST /invites/:token/accept human auto approval", () =
       "users:invite",
       "users:manage_permissions",
     ]);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, res.body.id));
+    expect(activity.map((entry) => entry.action)).toEqual(["join.auto_approved"]);
   }, 20_000);
 
   it("leaves agent invites in the existing pending approval flow", async () => {
