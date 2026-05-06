@@ -1,0 +1,17 @@
+#!/bin/sh
+# Rejects commit messages that contain Co-Authored-By or Generated-with AI attribution trailers.
+# See AGENTS.md §5a rule #1-2. Override only with --no-verify (board/explicit user approval required).
+
+commit_msg_file="$1"
+
+if grep -i -E '^Co-Authored-By:|^[[:space:]]*🤖 Generated with|^Generated with \[Claude' "$commit_msg_file" > /dev/null 2>&1; then
+  echo ""
+  echo "ERROR: Commit rejected — banned attribution trailer detected."
+  echo ""
+  echo "  Remove all 'Co-Authored-By:' and 'Generated with' lines from your commit message."
+  echo "  See AGENTS.md §5a for the full rule. Use --no-verify only with explicit board/user approval."
+  echo ""
+  exit 1
+fi
+
+exit 0

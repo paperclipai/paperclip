@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# check-i18n-only-diff.sh [GIT_RANGE]
+# Validates that every change in the range is an i18n-only modification.
+# Stage-8 commits may add new LanguageSwitcher/*.tsx|css files and mount
+# the component in an existing layout file when the commit message contains
+# the literal token [stage-8-switcher].
+#
+# Exit 0  -> "OK: all TSX changes are i18n-only"
+# Exit 1  -> one or more violations printed to stderr
+
+set -uo pipefail
+
+RANGE="${1:-master..HEAD}"
+SWITCHER_DIR="ui/src/components/LanguageSwitcher"
+violations=0
+
+fail() { echo "FAIL: $*" >&2; violations=$((violations + 1)); }
+
+while IFS= read -r commit; do
+  msg=$(git log -1 --format='%B' "$commit" 2>/dev/null || true)
+  has_bypass=0
+  echo "$msg" | grep -qF '[stage-8-switcher]' 2>/dev/null && has_bypass=1
+
+  while IFS=$'\t' read -r status filepath; do
+    # Ignore deletions
+    [[ "${status:0:1}" == "D" ]] && continue
+
+    # ── Always-OK categories ─────────────────────────────────────────────────
+    case "$filepath" in
+      ui/src/locales/*.json)  continue ;;
+      ui/src/locales/i18n.ts) continue ;;
+      ui/package.json|pnpm-lock.yaml) continue ;;
+      scripts/*|.github/*|.githooks/*) continue ;;
+      AGENTS.md) continue ;;
+      playwright.config.*) continue ;;
+    esac
+
+    # ── Extension-based rules ────────────────────────────────────────────────
+    case "$filepath" in
+
+      *.tsx)
+        if [[ "${status:0:1}" == "A" ]]; then
+          # New TSX file: only LanguageSwitcher with bypass marker
+          if [[ $has_bypass -eq 1 && "$filepath" == "$SWITCHER_DIR"/* ]]; then
+            continue
+          fi
+          fail "New TSX file not permitted: $filepath (commit ${commit:0:8}); use [stage-8-switcher] + LanguageSwitcher path"
+        else
+          # Modified TSX: every added line must be i18n wiring
+          while IFS= read -r line; do
+            content="${line:1}"
+            # blank
+            [[ -z "${content//[[:space:]]/}" ]] && continue
+            # import react-i18next
+            echo "$content" | grep -qE 'import[[:space:]].*react-i18next' && continue
+            # import i18n bootstrap
+            echo "$content" | grep -qE "import[[:space:]].*locales/i18n" && continue
+            # useTranslation destructure
+            echo "$content" | grep -qE "const[[:space:]]*\{[^}]*\bt\b[^}]*\}[[:space:]]*=[[:space:]]*useTranslation" && continue
+            # any t() call
+            echo "$content" | grep -qE "\bt\([\"'\`]" && continue
+            # i18n.t() direct call
+            echo "$content" | grep -qE "i18n\.t\([\"'\`]" && continue
+            # Stage-8 bypass: allow LanguageSwitcher import and component usage
+            [[ $has_bypass -eq 1 ]] && echo "$content" | grep -qiE 'LanguageSwitcher' && continue
+            # violation
+            fail "Non-i18n addition in $filepath (commit ${commit:0:8}): $(echo "$content" | cut -c1-120)"
+          done < <(git show "$commit" -- "$filepath" 2>/dev/null | grep '^+' | grep -v '^+++')
+        fi
+        ;;
+
+      *.css)
+        if [[ "${status:0:1}" == "A" ]]; then
+          if [[ $has_bypass -eq 1 && "$filepath" == "$SWITCHER_DIR"/* ]]; then
+            continue
+          fi
+          fail "New CSS file not permitted: $filepath (commit ${commit:0:8}); only LanguageSwitcher/ with [stage-8-switcher]"
+        fi
+        # Modified CSS: allowed (no i18n content to validate)
+        ;;
+
+      *.ts)
+        # New .ts files rejected outside always-OK paths; modified .ts files allowed
+        if [[ "${status:0:1}" == "A" ]]; then
+          fail "New .ts file not permitted outside approved paths: $filepath (commit ${commit:0:8})"
+        fi
+        ;;
+
+      *)
+        fail "Unexpected file type in i18n commit: $filepath (status=${status:0:1}, commit ${commit:0:8})"
+        ;;
+
+    esac
+  done < <(git diff-tree --no-commit-id -r --name-status "$commit" 2>/dev/null || true)
+
+done < <(git log --format='%H' "$RANGE" 2>/dev/null || true)
+
+if [[ $violations -eq 0 ]]; then
+  echo "OK: all TSX changes are i18n-only"
+  exit 0
+else
+  echo "FAIL: $violations violation(s) — see FAIL lines above" >&2
+  exit 1
+fi

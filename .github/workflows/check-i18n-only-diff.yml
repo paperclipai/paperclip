@@ -1,0 +1,22 @@
+name: i18n-only diff check
+
+on:
+  push:
+    branches:
+      - 'vib-1171-2652-2760-3582-localization'
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  check-i18n-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check i18n-only diff
+        run: |
+          git fetch origin master --depth=1 2>/dev/null || true
+          bash scripts/check-i18n-only-diff.sh "origin/master..HEAD"
