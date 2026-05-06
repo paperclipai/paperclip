@@ -2265,7 +2265,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
-    if (!isUuidLike(runId)) return null;
     const safeForLegacyEncoding = !opts?.unsafeFullResultJson && await hasUnsafeTextProjectionDatabase();
     return db
       .select(
@@ -8832,7 +8831,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     },
 
-    getRun,
+    getRun: async (runId: string, opts?: { unsafeFullResultJson?: boolean }) => {
+      if (!isUuidLike(runId)) return null;
+      return getRun(runId, opts);
+    },
 
     getRunLogAccess,
 
