@@ -3,6 +3,8 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "codex_local";
 export const label = "Codex (local)";
 
+export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
+
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
