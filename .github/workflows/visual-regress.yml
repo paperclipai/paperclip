@@ -1,0 +1,43 @@
+name: visual-regress
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'ui/src/**'
+      - 'ui/src/locales/**'
+      - 'scripts/visual-regress.spec.ts'
+      - 'playwright.config.ts'
+  workflow_dispatch:
+
+jobs:
+  visual-regress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm --filter @paperclipai/ui build
+      - name: Start UI preview server
+        run: pnpm --filter @paperclipai/ui preview --host 127.0.0.1 --port 5173 &
+      - name: Wait for UI
+        run: npx wait-on http://127.0.0.1:5173 -t 60000
+      - name: Run visual regression
+        run: pnpm exec playwright test scripts/visual-regress.spec.ts
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regress-report
+          path: scripts/visual-regress-report/
+          retention-days: 30
