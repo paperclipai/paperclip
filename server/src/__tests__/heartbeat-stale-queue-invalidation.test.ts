@@ -36,7 +36,7 @@ const mockAdapterExecute = vi.hoisted(() =>
     signal: null,
     timedOut: false,
     errorMessage: null,
-    summary: "Stale-queue invalidation test run.",
+    summary: null,
     provider: "test",
     model: "test-model",
   })),
@@ -117,7 +117,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: "Stale-queue invalidation test run.",
+      summary: null,
       provider: "test",
       model: "test-model",
     }));
