@@ -18,6 +18,7 @@ import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  STALE_ACTIVE_RUN_EVALUATION_COOLDOWN_MS,
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
@@ -384,7 +385,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.snoozedUntil?.toISOString()).toBe(rearmAt.toISOString());
 
-    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: now })
+      .where(eq(issues.id, evaluationIssueId));
 
     const beforeRearm = await heartbeat.scanSilentActiveRuns({
       now: new Date(rearmAt.getTime() - 60_000),
@@ -546,5 +550,95 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("suppresses re-firing within cooldown after a closed suspicious evaluation", async () => {
+    const initialNow = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now: initialNow,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const initial = await heartbeat.scanSilentActiveRuns({ now: initialNow, companyId });
+    expect(initial.created).toBe(1);
+    const evaluationIssueId = initial.evaluationIssueIds[0]!;
+
+    const closedAt = new Date(initialNow.getTime() + 5 * 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: closedAt })
+      .where(eq(issues.id, evaluationIssueId));
+
+    const withinCooldown = new Date(closedAt.getTime() + STALE_ACTIVE_RUN_EVALUATION_COOLDOWN_MS - 60_000);
+    const duringCooldown = await heartbeat.scanSilentActiveRuns({ now: withinCooldown, companyId });
+    expect(duringCooldown).toMatchObject({ created: 0, cooldown: 1 });
+
+    const stillOnlyOne = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(stillOnlyOne).toHaveLength(1);
+    expect(stillOnlyOne[0]?.id).toBe(evaluationIssueId);
+
+    const afterCooldown = new Date(closedAt.getTime() + STALE_ACTIVE_RUN_EVALUATION_COOLDOWN_MS + 60_000);
+    const reopened = await heartbeat.scanSilentActiveRuns({ now: afterCooldown, companyId });
+    expect(reopened.created).toBe(1);
+    expect(reopened.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
+  });
+
+  it("escalation past the critical threshold bypasses the cooldown", async () => {
+    const initialNow = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now: initialNow,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const initial = await heartbeat.scanSilentActiveRuns({ now: initialNow, companyId });
+    expect(initial.created).toBe(1);
+    const evaluationIssueId = initial.evaluationIssueIds[0]!;
+
+    const closedAt = new Date(initialNow.getTime() + 5 * 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: closedAt })
+      .where(eq(issues.id, evaluationIssueId));
+
+    // Bring the run forward into the critical window so its silenceAge is >= critical threshold.
+    const criticalNow = new Date(closedAt.getTime() + 60_000);
+    const oldStarted = new Date(criticalNow.getTime() - ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS - 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ startedAt: oldStarted, processStartedAt: oldStarted, lastOutputAt: null })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const escalated = await heartbeat.scanSilentActiveRuns({ now: criticalNow, companyId });
+    expect(escalated.created).toBe(1);
+    expect(escalated.cooldown ?? 0).toBe(0);
+    expect(escalated.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
+  });
+
+  it("cooldown applies to cancelled evaluations as well as done", async () => {
+    const initialNow = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now: initialNow,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const initial = await heartbeat.scanSilentActiveRuns({ now: initialNow, companyId });
+    expect(initial.created).toBe(1);
+    const evaluationIssueId = initial.evaluationIssueIds[0]!;
+
+    const cancelledAt = new Date(initialNow.getTime() + 2 * 60_000);
+    await db
+      .update(issues)
+      .set({ status: "cancelled", updatedAt: cancelledAt })
+      .where(eq(issues.id, evaluationIssueId));
+
+    const withinCooldown = new Date(cancelledAt.getTime() + STALE_ACTIVE_RUN_EVALUATION_COOLDOWN_MS - 60_000);
+    const duringCooldown = await heartbeat.scanSilentActiveRuns({ now: withinCooldown, companyId });
+    expect(duringCooldown).toMatchObject({ created: 0, cooldown: 1 });
   });
 });
