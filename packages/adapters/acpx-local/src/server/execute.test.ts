@@ -56,7 +56,13 @@ function buildRuntime() {
   };
 }
 
-async function runExecutor(config: Record<string, unknown>) {
+async function runExecutor(
+  config: Record<string, unknown>,
+  options: {
+    context?: Record<string, unknown>;
+    executionTransport?: Record<string, unknown>;
+  } = {},
+) {
   const runtimeOptions: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
@@ -73,12 +79,13 @@ async function runExecutor(config: Record<string, unknown>) {
       id: "agent-1",
       companyId: "company-1",
     },
-    runtime: {},
-    config,
-    context: {},
-    onLog: async (stream: "stdout" | "stderr", text: string) => {
-      logs.push({ stream, text });
-    },
+      runtime: {},
+      config,
+      context: options.context ?? {},
+      executionTransport: options.executionTransport,
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
     onMeta: async (payload: unknown) => {
       meta.push(payload as Record<string, unknown>);
     },
@@ -255,6 +262,57 @@ describe("acpx_local runtime skill isolation", () => {
     expect(wrapper).not.toContain("old-key");
     expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
+  });
+
+  it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const workspaceDir = path.join(root, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    await runExecutor(
+      {
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      {
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+            strategy: "git_worktree",
+            workspaceId: "workspace-1",
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "main",
+            branchName: "feature/remote-acpx",
+            worktreePath: workspaceDir,
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+      },
+    );
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const envPath = path.join(
+      stateDir,
+      "wrappers",
+      wrappers.find((name) => name.endsWith(".env"))!,
+    );
+    const env = await fs.readFile(envPath, "utf8");
+
+    expect(env).toContain("PAPERCLIP_WORKSPACE_CWD='/remote/workspace'");
+    expect(env).not.toContain("PAPERCLIP_WORKSPACE_WORKTREE_PATH=");
   });
 
   it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
