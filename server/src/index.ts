@@ -98,7 +98,13 @@ export async function startServer(): Promise<StartedServer> {
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
-  
+  if (process.env.PAPERCLIP_ATTRIBUTION_COMMIT === undefined) {
+    process.env.PAPERCLIP_ATTRIBUTION_COMMIT = config.attributionCommit ? "true" : "false";
+  }
+  if (process.env.PAPERCLIP_ATTRIBUTION_PR === undefined) {
+    process.env.PAPERCLIP_ATTRIBUTION_PR = config.attributionPr ? "true" : "false";
+  }
+
   type MigrationSummary =
     | "skipped"
     | "already applied"
