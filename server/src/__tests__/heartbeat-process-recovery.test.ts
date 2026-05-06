@@ -2366,6 +2366,166 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 
+  it("caps explicit stranded recovery issue creation to one per source issue inside 1h", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const recoveryIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Recover stalled issue T-1",
+      status: "cancelled",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "stranded_issue_recovery",
+      originId: issueId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    const recoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
+    expect(recoveries.map((issue) => issue.id)).toEqual([recoveryIssueId]);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("1h recovery cap window");
+  });
+
+  it("pauses stranded recovery when a source issue exhausts the 24h automatic retry budget", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const now = new Date();
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 4 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        startedAt: new Date(now.getTime() - (index + 2) * 60_000),
+        finishedAt: new Date(now.getTime() - (index + 2) * 60_000 + 30_000),
+        createdAt: new Date(now.getTime() - (index + 2) * 60_000),
+        updatedAt: new Date(now.getTime() - (index + 2) * 60_000 + 30_000),
+        errorCode: "process_lost",
+        error: "retry failed",
+      })),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("consumed 5 automatic recovery attempts inside 24h");
+  });
+
+  it("backs off external rate-limit failures instead of retrying immediately", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "429 RESOURCE_EXHAUSTED: ChatGPT pro limit hit",
+    });
+    const recent = new Date(Date.now() - 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        createdAt: recent,
+        startedAt: recent,
+        finishedAt: recent,
+        updatedAt: recent,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("moves external rate-limit recovery to manual after the backoff ladder is exhausted", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "429 RESOURCE_EXHAUSTED: ChatGPT pro limit hit",
+    });
+    const now = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        createdAt: new Date(now.getTime() - 90 * 60_000),
+        startedAt: new Date(now.getTime() - 90 * 60_000),
+        finishedAt: new Date(now.getTime() - 90 * 60_000),
+        updatedAt: new Date(now.getTime() - 90 * 60_000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          source: "external_rate_limit_backoff",
+        },
+        startedAt: new Date(now.getTime() - (index + 2) * 90 * 60_000),
+        finishedAt: new Date(now.getTime() - (index + 2) * 90 * 60_000 + 30_000),
+        createdAt: new Date(now.getTime() - (index + 2) * 90 * 60_000),
+        updatedAt: new Date(now.getTime() - (index + 2) * 90 * 60_000 + 30_000),
+        errorCode: "openclaw_gateway_wait_error",
+        error: "429 RESOURCE_EXHAUSTED: ChatGPT pro limit hit",
+      })),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("5m → 15m → 1h → manual");
+  });
+
   it("skips reconcile when issue has an active routine with a future-scheduled cron trigger (external-dependency wake suppression)", async () => {
     // Reproduces DGG-5074 pattern: blocked issue + future cron wake = self-feedback loop.
     // The fix adds a guard in hasActiveExecutionPath that recognises a future routine trigger

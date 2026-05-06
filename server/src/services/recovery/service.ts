@@ -438,7 +438,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function evaluateExternalRateLimitBackoff(companyId: string, issueId: string, latestRun: LatestIssueRun, now = new Date()) {
-    if (!isUnsuccessfulTerminalIssueRun(latestRun) || !isExternalRateLimitRun(latestRun)) {
+    if (!latestRun || !isUnsuccessfulTerminalIssueRun(latestRun) || !isExternalRateLimitRun(latestRun)) {
       return { kind: "none" as const };
     }
 
@@ -1935,6 +1935,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (externalRateLimitBackoff.kind === "retry_now") {
+            if (await isInvocationBudgetBlocked(issue, agentId)) {
+              result.skipped += 1;
+              continue;
+            }
+
+            const queued = await enqueueStrandedIssueRecovery({
+              issueId: issue.id,
+              agentId,
+              reason: "issue_assignment_recovery",
+              retryReason: "assignment_recovery",
+              source: EXTERNAL_RATE_LIMIT_RECOVERY_REASON,
+              retryOfRunId: latestRun!.id,
+            });
+            if (queued) {
+              result.dispatchRequeued += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -2042,6 +2065,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (externalRateLimitBackoff.kind === "retry_now") {
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: EXTERNAL_RATE_LIMIT_RECOVERY_REASON,
+            retryOfRunId: latestRun!.id,
+          });
+          if (queued) {
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,
