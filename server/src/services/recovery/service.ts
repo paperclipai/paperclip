@@ -1836,7 +1836,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           assigneeUserId: issues.assigneeUserId,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issues)
         .where(
@@ -1966,6 +1969,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues,
+      now: new Date(),
     });
   }
 
