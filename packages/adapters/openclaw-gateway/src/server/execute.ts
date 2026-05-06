@@ -1143,7 +1143,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // but must not be sent in agentParams — OpenClaw's AgentParamsSchema
   // enforces additionalProperties: false and rejects unknown fields.
 
-  if (ctx.config.includePaperclipPayload) {
+  if (parseBoolean(ctx.config.includePaperclipPayload, false)) {
     agentParams.paperclip = paperclipPayload;
   }
 
