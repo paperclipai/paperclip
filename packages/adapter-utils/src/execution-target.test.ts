@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import {
   adapterExecutionTargetUsesManagedHome,
+  ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetShellCommand,
 } from "./execution-target.js";
 
@@ -157,5 +159,125 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         strictHostKeyChecking: true,
       },
     })).toBe(false);
+  });
+});
+
+describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("runs install commands for sandbox targets", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+      runId: "run-install",
+      target: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "e2b",
+        remoteCwd: "/remote/workspace",
+        runner,
+      },
+      installCommand: "npm install -g @google/gemini-cli",
+      cwd: "/local/workspace",
+      env: { PATH: "/usr/bin" },
+      timeoutSec: 30,
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "sh",
+      args: ["-lc", "npm install -g @google/gemini-cli"],
+      cwd: "/remote/workspace",
+      env: { PATH: "/usr/bin" },
+      timeoutMs: 30_000,
+    }));
+  });
+
+  it("skips install commands for SSH targets", async () => {
+    const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+      stdout: "",
+      stderr: "",
+    });
+
+    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+      runId: "run-skip",
+      target: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      installCommand: "npm install -g @google/gemini-cli",
+      cwd: "/tmp/local",
+      env: {},
+    });
+
+    expect(runSshCommandSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveAdapterExecutionTargetCwd", () => {
+  const sshTarget = {
+    kind: "remote" as const,
+    transport: "ssh" as const,
+    remoteCwd: "/srv/paperclip/workspace",
+    spec: {
+      host: "ssh.example.test",
+      port: 22,
+      username: "ssh-user",
+      remoteCwd: "/srv/paperclip/workspace",
+      remoteWorkspacePath: "/srv/paperclip/workspace",
+      privateKey: null,
+      knownHosts: null,
+      strictHostKeyChecking: true,
+    },
+  };
+
+  it("falls back to the remote cwd when no adapter cwd is configured", () => {
+    expect(resolveAdapterExecutionTargetCwd(sshTarget, "", "/Users/host/repo/server")).toBe(
+      "/srv/paperclip/workspace",
+    );
+    expect(resolveAdapterExecutionTargetCwd(sshTarget, "   ", "/Users/host/repo/server")).toBe(
+      "/srv/paperclip/workspace",
+    );
+    expect(resolveAdapterExecutionTargetCwd(sshTarget, null, "/Users/host/repo/server")).toBe(
+      "/srv/paperclip/workspace",
+    );
+  });
+
+  it("preserves an explicit adapter cwd when one is configured", () => {
+    expect(
+      resolveAdapterExecutionTargetCwd(
+        sshTarget,
+        "/srv/paperclip/custom-agent-dir",
+        "/Users/host/repo/server",
+      ),
+    ).toBe("/srv/paperclip/custom-agent-dir");
+  });
+
+  it("keeps the local fallback cwd for local targets", () => {
+    expect(resolveAdapterExecutionTargetCwd(null, "", "/Users/host/repo/server")).toBe(
+      "/Users/host/repo/server",
+    );
   });
 });

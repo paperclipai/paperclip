@@ -153,7 +153,7 @@ export function SwipeToArchive({
         data-inbox-row-surface
         className={cn(
           "relative will-change-transform",
-          selected ? "bg-zinc-100 dark:bg-zinc-800" : "bg-card",
+          selected ? "bg-zinc-100 dark:bg-zinc-800" : "bg-background",
         )}
         style={{
           transform: `translate3d(${offsetX}px, 0, 0)`,

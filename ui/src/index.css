@@ -442,7 +442,7 @@
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.45rem;
+  padding: 0 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
@@ -457,9 +457,7 @@
 
 /* Strip the MDXEditor's default inline-code styling from the text inside chips
    (the link label otherwise picks up a monospace font + gray tint). */
-.paperclip-mdxeditor-content a.paperclip-mention-chip,
 .paperclip-mdxeditor-content a.paperclip-mention-chip code,
-.paperclip-mdxeditor-content a.paperclip-project-mention-chip,
 .paperclip-mdxeditor-content a.paperclip-project-mention-chip code {
   font-family: inherit;
   background: none;
@@ -670,6 +668,53 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: none;
 }
 
+/* Copy-to-clipboard button on fenced code blocks */
+.paperclip-markdown-codeblock {
+  position: relative;
+}
+
+.paperclip-markdown-codeblock-copy {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: calc(var(--radius) - 4px);
+  border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
+  background-color: color-mix(in oklab, var(--muted) 92%, var(--background) 8%);
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+
+.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-copy,
+.paperclip-markdown-codeblock-copy:focus-visible,
+.paperclip-markdown-codeblock-copy[data-copied] {
+  opacity: 1;
+}
+
+.paperclip-markdown-codeblock-copy:hover {
+  background-color: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.paperclip-markdown-codeblock-copy[data-copied] {
+  color: var(--primary);
+}
+
+.paperclip-markdown-codeblock-copy[data-failed] {
+  color: var(--destructive);
+}
+
+.paperclip-markdown-codeblock-copy-label {
+  font-weight: 500;
+}
+
 /* Remove backtick pseudo-elements from inline code (prose default adds them) */
 .prose code::before,
 .prose code::after {
@@ -862,7 +907,7 @@ span.paperclip-project-mention-chip {
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.45rem;
+  padding: 0 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;

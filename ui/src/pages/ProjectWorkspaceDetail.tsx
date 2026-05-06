@@ -317,9 +317,9 @@ export function ProjectWorkspaceDetail() {
         request.action === "run"
           ? "Workspace job completed."
           : request.action === "stop"
-            ? "Workspace service stopped."
+            ? "Workspace service stopped. Issue execution is not paused."
             : request.action === "restart"
-              ? "Workspace service restarted."
+              ? "Workspace service restarted. Issue execution is not paused."
               : "Workspace service started.",
       );
     },

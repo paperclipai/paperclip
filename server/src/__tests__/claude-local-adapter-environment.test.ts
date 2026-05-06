@@ -180,4 +180,42 @@ describe("claude_local environment diagnostics", () => {
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
+
+  it("defaults remote probes to the environment remote cwd when adapter cwd is unset", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        command: process.execPath,
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "test-provider",
+        remoteCwd: "/srv/paperclip/workspace",
+        runner: {
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          }),
+        },
+      },
+      environmentName: "Linux Box",
+    });
+
+    expect(result.checks.some((check) => check.code === "claude_cwd_valid")).toBe(true);
+    expect(
+      result.checks.some(
+        (check) =>
+          check.code === "claude_cwd_valid" &&
+          check.message === "Working directory is valid: /srv/paperclip/workspace",
+      ),
+    ).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
+  });
 });
