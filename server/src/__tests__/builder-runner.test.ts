@@ -252,6 +252,67 @@ describe("builder runner", () => {
     expect(firstCall.messages[1]).toMatchObject({ role: "user" });
     expect(firstCall.messages.at(-1)).toMatchObject({ content: "message-99" });
   });
+
+  it("widens the transcript to the prior user turn when the bounded tail is tool-heavy", async () => {
+    const { state, store } = makeStore();
+    for (let i = 0; i < 20; i += 1) {
+      state.messages.push({
+        id: `msg-${i}`,
+        sessionId,
+        companyId,
+        sequence: i,
+        role: i === 19 ? "user" : i % 2 === 0 ? "assistant" : "tool",
+        content:
+          i === 19
+            ? { text: `message-${i}` }
+            : i % 2 === 0
+              ? { text: `message-${i}`, toolCalls: [{ id: `c${i}`, name: "tool", arguments: {} }] }
+              : { toolResult: { toolCallId: `c${i - 1}`, name: "tool", ok: true, result: { ok: true } } },
+        inputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        createdAt: new Date(),
+      });
+    }
+    for (let i = 20; i < 120; i += 1) {
+      state.messages.push({
+        id: `msg-${i}`,
+        sessionId,
+        companyId,
+        sequence: i,
+        role: i % 2 === 0 ? "assistant" : "tool",
+        content:
+          i % 2 === 0
+            ? { text: `message-${i}`, toolCalls: [{ id: `c${i}`, name: "tool", arguments: {} }] }
+            : { toolResult: { toolCallId: `c${i - 1}`, name: "tool", ok: true, result: { ok: true } } },
+        inputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        createdAt: new Date(),
+      });
+    }
+
+    mockExecuteBuilderTurn.mockResolvedValueOnce({
+      text: "trimmed",
+      toolCalls: [],
+      finishReason: "stop",
+      usage: { inputTokens: 3, outputTokens: 1, costCents: 0 },
+    });
+
+    await runBuilderTurn({
+      db: {} as unknown as Db,
+      adapterConfig: config,
+      sessionId,
+      companyId,
+      actor: { type: "user", id: "user-1" },
+      store: store as unknown as Parameters<typeof runBuilderTurn>[0]["store"],
+      toolCatalog: makeCatalog([]),
+    });
+
+    const firstCall = mockExecuteBuilderTurn.mock.calls[0]?.[0];
+    expect(firstCall.messages[1]).toMatchObject({ role: "user", content: "message-19" });
+    expect(firstCall.messages.at(-1)).toMatchObject({ content: JSON.stringify({ ok: true }) });
+  });
 });
 
 describe("builder tool registry", () => {

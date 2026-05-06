@@ -77,9 +77,23 @@ function trimTranscriptForProvider(
   persisted: PersistedBuilderMessage[],
 ): PersistedBuilderMessage[] {
   if (persisted.length <= BUILDER_MAX_TRANSCRIPT_MESSAGES) return persisted;
-  const tail = persisted.slice(-BUILDER_MAX_TRANSCRIPT_MESSAGES);
+  const tailStart = persisted.length - BUILDER_MAX_TRANSCRIPT_MESSAGES;
+  const tail = persisted.slice(tailStart);
   const firstUserIdx = tail.findIndex((message) => message.role === "user");
-  return firstUserIdx > 0 ? tail.slice(firstUserIdx) : tail;
+  if (firstUserIdx >= 0) {
+    return firstUserIdx > 0 ? tail.slice(firstUserIdx) : tail;
+  }
+
+  // If the bounded tail contains only assistant/tool messages, widen the
+  // window backward to the most recent user turn so providers never receive
+  // an orphaned tool-only suffix.
+  for (let i = tailStart - 1; i >= 0; i -= 1) {
+    if (persisted[i]?.role === "user") {
+      return persisted.slice(i);
+    }
+  }
+
+  return tail;
 }
 
 /**
