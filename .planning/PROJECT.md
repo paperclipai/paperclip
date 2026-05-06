@@ -12,26 +12,23 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability, v3.0 Native Distribution Readiness, v3.1 DevPlan Core Convergence, v3.2 Future Scope, v3.3 RT2 Engine Convergence, v3.4 RT2 Integration & API Alignment
+**완료된 마일스톤:** v2.0~v3.5 모두 완료 (v3.5 2026-05-05 shipped)
 
-**최근 완료 마일스톤:** v3.4 RT2 Integration & API Alignment (2026-05-04). Phase 84-88 complete. 11/13 requirements satisfied, 2/13 intentionally deferred (API-02/API-03). Audit passed.
+## Current Milestone: v3.6 — RT2 Engine Consolidation
 
-**현재 진행:** v3.5 Trello Advanced Parity planning started.
-
-## Current Milestone: v3.5 — Trello Advanced Parity
-
-**Goal:** Trello 고급 기능 parity를 필드 확장(checklist, due date, labels, members)과 automation/power-up 두 축으로 모두 포함해 RealTycoon2 업무 보드를 진짜 Trello 대안으로 완성한다.
+**Goal:** event/projector 시스템 하드닝, work entity 무결성 보장, board 성능 최적화, error handling/recovery 개선.
 
 **Target features:**
-- Checklist, Due date, Labels, Members 필드 parity — Phase 89
-- Automation/_power-up parity (Custom fields, Formula, Calendar, Board限额) — Phase 90-91
-- Phase 89-91 검증 및 클로저 — Phase 92
+- Event System Reliability (at-least-once delivery, projector replay, retry with backoff) — Phase 93
+- Work Entity Integrity (atomic transitions, auto-repair, indexed queries) — Phase 94
+- Board Performance Optimization (< 200ms overview, no N+1, indexed counts) — Phase 95
+- Error Handling & Recovery (retry UI, local auto-save, startup validation) — Phase 96
 
 ## Next Milestone Goals
 
-- v3.5: Trello advanced parity (필드 확장 + automation)
-- v3.4 shipped (2026-05-04). Phase 84-88 complete. Archive at milestones/v3.4-ROADMAP.md.
-- 다음 milestone planning을 시작합니다. `/gsd-new-milestone`으로 새 milestone을 정의하세요.
+- v3.6: RT2 Engine Consolidation (Phase 93-96)
+- v3.5 shipped (2026-05-05). Phase 89-92 complete.
+- Phase 93 plan부터 시작합니다. `/gsd-plan-phase 93`으로 plan을 작성하세요.
 
 ## Current State After v3.0
 

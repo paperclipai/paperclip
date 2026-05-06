@@ -20,6 +20,8 @@
 
 - [shipped] **v3.5 Trello Advanced Parity** - Phase 89-92 complete, 2026-05-05
 
+- [planned] **v3.6 RT2 Engine Consolidation** - Phase 93-96 in planning
+
 ## 완료됨
 
 <details>
@@ -592,6 +594,10 @@ Success criteria:
 | 90. Custom Field and Calendar View | v3.5 | 2/2 | Complete | 2026-05-05 |
 | 91. Trello Automation Power-up Parity 2 | v3.5 | 1/1 | Complete | 2026-05-05 |
 | 92. v3.5 Acceptance Gate | v3.5 | 0/0 | Complete | 2026-05-05 |
+| 93. Event System Reliability | v3.6 | 1/1 | Planning | — |
+| 94. Work Entity Integrity | v3.6 | 1/1 | Planning | — |
+| 95. Board Performance Optimization | v3.6 | 1/1 | Planning | — |
+| 96. Error Handling & Recovery | v3.6 | 1/1 | Planning | — |
 
 ## Archive
 
