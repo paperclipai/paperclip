@@ -61,6 +61,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
         });
@@ -202,6 +203,113 @@ async function execFileText(
         });
       },
     );
+  });
+}
+
+async function spawnText(
+  file: string,
+  args: string[],
+  options: {
+    stdin?: string;
+    timeout?: number;
+    maxBuffer?: number;
+  } = {},
+): Promise<SshCommandResult> {
+  return await new Promise<SshCommandResult>((resolve, reject) => {
+    const child = spawn(file, args, {
+      stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+    });
+
+    const maxBuffer = options.maxBuffer ?? 1024 * 128;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+
+    const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
+      if (settled) return;
+      settled = true;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      error.killed = timedOut;
+      reject(error);
+    };
+
+    const append = (
+      streamName: "stdout" | "stderr",
+      chunk: unknown,
+    ) => {
+      const text = String(chunk);
+      if (streamName === "stdout") {
+        stdout += text;
+      } else {
+        stderr += text;
+      }
+      if (Buffer.byteLength(stdout, "utf8") > maxBuffer || Buffer.byteLength(stderr, "utf8") > maxBuffer) {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`), {
+          code: null,
+        }));
+      }
+    };
+
+    let killEscalation: NodeJS.Timeout | null = null;
+    const timeout = options.timeout && options.timeout > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+          // Escalate to SIGKILL after a 5s grace window so a hung remote
+          // command that ignores SIGTERM cannot keep the child alive
+          // indefinitely.
+          killEscalation = setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // child may have already exited between the SIGTERM and the
+              // escalation — that's fine.
+            }
+          }, 5_000);
+          killEscalation.unref?.();
+        }, options.timeout)
+      : null;
+
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (killEscalation) clearTimeout(killEscalation);
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      append("stdout", chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      append("stderr", chunk);
+    });
+
+    child.on("error", (error) => {
+      clearTimers();
+      finishReject(Object.assign(error, { code: null }));
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimers();
+      if (settled) return;
+      settled = true;
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
+        stdout,
+        stderr,
+        code,
+        signal,
+        killed: timedOut,
+      }));
+    });
+
+    if (options.stdin != null && child.stdin) {
+      child.stdin.end(options.stdin);
+    }
   });
 }
 
@@ -721,6 +829,8 @@ export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
   options: {
+    env?: Record<string, string>;
+    stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
   } = {},
@@ -730,18 +840,45 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const envEntries = Object.entries(options.env ?? {})
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+    for (const [key] of envEntries) {
+      if (!isValidShellEnvKey(key)) {
+        throw new Error(`Invalid SSH environment variable key: ${key}`);
+      }
+    }
+
+    // Mirror buildSshSpawnTarget: source login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
+    // a profile re-exports. Without this, a remote profile that resets HOME
+    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
+    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const remoteScript = [
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      envArgs.length > 0
+        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
+        : `exec sh -c ${shellQuote(remoteCommand)}`,
+    ].join(" && ");
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      remoteCommand,
+      `sh -lc ${shellQuote(remoteScript)}`,
     );
 
-    return await execFileText("ssh", sshArgs, {
-      timeout: options.timeoutMs ?? 15_000,
-      maxBuffer: options.maxBuffer ?? 1024 * 128,
-    });
+    return options.stdin != null
+      ? await spawnText("ssh", sshArgs, {
+          stdin: options.stdin,
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: options.maxBuffer ?? 1024 * 128,
+        })
+      : await execFileText("ssh", sshArgs, {
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: options.maxBuffer ?? 1024 * 128,
+        });
   } finally {
     await cleanup();
   }
