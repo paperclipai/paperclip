@@ -56,6 +56,16 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 More detailed task structure TBD.
 
+### Deliverables
+
+When an agent produces a downloadable file artifact while working on a task, that artifact is recorded as an `issue_work_products` row of type `artifact`. The board surfaces these across the whole company in the **Work → Deliverables** tab:
+
+- A flat, downloadable list of every artifact, newest first.
+- Each row links to the **root** task the deliverable was originally requested from, and to the **child** task the agent actually worked on, plus the agent that generated it.
+- Opening a deliverable shows an inline preview where possible (image, PDF), a one-click download, and the full chain back to the originating task and the run that produced it.
+
+The Deliverables tab is read-only; per-task editing of work products still happens on the issue detail page.
+
 ## Principles
 
 1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Bizbox defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.
