@@ -617,6 +617,13 @@
       "when": 1777933347808,
       "tag": "0087_provider_rate_limit_blocks",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1778054400000,
+      "tag": "0079_provider_rate_limit_block_members",
+      "breakpoints": true
     }
   ]
 }
