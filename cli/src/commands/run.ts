@@ -83,7 +83,11 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
-  await checkStartedServerBoardAuthCache(startedServer.apiUrl);
+  try {
+    await checkStartedServerBoardAuthCache(startedServer.apiUrl);
+  } catch (err) {
+    p.log.warn(`Could not check cached CLI board auth for ${startedServer.apiUrl}: ${formatError(err)}`);
+  }
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
@@ -122,7 +126,13 @@ async function checkStartedServerBoardAuthCache(apiBase: string): Promise<void> 
     return;
   }
 
-  p.log.warn(`Could not verify cached CLI board auth for ${apiBase}: ${result.statusCode}: ${result.message}`);
+  if (result.status === "error") {
+    p.log.warn(`Could not verify cached CLI board auth for ${apiBase}: ${result.statusCode}: ${result.message}`);
+    return;
+  }
+
+  const _exhaustive: never = result;
+  return _exhaustive;
 }
 
 function resolveBootstrapInviteBaseUrl(
