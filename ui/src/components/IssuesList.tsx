@@ -41,7 +41,7 @@ import {
   resolveIssueWorkspaceName,
   type InboxIssueColumn,
 } from "../lib/inbox";
-import { cn } from "../lib/utils";
+import { cn, formatDurationMs, formatTokens } from "../lib/utils";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -114,7 +114,7 @@ export type IssueSortField = "status" | "priority" | "title" | "created" | "upda
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   collapsedGroups: string[];
@@ -364,6 +364,12 @@ interface IssuesListProps {
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
   showProgressSummary?: boolean;
+  /**
+   * When set together with `showProgressSummary`, the progress strip fetches
+   * the recursive cost-summary for this parent issue and renders aggregate
+   * tokens + wall-clock runtime for every run in the tree.
+   */
+  parentIssueIdForCostSummary?: string;
   enableRoutineVisibilityFilter?: boolean;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
@@ -439,9 +445,11 @@ function IssueSearchInput({
 function SubIssueProgressSummaryStrip({
   summary,
   issueLinkState,
+  parentIssueIdForCostSummary,
 }: {
   summary: SubIssueProgressSummary;
   issueLinkState?: unknown;
+  parentIssueIdForCostSummary?: string;
 }) {
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
@@ -450,6 +458,21 @@ function SubIssueProgressSummaryStrip({
   const statusEntries = ISSUE_STATUSES
     .map((status) => ({ status, count: summary.countsByStatus[status] ?? 0 }))
     .filter((entry) => entry.count > 0);
+
+  // Refresh fast enough that the runtime ticks up while a sub-issue is still
+  // running, but slow enough not to hammer the recursive CTE on idle trees.
+  const hasInProgress = summary.inProgressCount > 0;
+  const { data: costSummary } = useQuery({
+    queryKey: queryKeys.issues.costSummary(parentIssueIdForCostSummary ?? "pending", { excludeRoot: true }),
+    queryFn: () => issuesApi.getCostSummary(parentIssueIdForCostSummary!, { excludeRoot: true }),
+    enabled: !!parentIssueIdForCostSummary,
+    refetchInterval: hasInProgress ? 5_000 : false,
+  });
+
+  const totalTokens = costSummary
+    ? costSummary.inputTokens + costSummary.cachedInputTokens + costSummary.outputTokens
+    : 0;
+  const showCostSummary = !!costSummary && (costSummary.runCount > 0 || totalTokens > 0);
 
   return (
     <div className="border border-border bg-background p-3">
@@ -465,6 +488,23 @@ function SubIssueProgressSummaryStrip({
             <span className="text-muted-foreground">
               {summary.blockedCount} blocked
             </span>
+            {showCostSummary && (
+              <>
+                <span
+                  className="text-muted-foreground tabular-nums"
+                  title={`${costSummary.runCount.toLocaleString()} run${
+                    costSummary.runCount === 1 ? "" : "s"
+                  } across ${costSummary.issueCount} sub-issue${
+                    costSummary.issueCount === 1 ? "" : "s"
+                  }`}
+                >
+                  {formatTokens(totalTokens)} tokens
+                </span>
+                <span className="text-muted-foreground tabular-nums">
+                  {formatDurationMs(costSummary.runtimeMs)} runtime
+                </span>
+              </>
+            )}
           </div>
           <div
             role="progressbar"
@@ -536,6 +576,7 @@ export function IssuesList({
   createIssueLabel,
   defaultSortField,
   showProgressSummary = false,
+  parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
@@ -996,6 +1037,22 @@ export function IssuesList({
           items: groups[key]!,
         }));
     }
+    if (viewState.groupBy === "project") {
+      const groups = groupBy(filtered, (issue) => issue.projectId ?? "__no_project");
+      return Object.keys(groups)
+        .sort((a, b) => {
+          if (a === "__no_project") return 1;
+          if (b === "__no_project") return -1;
+          const labelA = projectById.get(a)?.name ?? a;
+          const labelB = projectById.get(b)?.name ?? b;
+          return labelA.localeCompare(labelB);
+        })
+        .map((key) => ({
+          key,
+          label: key === "__no_project" ? "No Project" : (projectById.get(key)?.name ?? key.slice(0, 8)),
+          items: groups[key]!,
+        }));
+    }
     if (viewState.groupBy === "parent") {
       const groups = groupBy(filtered, (i) => i.parentId ?? "__no_parent");
       return Object.keys(groups)
@@ -1036,6 +1093,7 @@ export function IssuesList({
     workspaceNameMap,
     issueTitleMap,
     companyUserLabelMap,
+    projectById,
   ]);
 
   useEffect(() => {
@@ -1131,6 +1189,7 @@ export function IssuesList({
         if (groupKey.startsWith("__user:")) defaults.assigneeUserId = groupKey.slice("__user:".length);
         else defaults.assigneeAgentId = groupKey;
       }
+      else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
       else if (viewState.groupBy === "parent" && groupKey !== "__no_parent") {
         const parentIssue = issueById.get(groupKey);
         if (parentIssue) Object.assign(defaults, buildSubIssueDefaultsForViewer(parentIssue, currentUserId));
@@ -1175,7 +1234,11 @@ export function IssuesList({
   return (
     <div ref={rootRef} className="space-y-4">
       {progressSummary ? (
-        <SubIssueProgressSummaryStrip summary={progressSummary} issueLinkState={issueLinkState} />
+        <SubIssueProgressSummaryStrip
+          summary={progressSummary}
+          issueLinkState={issueLinkState}
+          parentIssueIdForCostSummary={parentIssueIdForCostSummary}
+        />
       ) : null}
 
       {/* Toolbar */}
@@ -1307,6 +1370,7 @@ export function IssuesList({
                     ["status", "Status"],
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
+                    ["project", "Project"],
                     ["workspace", "Workspace"],
                     ["parent", "Parent Issue"],
                     ["none", "None"],

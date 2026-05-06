@@ -411,6 +411,86 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("applies project and execution workspace defaults for normal new issues", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        workspaces: [
+          {
+            id: "project-workspace-1",
+            name: "Primary",
+            isPrimary: true,
+          },
+          {
+            id: "project-workspace-2",
+            name: "Isolated checkout",
+            isPrimary: false,
+          },
+        ],
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "PAP-100",
+        mode: "isolated_workspace",
+        status: "active",
+        branchName: "feature/pap-100",
+        cwd: "/tmp/workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      title: "Follow-up issue",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-2",
+      executionWorkspaceId: "workspace-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).toContain("New issue");
+    expect(container.textContent).not.toContain("New sub-issue");
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Reusing PAP-100");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Follow-up issue",
+        projectId: "project-1",
+        projectWorkspaceId: "project-workspace-2",
+        executionWorkspaceId: "workspace-1",
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: {
+          mode: "isolated_workspace",
+        },
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("submits the latest locally typed title and description", async () => {
     let resolveProjects: (projects: Array<{
       id: string;

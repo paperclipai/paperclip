@@ -108,6 +108,11 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
   processGroupId: number | null;
 }
 
+type StoppedRuntimeServiceReuseCandidate = {
+  id: string;
+  port: number | null;
+};
+
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
@@ -1815,6 +1820,33 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
     });
 }
 
+async function findStoppedRuntimeServiceReuseCandidate(input: {
+  db?: Db;
+  companyId: string;
+  reuseKey: string | null;
+}): Promise<StoppedRuntimeServiceReuseCandidate | null> {
+  if (!input.db || !input.reuseKey) return null;
+  const row = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      port: workspaceRuntimeServices.port,
+    })
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.companyId, input.companyId),
+        eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
+        eq(workspaceRuntimeServices.provider, "local_process"),
+        eq(workspaceRuntimeServices.status, "stopped"),
+      ),
+    )
+    .orderBy(desc(workspaceRuntimeServices.updatedAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  return row ?? null;
+}
+
 function clearIdleTimer(record: RuntimeServiceRecord) {
   if (!record.idleTimer) return;
   clearTimeout(record.idleTimer);
@@ -1927,9 +1959,20 @@ async function startLocalRuntimeService(input: {
   const serviceIdentityFingerprint = input.reuseKey ?? envFingerprint;
   const explicitPort = identity.explicitPort;
   const identityPort = identity.identityPort;
+  const stoppedReuseCandidate = await findStoppedRuntimeServiceReuseCandidate({
+    db: input.db,
+    companyId: input.agent.companyId,
+    reuseKey: input.reuseKey,
+  });
+  const reusableStoppedPort =
+    asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port
+      ? (await readLocalServicePortOwner(stoppedReuseCandidate.port))
+        ? null
+        : stoppedReuseCandidate.port
+      : null;
   const port =
     asString(portConfig.type, "") === "auto"
-      ? await allocatePort()
+      ? (reusableStoppedPort ?? await allocatePort())
       : explicitPort > 0
         ? explicitPort
         : null;
@@ -2073,7 +2116,7 @@ async function startLocalRuntimeService(input: {
   }
 
   const record: RuntimeServiceRecord = {
-    id: randomUUID(),
+    id: stoppedReuseCandidate?.id ?? randomUUID(),
     companyId: input.agent.companyId,
     projectId: input.workspace.projectId,
     projectWorkspaceId: input.workspace.workspaceId,

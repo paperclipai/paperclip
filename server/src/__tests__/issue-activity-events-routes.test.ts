@@ -109,7 +109,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(db: unknown = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -126,7 +126,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -265,6 +265,88 @@ describe("issue activity event routes", () => {
       );
     });
   }, 15_000);
+
+  it("logs successful_run_handoff_resolved when an in_progress issue transitions to done with a pending required handoff", async () => {
+    const issue = { ...makeIssue(), status: "in_progress" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const handoffActivityRow = {
+      entityId: issue.id,
+      action: "issue.successful_run_handoff_required",
+      agentId: issue.assigneeAgentId,
+      runId: "run-1",
+      details: {
+        sourceRunId: "run-1",
+        correctiveRunId: "run-2",
+      },
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+    };
+    const dbMock = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [handoffActivityRow],
+          }),
+        }),
+      }),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.successful_run_handoff_resolved",
+          entityId: issue.id,
+          details: expect.objectContaining({
+            identifier: "PAP-580",
+            sourceRunId: "run-1",
+            correctiveRunId: "run-2",
+            resolvedByStatus: "done",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not log successful_run_handoff_resolved when status stays in_progress", async () => {
+    const issue = { ...makeIssue(), status: "in_progress" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const dbMock = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [],
+          }),
+        }),
+      }),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ title: "Updated title" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.successful_run_handoff_resolved" }),
+    );
+  });
 
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {
     const existingPolicy = normalizeIssueExecutionPolicy({
