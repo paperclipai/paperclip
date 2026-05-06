@@ -160,6 +160,148 @@ describe("heartbeat comment wake batching", () => {
     await tempDb?.cleanup();
   });
 
+  it("persists sanitized context for newly queued generic timer wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "scheduler",
+      triggerDetail: "system",
+      reason: "interval_elapsed",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        resumeFromRunId: "run-1",
+        resumeSessionDisplayId: "session-1",
+        resumeSessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/stale-workspace",
+        },
+      },
+    });
+
+    expect(run).not.toBeNull();
+
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0]);
+
+    expect(persistedRun?.contextSnapshot).toMatchObject({
+      source: "scheduler",
+      reason: "interval_elapsed",
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      forceFreshSession: true,
+    });
+    expect((persistedRun?.contextSnapshot as Record<string, unknown>).resumeFromRunId).toBeUndefined();
+    expect((persistedRun?.contextSnapshot as Record<string, unknown>).resumeSessionDisplayId).toBeUndefined();
+    expect((persistedRun?.contextSnapshot as Record<string, unknown>).resumeSessionParams).toBeUndefined();
+  });
+
+  it("persists sanitized context when coalescing generic timer wakes into a queued run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "scheduler",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        resumeFromRunId: "run-old",
+        resumeSessionDisplayId: "session-old",
+        resumeSessionParams: {
+          sessionId: "session-old",
+          cwd: "/tmp/stale-workspace",
+        },
+      },
+    });
+
+    const mergedRun = await heartbeat.wakeup(agentId, {
+      source: "scheduler",
+      triggerDetail: "system",
+      reason: "interval_elapsed",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        resumeFromRunId: "run-new",
+        resumeSessionDisplayId: "session-new",
+        resumeSessionParams: {
+          sessionId: "session-new",
+          cwd: "/tmp/other-stale-workspace",
+        },
+      },
+    });
+
+    expect(mergedRun?.id).toBe(runId);
+
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+
+    expect(persistedRun?.contextSnapshot).toMatchObject({
+      source: "scheduler",
+      reason: "interval_elapsed",
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      forceFreshSession: true,
+    });
+    expect((persistedRun?.contextSnapshot as Record<string, unknown>).resumeFromRunId).toBeUndefined();
+    expect((persistedRun?.contextSnapshot as Record<string, unknown>).resumeSessionDisplayId).toBeUndefined();
+    expect((persistedRun?.contextSnapshot as Record<string, unknown>).resumeSessionParams).toBeUndefined();
+  });
+
   it("defers approval-approved wakes for a running issue so the assignee resumes after the run", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

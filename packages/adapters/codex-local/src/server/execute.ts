@@ -530,7 +530,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
   const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
-  const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
+  const legacySchedulerTimerWake =
+    asString(context.source, "") === "scheduler" &&
+    asString(context.reason, "") === "interval_elapsed";
+  const timerWakeRequiresFreshSession =
+    context.forceFreshSession === true ||
+    wakeReason === "heartbeat_timer" ||
+    asString(context.wakeSource, "") === "timer" ||
+    legacySchedulerTimerWake;
+  const forceFreshSession =
+    timerWakeRequiresFreshSession || fallbackModeUsesFreshSession(codexTransientFallbackMode);
   const sessionId = canResumeSession && !forceFreshSession ? runtimeSessionId : null;
   if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(

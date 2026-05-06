@@ -4,6 +4,7 @@ import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-lo
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  applyFreshSessionPolicyToWakeContext,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -13,7 +14,9 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveExplicitResumeSessionForRun,
   resolveRuntimeSessionParamsForWorkspace,
+  resolveTaskSessionWorkspaceFallbackForRun,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -124,6 +127,92 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("resolveTaskSessionWorkspaceFallbackForRun", () => {
+  it("reuses the saved task-session workspace when allowed and present", async () => {
+    const result = await resolveTaskSessionWorkspaceFallbackForRun({
+      agentId: "agent-123",
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: process.cwd(),
+        workspaceId: "workspace-1",
+        repoUrl: "https://example.com/repo.git",
+        repoRef: "main",
+      },
+      resolvedProjectId: null,
+      workspaceHints: [],
+      allowTaskSessionWorkspace: true,
+    });
+
+    expect(result.source).toBe("task_session");
+    expect(result.cwd).toBe(process.cwd());
+    expect(result.workspaceId).toBe("workspace-1");
+  });
+
+  it("ignores the saved task-session workspace for timer/fresh-session wakes", async () => {
+    const result = await resolveTaskSessionWorkspaceFallbackForRun({
+      agentId: "agent-123",
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: process.cwd(),
+        workspaceId: "workspace-1",
+      },
+      resolvedProjectId: null,
+      workspaceHints: [],
+      allowTaskSessionWorkspace: false,
+    });
+
+    expect(result.source).toBe("agent_home");
+    expect(result.cwd).toBe(resolveDefaultAgentWorkspaceDir("agent-123"));
+    expect(result.warnings).toContain(
+      `Saved session workspace "${process.cwd()}" is being ignored for this run. Using fallback workspace "${resolveDefaultAgentWorkspaceDir("agent-123")}" instead.`,
+    );
+  });
+});
+
+describe("resolveExplicitResumeSessionForRun", () => {
+  it("preserves explicit resume session params when resume is allowed", () => {
+    const result = resolveExplicitResumeSessionForRun({
+      contextSnapshot: {
+        resumeSessionDisplayId: "session-1",
+        resumeSessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/workspace",
+        },
+      },
+      sessionCodec: codexSessionCodec,
+      allowResume: true,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-1",
+      sessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/workspace",
+      },
+    });
+  });
+
+  it("drops explicit resume session params for timer/fresh-session wakes", () => {
+    const result = resolveExplicitResumeSessionForRun({
+      contextSnapshot: {
+        resumeFromRunId: "run-1",
+        resumeSessionDisplayId: "session-1",
+        resumeSessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/workspace",
+        },
+      },
+      sessionCodec: codexSessionCodec,
+      allowResume: false,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: null,
+      sessionParams: null,
+    });
   });
 });
 
@@ -299,8 +388,34 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
   });
 
-  it("preserves session context on timer heartbeats", () => {
-    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
+  it("resets session context on timer heartbeats", () => {
+    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(true);
+  });
+
+  it("resets session context on timer heartbeats even with an explicit task key", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeSource: "timer",
+        taskKey: "issue-789",
+      }),
+    ).toBe(true);
+  });
+
+  it("resets session context on legacy scheduler timer wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        source: "scheduler",
+        reason: "interval_elapsed",
+      }),
+    ).toBe(true);
+  });
+
+  it("resets session context when wakeReason is heartbeat_timer", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "heartbeat_timer",
+      }),
+    ).toBe(true);
   });
 
   it("preserves session context on manual on-demand invokes by default", () => {
@@ -358,6 +473,55 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("applyFreshSessionPolicyToWakeContext", () => {
+  it("forces a fresh session and strips resume fields for timer wakes", () => {
+    const result = applyFreshSessionPolicyToWakeContext({
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      resumeFromRunId: "run-1",
+      resumeSessionDisplayId: "session-1",
+      resumeSessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/workspace",
+      },
+    });
+
+    expect(result).toEqual({
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      forceFreshSession: true,
+    });
+  });
+
+  it("forces a fresh session for legacy scheduler timer wakes", () => {
+    const result = applyFreshSessionPolicyToWakeContext({
+      source: "scheduler",
+      reason: "interval_elapsed",
+      resumeSessionDisplayId: "session-1",
+    });
+
+    expect(result).toEqual({
+      source: "scheduler",
+      reason: "interval_elapsed",
+      forceFreshSession: true,
+    });
+  });
+
+  it("preserves resume fields for comment wakes that may continue an active session", () => {
+    const result = applyFreshSessionPolicyToWakeContext({
+      wakeReason: "issue_commented",
+      resumeFromRunId: "run-1",
+      resumeSessionDisplayId: "session-1",
+    });
+
+    expect(result).toEqual({
+      wakeReason: "issue_commented",
+      resumeFromRunId: "run-1",
+      resumeSessionDisplayId: "session-1",
+    });
+  });
+});
+
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -367,11 +531,11 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ issueId: "issue-456" }, null)).toBe("issue-456");
   });
 
-  it("returns __heartbeat__ for timer wakes with no explicit key", () => {
-    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBe("__heartbeat__");
+  it("does not invent a synthetic key for timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBeNull();
   });
 
-  it("prefers explicit key over heartbeat fallback even on timer wakes", () => {
+  it("prefers explicit key on timer wakes", () => {
     expect(
       deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer", taskKey: "issue-789" }, null),
     ).toBe("issue-789");
