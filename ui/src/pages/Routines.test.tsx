@@ -254,6 +254,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     variables: [],
     latestRevisionId: null,
     latestRevisionNumber: 1,
+    preGate: null,
     createdByAgentId: null,
     createdByUserId: null,
     updatedByAgentId: null,
