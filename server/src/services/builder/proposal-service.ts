@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import type { BuilderHandoffTarget } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../activity-log.js";
 import { builderProposalStore } from "./proposal-store.js";
@@ -18,6 +19,21 @@ import type { ApplierContext } from "./applier-types.js";
 
 export function proposalService(db: Db) {
   const store = builderProposalStore(db);
+
+  function entityHandoff(entityType: string, entityId: string): BuilderHandoffTarget | null {
+    switch (entityType) {
+      case "issue":
+        return { kind: "entity", label: "Open issue", href: `/issues/${entityId}`, entityType, entityId };
+      case "goal":
+        return { kind: "entity", label: "Open goal", href: `/goals/${entityId}`, entityType, entityId };
+      case "routine":
+        return { kind: "entity", label: "Open routine", href: `/routines/${entityId}`, entityType, entityId };
+      case "company":
+        return { kind: "entity", label: "Open company settings", href: "/company/settings", entityType, entityId };
+      default:
+        return null;
+    }
+  }
 
   function findApplier(kind: string, catalog: Map<string, BuilderTool>): MutationTool | null {
     for (const tool of catalog.values()) {
@@ -127,7 +143,21 @@ export function proposalService(db: Db) {
             logger.warn({ logErr, proposalId }, "builder apply: activity log failed"),
           );
         }
-        return applied;
+        if (wonRace && result && typeof result.entityType === "string" && typeof result.entityId === "string") {
+          const handoff = entityHandoff(result.entityType, result.entityId);
+          if (handoff) {
+            return {
+              ...applied,
+              handoff,
+              entityType: result.entityType,
+              entityId: result.entityId,
+              applyResult: result,
+            };
+          }
+        }
+        return wonRace && result
+          ? { ...applied, applyResult: result }
+          : applied;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "Apply failed";
         logger.warn(

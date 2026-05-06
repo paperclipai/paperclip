@@ -82,7 +82,12 @@ afterEach(() => {
 
 describe("proposalService", () => {
   it("dispatches apply() to the matching mutation tool", async () => {
-    const apply = vi.fn(async () => ({ summary: "ran", entityId: "ent-1", entityType: "thing" }));
+    const apply = vi.fn(async () => ({
+      summary: "ran",
+      entityId: "ent-1",
+      entityType: "thing",
+      details: { surfaced: true },
+    }));
     const tool = defineMutationTool({
       name: "do_thing",
       description: "x",
@@ -114,6 +119,7 @@ describe("proposalService", () => {
     expect(apply).toHaveBeenCalledOnce();
     expect((apply.mock.calls[0][0] as Record<string, unknown>).foo).toBe("bar");
     expect((result as { status: string } | null)?.status).toBe("applied");
+    expect((result as { applyResult?: { details?: { surfaced?: boolean } } }).applyResult?.details?.surfaced).toBe(true);
   });
 
   it("marks the proposal failed when no matching tool exists", async () => {

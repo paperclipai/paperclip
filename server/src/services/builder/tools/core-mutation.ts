@@ -1,8 +1,18 @@
 import {
+  addApprovalCommentSchema,
+  createCompanyInviteSchema,
+  createProjectSchema,
+  createRoutineTriggerSchema,
+  runRoutineSchema,
+  updateAgentSchema,
+  updateProjectSchema,
+  updateRoutineTriggerSchema,
+} from "@paperclipai/shared";
+import {
   agentService,
-  budgetService,
-  companyService,
+  approvalService,
   goalService,
+  inviteService,
   issueService,
   projectService,
   routineService,
@@ -12,56 +22,239 @@ import { logger } from "../../../middleware/logger.js";
 import type { BuilderTool } from "../types.js";
 import { defineMutationTool } from "./mutation-tool.js";
 
-/**
- * Phase 1 + Phase 2 mutation tools.
- *
- * All of these create a `builder_proposal` rather than mutating directly.
- * The actual write happens in the applier when the operator clicks Apply
- * (or, for governed primitives in Phase 2, when the linked approval is
- * decided through the normal Approvals UI).
- *
- * Schemas are intentionally permissive — service-layer validation is the
- * real gate, and the model gets a clear `error` back if it sends garbage.
- */
+const stringOrNull = (value: unknown) =>
+  typeof value === "string" && value.trim() ? value.trim() : null;
 
-const stringOrNull = (v: unknown) =>
-  typeof v === "string" && v.trim() ? v.trim() : null;
-const nonEmptyString = (v: unknown, field: string): string => {
-  const s = stringOrNull(v);
-  if (!s) throw new Error(`Missing required field: ${field}`);
-  return s;
+const nonEmptyString = (value: unknown, field: string): string => {
+  const parsed = stringOrNull(value);
+  if (!parsed) throw new Error(`Missing required field: ${field}`);
+  return parsed;
 };
 
-// ---------------------------------------------------------------------------
-// Phase 1 — direct-apply mutations (proposal, but no separate approval row)
-// ---------------------------------------------------------------------------
+function finiteNonNegativeInteger(value: unknown, field: string) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${field} must be a non-negative number`);
+  }
+  return Math.floor(value);
+}
 
-const createRoutine: BuilderTool = defineMutationTool({
-  name: "create_routine",
-  description:
-    "Propose a new routine (recurring task). Creates a pending proposal — the operator must Apply it before the routine is created.",
+async function logBuilderAction(
+  ctx: { db: any; companyId: string; decidedByUserId: string | null },
+  input: {
+    action: string;
+    entityType: string;
+    entityId: string;
+    details?: Record<string, unknown> | null;
+  },
+) {
+  await logActivity(ctx.db, {
+    companyId: ctx.companyId,
+    actorType: "user",
+    actorId: ctx.decidedByUserId ?? "board",
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    details: input.details ?? null,
+  }).catch((logErr) =>
+    logger.warn({ logErr, entityId: input.entityId, action: input.action }, "builder activity log failed"),
+  );
+}
+
+async function assertGoalIdsBelongToCompany(
+  db: any,
+  companyId: string,
+  goalIds: string[] | undefined,
+) {
+  for (const goalId of goalIds ?? []) {
+    const goal = await goalService(db).getById(goalId);
+    if (!goal || goal.companyId !== companyId) {
+      throw new Error("Goal not found");
+    }
+  }
+}
+
+async function assertProjectBelongsToCompany(db: any, companyId: string, projectId: string | null) {
+  if (!projectId) return;
+  const project = await projectService(db).getById(projectId);
+  if (!project || project.companyId !== companyId) {
+    throw new Error("Project not found");
+  }
+}
+
+async function assertAgentBelongsToCompany(db: any, companyId: string, agentId: string | null, label = "Agent") {
+  if (!agentId) return;
+  const agent = await agentService(db).getById(agentId);
+  if (!agent || agent.companyId !== companyId) {
+    throw new Error(`${label} not found`);
+  }
+}
+
+const addIssueComment: BuilderTool = {
+  name: "add_issue_comment",
+  description: "Add a durable comment to an issue immediately.",
   parametersSchema: {
     type: "object",
     properties: {
-      title: { type: "string", description: "Routine title (1-200 chars)." },
+      issueId: { type: "string" },
+      body: { type: "string" },
+    },
+    required: ["issueId", "body"],
+    additionalProperties: false,
+  },
+  requiresApproval: false,
+  capability: "issue.comments.create",
+  source: "core",
+  async run(params, ctx) {
+    const issueId = nonEmptyString(params.issueId, "issueId");
+    const body = nonEmptyString(params.body, "body");
+    const issue = await issueService(ctx.db).getById(issueId);
+    if (!issue || issue.companyId !== ctx.companyId) {
+      return { ok: false, error: "Issue not found" };
+    }
+    const comment = await issueService(ctx.db).addComment(issue.id, body, {
+      userId: ctx.actor.type === "user" ? ctx.actor.id ?? undefined : undefined,
+    });
+    await logActivity(ctx.db, {
+      companyId: ctx.companyId,
+      actorType: "user",
+      actorId: ctx.actor.id ?? "board",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { commentId: comment.id },
+    }).catch((logErr) =>
+      logger.warn({ logErr, issueId: issue.id }, "add_issue_comment: activity log failed"),
+    );
+    return {
+      ok: true,
+      result: comment,
+    };
+  },
+};
+
+const addApprovalComment: BuilderTool = {
+  name: "add_approval_comment",
+  description: "Add a durable comment to an approval immediately.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      approvalId: { type: "string" },
+      body: { type: "string" },
+    },
+    required: ["approvalId", "body"],
+    additionalProperties: false,
+  },
+  requiresApproval: false,
+  capability: "approval.comments.create",
+  source: "core",
+  async run(params, ctx) {
+    const approvalId = nonEmptyString(params.approvalId, "approvalId");
+    const parsed = addApprovalCommentSchema.parse({ body: params.body });
+    const approval = await approvalService(ctx.db).getById(approvalId);
+    if (!approval || approval.companyId !== ctx.companyId) {
+      return { ok: false, error: "Approval not found" };
+    }
+    const comment = await approvalService(ctx.db).addComment(approval.id, parsed.body, {
+      userId: ctx.actor.type === "user" ? ctx.actor.id ?? undefined : undefined,
+    });
+    await logActivity(ctx.db, {
+      companyId: ctx.companyId,
+      actorType: "user",
+      actorId: ctx.actor.id ?? "board",
+      action: "approval.comment_added",
+      entityType: "approval",
+      entityId: approval.id,
+      details: { commentId: comment.id },
+    }).catch((logErr) =>
+      logger.warn({ logErr, approvalId: approval.id }, "add_approval_comment: activity log failed"),
+    );
+    return {
+      ok: true,
+      result: comment,
+    };
+  },
+};
+
+const runRoutine: BuilderTool = {
+  name: "run_routine",
+  description: "Trigger a routine immediately.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      routineId: { type: "string" },
+      triggerId: { type: "string" },
+      payload: { type: "object" },
+      variables: { type: "object" },
+      projectId: { type: "string" },
+      assigneeAgentId: { type: "string" },
+      idempotencyKey: { type: "string" },
+      source: { type: "string", enum: ["manual", "api"] },
+      executionWorkspaceId: { type: "string" },
+      executionWorkspacePreference: { type: "string" },
+      executionWorkspaceSettings: { type: "object" },
+    },
+    required: ["routineId"],
+    additionalProperties: false,
+  },
+  requiresApproval: false,
+  capability: "routines.write",
+  source: "core",
+  async run(params, ctx) {
+    const routineId = nonEmptyString(params.routineId, "routineId");
+    const routine = await routineService(ctx.db).get(routineId);
+    if (!routine || routine.companyId !== ctx.companyId) {
+      return { ok: false, error: "Routine not found" };
+    }
+    const parsed = runRoutineSchema.parse({
+      triggerId: params.triggerId,
+      payload: params.payload,
+      variables: params.variables,
+      projectId: params.projectId,
+      assigneeAgentId: params.assigneeAgentId,
+      idempotencyKey: params.idempotencyKey,
+      source: params.source,
+      executionWorkspaceId: params.executionWorkspaceId,
+      executionWorkspacePreference: params.executionWorkspacePreference,
+      executionWorkspaceSettings: params.executionWorkspaceSettings,
+    });
+    const run = await routineService(ctx.db).runRoutine(routine.id, parsed);
+    await logActivity(ctx.db, {
+      companyId: ctx.companyId,
+      actorType: "user",
+      actorId: ctx.actor.id ?? "board",
+      action: "routine.run_triggered",
+      entityType: "routine_run",
+      entityId: run.id,
+      details: { routineId: routine.id, source: run.source, status: run.status },
+    }).catch((logErr) =>
+      logger.warn({ logErr, routineId: routine.id }, "run_routine: activity log failed"),
+    );
+    return {
+      ok: true,
+      result: run,
+    };
+  },
+};
+
+const createRoutine = defineMutationTool({
+  name: "create_routine",
+  description:
+    "Propose a new routine (recurring task). Creates a pending proposal that must be applied before the routine is created.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string" },
       description: { type: "string" },
-      assigneeAgentId: { type: "string", description: "UUID of the assignee agent." },
+      assigneeAgentId: { type: "string" },
       projectId: { type: "string" },
       goalId: { type: "string" },
-      priority: {
-        type: "string",
-        enum: ["critical", "high", "medium", "low"],
-      },
-      status: {
-        type: "string",
-        enum: ["active", "paused", "archived"],
-      },
+      priority: { type: "string", enum: ["critical", "high", "medium", "low"] },
+      status: { type: "string", enum: ["active", "paused", "archived"] },
     },
     required: ["title"],
     additionalProperties: false,
   },
   capability: "routines.write",
-
   buildPayload(params) {
     return {
       title: nonEmptyString(params.title, "title"),
@@ -74,30 +267,15 @@ const createRoutine: BuilderTool = defineMutationTool({
     };
   },
   summarize(payload) {
-    return `Create routine "${String(payload.title)}" (${String(payload.status)}, ${String(
-      payload.priority,
-    )})`;
+    return `Create routine "${String(payload.title)}" (${String(payload.status)}, ${String(payload.priority)})`;
   },
   async apply(payload, ctx) {
-    // Verify foreign key ownership to prevent cross-company references
     if (payload.goalId) {
       const goal = await goalService(ctx.db).getById(String(payload.goalId));
-      if (!goal || goal.companyId !== ctx.companyId) {
-        throw new Error("Goal not found");
-      }
+      if (!goal || goal.companyId !== ctx.companyId) throw new Error("Goal not found");
     }
-    if (payload.projectId) {
-      const project = await projectService(ctx.db).getById(String(payload.projectId));
-      if (!project || project.companyId !== ctx.companyId) {
-        throw new Error("Project not found");
-      }
-    }
-    if (payload.assigneeAgentId) {
-      const agent = await agentService(ctx.db).getById(String(payload.assigneeAgentId));
-      if (!agent || agent.companyId !== ctx.companyId) {
-        throw new Error("Assignee agent not found");
-      }
-    }
+    await assertProjectBelongsToCompany(ctx.db, ctx.companyId, (payload.projectId as string | null) ?? null);
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (payload.assigneeAgentId as string | null) ?? null, "Assignee agent");
     const created = await routineService(ctx.db).create(
       ctx.companyId,
       {
@@ -114,40 +292,28 @@ const createRoutine: BuilderTool = defineMutationTool({
       },
       { userId: ctx.decidedByUserId, agentId: null },
     );
-    const result = {
+    await logBuilderAction(ctx, {
+      action: "routine.created",
+      entityType: "routine",
+      entityId: created.id,
+      details: { source: "builder", title: created.title },
+    });
+    return {
       summary: `Routine "${created.title}" created`,
       entityId: created.id,
       entityType: "routine",
       details: { id: created.id, title: created.title },
     };
-    // Best-effort activity log — never fail the apply because of logging
-    logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
-      action: "routine.created",
-      entityType: "routine",
-      entityId: created.id,
-      details: {
-        source: "builder",
-        title: created.title,
-        viaProposalKind: "create_routine",
-      },
-    }).catch((logErr) =>
-      logger.warn({ logErr, routineId: created.id }, "create_routine: activity log failed"),
-    );
-    return result;
   },
 });
 
-const updateRoutine: BuilderTool = defineMutationTool({
+const updateRoutine = defineMutationTool({
   name: "update_routine",
-  description:
-    "Propose changes to an existing routine (title, description, assignee, status, priority).",
+  description: "Propose changes to an existing routine.",
   parametersSchema: {
     type: "object",
     properties: {
-      routineId: { type: "string", description: "UUID of the routine to update." },
+      routineId: { type: "string" },
       title: { type: "string" },
       description: { type: "string" },
       assigneeAgentId: { type: "string" },
@@ -158,7 +324,6 @@ const updateRoutine: BuilderTool = defineMutationTool({
     additionalProperties: false,
   },
   capability: "routines.write",
-
   buildPayload(params) {
     const patch: Record<string, unknown> = {};
     for (const key of ["title", "description", "assigneeAgentId", "status", "priority"] as const) {
@@ -170,68 +335,49 @@ const updateRoutine: BuilderTool = defineMutationTool({
     };
   },
   summarize(payload) {
-    const patch = payload.patch as Record<string, unknown>;
-    const fields = Object.keys(patch).join(", ") || "no fields";
+    const fields = Object.keys(payload.patch as Record<string, unknown>).join(", ") || "no fields";
     return `Update routine ${String(payload.routineId)} (${fields})`;
   },
   async apply(payload, ctx) {
-    // Verify ownership before updating to prevent cross-company IDOR
     const existing = await routineService(ctx.db).get(String(payload.routineId));
-    if (!existing || existing.companyId !== ctx.companyId) {
-      throw new Error("Routine not found");
-    }
-    // Verify assigneeAgentId if present in patch
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Routine not found");
     const patch = payload.patch as Record<string, unknown>;
-    if (patch.assigneeAgentId) {
-      const agent = await agentService(ctx.db).getById(String(patch.assigneeAgentId));
-      if (!agent || agent.companyId !== ctx.companyId) {
-        throw new Error("Assignee agent not found");
-      }
-    }
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (patch.assigneeAgentId as string | null) ?? null, "Assignee agent");
     const updated = await routineService(ctx.db).update(
       String(payload.routineId),
-      payload.patch as Record<string, unknown>,
+      patch,
       { userId: ctx.decidedByUserId, agentId: null },
     );
     if (!updated) throw new Error("Routine not found");
-    const result = {
+    await logBuilderAction(ctx, {
+      action: "routine.updated",
+      entityType: "routine",
+      entityId: updated.id,
+      details: { source: "builder", patch },
+    });
+    return {
       summary: `Routine ${updated.id} updated`,
       entityId: updated.id,
       entityType: "routine",
     };
-    // Best-effort activity log — never fail the apply because of logging
-    logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
-      action: "routine.updated",
-      entityType: "routine",
-      entityId: updated.id,
-      details: { source: "builder", patch: payload.patch },
-    }).catch((logErr) =>
-      logger.warn({ logErr, routineId: updated.id }, "update_routine: activity log failed"),
-    );
-    return result;
   },
 });
 
-const createGoal: BuilderTool = defineMutationTool({
+const createGoal = defineMutationTool({
   name: "create_goal",
-  description:
-    "Propose a new goal. Goals organise work into measurable outcomes (`level`: company, team, individual).",
+  description: "Propose a new goal.",
   parametersSchema: {
     type: "object",
     properties: {
       title: { type: "string" },
       description: { type: "string" },
       level: { type: "string", enum: ["company", "team", "individual"] },
-      parentId: { type: "string", description: "Optional parent goal UUID." },
+      parentId: { type: "string" },
     },
     required: ["title", "level"],
     additionalProperties: false,
   },
   capability: "goals.write",
-
   buildPayload(params) {
     return {
       title: nonEmptyString(params.title, "title"),
@@ -244,12 +390,9 @@ const createGoal: BuilderTool = defineMutationTool({
     return `Create ${String(payload.level)} goal "${String(payload.title)}"`;
   },
   async apply(payload, ctx) {
-    // Verify parent goal ownership to prevent cross-company references
     if (payload.parentId) {
       const parent = await goalService(ctx.db).getById(String(payload.parentId));
-      if (!parent || parent.companyId !== ctx.companyId) {
-        throw new Error("Parent goal not found");
-      }
+      if (!parent || parent.companyId !== ctx.companyId) throw new Error("Parent goal not found");
     }
     const created = await goalService(ctx.db).create(ctx.companyId, {
       title: String(payload.title),
@@ -259,24 +402,21 @@ const createGoal: BuilderTool = defineMutationTool({
       parentId: (payload.parentId as string | null) ?? null,
     });
     if (!created) throw new Error("Goal creation returned no row");
-    const result = { summary: `Goal "${created.title}" created`, entityId: created.id, entityType: "goal" };
-    // Best-effort activity log — never fail the apply because of logging
-    logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
+    await logBuilderAction(ctx, {
       action: "goal.created",
       entityType: "goal",
       entityId: created.id,
       details: { source: "builder", title: created.title },
-    }).catch((logErr) =>
-      logger.warn({ logErr, goalId: created.id }, "create_goal: activity log failed"),
-    );
-    return result;
+    });
+    return {
+      summary: `Goal "${created.title}" created`,
+      entityId: created.id,
+      entityType: "goal",
+    };
   },
 });
 
-const updateGoal: BuilderTool = defineMutationTool({
+const updateGoal = defineMutationTool({
   name: "update_goal",
   description: "Propose changes to an existing goal.",
   parametersSchema: {
@@ -291,7 +431,6 @@ const updateGoal: BuilderTool = defineMutationTool({
     additionalProperties: false,
   },
   capability: "goals.write",
-
   buildPayload(params) {
     const patch: Record<string, unknown> = {};
     for (const key of ["title", "description", "status"] as const) {
@@ -307,34 +446,25 @@ const updateGoal: BuilderTool = defineMutationTool({
     return `Update goal ${String(payload.goalId)} (${fields})`;
   },
   async apply(payload, ctx) {
-    // Verify ownership before updating to prevent cross-company IDOR
     const existing = await goalService(ctx.db).getById(String(payload.goalId));
-    if (!existing || existing.companyId !== ctx.companyId) {
-      throw new Error("Goal not found");
-    }
-    const updated = await goalService(ctx.db).update(
-      String(payload.goalId),
-      payload.patch as Record<string, unknown>,
-    );
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Goal not found");
+    const updated = await goalService(ctx.db).update(String(payload.goalId), payload.patch as Record<string, unknown>);
     if (!updated) throw new Error("Goal not found");
-    const result = { summary: `Goal ${updated.id} updated`, entityId: updated.id, entityType: "goal" };
-    // Best-effort activity log — never fail the apply because of logging
-    logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
+    await logBuilderAction(ctx, {
       action: "goal.updated",
       entityType: "goal",
       entityId: updated.id,
-      details: { source: "builder", patch: payload.patch },
-    }).catch((logErr) =>
-      logger.warn({ logErr, goalId: updated.id }, "update_goal: activity log failed"),
-    );
-    return result;
+      details: { source: "builder", patch: payload.patch as Record<string, unknown> },
+    });
+    return {
+      summary: `Goal ${updated.id} updated`,
+      entityId: updated.id,
+      entityType: "goal",
+    };
   },
 });
 
-const createIssue: BuilderTool = defineMutationTool({
+const createIssue = defineMutationTool({
   name: "create_issue",
   description: "Propose a new issue (task).",
   parametersSchema: {
@@ -345,16 +475,12 @@ const createIssue: BuilderTool = defineMutationTool({
       projectId: { type: "string" },
       assigneeAgentId: { type: "string" },
       priority: { type: "string", enum: ["critical", "high", "medium", "low"] },
-      status: {
-        type: "string",
-        enum: ["open", "in_progress", "blocked", "done", "cancelled"],
-      },
+      status: { type: "string", enum: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] },
     },
     required: ["title"],
     additionalProperties: false,
   },
   capability: "issues.write",
-
   buildPayload(params) {
     return {
       title: nonEmptyString(params.title, "title"),
@@ -362,26 +488,15 @@ const createIssue: BuilderTool = defineMutationTool({
       projectId: stringOrNull(params.projectId),
       assigneeAgentId: stringOrNull(params.assigneeAgentId),
       priority: stringOrNull(params.priority) ?? "medium",
-      status: stringOrNull(params.status) ?? "open",
+      status: stringOrNull(params.status) ?? "todo",
     };
   },
   summarize(payload) {
     return `Create issue "${String(payload.title)}" (${String(payload.status)})`;
   },
   async apply(payload, ctx) {
-    // Verify project ownership to prevent cross-company references
-    if (payload.projectId) {
-      const project = await projectService(ctx.db).getById(String(payload.projectId));
-      if (!project || project.companyId !== ctx.companyId) {
-        throw new Error("Project not found");
-      }
-    }
-    if (payload.assigneeAgentId) {
-      const agent = await agentService(ctx.db).getById(String(payload.assigneeAgentId));
-      if (!agent || agent.companyId !== ctx.companyId) {
-        throw new Error("Assignee agent not found");
-      }
-    }
+    await assertProjectBelongsToCompany(ctx.db, ctx.companyId, (payload.projectId as string | null) ?? null);
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (payload.assigneeAgentId as string | null) ?? null, "Assignee agent");
     const created = await issueService(ctx.db).create(ctx.companyId, {
       title: String(payload.title),
       description: (payload.description as string | null) ?? null,
@@ -394,28 +509,21 @@ const createIssue: BuilderTool = defineMutationTool({
     } as Parameters<ReturnType<typeof issueService>["create"]>[1]);
     if (!created) throw new Error("Issue creation returned no row");
     const issueRow = created as { id: string; title: string };
-    const result = {
-      summary: `Issue "${issueRow.title}" created`,
-      entityId: issueRow.id,
-      entityType: "issue",
-    };
-    // Best-effort activity log — never fail the apply because of logging
-    logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
+    await logBuilderAction(ctx, {
       action: "issue.created",
       entityType: "issue",
       entityId: issueRow.id,
       details: { source: "builder", title: issueRow.title },
-    }).catch((logErr) =>
-      logger.warn({ logErr, issueId: issueRow.id }, "create_issue: activity log failed"),
-    );
-    return result;
+    });
+    return {
+      summary: `Issue "${issueRow.title}" created`,
+      entityId: issueRow.id,
+      entityType: "issue",
+    };
   },
 });
 
-const updateIssue: BuilderTool = defineMutationTool({
+const updateIssue = defineMutationTool({
   name: "update_issue",
   description: "Propose changes to an existing issue.",
   parametersSchema: {
@@ -425,17 +533,13 @@ const updateIssue: BuilderTool = defineMutationTool({
       title: { type: "string" },
       description: { type: "string" },
       assigneeAgentId: { type: "string" },
-      status: {
-        type: "string",
-        enum: ["open", "in_progress", "blocked", "done", "cancelled"],
-      },
+      status: { type: "string", enum: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] },
       priority: { type: "string", enum: ["critical", "high", "medium", "low"] },
     },
     required: ["issueId"],
     additionalProperties: false,
   },
   capability: "issues.write",
-
   buildPayload(params) {
     const patch: Record<string, unknown> = {};
     for (const key of ["title", "description", "assigneeAgentId", "status", "priority"] as const) {
@@ -451,58 +555,707 @@ const updateIssue: BuilderTool = defineMutationTool({
     return `Update issue ${String(payload.issueId)} (${fields})`;
   },
   async apply(payload, ctx) {
-    // Verify ownership before updating to prevent cross-company IDOR
     const existing = await issueService(ctx.db).getById(String(payload.issueId));
-    if (!existing || existing.companyId !== ctx.companyId) {
-      throw new Error("Issue not found");
-    }
-    // Verify assigneeAgentId if present in patch
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Issue not found");
     const patch = payload.patch as Record<string, unknown>;
-    if (patch.assigneeAgentId) {
-      const agent = await agentService(ctx.db).getById(String(patch.assigneeAgentId));
-      if (!agent || agent.companyId !== ctx.companyId) {
-        throw new Error("Assignee agent not found");
-      }
-    }
-    const result = (await issueService(ctx.db).update(
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (patch.assigneeAgentId as string | null) ?? null, "Assignee agent");
+    const updated = await issueService(ctx.db).update(
       String(payload.issueId),
-      payload.patch as Parameters<ReturnType<typeof issueService>["update"]>[1],
+      patch as Parameters<ReturnType<typeof issueService>["update"]>[1],
       { actorType: "user", userId: ctx.decidedByUserId, agentId: null } as never,
-    )) as { id: string } | null;
-    if (!result) throw new Error("Issue not found");
-    const returnValue = { summary: `Issue ${result.id} updated`, entityId: result.id, entityType: "issue" };
-    // Best-effort activity log — never fail the apply because of logging
-    logActivity(ctx.db, {
-      companyId: ctx.companyId,
-      actorType: "user",
-      actorId: ctx.decidedByUserId ?? "board",
+    );
+    if (!updated) throw new Error("Issue not found");
+    await logBuilderAction(ctx, {
       action: "issue.updated",
       entityType: "issue",
-      entityId: result.id,
-      details: { source: "builder", patch: payload.patch },
-    }).catch((logErr) =>
-      logger.warn({ logErr, issueId: result.id }, "update_issue: activity log failed"),
-    );
-    return returnValue;
+      entityId: updated.id,
+      details: { source: "builder", patch },
+    });
+    return {
+      summary: `Issue ${updated.id} updated`,
+      entityId: updated.id,
+      entityType: "issue",
+    };
   },
 });
 
-// ---------------------------------------------------------------------------
-// Phase 2 — governed primitives that route through `approvalService`
-// ---------------------------------------------------------------------------
+const createProject = defineMutationTool({
+  name: "create_project",
+  description: "Propose a new project.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      goalId: { type: "string" },
+      goalIds: { type: "array", items: { type: "string" } },
+      name: { type: "string" },
+      description: { type: "string" },
+      status: { type: "string" },
+      leadAgentId: { type: "string" },
+      targetDate: { type: "string" },
+      color: { type: "string" },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+  capability: "projects.write",
+  buildPayload(params) {
+    const parsed = createProjectSchema.parse({
+      goalId: params.goalId,
+      goalIds: params.goalIds,
+      name: params.name,
+      description: params.description,
+      status: params.status,
+      leadAgentId: params.leadAgentId,
+      targetDate: params.targetDate,
+      color: params.color,
+    });
+    if ((params as Record<string, unknown>).workspace !== undefined) {
+      throw new Error("Project workspace creation is not supported through this tool");
+    }
+    return parsed as unknown as Record<string, unknown>;
+  },
+  summarize(payload) {
+    return `Create project "${String(payload.name)}"`;
+  },
+  async apply(payload, ctx) {
+    await assertGoalIdsBelongToCompany(ctx.db, ctx.companyId, payload.goalIds as string[] | undefined);
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (payload.leadAgentId as string | null) ?? null, "Lead agent");
+    const created = await projectService(ctx.db).create(ctx.companyId, payload as any);
+    await logBuilderAction(ctx, {
+      action: "project.created",
+      entityType: "project",
+      entityId: created.id,
+      details: { source: "builder", name: created.name },
+    });
+    return {
+      summary: `Project "${created.name}" created`,
+      entityId: created.id,
+      entityType: "project",
+    };
+  },
+});
 
-const hireAgent: BuilderTool = defineMutationTool({
+const updateProject = defineMutationTool({
+  name: "update_project",
+  description: "Propose changes to an existing project.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      projectId: { type: "string" },
+      goalId: { type: "string" },
+      goalIds: { type: "array", items: { type: "string" } },
+      name: { type: "string" },
+      description: { type: "string" },
+      status: { type: "string" },
+      leadAgentId: { type: "string" },
+      targetDate: { type: "string" },
+      color: { type: "string" },
+      archivedAt: { type: "string" },
+    },
+    required: ["projectId"],
+    additionalProperties: false,
+  },
+  capability: "projects.write",
+  buildPayload(params) {
+    const projectId = nonEmptyString(params.projectId, "projectId");
+    const parsed = updateProjectSchema.parse({
+      goalId: params.goalId,
+      goalIds: params.goalIds,
+      name: params.name,
+      description: params.description,
+      status: params.status,
+      leadAgentId: params.leadAgentId,
+      targetDate: params.targetDate,
+      color: params.color,
+      archivedAt: params.archivedAt,
+    });
+    return {
+      projectId,
+      patch: parsed as Record<string, unknown>,
+    };
+  },
+  summarize(payload) {
+    const fields = Object.keys(payload.patch as Record<string, unknown>).join(", ") || "no fields";
+    return `Update project ${String(payload.projectId)} (${fields})`;
+  },
+  async apply(payload, ctx) {
+    const existing = await projectService(ctx.db).getById(String(payload.projectId));
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Project not found");
+    const patch = payload.patch as Record<string, unknown>;
+    await assertGoalIdsBelongToCompany(ctx.db, ctx.companyId, patch.goalIds as string[] | undefined);
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (patch.leadAgentId as string | null) ?? null, "Lead agent");
+    const updated = await projectService(ctx.db).update(existing.id, patch as any);
+    if (!updated) throw new Error("Project not found");
+    await logBuilderAction(ctx, {
+      action: "project.updated",
+      entityType: "project",
+      entityId: updated.id,
+      details: { source: "builder", patch },
+    });
+    return {
+      summary: `Project ${updated.id} updated`,
+      entityId: updated.id,
+      entityType: "project",
+    };
+  },
+});
+
+const updateAgent = defineMutationTool({
+  name: "update_agent",
+  description: "Propose organizational and budget changes to an existing agent.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      agentId: { type: "string" },
+      name: { type: "string" },
+      role: { type: "string" },
+      title: { type: "string" },
+      icon: { type: "string" },
+      reportsTo: { type: "string" },
+      capabilities: { type: "string" },
+      budgetMonthlyCents: { type: "number" },
+      metadata: { type: "object" },
+    },
+    required: ["agentId"],
+    additionalProperties: false,
+  },
+  capability: "agents.write",
+  buildPayload(params) {
+    const agentId = nonEmptyString(params.agentId, "agentId");
+    const parsed = updateAgentSchema.parse({
+      name: params.name,
+      role: params.role,
+      title: params.title,
+      icon: params.icon,
+      reportsTo: params.reportsTo,
+      capabilities: params.capabilities,
+      budgetMonthlyCents: params.budgetMonthlyCents,
+      metadata: params.metadata,
+    });
+    if ((parsed as Record<string, unknown>).status !== undefined) {
+      throw new Error("Use lifecycle tools instead of update_agent for status changes");
+    }
+    if ((parsed as Record<string, unknown>).adapterConfig !== undefined || (parsed as Record<string, unknown>).adapterType !== undefined) {
+      throw new Error("Adapter configuration changes are not supported through this tool");
+    }
+    return {
+      agentId,
+      patch: parsed as Record<string, unknown>,
+    };
+  },
+  summarize(payload) {
+    const fields = Object.keys(payload.patch as Record<string, unknown>).join(", ") || "no fields";
+    return `Update agent ${String(payload.agentId)} (${fields})`;
+  },
+  async apply(payload, ctx) {
+    const existing = await agentService(ctx.db).getById(String(payload.agentId));
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Agent not found");
+    const patch = payload.patch as Record<string, unknown>;
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (patch.reportsTo as string | null) ?? null, "Manager agent");
+    const updated = await agentService(ctx.db).update(existing.id, patch as any, {
+      recordRevision: {
+        createdByUserId: ctx.decidedByUserId,
+        source: "builder",
+      },
+    });
+    if (!updated) throw new Error("Agent not found");
+    await logBuilderAction(ctx, {
+      action: "agent.updated",
+      entityType: "agent",
+      entityId: updated.id,
+      details: patch,
+    });
+    return {
+      summary: `Agent ${updated.name} updated`,
+      entityId: updated.id,
+      entityType: "agent",
+    };
+  },
+});
+
+function makeAgentLifecycleTool(def: {
+  name: "pause_agent" | "resume_agent" | "terminate_agent" | "delete_agent";
+  description: string;
+  summary: string;
+  action: string;
+  applyAgent: (db: any, agentId: string) => Promise<{ id: string; name?: string | null } | null>;
+}) {
+  return defineMutationTool({
+    name: def.name,
+    description: def.description,
+    parametersSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string" },
+      },
+      required: ["agentId"],
+      additionalProperties: false,
+    },
+    capability: "agents.write",
+    buildPayload(params) {
+      return { agentId: nonEmptyString(params.agentId, "agentId") };
+    },
+    summarize(payload) {
+      return `${def.summary} ${String(payload.agentId)}`;
+    },
+    async apply(payload, ctx) {
+      const existing = await agentService(ctx.db).getById(String(payload.agentId));
+      if (!existing || existing.companyId !== ctx.companyId) throw new Error("Agent not found");
+      const updated = await def.applyAgent(ctx.db, existing.id);
+      if (!updated) throw new Error("Agent not found");
+      await logBuilderAction(ctx, {
+        action: def.action,
+        entityType: "agent",
+        entityId: existing.id,
+        details: null,
+      });
+      return {
+        summary: `${def.summary} ${existing.name}`,
+        entityId: existing.id,
+        entityType: "agent",
+      };
+    },
+  });
+}
+
+const pauseAgent = makeAgentLifecycleTool({
+  name: "pause_agent",
+  description: "Propose pausing an agent.",
+  summary: "Pause agent",
+  action: "agent.paused",
+  applyAgent: (db, agentId) => agentService(db).pause(agentId),
+});
+
+const resumeAgent = makeAgentLifecycleTool({
+  name: "resume_agent",
+  description: "Propose resuming a paused agent.",
+  summary: "Resume agent",
+  action: "agent.resumed",
+  applyAgent: (db, agentId) => agentService(db).resume(agentId),
+});
+
+const terminateAgent = makeAgentLifecycleTool({
+  name: "terminate_agent",
+  description: "Propose terminating an agent.",
+  summary: "Terminate agent",
+  action: "agent.terminated",
+  applyAgent: (db, agentId) => agentService(db).terminate(agentId),
+});
+
+const deleteAgent = makeAgentLifecycleTool({
+  name: "delete_agent",
+  description: "Propose permanently deleting an agent.",
+  summary: "Delete agent",
+  action: "agent.deleted",
+  applyAgent: (db, agentId) => agentService(db).remove(agentId),
+});
+
+const createRoutineTrigger = defineMutationTool({
+  name: "create_routine_trigger",
+  description: "Propose creating a new trigger for a routine.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      routineId: { type: "string" },
+      kind: { type: "string", enum: ["schedule", "webhook", "api"] },
+      label: { type: "string" },
+      enabled: { type: "boolean" },
+      cronExpression: { type: "string" },
+      timezone: { type: "string" },
+      signingMode: { type: "string" },
+      replayWindowSec: { type: "number" },
+    },
+    required: ["routineId", "kind"],
+    additionalProperties: false,
+  },
+  capability: "routines.write",
+  buildPayload(params) {
+    const routineId = nonEmptyString(params.routineId, "routineId");
+    const input = createRoutineTriggerSchema.parse({
+      kind: params.kind,
+      label: params.label,
+      enabled: params.enabled,
+      cronExpression: params.cronExpression,
+      timezone: params.timezone,
+      signingMode: params.signingMode,
+      replayWindowSec: params.replayWindowSec,
+    });
+    return {
+      routineId,
+      input,
+    };
+  },
+  summarize(payload) {
+    return `Create ${String((payload.input as Record<string, unknown>).kind)} trigger for routine ${String(payload.routineId)}`;
+  },
+  async apply(payload, ctx) {
+    const routine = await routineService(ctx.db).get(String(payload.routineId));
+    if (!routine || routine.companyId !== ctx.companyId) throw new Error("Routine not found");
+    const created = await routineService(ctx.db).createTrigger(
+      routine.id,
+      payload.input as any,
+      { userId: ctx.decidedByUserId, agentId: null },
+    );
+    await logBuilderAction(ctx, {
+      action: "routine.trigger_created",
+      entityType: "routine_trigger",
+      entityId: created.trigger.id,
+      details: { routineId: routine.id, kind: created.trigger.kind },
+    });
+    return {
+      summary: `Routine trigger created`,
+      entityId: created.trigger.id,
+      entityType: "routine_trigger",
+      details: {
+        routineId: routine.id,
+        trigger: created.trigger,
+        secretMaterial: (created.secretMaterial as Record<string, unknown> | null) ?? null,
+      },
+    };
+  },
+});
+
+const updateRoutineTrigger = defineMutationTool({
+  name: "update_routine_trigger",
+  description: "Propose updating a routine trigger.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      triggerId: { type: "string" },
+      label: { type: "string" },
+      enabled: { type: "boolean" },
+      cronExpression: { type: "string" },
+      timezone: { type: "string" },
+      signingMode: { type: "string" },
+      replayWindowSec: { type: "number" },
+    },
+    required: ["triggerId"],
+    additionalProperties: false,
+  },
+  capability: "routines.write",
+  buildPayload(params) {
+    return {
+      triggerId: nonEmptyString(params.triggerId, "triggerId"),
+      patch: updateRoutineTriggerSchema.parse({
+        label: params.label,
+        enabled: params.enabled,
+        cronExpression: params.cronExpression,
+        timezone: params.timezone,
+        signingMode: params.signingMode,
+        replayWindowSec: params.replayWindowSec,
+      }) as Record<string, unknown>,
+    };
+  },
+  summarize(payload) {
+    const fields = Object.keys(payload.patch as Record<string, unknown>).join(", ") || "no fields";
+    return `Update routine trigger ${String(payload.triggerId)} (${fields})`;
+  },
+  async apply(payload, ctx) {
+    const existing = await routineService(ctx.db).getTrigger(String(payload.triggerId));
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Routine trigger not found");
+    const updated = await routineService(ctx.db).updateTrigger(
+      existing.id,
+      payload.patch as any,
+      { userId: ctx.decidedByUserId, agentId: null },
+    );
+    if (!updated) throw new Error("Routine trigger not found");
+    await logBuilderAction(ctx, {
+      action: "routine.trigger_updated",
+      entityType: "routine_trigger",
+      entityId: updated.id,
+      details: { routineId: updated.routineId, kind: updated.kind },
+    });
+    return {
+      summary: `Routine trigger ${updated.id} updated`,
+      entityId: updated.id,
+      entityType: "routine_trigger",
+    };
+  },
+});
+
+const rotateRoutineTriggerSecret = defineMutationTool({
+  name: "rotate_routine_trigger_secret",
+  description: "Propose rotating the secret for a webhook routine trigger.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      triggerId: { type: "string" },
+    },
+    required: ["triggerId"],
+    additionalProperties: false,
+  },
+  capability: "routines.write",
+  buildPayload(params) {
+    return { triggerId: nonEmptyString(params.triggerId, "triggerId") };
+  },
+  summarize(payload) {
+    return `Rotate routine trigger secret ${String(payload.triggerId)}`;
+  },
+  async apply(payload, ctx) {
+    const existing = await routineService(ctx.db).getTrigger(String(payload.triggerId));
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Routine trigger not found");
+    const rotated = await routineService(ctx.db).rotateTriggerSecret(
+      existing.id,
+      { userId: ctx.decidedByUserId, agentId: null },
+    );
+    await logBuilderAction(ctx, {
+      action: "routine.trigger_secret_rotated",
+      entityType: "routine_trigger",
+      entityId: rotated.trigger.id,
+      details: { routineId: rotated.trigger.routineId },
+    });
+    return {
+      summary: `Routine trigger secret rotated`,
+      entityId: rotated.trigger.id,
+      entityType: "routine_trigger",
+      details: rotated.secretMaterial as unknown as Record<string, unknown>,
+    };
+  },
+});
+
+const createInvite = defineMutationTool({
+  name: "create_invite",
+  description: "Propose creating a new company invite.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      allowedJoinTypes: { type: "string", enum: ["human", "agent", "both"] },
+      humanRole: { type: "string", enum: ["owner", "admin", "operator", "viewer"] },
+      defaultsPayload: { type: "object" },
+      agentMessage: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+  capability: "invites.write",
+  buildPayload(params) {
+    return createCompanyInviteSchema.parse({
+      allowedJoinTypes: params.allowedJoinTypes,
+      humanRole: params.humanRole,
+      defaultsPayload: params.defaultsPayload,
+      agentMessage: params.agentMessage,
+    }) as unknown as Record<string, unknown>;
+  },
+  summarize(payload) {
+    return `Create ${String(payload.allowedJoinTypes ?? "both")} invite`;
+  },
+  async apply(payload, ctx) {
+    const created = await inviteService(ctx.db).create(
+      ctx.companyId,
+      payload as any,
+      { userId: ctx.decidedByUserId },
+    );
+    await logBuilderAction(ctx, {
+      action: "invite.created",
+      entityType: "invite",
+      entityId: created.invite.id,
+      details: {
+        inviteType: created.invite.inviteType,
+        allowedJoinTypes: created.invite.allowedJoinTypes,
+        expiresAt: created.invite.expiresAt.toISOString(),
+        humanRole: created.humanRole,
+        hasAgentMessage: Boolean(created.inviteMessage),
+      },
+    });
+    return {
+      summary: `Invite created`,
+      entityId: created.invite.id,
+      entityType: "invite",
+      details: {
+        inviteId: created.invite.id,
+        token: created.token,
+        invitePath: created.invitePath,
+      },
+    };
+  },
+});
+
+const revokeInvite = defineMutationTool({
+  name: "revoke_invite",
+  description: "Propose revoking an existing invite.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      inviteId: { type: "string" },
+    },
+    required: ["inviteId"],
+    additionalProperties: false,
+  },
+  capability: "invites.write",
+  buildPayload(params) {
+    return { inviteId: nonEmptyString(params.inviteId, "inviteId") };
+  },
+  summarize(payload) {
+    return `Revoke invite ${String(payload.inviteId)}`;
+  },
+  async apply(payload, ctx) {
+    const invite = await inviteService(ctx.db).getById(String(payload.inviteId));
+    if (!invite || invite.companyId !== ctx.companyId) throw new Error("Invite not found");
+    const revoked = await inviteService(ctx.db).revoke(invite.id);
+    await logBuilderAction(ctx, {
+      action: "invite.revoked",
+      entityType: "invite",
+      entityId: revoked.id,
+      details: null,
+    });
+    return {
+      summary: `Invite ${revoked.id} revoked`,
+      entityId: revoked.id,
+      entityType: "invite",
+    };
+  },
+});
+
+const approveApproval = defineMutationTool({
+  name: "approve_approval",
+  description: "Propose approving an existing approval request.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      approvalId: { type: "string" },
+      decisionNote: { type: "string" },
+    },
+    required: ["approvalId"],
+    additionalProperties: false,
+  },
+  capability: "approvals.write",
+  buildPayload(params) {
+    return {
+      approvalId: nonEmptyString(params.approvalId, "approvalId"),
+      decisionNote: stringOrNull(params.decisionNote),
+    };
+  },
+  summarize(payload) {
+    return `Approve approval ${String(payload.approvalId)}`;
+  },
+  async apply(payload, ctx) {
+    const existing = await approvalService(ctx.db).getById(String(payload.approvalId));
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Approval not found");
+    const result = await approvalService(ctx.db).approve(
+      existing.id,
+      ctx.decidedByUserId ?? "board",
+      (payload.decisionNote as string | null) ?? null,
+    );
+    if (result.applied) {
+      await logBuilderAction(ctx, {
+        action: "approval.approved",
+        entityType: "approval",
+        entityId: result.approval.id,
+        details: { type: result.approval.type },
+      });
+    }
+    return {
+      summary: `Approval ${result.approval.id} approved`,
+      entityId: result.approval.id,
+      entityType: "approval",
+      details: { applied: result.applied, status: result.approval.status },
+    };
+  },
+});
+
+const rejectApproval = defineMutationTool({
+  name: "reject_approval",
+  description: "Propose rejecting an existing approval request.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      approvalId: { type: "string" },
+      decisionNote: { type: "string" },
+    },
+    required: ["approvalId"],
+    additionalProperties: false,
+  },
+  capability: "approvals.write",
+  buildPayload(params) {
+    return {
+      approvalId: nonEmptyString(params.approvalId, "approvalId"),
+      decisionNote: stringOrNull(params.decisionNote),
+    };
+  },
+  summarize(payload) {
+    return `Reject approval ${String(payload.approvalId)}`;
+  },
+  async apply(payload, ctx) {
+    const existing = await approvalService(ctx.db).getById(String(payload.approvalId));
+    if (!existing || existing.companyId !== ctx.companyId) throw new Error("Approval not found");
+    const result = await approvalService(ctx.db).reject(
+      existing.id,
+      ctx.decidedByUserId ?? "board",
+      (payload.decisionNote as string | null) ?? null,
+    );
+    if (result.applied) {
+      await logBuilderAction(ctx, {
+        action: "approval.rejected",
+        entityType: "approval",
+        entityId: result.approval.id,
+        details: { type: result.approval.type },
+      });
+    }
+    return {
+      summary: `Approval ${result.approval.id} rejected`,
+      entityId: result.approval.id,
+      entityType: "approval",
+      details: { applied: result.applied, status: result.approval.status },
+    };
+  },
+});
+
+const revokeAgentKey = defineMutationTool({
+  name: "revoke_agent_key",
+  description: "Propose revoking an agent API key.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      agentId: { type: "string" },
+      keyId: { type: "string" },
+    },
+    required: ["agentId", "keyId"],
+    additionalProperties: false,
+  },
+  capability: "agents.write",
+  buildPayload(params) {
+    return {
+      agentId: nonEmptyString(params.agentId, "agentId"),
+      keyId: nonEmptyString(params.keyId, "keyId"),
+    };
+  },
+  summarize(payload) {
+    return `Revoke agent key ${String(payload.keyId)}`;
+  },
+  async apply(payload, ctx) {
+    const agent = await agentService(ctx.db).getById(String(payload.agentId));
+    if (!agent || agent.companyId !== ctx.companyId) throw new Error("Agent not found");
+    const key = await agentService(ctx.db).getKeyById(String(payload.keyId));
+    if (!key || key.agentId !== agent.id || key.companyId !== ctx.companyId) {
+      throw new Error("Agent key not found");
+    }
+    const revoked = await agentService(ctx.db).revokeKey(agent.id, key.id);
+    if (!revoked) throw new Error("Agent key not found");
+    await logBuilderAction(ctx, {
+      action: "agent.key_revoked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: revoked.id, name: revoked.name },
+    });
+    return {
+      summary: `Agent key ${revoked.id} revoked`,
+      entityId: agent.id,
+      entityType: "agent",
+    };
+  },
+});
+
+const hireAgent = defineMutationTool({
   name: "hire_agent",
   description:
-    "Propose hiring (creating) a new agent. Generates a `hire_agent` approval that the board approves through the standard Approvals UI; the agent is created when the approval is approved.",
+    "Propose hiring a new agent. Generates a hire approval that completes through the Approvals workflow.",
   parametersSchema: {
     type: "object",
     properties: {
       name: { type: "string" },
       role: { type: "string" },
       title: { type: "string" },
-      reportsTo: { type: "string", description: "UUID of the manager agent." },
-      adapterType: { type: "string", description: "e.g. process, claude_local, codex_local" },
+      reportsTo: { type: "string" },
+      adapterType: { type: "string" },
       budgetMonthlyCents: { type: "number" },
       capabilities: { type: "string" },
     },
@@ -510,16 +1263,10 @@ const hireAgent: BuilderTool = defineMutationTool({
     additionalProperties: false,
   },
   capability: "agents.write",
-
   approvalType: "hire_agent",
   async buildPayload(params, ctx) {
     const reportsTo = stringOrNull(params.reportsTo);
-    if (reportsTo) {
-      const manager = await agentService(ctx.db).getById(reportsTo);
-      if (!manager || manager.companyId !== ctx.companyId) {
-        throw new Error("Manager agent not found");
-      }
-    }
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, reportsTo, "Manager agent");
     return {
       name: nonEmptyString(params.name, "name"),
       role: nonEmptyString(params.role, "role"),
@@ -535,16 +1282,9 @@ const hireAgent: BuilderTool = defineMutationTool({
     };
   },
   summarize(payload) {
-    return `Hire agent "${String(payload.name)}" as ${String(payload.role)} (adapter ${String(
-      payload.adapterType,
-    )})`;
+    return `Hire agent "${String(payload.name)}" as ${String(payload.role)} (adapter ${String(payload.adapterType)})`;
   },
-  async apply(_payload, _ctx) {
-    // No-op applier: the actual hire is performed by `approvalService.approve`
-    // when the linked `hire_agent` approval row is approved through the
-    // standard Approvals UI (see services/approvals.ts). The Builder
-    // proposal is marked applied here purely to record that the operator
-    // sent the request forward; the side effect happens elsewhere.
+  async apply() {
     return {
       summary: "Hire request sent to Approvals queue",
       entityType: "approval",
@@ -552,73 +1292,53 @@ const hireAgent: BuilderTool = defineMutationTool({
   },
 });
 
-const setBudget: BuilderTool = defineMutationTool({
+const setBudget = defineMutationTool({
   name: "set_budget",
   description:
-    "Propose updating a budget policy (company-wide or per-agent monthly cap). Goes through the standard Approvals UI.",
+    "Propose updating a budget policy. Goes through the standard Approvals workflow.",
   parametersSchema: {
     type: "object",
     properties: {
       scopeType: { type: "string", enum: ["company", "agent", "project"] },
-      scopeId: { type: "string", description: "UUID — for `company` use the current company id." },
-      amountCents: { type: "number", description: "Monthly cap in cents." },
+      scopeId: { type: "string" },
+      amountCents: { type: "number" },
       hardStopEnabled: { type: "boolean" },
     },
     required: ["scopeType", "scopeId", "amountCents"],
     additionalProperties: false,
   },
   capability: "budgets.write",
-
   approvalType: "set_budget",
   async buildPayload(params, ctx) {
     const scopeType = nonEmptyString(params.scopeType, "scopeType");
-    if (!["company", "agent", "project"].includes(scopeType)) {
-      throw new Error("scopeType must be company, agent, or project");
-    }
-    const scopeId =
-      scopeType === "company" ? ctx.companyId : nonEmptyString(params.scopeId, "scopeId");
+    const scopeId = scopeType === "company" ? ctx.companyId : nonEmptyString(params.scopeId, "scopeId");
     if (scopeType === "agent") {
-      const agent = await agentService(ctx.db).getById(scopeId);
-      if (!agent || agent.companyId !== ctx.companyId) {
-        throw new Error("Budget scope agent not found");
-      }
+      await assertAgentBelongsToCompany(ctx.db, ctx.companyId, scopeId, "Budget scope agent");
     }
     if (scopeType === "project") {
-      const project = await projectService(ctx.db).getById(scopeId);
-      if (!project || project.companyId !== ctx.companyId) {
-        throw new Error("Budget scope project not found");
-      }
+      await assertProjectBelongsToCompany(ctx.db, ctx.companyId, scopeId);
     }
-    const amount = Number(params.amountCents);
-    if (!Number.isFinite(amount) || amount < 0) throw new Error("amountCents must be a non-negative number");
     return {
       scopeType,
       scopeId,
-      amountCents: Math.floor(amount),
+      amountCents: finiteNonNegativeInteger(params.amountCents, "amountCents"),
       hardStopEnabled: typeof params.hardStopEnabled === "boolean" ? params.hardStopEnabled : true,
     };
   },
   summarize(payload) {
-    return `Set ${String(payload.scopeType)} budget (${String(payload.scopeId)}) → ${String(
-      payload.amountCents,
-    )}¢`;
+    return `Set ${String(payload.scopeType)} budget (${String(payload.scopeId)}) -> ${String(payload.amountCents)}c`;
   },
-  async apply(_payload, _ctx) {
-    // No-op applier: the actual budget update is performed by `approvalService.approve`
-    // when the linked `set_budget` approval row is approved through the standard
-    // Approvals UI. The Builder proposal is marked applied here purely to record
-    // that the operator sent the request forward; the side effect happens elsewhere.
+  async apply() {
     return {
       summary: "Budget policy request sent to Approvals queue",
       entityType: "approval",
-      entityId: null,
     };
   },
 });
 
-const updateCompany: BuilderTool = defineMutationTool({
+const updateCompany = defineMutationTool({
   name: "update_company",
-  description: "Propose updating company metadata (name, description, monthly budget cap).",
+  description: "Propose updating company metadata.",
   parametersSchema: {
     type: "object",
     properties: {
@@ -629,17 +1349,12 @@ const updateCompany: BuilderTool = defineMutationTool({
     additionalProperties: false,
   },
   capability: "companies.write",
-
   approvalType: "update_company",
   buildPayload(params) {
     const patch: Record<string, unknown> = {};
     if (typeof params.name === "string" && params.name.trim()) patch.name = params.name.trim();
     if (typeof params.description === "string") patch.description = params.description;
-    if (
-      typeof params.budgetMonthlyCents === "number" &&
-      Number.isFinite(params.budgetMonthlyCents) &&
-      params.budgetMonthlyCents >= 0
-    ) {
+    if (typeof params.budgetMonthlyCents === "number" && Number.isFinite(params.budgetMonthlyCents) && params.budgetMonthlyCents >= 0) {
       patch.budgetMonthlyCents = Math.floor(params.budgetMonthlyCents);
     }
     if (Object.keys(patch).length === 0) {
@@ -648,26 +1363,20 @@ const updateCompany: BuilderTool = defineMutationTool({
     return { patch };
   },
   summarize(payload) {
-    const fields = Object.keys(payload.patch as Record<string, unknown>).join(", ");
-    return `Update company (${fields})`;
+    return `Update company (${Object.keys(payload.patch as Record<string, unknown>).join(", ")})`;
   },
-  async apply(_payload, _ctx) {
-    // No-op applier: the actual company update is performed by `approvalService.approve`
-    // when the linked `update_company` approval row is approved through the standard
-    // Approvals UI. The Builder proposal is marked applied here purely to record
-    // that the operator sent the request forward; the side effect happens elsewhere.
+  async apply() {
     return {
       summary: "Company update request sent to Approvals queue",
       entityType: "approval",
-      entityId: null,
     };
   },
 });
 
-const grantAccess: BuilderTool = defineMutationTool({
+const grantAccess = defineMutationTool({
   name: "grant_access",
   description:
-    "Propose granting a user access to this company. Goes through the Approvals UI before any access is granted.",
+    "Propose granting a user access to this company. Goes through the Approvals workflow.",
   parametersSchema: {
     type: "object",
     properties: {
@@ -679,7 +1388,6 @@ const grantAccess: BuilderTool = defineMutationTool({
     additionalProperties: false,
   },
   capability: "access.write",
-
   approvalType: "grant_access",
   buildPayload(params) {
     return {
@@ -691,11 +1399,7 @@ const grantAccess: BuilderTool = defineMutationTool({
   summarize(payload) {
     return `Grant ${String(payload.role)} access to user ${String(payload.userId)}`;
   },
-  async apply(_payload, _ctx) {
-    // No-op applier: the actual access grant is performed by
-    // `approvalService.approve` when the linked `grant_access` approval row
-    // is approved through the standard Approvals UI. The Builder proposal
-    // records that the operator sent the request forward.
+  async apply() {
     return {
       summary: "Access grant request sent to Approvals queue",
       entityType: "approval",
@@ -705,12 +1409,30 @@ const grantAccess: BuilderTool = defineMutationTool({
 
 export function buildCoreMutationTools(): BuilderTool[] {
   return [
+    addIssueComment,
+    addApprovalComment,
+    runRoutine,
     createRoutine,
     updateRoutine,
     createGoal,
     updateGoal,
     createIssue,
     updateIssue,
+    createProject,
+    updateProject,
+    updateAgent,
+    pauseAgent,
+    resumeAgent,
+    terminateAgent,
+    deleteAgent,
+    createRoutineTrigger,
+    updateRoutineTrigger,
+    rotateRoutineTriggerSecret,
+    createInvite,
+    revokeInvite,
+    approveApproval,
+    rejectApproval,
+    revokeAgentKey,
     hireAgent,
     setBudget,
     updateCompany,
