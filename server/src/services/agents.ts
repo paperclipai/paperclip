@@ -547,14 +547,25 @@ export function agentService(db: Db) {
       return existing ? { agent: existing, activated: false } : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (
+      id: string,
+      permissions: { canCreateAgents: boolean; canManageSkills?: boolean },
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
+
+      const merged = {
+        ...existing.permissions,
+        canCreateAgents: permissions.canCreateAgents,
+        ...(permissions.canManageSkills !== undefined
+          ? { canManageSkills: permissions.canManageSkills }
+          : {}),
+      };
 
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
+          permissions: normalizeAgentPermissions(merged, existing.role),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

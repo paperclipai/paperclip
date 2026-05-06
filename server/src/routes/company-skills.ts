@@ -27,9 +27,9 @@ export function companySkillRoutes(db: Db) {
   const access = accessService(db);
   const svc = companySkillService(db);
 
-  function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
+  function canManageSkills(agent: { permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+    return Boolean((agent.permissions as Record<string, unknown>).canManageSkills);
   }
 
   function asString(value: unknown): string | null {
@@ -73,12 +73,11 @@ export function companySkillRoutes(db: Db) {
       throw forbidden("Agent key cannot access another company");
     }
 
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    if (allowedByGrant || canCreateAgents(actorAgent)) {
+    if (canManageSkills(actorAgent)) {
       return;
     }
 
-    throw forbidden("Missing permission: can create agents");
+    throw forbidden("Missing permission: can manage skills");
   }
 
   router.get("/companies/:companyId/skills", async (req, res) => {
