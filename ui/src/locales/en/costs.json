@@ -1,1 +1,213 @@
-{}
+{
+  "title": "Costs",
+  "description": "Inference spend, platform fees, credits, and live quota windows.",
+  "tabs": {
+    "overview": "Overview",
+    "budgets": "Budgets",
+    "providers": "Providers",
+    "billers": "Billers",
+    "finance": "Finance",
+    "all_providers": "All providers",
+    "all_billers": "All billers"
+  },
+  "presets": {
+    "mtd": "Month to Date",
+    "7d": "Last 7 Days",
+    "30d": "Last 30 Days",
+    "ytd": "Year to Date",
+    "all": "All Time",
+    "custom": "Custom"
+  },
+  "date_range": {
+    "to": "to"
+  },
+  "metrics": {
+    "inference_spend": "Inference spend",
+    "budget": "Budget",
+    "finance_net": "Finance net",
+    "finance_events": "Finance events",
+    "debits": "Debits",
+    "credits": "Credits",
+    "net": "Net",
+    "estimated": "Estimated",
+    "active_incidents": "Active incidents",
+    "pending_approvals": "Pending approvals",
+    "paused_agents": "Paused agents",
+    "paused_projects": "Paused projects",
+    "open": "Open",
+    "no_monthly_cap": "No monthly cap configured",
+    "unlimited_budget": "Unlimited budget"
+  },
+  "subtitles": {
+    "tokens_across_events": "tokens across request-scoped events",
+    "agents_paused_projects_paused": "{{agentCount}} agents paused · {{projectCount}} projects paused",
+    "monthly_utilized": "{{percent}}% of monthly budget consumed in this range.",
+    "refunds_offsets": "Refunds, offsets, and credit returns",
+    "debit_minus_credit": "Debit minus credit for the selected period",
+    "estimated_debits": "Estimated debits that are not yet invoice-authoritative",
+    "threshold_crossings": "Open soft or hard threshold crossings",
+    "budget_approvals_awaiting": "Budget override approvals awaiting board action",
+    "heartbeats_blocked": "Agent heartbeats blocked by budget",
+    "execution_blocked": "Project execution blocked by budget",
+    "estimated_in_range": "estimated in range",
+    "debits_credits": "{{debits}} debits · {{credits}} credits",
+    "events_in_range_one": "{{count}} event in range",
+    "events_in_range_other": "{{count}} events in range"
+  },
+  "budget": {
+    "of": "{{spend}} of {{budget}}",
+    "budget_label": "Budget {{amount}}"
+  },
+  "labels": {
+    "usage": "usage",
+    "tok": "tok",
+    "in_out_tokens": "in {{inTokens}} · out {{outTokens}}",
+    "api_runs": "{{count}} api",
+    "subscription_runs": "{{count}} subscription"
+  },
+  "cards": {
+    "inference_ledger": "Inference ledger",
+    "inference_ledger_desc": "Request-scoped inference spend for the selected period.",
+    "finance_ledger": "Finance ledger",
+    "finance_ledger_desc": "Account-level charges that do not map to a single inference request.",
+    "by_agent": "By agent",
+    "by_agent_desc": "What each agent consumed in the selected period.",
+    "by_project": "By project",
+    "by_project_desc": "Run costs attributed through project-linked issues.",
+    "by_biller": "By biller",
+    "by_biller_desc": "Account-level financial events grouped by who charged or credited them.",
+    "budget_control": "Budget control plane",
+    "budget_control_desc": "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers."
+  },
+  "budgets": {
+    "company_policy": "Company-wide monthly policy.",
+    "agent_policy": "Recurring monthly spend policies for individual agents.",
+    "project_policy": "Lifetime spend policies for execution-bound projects.",
+    "active_incidents_title": "Active incidents",
+    "resolve_hard_stops": "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+    "unattributed": "Unattributed",
+    "company_budgets_title": "Company budgets",
+    "agent_budgets_title": "Agent budgets",
+    "project_budgets_title": "Project budgets"
+  },
+  "incident_card": {
+    "project_paused": "Project execution is paused. New work in this project will not start until you resolve the budget incident.",
+    "scope_paused": "This scope is paused. New heartbeats will not start until you resolve the budget incident.",
+    "applying": "Applying...",
+    "raise_budget": "Raise budget & resume",
+    "keep_paused": "Keep paused",
+    "budget_must_exceed": "The new budget must exceed current observed spend."
+  },
+  "policy_card": {
+    "lifetime_budget": "Lifetime budget",
+    "monthly_budget": "Monthly UTC budget",
+    "of_limit": "{{percent}}% of limit",
+    "no_cap": "No cap configured",
+    "disabled": "Disabled",
+    "unlimited": "Unlimited",
+    "project_paused": "Execution is paused for this project until the budget is raised or the incident is dismissed.",
+    "scope_paused": "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed.",
+    "saving": "Saving...",
+    "update_budget": "Update budget",
+    "set_budget": "Set budget",
+    "status_paused": "Paused",
+    "status_warning": "Warning",
+    "status_hard_stop": "Hard stop",
+    "status_healthy": "Healthy",
+    "observed": "Observed",
+    "budget": "Budget",
+    "soft_alert": "Soft alert at {{percent}}%",
+    "soft_alert_with_pause": "Soft alert at {{percent}}% · {{reason}} pause",
+    "remaining": "Remaining",
+    "budget_usd": "Budget (USD)"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "Paused by budget"
+  },
+  "empty": {
+    "select_company": "Select a company to view costs.",
+    "no_cost_events": "No cost events yet.",
+    "no_project_costs": "No project-attributed run costs yet.",
+    "no_finance_events": "No finance events yet. Add account-level charges once biller invoices or credits land.",
+    "no_finance_events_overview": "No finance events yet. Add account-level charges once biller invoices or credits land.",
+    "no_cost_events_period": "No cost events in this period.",
+    "no_billable_events": "No billable events in this period.",
+    "select_date_range": "Select a start and end date to load data.",
+    "no_budget_policies": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control."
+  },
+  "finance_timeline": {
+    "title": "Recent financial events",
+    "description": "Top-ups, fees, credits, commitments, and other non-request charges.",
+    "no_events": "No financial events in this period.",
+    "invoice": "invoice {{id}}",
+    "region": "region {{region}}",
+    "tier": "tier {{tier}}",
+    "estimated": "estimated"
+  },
+  "quota_card": {
+    "period_spend": "Period spend",
+    "of_allocation": "{{percent}}% of allocation",
+    "this_week": "This week",
+    "per_week": "~{{amount}} / wk",
+    "rolling_windows": "Rolling windows",
+    "subscription_quota": "Subscription quota",
+    "in_label": "in",
+    "out_label": "out",
+    "api_sub_runs": "~{{apiRuns}} api / ~{{subRuns}} sub runs",
+    "api_runs_only": "~{{apiRuns}} api runs",
+    "sub_runs_only": "~{{subRuns}} sub runs",
+    "percent_used": "{{percent}}% used",
+    "resets": "resets {{date}}"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} metered run",
+    "metered_runs_other": "{{count}} metered runs",
+    "subscription_runs_one": "{{count}} subscription run",
+    "subscription_runs_other": "{{count}} subscription runs",
+    "this_week": "this week",
+    "billing_types": "Billing types",
+    "upstream_providers": "Upstream providers"
+  },
+  "finance_kind": {
+    "title": "Financial event mix",
+    "description": "Account-level charges grouped by event kind.",
+    "no_events": "No finance events in this period.",
+    "events_one": "{{count}} event",
+    "events_other": "{{count}} events",
+    "billers_one": "{{count}} biller",
+    "billers_other": "{{count}} billers",
+    "debits": "debits"
+  },
+  "subscription_panel": {
+    "title": "Anthropic subscription",
+    "subtitle": "Live Claude quota windows.",
+    "runs": "runs",
+    "total": "total",
+    "in_label": "in",
+    "out_label": "out",
+    "sub_share": "{{percent}}% of token usage via subscription",
+    "subscription": "Subscription",
+    "resets": "Resets {{date}}",
+    "percent_used": "{{percent}}% used"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Inference charge",
+    "platform_fee": "Platform fee",
+    "credit_purchase": "Credit purchase",
+    "credit_refund": "Credit refund",
+    "credit_expiry": "Credit expiry",
+    "byok_fee": "BYOK fee",
+    "gateway_overhead": "Gateway overhead",
+    "log_storage_charge": "Log storage",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Provisioned capacity",
+    "training_charge": "Training",
+    "custom_model_import_charge": "Custom model import",
+    "custom_model_storage_charge": "Custom model storage",
+    "manual_adjustment": "Manual adjustment"
+  },
+  "finance_direction": {
+    "credit": "Credit",
+    "debit": "Debit"
+  }
+}

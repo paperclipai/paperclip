@@ -1,1 +1,215 @@
-{}
+{
+  "title": "Расходы",
+  "description": "Расходы на инференс, платформенные сборы, кредиты и лимиты квот.",
+  "tabs": {
+    "overview": "Обзор",
+    "budgets": "Бюджеты",
+    "providers": "Провайдеры",
+    "billers": "Выставители счетов",
+    "finance": "Финансы",
+    "all_providers": "Все провайдеры",
+    "all_billers": "Все выставители"
+  },
+  "presets": {
+    "mtd": "Текущий месяц",
+    "7d": "Последние 7 дней",
+    "30d": "Последние 30 дней",
+    "ytd": "С начала года",
+    "all": "За всё время",
+    "custom": "Произвольный"
+  },
+  "date_range": {
+    "to": "по"
+  },
+  "metrics": {
+    "inference_spend": "Расходы на инференс",
+    "budget": "Бюджет",
+    "finance_net": "Чистые финансы",
+    "finance_events": "Финансовые события",
+    "debits": "Дебеты",
+    "credits": "Кредиты",
+    "net": "Нетто",
+    "estimated": "Оценочно",
+    "active_incidents": "Активные инциденты",
+    "pending_approvals": "Ожидающие одобрения",
+    "paused_agents": "Агенты на паузе",
+    "paused_projects": "Проекты на паузе",
+    "open": "Открыто",
+    "no_monthly_cap": "Месячный лимит не установлен",
+    "unlimited_budget": "Безлимитный бюджет"
+  },
+  "subtitles": {
+    "tokens_across_events": "токенов по запросам",
+    "agents_paused_projects_paused": "{{agentCount}} агентов на паузе · {{projectCount}} проектов на паузе",
+    "monthly_utilized": "{{percent}}% месячного бюджета использовано.",
+    "refunds_offsets": "Возвраты, зачёты и возвраты кредитов",
+    "debit_minus_credit": "Дебет минус кредит за выбранный период",
+    "estimated_debits": "Оценочные дебеты, ещё не являющиеся авторитетными по счёту",
+    "threshold_crossings": "Мягкие или жёсткие пересечения порогов",
+    "budget_approvals_awaiting": "Одобрения превышения бюджета, ожидающие действия совета",
+    "heartbeats_blocked": "Запуски агентов заблокированы бюджетом",
+    "execution_blocked": "Выполнение проектов заблокировано бюджетом",
+    "estimated_in_range": "оценочно за период",
+    "debits_credits": "{{debits}} дебетов · {{credits}} кредитов",
+    "events_in_range_one": "{{count}} событие за период",
+    "events_in_range_few": "{{count}} события за период",
+    "events_in_range_many": "{{count}} событий за период",
+    "events_in_range_other": "{{count}} событий за период"
+  },
+  "budget": {
+    "of": "{{spend}} из {{budget}}",
+    "budget_label": "Бюджет {{amount}}"
+  },
+  "labels": {
+    "usage": "использование",
+    "tok": "ток",
+    "in_out_tokens": "вх. {{inTokens}} · исх. {{outTokens}}",
+    "api_runs": "{{count}} api",
+    "subscription_runs": "{{count}} подписка"
+  },
+  "cards": {
+    "inference_ledger": "Журнал инференса",
+    "inference_ledger_desc": "Расходы на инференс за выбранный период.",
+    "finance_ledger": "Финансовый журнал",
+    "finance_ledger_desc": "Платежи на уровне аккаунта, не привязанные к конкретному запросу.",
+    "by_agent": "По агентам",
+    "by_agent_desc": "Что потребил каждый агент за выбранный период.",
+    "by_project": "По проектам",
+    "by_project_desc": "Расходы на запуски, отнесённые к проектам через задачи.",
+    "by_biller": "По выставителям",
+    "by_biller_desc": "Финансовые события на уровне аккаунта, сгруппированные по источнику.",
+    "budget_control": "Панель управления бюджетом",
+    "budget_control_desc": "Жёсткие ограничения расходов для агентов и проектов. Квота подписки провайдера отображается в разделе «Провайдеры»."
+  },
+  "budgets": {
+    "company_policy": "Корпоративная ежемесячная политика.",
+    "agent_policy": "Повторяющиеся ежемесячные политики расходов для отдельных агентов.",
+    "project_policy": "Политики расходов на срок жизни проектов с выполнением.",
+    "active_incidents_title": "Активные инциденты",
+    "resolve_hard_stops": "Устраните жёсткие остановки здесь, повысив бюджет или явно оставив на паузе.",
+    "unattributed": "Без атрибуции",
+    "company_budgets_title": "Корпоративные бюджеты",
+    "agent_budgets_title": "Бюджеты агентов",
+    "project_budgets_title": "Бюджеты проектов"
+  },
+  "incident_card": {
+    "project_paused": "Выполнение проекта приостановлено. Новые задачи не начнутся, пока не устранён инцидент бюджета.",
+    "scope_paused": "Этот объём приостановлен. Новые heartbeat-запуски не начнутся, пока не устранён инцидент бюджета.",
+    "applying": "Применение...",
+    "raise_budget": "Повысить бюджет и возобновить",
+    "keep_paused": "Оставить на паузе",
+    "budget_must_exceed": "Новый бюджет должен превышать текущие наблюдаемые расходы."
+  },
+  "policy_card": {
+    "lifetime_budget": "Пожизненный бюджет",
+    "monthly_budget": "Ежемесячный UTC-бюджет",
+    "of_limit": "{{percent}}% от лимита",
+    "no_cap": "Лимит не настроен",
+    "disabled": "Отключено",
+    "unlimited": "Без ограничений",
+    "project_paused": "Выполнение проекта приостановлено, пока не повышен бюджет или инцидент не отклонён.",
+    "scope_paused": "Heartbeat-запуски приостановлены, пока не повышен бюджет или инцидент не отклонён.",
+    "saving": "Сохранение...",
+    "update_budget": "Обновить бюджет",
+    "set_budget": "Установить бюджет",
+    "status_paused": "На паузе",
+    "status_warning": "Предупреждение",
+    "status_hard_stop": "Жёсткая остановка",
+    "status_healthy": "В норме",
+    "observed": "Наблюдаемое",
+    "budget": "Бюджет",
+    "soft_alert": "Мягкое предупреждение при {{percent}}%",
+    "soft_alert_with_pause": "Мягкое предупреждение при {{percent}}% · пауза {{reason}}",
+    "remaining": "Остаток",
+    "budget_usd": "Бюджет (USD)"
+  },
+  "budget_sidebar_marker": {
+    "paused_by_budget": "Приостановлено по бюджету"
+  },
+  "empty": {
+    "select_company": "Выберите компанию для просмотра расходов.",
+    "no_cost_events": "Событий расходов пока нет.",
+    "no_project_costs": "Расходов на запуски проектов пока нет.",
+    "no_finance_events": "Финансовых событий пока нет. Добавьте платежи на уровне аккаунта после получения счетов.",
+    "no_finance_events_overview": "Финансовых событий пока нет. Добавьте платежи на уровне аккаунта после получения счетов.",
+    "no_cost_events_period": "Событий расходов за этот период нет.",
+    "no_billable_events": "Оплачиваемых событий за этот период нет.",
+    "select_date_range": "Выберите начальную и конечную даты для загрузки данных.",
+    "no_budget_policies": "Политик бюджета пока нет. Задайте бюджеты агентов и проектов со страниц их деталей или используйте существующий корпоративный ежемесячный бюджет."
+  },
+  "finance_timeline": {
+    "title": "Последние финансовые события",
+    "description": "Пополнения, сборы, кредиты, обязательства и другие внезапросные платежи.",
+    "no_events": "Финансовых событий в этом периоде нет.",
+    "invoice": "счёт {{id}}",
+    "region": "регион {{region}}",
+    "tier": "уровень {{tier}}",
+    "estimated": "оценочно"
+  },
+  "quota_card": {
+    "period_spend": "Расходы за период",
+    "of_allocation": "{{percent}}% от лимита",
+    "this_week": "Эта неделя",
+    "per_week": "~{{amount}} / нед.",
+    "rolling_windows": "Скользящие окна",
+    "subscription_quota": "Квота подписки",
+    "in_label": "вх.",
+    "out_label": "исх.",
+    "api_sub_runs": "~{{apiRuns}} api / ~{{subRuns}} подп. запусков",
+    "api_runs_only": "~{{apiRuns}} api запусков",
+    "sub_runs_only": "~{{subRuns}} подп. запусков",
+    "percent_used": "{{percent}}% использовано",
+    "resets": "сбрасывается {{date}}"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} тарифицированный запуск",
+    "metered_runs_other": "{{count}} тарифицированных запусков",
+    "subscription_runs_one": "{{count}} подписочный запуск",
+    "subscription_runs_other": "{{count}} подписочных запусков",
+    "this_week": "на этой неделе",
+    "billing_types": "Типы тарификации",
+    "upstream_providers": "Провайдеры"
+  },
+  "finance_kind": {
+    "title": "Структура финансовых событий",
+    "description": "Расходы на уровне аккаунта, сгруппированные по типу событий.",
+    "no_events": "Финансовых событий за этот период нет.",
+    "events_one": "{{count}} событие",
+    "events_other": "{{count}} событий",
+    "billers_one": "{{count}} выставитель",
+    "billers_other": "{{count}} выставителей",
+    "debits": "дебеты"
+  },
+  "subscription_panel": {
+    "title": "Подписка Anthropic",
+    "subtitle": "Актуальные окна квот Claude.",
+    "runs": "запусков",
+    "total": "всего",
+    "in_label": "вх.",
+    "out_label": "исх.",
+    "sub_share": "{{percent}}% использования токенов через подписку",
+    "subscription": "Подписка",
+    "resets": "Сбрасывается {{date}}",
+    "percent_used": "{{percent}}% использовано"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Плата за инференс",
+    "platform_fee": "Платформенный сбор",
+    "credit_purchase": "Покупка кредитов",
+    "credit_refund": "Возврат кредитов",
+    "credit_expiry": "Истечение кредитов",
+    "byok_fee": "Сбор BYOK",
+    "gateway_overhead": "Накладные расходы шлюза",
+    "log_storage_charge": "Хранение журналов",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Резервированная ёмкость",
+    "training_charge": "Обучение",
+    "custom_model_import_charge": "Импорт модели",
+    "custom_model_storage_charge": "Хранение модели",
+    "manual_adjustment": "Ручная корректировка"
+  },
+  "finance_direction": {
+    "credit": "Кредит",
+    "debit": "Дебет"
+  }
+}

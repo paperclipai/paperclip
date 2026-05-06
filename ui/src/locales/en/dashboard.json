@@ -1,1 +1,45 @@
-{}
+{
+  "title": "Dashboard",
+  "empty": {
+    "welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+    "get_started": "Get Started",
+    "select_company": "Create or select a company to view the dashboard.",
+    "no_tasks": "No tasks yet."
+  },
+  "budget": {
+    "active_incidents_one": "{{count}} active budget incident",
+    "active_incidents_other": "{{count}} active budget incidents",
+    "paused_summary": "{{agents}} agents paused · {{projects}} projects paused · {{approvals}} pending budget approvals",
+    "open_budgets": "Open budgets"
+  },
+  "metrics": {
+    "agents_enabled": "Agents Enabled",
+    "agents_description": "{{running}} running, {{paused}} paused, {{errors}} errors",
+    "tasks_in_progress": "Tasks In Progress",
+    "tasks_description": "{{open}} open, {{blocked}} blocked",
+    "month_spend": "Month Spend",
+    "budget_utilization": "{{percent}}% of {{budget}} budget",
+    "pending_approvals": "Pending Approvals",
+    "budget_overrides_pending_one": "{{count}} budget override awaiting board review",
+    "budget_overrides_pending_other": "{{count}} budget overrides awaiting board review",
+    "unlimited_budget": "Unlimited budget",
+    "awaiting_board": "Awaiting board review"
+  },
+  "charts": {
+    "run_activity": "Run Activity",
+    "issues_by_priority": "Issues by Priority",
+    "issues_by_status": "Issues by Status",
+    "success_rate": "Success Rate",
+    "last_14_days": "Last 14 days"
+  },
+  "live": {
+    "breadcrumb": "Live runs",
+    "title": "Live agent runs",
+    "subtitle": "Active runs first, followed by the most recent completed runs.",
+    "showing_up_to": "Showing up to {{count}}",
+    "active_recent": "Active / recent",
+    "empty_create_company": "Create a company to view live runs.",
+    "empty_select_company": "Select a company to view live runs.",
+    "panel_empty": "No active or recent agent runs."
+  }
+}

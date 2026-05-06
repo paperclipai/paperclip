@@ -1,1 +1,92 @@
-{}
+{
+  "title": "Inbox",
+  "tabs": {
+    "mine": "Mine",
+    "board": "Board",
+    "recent": "Recent",
+    "unread": "Unread",
+    "all": "All"
+  },
+  "actions": {
+    "retry": "Retry",
+    "retrying": "Retrying…",
+    "mark_as_read": "Mark as read",
+    "dismiss": "Dismiss",
+    "mark_all_read": "Mark all as read",
+    "marking": "Marking…"
+  },
+  "group": {
+    "none": "None",
+    "type": "Type",
+    "workspace": "Workspace",
+    "archived": "Archived",
+    "other": "Other results",
+    "group": "Group",
+    "earlier": "Earlier"
+  },
+  "search": {
+    "placeholder": "Search inbox…"
+  },
+  "filters": {
+    "category": "Category",
+    "approval_status": "Approval status",
+    "category_everything": "All categories",
+    "category_issues_i_touched": "My recent issues",
+    "category_join_requests": "Join requests",
+    "category_approvals": "Approvals",
+    "category_alerts": "Alerts",
+    "status_all": "All approval statuses",
+    "status_actionable": "Needs action",
+    "status_resolved": "Resolved"
+  },
+  "placeholders": {
+    "category": "Category",
+    "approval_status": "Approval status"
+  },
+  "misc": {
+    "human_join_request": "Human join request",
+    "run_error": "Run exited with an error.",
+    "enable_nesting": "Enable parent-child nesting",
+    "disable_nesting": "Disable parent-child nesting",
+    "choose_columns": "Choose which inbox columns stay visible"
+  },
+  "empty": {
+    "select_company": "Select a company to view inbox.",
+    "no_search_match": "No inbox items match your search.",
+    "inbox_zero": "Inbox zero.",
+    "no_new": "No new inbox items.",
+    "no_recent": "No recent inbox items.",
+    "no_match_filters": "No inbox items match these filters."
+  },
+  "join_queue": {
+    "title": "Join Request Queue",
+    "breadcrumb": "Join Requests",
+    "description": "Review human and agent join requests outside the mixed inbox feed. This queue uses the same approval mutations as the inline inbox cards.",
+    "select_company": "Select a company to review join requests.",
+    "loading": "Loading join requests…",
+    "permission_error": "You do not have permission to review join requests for this company.",
+    "failed_load": "Failed to load join requests.",
+    "filter_status": "Status",
+    "filter_type": "Request type",
+    "status_pending": "Pending approval",
+    "status_approved": "Approved",
+    "status_rejected": "Rejected",
+    "type_all": "All",
+    "type_human": "Human",
+    "type_agent": "Agent",
+    "empty": "No join requests match the current filters.",
+    "toast_approved": "Join request approved",
+    "toast_rejected": "Join request rejected",
+    "unknown_human": "Unknown human requester",
+    "unknown_agent": "Unknown agent requester",
+    "reject": "Reject",
+    "approve": "Approve",
+    "invite_context": "Invite context",
+    "invite_join_invite": "{{type}} join invite",
+    "invite_role": " • default role {{role}}",
+    "invite_unavailable": "Invite metadata unavailable",
+    "request_details": "Request details",
+    "submitted_at": "Submitted {{date}}",
+    "source_ip": "Source IP {{ip}}"
+  }
+}
