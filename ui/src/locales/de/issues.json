@@ -92,6 +92,7 @@
     "archive_from_inbox": "Aus Posteingang archivieren",
     "more_actions": "Weitere Aktionen",
     "copy_as_markdown": "Als Markdown kopieren",
+    "run_ledger_aria_label": "Aufgaben-Lauf-Journal",
     "properties": "Eigenschaften",
     "hide_issue": "Diese Aufgabe ausblenden",
     "show_properties": "Eigenschaften anzeigen",
@@ -286,7 +287,9 @@
     "ran_commands_one": "hat {{count}} Befehl ausgeführt",
     "ran_commands_other": "hat {{count}} Befehle ausgeführt",
     "called_tools_one": "hat {{count}} Tool aufgerufen",
-    "called_tools_other": "hat {{count}} Tools aufgerufen"
+    "called_tools_other": "hat {{count}} Tools aufgerufen",
+    "no_assignee_selected": "Kein Zuständiger ausgewählt",
+    "no_assignee_body": "Wählen Sie einen Zuständigen oder klicken Sie erneut auf Senden, um ohne einen zu posten."
   },
   "columns": {
     "button": "Spalten",
@@ -571,5 +574,9 @@
     "queued_ellipsis": "In Warteschlange...",
     "working": "Arbeitet...",
     "run_finished": "Ausführung beendet"
+  },
+  "related_work": {
+    "references": "Verweise",
+    "referenced_by": "Verwiesen von"
   }
 }

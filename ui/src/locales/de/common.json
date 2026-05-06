@@ -3,6 +3,7 @@
     "activity": "Aktivität",
     "agents": "Agenten",
     "issues": "Aufgaben",
+    "search": "Suchen",
     "my_issues": "Meine Aufgaben",
     "costs": "Kosten",
     "goals": "Ziele",
@@ -38,6 +39,7 @@
     "confirm": "Bestätigen",
     "close": "Schließen",
     "copy": "Kopieren",
+    "copy_code": "Code kopieren",
     "copied": "Kopiert",
     "loading": "Wird geladen...",
     "creating": "Wird erstellt...",
@@ -75,7 +77,9 @@
     "dismiss_from_inbox": "Aus Posteingang verwerfen",
     "assignment": "Zuweisung",
     "timer": "Timer",
-    "on_demand": "Auf Anfrage"
+    "on_demand": "Auf Anfrage",
+    "reset": "Zurücksetzen",
+    "run_now": "Jetzt ausführen"
   },
   "status": {
     "all": "Alle",
@@ -113,6 +117,15 @@
     "approved": "Genehmigt",
     "rejected": "Abgelehnt",
     "revision_requested": "Überarbeitung angefordert"
+  },
+  "status_labels": {
+    "backlog": "Backlog",
+    "todo": "Zu erledigen",
+    "in_progress": "In Bearbeitung",
+    "in_review": "In Prüfung",
+    "done": "Erledigt",
+    "blocked": "Blockiert",
+    "cancelled": "Abgebrochen"
   },
   "filter": {
     "filters": "Filter",
@@ -154,10 +167,17 @@
     "no_results": "Keine Ergebnisse gefunden.",
     "group_actions": "Aktionen",
     "group_pages": "Seiten",
+    "group_search": "Suchen",
     "create_issue": "Neue Aufgabe erstellen",
     "create_agent": "Neuen Agenten erstellen",
     "create_project": "Neues Projekt erstellen",
-    "title": "Befehlspalette"
+    "title": "Befehlspalette",
+    "no_quick_matches": "Keine schnellen Aufgabentreffer. Drücken Sie",
+    "to_search_all_hint": "um alle zu durchsuchen, oder tippen Sie weiter, um die Suche zu verfeinern.",
+    "search_all_for": "Alle nach \"{{query}}\" durchsuchen",
+    "open_full_search": "vollständige Suche öffnen",
+    "shortcut_create_issue": "C",
+    "command_dialog_description": "Nach einem auszuführenden Befehl suchen..."
   },
   "company_switcher": {
     "companies": "Unternehmen",
@@ -239,7 +259,10 @@
     "toast_archived": "\"{{name}}\" wurde archiviert",
     "toast_unarchived": "\"{{name}}\" wurde wiederhergestellt",
     "toast_archive_failed": "Projekt konnte nicht archiviert werden",
-    "toast_unarchive_failed": "Projekt konnte nicht wiederhergestellt werden"
+    "toast_unarchive_failed": "Projekt konnte nicht wiederhergestellt werden",
+    "add_project": "Projekt hinzufügen",
+    "no_projects": "Noch keine Projekte.",
+    "select_company_for_projects": "Wählen Sie ein Unternehmen, um Projekte anzuzeigen."
   },
   "board_claim": {
     "invalid_url": "Ungültige Board-Claim-URL.",
@@ -317,7 +340,37 @@
     "failed_load": "Arbeitsbereich konnte nicht geladen werden",
     "tab_configuration": "Konfiguration",
     "tab_runtime_logs": "Laufzeitprotokolle",
-    "tab_issues": "Aufgaben"
+    "tab_issues": "Aufgaben",
+    "tab_routines": "Routinen",
+    "configure_workspace_desc": "Konfigurieren Sie den konkreten Laufzeit-Workspace, den Paperclip für diesen Aufgabenfluss wiederverwendet.",
+    "configure_workspace_detail": "Diese Einstellungen bleiben mit dem Ausführungs-Workspace verknüpft, damit zukünftige Läufe lokale Pfade, Repo-Refs, Bereitstellung, Abbau und Laufzeit-Dienst-Verhalten mit dem tatsächlich wiederverwendeten Workspace synchron halten können.",
+    "workspace_settings_title": "Workspace-Einstellungen",
+    "workspace_settings_desc": "Bearbeiten Sie den konkreten Pfad, das Repo, den Branch, die Bereitstellung, den Abbau und die Laufzeit-Überschreibungen, die mit diesem Ausführungs-Workspace verknüpft sind.",
+    "runtime_config_source_title": "Quelle der Laufzeitkonfiguration",
+    "runtime_config_source_execution": "Dieser Ausführungs-Workspace überschreibt derzeit die Laufzeitkonfiguration des Projekt-Workspaces.",
+    "runtime_config_source_project": "Dieser Ausführungs-Workspace erbt die Laufzeitkonfiguration des Projekt-Workspaces.",
+    "runtime_config_source_none": "Auf diesem Ausführungs-Workspace oder seinem Projekt-Workspace ist derzeit keine Laufzeitkonfiguration definiert.",
+    "runtime_source_execution_override": "Ausführungs-Workspace-Überschreibung",
+    "runtime_source_project_default": "Projekt-Workspace-Standard",
+    "runtime_source_none": "keine",
+    "services_and_jobs_title": "Dienste und Jobs",
+    "services_source_label": "Quelle: {{source}}",
+    "workspace_context_title": "Workspace-Kontext",
+    "workspace_context_desc": "Verknüpfte Objekte und Beziehungen",
+    "concrete_location_title": "Konkreter Speicherort",
+    "concrete_location_desc": "Pfade und Refs",
+    "workspace_routines_title": "Workspace-Routinen",
+    "workspace_routines_desc": "Routinen, die workspace-spezifische Variablen verwenden, können gegen diesen Ausführungs-Workspace ausgeführt werden.",
+    "runtime_cleanup_logs_title": "Laufzeit- und Bereinigungsprotokolle",
+    "runtime_cleanup_logs_desc": "Letzte Operationen",
+    "workspace_count": "{{count}} Workspace",
+    "workspace_count_plural": "{{count}} Workspaces",
+    "no_activity_yet": "Noch keine Workspace-Aktivität.",
+    "provision_command_hint": "Wird ausgeführt, wenn Paperclip diesen Ausführungs-Workspace vorbereitet",
+    "teardown_command_hint": "Wird ausgeführt, wenn der Ausführungs-Workspace archiviert oder bereinigt wird",
+    "cleanup_command_hint": "Workspace-spezifische Bereinigung vor dem Abbau",
+    "advanced_runtime_override_desc": "Überschreiben Sie das geerbte Workspace-Befehlsmodell nur, wenn dieser Ausführungs-Workspace wirklich ein anderes Dienst- oder Job-Verhalten benötigt.",
+    "workspace_commands_hint": "Legacy-`services`-Arrays funktionieren weiterhin, aber `commands` unterstützt sowohl Dienste als auch Jobs."
   },
   "plugins": {
     "breadcrumb_plugins": "Plugins",
@@ -409,7 +462,24 @@
     "example_badge": "Beispiel",
     "no_description": "Keine Beschreibung vorhanden.",
     "error_state_desc": "{{name}} ist in einen Fehlerzustand geraten.",
-    "plugin_fallback": "Plugin"
+    "plugin_fallback": "Plugin",
+    "this_plugin": "Dieses Plugin",
+    "env_drivers_heading": "Konfigurieren Sie dieses Plugin in den Unternehmensumgebungen.",
+    "env_drivers_body": "{{drivers}} registriert dort Umgebungs-Laufzeiteinstellungen, damit Anmeldedaten unternehmensbezogen bleiben statt instanzweit.",
+    "env_drivers_link": "Unternehmensumgebungen öffnen",
+    "relative_just_now": "gerade eben",
+    "relative_seconds_ago": "vor {{count}}s",
+    "relative_minutes_ago": "vor {{count}}min",
+    "relative_hours_ago": "vor {{count}}h",
+    "relative_days_ago": "vor {{count}}d",
+    "uptime_none": "—",
+    "uptime_seconds": "{{count}}s",
+    "uptime_minutes": "{{count}}min {{seconds}}s",
+    "uptime_hours": "{{count}}h {{minutes}}min",
+    "uptime_days": "{{count}}d {{hours}}h",
+    "duration_ms": "{{count}}ms",
+    "duration_s": "{{count}}s",
+    "duration_m": "{{count}}min"
   },
   "sidebar": {
     "new_issue": "Neue Aufgabe",
@@ -424,7 +494,18 @@
     "worktree_copy_title": "Klicken, um Worktree-Namen zu kopieren",
     "worktree_copied": "Kopiert!",
     "agent_paused_by_budget": "Agent durch Budget pausiert",
-    "project_paused_by_budget": "Projekt durch Budget pausiert"
+    "project_paused_by_budget": "Projekt durch Budget pausiert",
+    "resume_agent": "Agent fortsetzen",
+    "pause_agent": "Agent pausieren",
+    "updating": "Wird aktualisiert...",
+    "budget_paused": "Budget pausiert",
+    "edit_agent": "Agent bearbeiten",
+    "agent_paused_by_budget_limits": "Agent wurde durch Budgetgrenzen pausiert",
+    "open_agent_actions": "Aktionen für {{name}} öffnen",
+    "toast_agent_paused": "Agent pausiert",
+    "toast_agent_resumed": "Agent fortgesetzt",
+    "toast_pause_failed": "Agent konnte nicht pausiert werden",
+    "toast_resume_failed": "Agent konnte nicht fortgesetzt werden"
   },
   "cloud_access_gate": {
     "loading": "Wird geladen...",
@@ -516,7 +597,24 @@
     "cleanup_command": "Bereinigungsbefehl",
     "workspace_commands_json": "Arbeitsbereich-Befehle JSON",
     "inherit_project_workspace_runtime": "Projekt-Arbeitsbereich-Laufzeitkonfiguration erben",
-    "reset_to_inherit": "Zum Erben zurücksetzen"
+    "reset_to_inherit": "Zum Erben zurücksetzen",
+    "project_workspace": "Projekt-Workspace",
+    "source_issue": "Quell-Aufgabe",
+    "derived_from": "Abgeleitet von",
+    "workspace_id": "Workspace-ID",
+    "working_dir": "Arbeitsverzeichnis",
+    "provider_ref": "Anbieter-Ref",
+    "branch": "Branch",
+    "opened": "Geöffnet",
+    "last_used": "Zuletzt verwendet",
+    "cleanup": "Bereinigung",
+    "not_scheduled": "Nicht geplant",
+    "none": "Keine",
+    "general": "Allgemein",
+    "source_control": "Versionskontrolle",
+    "paths": "Pfade",
+    "lifecycle_commands": "Lebenszyklus-Befehle",
+    "runtime_config": "Laufzeitkonfiguration"
   },
   "workspace_types": {
     "local_git_checkout": "Lokaler Git-Checkout",
@@ -589,6 +687,9 @@
     "long_running_desc": "Dauerlaufende Befehle, die Paperclip für diesen Arbeitsbereich überwachen kann.",
     "one_shot_desc": "Einmalige Befehle, die jetzt ausgeführt werden und beim Abschluss beenden.",
     "mismatched_services_desc": "Laufende Dienste, die nicht mehr der aktuellen Arbeitsbereich-Befehlskonfiguration entsprechen.",
+    "default_agent_set": "Standard-Agentensatz",
+    "choose_agent_when_running": "Agent beim Ausführen wählen",
+    "last_run": "Letzter Lauf {{time}}",
     "run_once": "einmalig ausführen",
     "kind_service": "Dienst",
     "kind_job": "Auftrag",
@@ -639,7 +740,13 @@
     "close_workspace": "Arbeitsbereich schließen",
     "retry_was_skipped": "Wiederholung wurde übersprungen.",
     "detach_skill_first": "Trennen Sie diesen Skill von allen Agenten, bevor Sie ihn entfernen.",
-    "select_skill_inspect": "Wählen Sie einen Skill, um seine Dateien zu prüfen."
+    "select_skill_inspect": "Wählen Sie einen Skill, um seine Dateien zu prüfen.",
+    "loading_routines": "Routinen werden geladen...",
+    "no_routines_with_workspace_vars": "Noch keine Routinen verwenden workspace-spezifische Variablen.",
+    "routine_started": "Routine gestartet",
+    "routine_started_body": "Paperclip hat einen Lauf mit diesem Ausführungs-Workspace erstellt.",
+    "routine_run_failed": "Routinen-Lauf fehlgeschlagen",
+    "routine_run_failed_body": "Paperclip konnte den Routinen-Lauf nicht starten."
   },
   "path_instructions": {
     "windows": "Windows",
@@ -672,19 +779,46 @@
     "tooltip_issues": "{{day}}: {{total}} Aufgaben",
     "tooltip_success_rate": "{{day}}: {{rate}}% ({{succeeded}}/{{total}})"
   },
-  "duration": {
-    "seconds_one": "{{count}} Sekunde",
-    "seconds_other": "{{count}} Sekunden",
-    "minutes_one": "{{count}} Minute",
-    "minutes_other": "{{count}} Minuten",
-    "hours_one": "{{count}} Stunde",
-    "hours_other": "{{count}} Stunden",
-    "hours_minutes_one": "{{hours}} Stunde {{minutes}} Min.",
-    "hours_minutes_other": "{{hours}} Stunden {{minutes}} Min."
-  },
   "layout": {
     "skip_to_main_content": "Zum Hauptinhalt springen",
-    "close_sidebar": "Seitenleiste schließen"
+    "close_sidebar": "Seitenleiste schließen",
+    "open_sidebar": "Seitenleiste öffnen",
+    "mobile_navigation": "Mobile Navigation",
+    "scroll_to_bottom": "Zum Ende scrollen",
+    "dismiss_notification": "Benachrichtigung schließen"
+  },
+  "app_shell": {
+    "create_another_company": "Weiteres Unternehmen erstellen",
+    "create_first_company": "Erstellen Sie Ihr erstes Unternehmen",
+    "add_agent": "Agent hinzufügen",
+    "start_onboarding": "Onboarding starten",
+    "new_company": "Neues Unternehmen"
+  },
+  "keyboard_shortcuts": {
+    "search_or_quick": "Aktuelle Seite durchsuchen oder Schnellsuche",
+    "new_issue": "Neue Aufgabe",
+    "title": "Tastaturkürzel",
+    "section_inbox": "Posteingang",
+    "section_issue_detail": "Aufgabendetails",
+    "section_global": "Global",
+    "move_down": "Nach unten",
+    "move_up": "Nach oben",
+    "collapse_group": "Ausgewählte Gruppe einklappen",
+    "expand_group": "Ausgewählte Gruppe ausklappen",
+    "open_item": "Ausgewählten Eintrag öffnen",
+    "archive_item": "Eintrag archivieren",
+    "mark_as_read": "Als gelesen markieren",
+    "mark_as_unread": "Als ungelesen markieren",
+    "quick_archive": "Schnell zurück in den Posteingang archivieren",
+    "go_to_inbox": "Zum Posteingang",
+    "focus_comment": "Kommentarfeld fokussieren",
+    "toggle_sidebar": "Seitenleiste umschalten",
+    "toggle_panel": "Bereich umschalten",
+    "show_shortcuts": "Tastaturkürzel anzeigen",
+    "then": "dann",
+    "footer_press": "Drücken Sie",
+    "footer_to_close": "zum Schließen",
+    "footer_disabled_in_text": "Tastenkürzel sind in Textfeldern deaktiviert"
   },
   "auth": {
     "loading": "Laden…",
@@ -704,5 +838,15 @@
     "create_one": "Erstellen",
     "sign_in_link": "Anmelden",
     "failed": "Authentifizierung fehlgeschlagen"
+  },
+  "duration": {
+    "seconds_one": "{{count}} Sekunde",
+    "seconds_other": "{{count}} Sekunden",
+    "minutes_one": "{{count}} Minute",
+    "minutes_other": "{{count}} Minuten",
+    "hours_one": "{{count}} Stunde",
+    "hours_other": "{{count}} Stunden",
+    "hours_minutes_one": "{{hours}} Stunde {{minutes}} Min.",
+    "hours_minutes_other": "{{hours}} Stunden {{minutes}} Min."
   }
 }

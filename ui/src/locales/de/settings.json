@@ -12,6 +12,7 @@
   "profile": {
     "title": "Profil",
     "instance_breadcrumb": "Instanzeinstellungen",
+    "loading": "Profil wird geladen...",
     "error_update_failed": "Profil konnte nicht aktualisiert werden.",
     "error_upload_failed": "Avatar konnte nicht hochgeladen werden.",
     "error_remove_failed": "Avatar konnte nicht entfernt werden.",
@@ -30,8 +31,7 @@
     "email_label": "E-Mail",
     "email_hint": "Die E-Mail wird durch Ihre Auth-Sitzung verwaltet und ist hier schreibgeschützt.",
     "save": "Profil speichern",
-    "saving": "Wird gespeichert...",
-    "loading": "Profil wird geladen..."
+    "saving": "Wird gespeichert..."
   },
   "instance": {
     "title": "Allgemein",
@@ -160,7 +160,10 @@
     "empty": "Keine Scheduler-Heartbeats entsprechen den aktuellen Kriterien.",
     "full_agent_config": "Vollständige Agentenkonfiguration",
     "disable_timer": "Timer-Heartbeat deaktivieren",
-    "enable_timer": "Timer-Heartbeat aktivieren"
+    "enable_timer": "Timer-Heartbeat aktivieren",
+    "on": "An",
+    "off": "Aus",
+    "never": "nie"
   },
   "experimental": {
     "title": "Experimentell",
@@ -168,12 +171,39 @@
     "loading": "Experimentelle Einstellungen werden geladen...",
     "failed_load": "Experimentelle Einstellungen konnten nicht geladen werden.",
     "failed_update": "Experimentelle Einstellungen konnten nicht aktualisiert werden.",
+    "failed_preview": "Vorschau für Wiederherstellungsaufgaben fehlgeschlagen.",
+    "failed_run": "Erstellen von Wiederherstellungsaufgaben fehlgeschlagen.",
+    "environments_title": "Umgebungen aktivieren",
+    "environments_desc": "Umgebungsverwaltung in den Unternehmenseinstellungen anzeigen und Steuerelemente für Projekt- und Agenten-Umgebungszuweisungen erlauben.",
+    "environments_aria": "Experimentelle Umgebungseinstellung umschalten",
     "isolated_workspaces_title": "Isolierte Arbeitsbereiche aktivieren",
     "isolated_workspaces_desc": "Zeigt Ausführungsarbeitsbereichssteuerungen in der Projektkonfiguration an und ermöglicht isoliertes Arbeitsbereichsverhalten für neue und bestehende Aufgaben-Ausführungen.",
     "isolated_workspaces_aria": "Experimentelle Einstellung für isolierte Arbeitsbereiche umschalten",
     "auto_restart_title": "Entwicklungsserver bei Inaktivität automatisch neu starten",
     "auto_restart_desc": "In `pnpm dev:once` warten, bis alle wartenden und laufenden lokalen Agenten-Ausführungen abgeschlossen sind, dann den Server automatisch neu starten, wenn Backend-Änderungen oder Migrationen den aktuellen Start veraltet machen.",
-    "auto_restart_aria": "Gesicherten Entwicklungsserver-Auto-Neustart umschalten"
+    "auto_restart_aria": "Gesicherten Entwicklungsserver-Auto-Neustart umschalten",
+    "auto_recovery_title": "Aufgaben-Wiederherstellungstasks automatisch erstellen",
+    "auto_recovery_desc": "Lassen Sie den Heartbeat-Scheduler Wiederherstellungsaufgaben für Aufgaben-Abhängigkeitsketten erstellen, die innerhalb des konfigurierten Rückblickfensters gefunden werden.",
+    "auto_recovery_aria": "Auto-Wiederherstellung der Aufgaben-Graph-Lebendigkeit umschalten",
+    "lookback_hours": "Rückblickstunden",
+    "lookback_hours_invalid": "Rückblickstunden müssen eine ganze Zahl zwischen 1 und 720 sein.",
+    "save_hours": "Stunden speichern",
+    "preview": "Vorschau",
+    "run_now": "Jetzt ausführen",
+    "current_window_one": "Aktuelles Fenster: letzte {{count}} Stunde.",
+    "current_window_other": "Aktuelles Fenster: letzte {{count}} Stunden.",
+    "confirm_title": "Auto-Wiederherstellung bestätigen",
+    "confirm_checking": "Wiederherstellungskandidaten werden vor dem Aktivieren geprüft.",
+    "confirm_task_count_one": "{{count}} Wiederherstellungsaufgabe entspricht den letzten {{hours}} Stunden.",
+    "confirm_task_count_other": "{{count}} Wiederherstellungsaufgaben entsprechen den letzten {{hours}} Stunden.",
+    "confirm_no_tasks": "Derzeit würden keine Wiederherstellungsaufgaben erstellt. Auto-Wiederherstellung kann weiterhin für zukünftige Lebendigkeits-Vorfälle in diesem Fenster ausgeführt werden.",
+    "confirm_recovery_target": "Wiederherstellungsziel:",
+    "confirm_skipped_one": "{{count}} aktueller Befund liegt außerhalb des konfigurierten Rückblicks und wird nicht berührt.",
+    "confirm_skipped_other": "{{count}} aktuelle Befunde liegen außerhalb des konfigurierten Rückblicks und werden nicht berührt.",
+    "confirm_cancel": "Abbrechen",
+    "confirm_enable_only": "Nur aktivieren",
+    "confirm_enable_create": "Aktivieren und {{count}} erstellen",
+    "confirm_enable": "Aktivieren"
   },
   "access": {
     "breadcrumb_settings": "Instanzeinstellungen",

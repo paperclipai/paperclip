@@ -31,5 +31,15 @@
     "issues_by_status": "Aufgaben nach Status",
     "success_rate": "Erfolgsrate",
     "last_14_days": "Letzte 14 Tage"
+  },
+  "live": {
+    "breadcrumb": "Live-Läufe",
+    "title": "Live-Agentenläufe",
+    "subtitle": "Aktive Läufe zuerst, gefolgt von den zuletzt abgeschlossenen Läufen.",
+    "showing_up_to": "Bis zu {{count}} werden angezeigt",
+    "active_recent": "Aktiv / letzte",
+    "empty_create_company": "Erstellen Sie ein Unternehmen, um Live-Läufe anzuzeigen.",
+    "empty_select_company": "Wählen Sie ein Unternehmen, um Live-Läufe anzuzeigen.",
+    "panel_empty": "Keine aktiven oder kürzlichen Agentenläufe."
   }
 }

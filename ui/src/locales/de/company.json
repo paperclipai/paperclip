@@ -32,7 +32,9 @@
       "remove_logo": "Logo entfernen",
       "removing_logo": "Wird entfernt...",
       "clear_color": "Löschen",
-      "uploading_logo": "Logo wird hochgeladen..."
+      "uploading_logo": "Logo wird hochgeladen...",
+      "saving": "Wird gespeichert...",
+      "failed_to_save": "Speichern fehlgeschlagen"
     },
     "status": {
       "saved": "Gespeichert",
@@ -49,7 +51,12 @@
       "terms_version": "Nutzungsbedingungen-Version:",
       "enabled_at": "Aktiviert",
       "currently_disabled": "Teilen ist derzeit deaktiviert.",
-      "read_tos": "Nutzungsbedingungen lesen"
+      "read_tos": "Nutzungsbedingungen lesen",
+      "enabled_at_by": "Aktiviert am {{date}} von {{user}}",
+      "sharing_enabled": "Feedback-Teilen aktiviert",
+      "sharing_disabled": "Feedback-Teilen deaktiviert",
+      "sharing_update_failed": "Feedback-Teilen-Einstellung konnte nicht aktualisiert werden",
+      "unknown_error": "Unbekannter Fehler"
     },
     "openclaw": {
       "generate_snippet": "Einen OpenClaw-Agenten-Einladungsschnipsel generieren.",
@@ -58,7 +65,9 @@
       "snippet_label": "OpenClaw-Einladungs-Prompt",
       "copied": "Kopiert",
       "copy_snippet": "Schnipsel kopieren",
-      "copied_snippet": "Schnipsel kopiert"
+      "copied_snippet": "Schnipsel kopiert",
+      "generate_snippet_hint": "Erzeugt eine kurzlebige OpenClaw-Agenten-Einladung und zeigt einen Prompt zum Kopieren an.",
+      "failed_to_create": "Einladung konnte nicht erstellt werden"
     },
     "packages": {
       "moved_notice": "Import und Export wurden auf dedizierte Seiten verschoben, die über das",
@@ -70,8 +79,10 @@
     "danger": {
       "archive_notice": "Dieses Unternehmen archivieren, um es aus der Seitenleiste auszublenden. Dies bleibt in der Datenbank erhalten.",
       "archive_button": "Unternehmen archivieren",
+      "already_archived": "Bereits archiviert",
       "archiving": "Wird archiviert...",
-      "confirm_archive": "Unternehmen archivieren"
+      "confirm_archive": "Unternehmen archivieren",
+      "archive_failed": "Unternehmen konnte nicht archiviert werden"
     }
   },
   "import": {
@@ -146,7 +157,22 @@
     "export_button": "Exportieren",
     "loading_data": "Exportdaten werden geladen...",
     "select_company": "Wählen Sie ein Unternehmen zum Exportieren.",
-    "company_export_title": "{{name}}-Export"
+    "company_export_title": "{{name}}-Export",
+    "binary_not_available": "Vorschau für Binärdateien ist für diesen Dateityp nicht verfügbar.",
+    "org_chart_breadcrumb": "Organigramm",
+    "selection_count_one": "{{selected}} / {{total}} Datei ausgewählt",
+    "selection_count_other": "{{selected}} / {{total}} Dateien ausgewählt",
+    "warnings_count_one": "{{count}} Warnung",
+    "warnings_count_other": "{{count}} Warnungen",
+    "export_count_one": "{{count}} Datei exportieren",
+    "export_count_other": "{{count}} Dateien exportieren",
+    "show_more_issues_count": "Mehr Aufgaben anzeigen ({{visible}} von {{total}})",
+    "toast_failed_title": "Export fehlgeschlagen",
+    "toast_failed_load": "Exportdaten konnten nicht geladen werden.",
+    "toast_failed_build": "Export-Paket konnte nicht erstellt werden.",
+    "toast_downloaded_title": "Export heruntergeladen",
+    "toast_downloaded_body_one": "{{count}} Datei exportiert als {{path}}.zip",
+    "toast_downloaded_body_other": "{{count}} Dateien exportiert als {{path}}.zip"
   },
   "invites": {
     "no_company": "Wählen Sie ein Unternehmen, um Einladungen zu verwalten.",
@@ -457,7 +483,10 @@
     "toast_approved": "Beitrittsanfrage genehmigt",
     "toast_rejected": "Beitrittsanfrage abgelehnt",
     "unknown_human": "Unbekannter menschlicher Anfrager",
-    "unknown_agent": "Unbekannter Agenten-Anfrager"
+    "unknown_agent": "Unbekannter Agenten-Anfrager",
+    "breadcrumb_inbox": "Posteingang",
+    "company_fallback": "Unternehmen",
+    "description_extra": "Diese Warteschlange verwendet die gleichen Genehmigungsmutationen wie die Inline-Posteingangskarten."
   },
   "invite": {
     "invalid_token": "Ungültiges Einladungs-Token.",
@@ -658,6 +687,7 @@
     "no_company": "Unternehmen auswählen, um Umgebungen zu verwalten.",
     "disabled_notice": "Umgebungen in den experimentellen Instanzeinstellungen aktivieren, um Unternehmens-Ausführungsziele zu verwalten.",
     "info_matrix": "Umgebungsoptionen verwenden dieselbe Adapter-Unterstützungsmatrix wie Agent-Standards. SSH ist immer für fernverwaltete Adapter verfügbar, und Sandbox-Umgebungen erscheinen nur, wenn ein ausführbares Sandbox-Provider-Plugin installiert ist.",
+    "table_caption": "Umgebungsunterstützung nach Adapter",
     "table_adapter": "Adapter",
     "table_local": "Lokal",
     "table_ssh": "SSH",
@@ -717,8 +747,7 @@
     "toast_probe_failed": "Umgebungstest fehlgeschlagen",
     "toast_probe_failed_body": "Umgebungstest fehlgeschlagen.",
     "toast_draft_passed": "Entwurfstest bestanden",
-    "toast_draft_failed": "Entwurfstest fehlgeschlagen",
-    "table_caption": "Umgebungsunterstützung nach Adapter"
+    "toast_draft_failed": "Entwurfstest fehlgeschlagen"
   },
   "project": {
     "budget": {
@@ -745,5 +774,42 @@
       "status_healthy": "Gesund",
       "error_invalid_amount": "Bitte gib einen gültigen nicht-negativen Dollarbetrag ein."
     }
+  },
+  "user_profile": {
+    "breadcrumb_users": "Benutzer",
+    "select_company": "Wählen Sie ein Unternehmen, um Benutzerprofile anzuzeigen.",
+    "not_found": "Benutzerprofil für dieses Unternehmen nicht gefunden.",
+    "last_14_days": "Letzte 14 Tage",
+    "tokens_total": "Tokens insgesamt",
+    "tokens_per_day": "Tokens / Tag",
+    "completions": "Abschlüsse",
+    "done": "erledigt",
+    "stat_touched": "Berührt",
+    "stat_completed": "Abgeschlossen",
+    "stat_comments": "Kommentare",
+    "stat_actions": "Aktionen",
+    "stat_tokens": "Tokens",
+    "stat_spend": "Ausgaben",
+    "stat_created": "Erstellt",
+    "stat_open": "Offen",
+    "issue_linked_usage": "Aufgaben-bezogene Nutzung",
+    "billed_through": "Abgerechnet über {{provider}}",
+    "hero_all_time_tokens": "Tokens insgesamt",
+    "hero_completed": "Abgeschlossen",
+    "hero_open_assigned": "Offen zugewiesen",
+    "hero_7day_actions": "7-Tage-Aktionen",
+    "hero_spent": "{{amount}} ausgegeben",
+    "hero_rate": "{{rate}} Rate",
+    "hero_created": "{{n}} erstellt",
+    "hero_comments": "{{n}} Kommentare",
+    "recent_tasks": "Letzte Aufgaben",
+    "no_recent_tasks": "Noch keine berührten Aufgaben.",
+    "recent_activity": "Letzte Aktivität",
+    "no_recent_activity": "Noch keine direkten Benutzeraktionen aufgezeichnet.",
+    "agent_attribution": "Agenten-Zuordnung",
+    "no_agent_usage": "Noch keine aufgaben-bezogene Token-Nutzung.",
+    "provider_mix": "Anbieter-Mix",
+    "no_provider_usage": "Noch keine Anbieter-Nutzung zugeordnet.",
+    "joined": "beigetreten am {{date}}"
   }
 }

@@ -221,10 +221,13 @@
     "unsaved_changes": "Nicht gespeicherte Änderungen",
     "section_identity": "Identität",
     "section_adapter": "Adapter",
+    "section_execution": "Ausführung",
     "section_permissions": "Berechtigungen & Konfiguration",
     "section_run_policy": "Ausführungsrichtlinie",
     "heartbeat_prefix": "Heartbeat alle ausführen",
     "hint_prefix": "Hinweis",
+    "experimental_badge": "Experimentell",
+    "primary_model": "Primäres Modell",
     "model_default": "Standard",
     "model_required": "Modell auswählen (erforderlich)",
     "model_select": "Modell auswählen",
@@ -241,6 +244,9 @@
       "prompt_template": "Prompt-Vorlage",
       "prompt_template_placeholder": "Sie sind Agent {{ agent.name }}. Ihre Rolle ist {{ agent.role }}...",
       "adapter_type": "Adapter-Typ",
+      "default_environment": "Standardumgebung",
+      "default_environment_hint": "Standard-Ausführungsziel auf Agentenebene. Projekt- und Aufgabeneinstellungen können dies weiterhin überschreiben.",
+      "default_environment_company_local": "Unternehmensstandard (Lokal)",
       "working_dir": "Arbeitsverzeichnis (veraltet)",
       "working_dir_placeholder": "/pfad/zum/projekt",
       "command": "Befehl",
@@ -253,23 +259,48 @@
       "grace_sec": "Unterbrechungs-Toleranzzeit (Sek.)",
       "cooldown_sec": "Abkühlzeit (Sek.)",
       "max_concurrent_runs": "Max. gleichzeitige Ausführungen",
+      "continue_after_max_turn": "Nach max-turn-Stopp fortsetzen",
+      "continuation_attempts": "Fortsetzungsversuche",
+      "continuation_delay_sec": "Fortsetzungsverzögerung (Sek.)",
       "model": "Modell",
       "model_search_placeholder": "Modelle suchen...",
       "model_search_creatable_placeholder": "Modelle suchen... (Eingabe zum Erstellen)",
       "thinking_effort": "Denkaufwand",
       "heartbeat_on_interval": "Heartbeat im Intervall",
       "wake_on_demand": "Bei Bedarf wecken",
-      "advanced_run_policy": "Erweiterte Ausführungsrichtlinie"
+      "advanced_run_policy": "Erweiterte Ausführungsrichtlinie",
+      "unit_sec": "Sek."
+    },
+    "options": {
+      "auto": "Auto",
+      "minimal": "Minimal",
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "xhigh": "X-Hoch",
+      "plan": "Plan",
+      "ask": "Fragen",
+      "max": "Max"
     },
     "actions": {
       "save": "Speichern",
       "saving": "Wird gespeichert...",
+      "test": "Testen",
       "test_environment": "Umgebung testen",
       "testing": "Wird getestet...",
       "detect_model": "Modell erkennen",
       "detecting": "Wird erkannt...",
       "re_detect_from_config": "Erneut aus Konfiguration erkennen",
-      "detect_from_config": "Aus Konfiguration erkennen"
+      "detect_from_config": "Aus Konfiguration erkennen",
+      "refresh_models": "Modelle aktualisieren",
+      "refreshing": "Wird aktualisiert..."
+    },
+    "errors": {
+      "select_company_secrets": "Wählen Sie ein Unternehmen, um Secrets zu erstellen",
+      "select_company_images": "Wählen Sie ein Unternehmen, um Bilder hochzuladen",
+      "select_company_detect_model": "Wählen Sie ein Unternehmen, um das Modell zu erkennen",
+      "select_company_test_environment": "Wählen Sie ein Unternehmen, um die Adapter-Umgebung zu testen",
+      "failed_refresh_models": "Adapter-Modelle konnten nicht aktualisiert werden."
     },
     "status": {
       "passed": "Bestanden",
@@ -280,9 +311,18 @@
       "no_model_detected_hint": "Noch kein Modell erkannt. Geben Sie manuell einen Anbieter/Modell ein.",
       "no_models_found": "Keine Modelle gefunden.",
       "failed_load_models": "Adapter-Modelle konnten nicht geladen werden.",
+      "live_opencode_local_only": "Live-OpenCode-Modellerkennung wird nur für lokale Umgebungen ausgeführt. Für {{name}} werden die kuratierte Liste und manuelle Eingabe verwendet.",
       "model_badge_current": "aktuell",
       "model_badge_detected": "erkannt",
       "model_badge_config": "Konfiguration"
+    },
+    "cheap_model": {
+      "label": "Günstiges Modell",
+      "description": "Wird verwendet, wenn ein Lauf das günstige Profil anfordert (z.B. Routine-Zusammenfassungen). Das primäre Modell bleibt unverändert.",
+      "adapter_default_placeholder": "Adapter-Standard · {{model}}",
+      "no_default_placeholder": "Kein Adapter-Standard — wählen Sie ein günstigeres Modell",
+      "fallback_note": "Kein explizites günstiges Modell ausgewählt — die Laufzeit greift auf {{model}} zurück.",
+      "no_default_warning": "Kein günstiges Modell ausgewählt und der Adapter hat keinen Standard. Cheap-Lane-Läufe werden mit dem primären Modell und einem Fallback-Hinweis fortgesetzt."
     },
     "permissions": {
       "enabled_ceo": "Automatisch für CEO-Agenten aktiviert.",
