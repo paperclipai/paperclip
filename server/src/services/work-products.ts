@@ -387,7 +387,7 @@ function rowToDeliverableListItem(row: DeliverableQueryRow): DeliverableListItem
 
   // Treat the child issue as the root only when there is no resolvable parent
   // chain. The recursive CTE returns the same id for issues with no parent.
-  const rootIsSelf = row.ri_id == null || row.ri_id === row.ci_id;
+  const rootIsSelf = row.ri_id === null || row.ri_id === row.ci_id;
 
   return {
     id: row.id,
@@ -408,7 +408,7 @@ function rowToDeliverableListItem(row: DeliverableQueryRow): DeliverableListItem
       status: row.ci_status,
     },
     rootIssue:
-      rootIsSelf || row.ri_id == null || row.ri_title == null || row.ri_status == null
+      rootIsSelf || row.ri_id === null || row.ri_title === null || row.ri_status === null
         ? null
         : {
             id: row.ri_id,
