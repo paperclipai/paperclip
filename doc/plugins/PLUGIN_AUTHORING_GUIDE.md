@@ -13,7 +13,9 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 - Plugin database migrations are restricted to a host-derived plugin namespace.
 - Plugin-owned JSON API routes must be declared in the manifest and are mounted
   only under `/api/plugins/:pluginId/api/*`.
-- There is no host-provided shared React component kit for plugins yet.
+- The host provides a small shared React component kit through
+  `@paperclipai/plugin-sdk/ui`; use it for common Paperclip controls before
+  building custom versions.
 - `ctx.assets` is not supported in the current runtime.
 
 ## Scaffold a plugin
@@ -167,6 +169,187 @@ Mount surfaces currently wired in the host include:
 - `contextMenuItem`
 - `commentAnnotation`
 - `commentContextMenuItem`
+
+## Shared host components
+
+Use shared components from `@paperclipai/plugin-sdk/ui` when the plugin needs a
+Paperclip-native control. The host owns the implementation, so plugins inherit
+the board's current styling, ordering, recent selections, and dark-mode behavior
+without importing `ui/src` internals.
+
+Currently exposed components include:
+
+- `MarkdownBlock` and `MarkdownEditor` for rendered and editable markdown.
+- `FileTree` for serializable file and directory trees.
+- `IssuesList` for a native company-scoped issue table.
+- `AssigneePicker` for the same agent/user selector used in the new issue pane.
+  Use the controlled `value` format `agent:<id>`, `user:<id>`, or `""`.
+- `ProjectPicker` for the same project selector used in the new issue pane.
+  Use the controlled project id value, or `""` for no project.
+- `ManagedRoutinesList` for plugin-owned routine settings pages.
+
+```tsx
+import { AssigneePicker, ProjectPicker } from "@paperclipai/plugin-sdk/ui";
+
+export function PluginAssignmentControls({ companyId }: { companyId: string }) {
+  const [assignee, setAssignee] = useState("");
+  const [projectId, setProjectId] = useState("");
+
+  return (
+    <>
+      <AssigneePicker
+        companyId={companyId}
+        value={assignee}
+        onChange={(value) => setAssignee(value)}
+      />
+      <ProjectPicker
+        companyId={companyId}
+        value={projectId}
+        onChange={setProjectId}
+      />
+    </>
+  );
+}
+```
+
+## File and path UI
+
+Plugin UI often needs to render a file tree, accept a folder path, or browse a
+project workspace. There are three different surfaces for that, and they map to
+different trust and data-flow boundaries. Pick the surface that matches the
+data the plugin actually has.
+
+### When to use the shared `FileTree`
+
+Use `FileTree` from `@paperclipai/plugin-sdk/ui` whenever the plugin only needs
+to render a serializable file/directory list and react to selection or
+expand/collapse. The host owns the implementation, so plugin UI inherits the
+board's icons, indent, focus ring, and dark-mode styling without importing host
+internals.
+
+```tsx
+import {
+  FileTree,
+  type FileTreeNode,
+} from "@paperclipai/plugin-sdk/ui";
+
+const nodes: FileTreeNode[] = [
+  { name: "AGENTS.md", path: "AGENTS.md", kind: "file", children: [] },
+  {
+    name: "wiki",
+    path: "wiki",
+    kind: "dir",
+    children: [
+      { name: "index.md", path: "wiki/index.md", kind: "file", children: [] },
+    ],
+  },
+];
+
+export function WikiTree() {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["wiki"]));
+  const [selected, setSelected] = useState<string | null>(null);
+
+  return (
+    <FileTree
+      nodes={nodes}
+      selectedFile={selected}
+      expandedPaths={expanded}
+      onSelectFile={(path) => setSelected(path)}
+      onToggleDir={(path) =>
+        setExpanded((current) => {
+          const next = new Set(current);
+          next.has(path) ? next.delete(path) : next.add(path);
+          return next;
+        })
+      }
+    />
+  );
+}
+```
+
+Good fits:
+
+- LLM Wiki page navigation in `packages/plugins/plugin-llm-wiki` builds a
+  `FileTreeNode[]` from worker query results and renders it through `FileTree`.
+- The example `plugin-file-browser-example` lazily fetches a directory's
+  children through a `loadFileList` action when `onToggleDir` fires, then
+  merges the children into the local tree state — letting the shared component
+  handle rendering and selection.
+
+Boundary rules:
+
+- Keep the prop surface serializable (`nodes`, `expandedPaths`, `checkedPaths`,
+  `fileBadges`, `fileTones`). Do not pass arbitrary render functions across the
+  plugin/host boundary in v1; the supported escape hatches are
+  `fileBadges` (status pill keyed by path) and `fileTones` (row tone keyed by
+  path).
+- Do not import the host's `FileTree.tsx` or any `ui/src/*` module. The SDK
+  declaration is the only supported import path for plugin UI.
+- The shared `FileTree` is for rendering and selection. Plugin-specific editors,
+  ingest flows, query forms, and lint runs stay inside the plugin and do not
+  belong as `FileTree` props.
+
+### When to declare `localFolders`
+
+When the plugin needs operator-configured filesystem roots — typically for
+trusted local plugins like wiki tooling — declare `localFolders[]` on the
+manifest and add the `local.folders` capability. The host renders a settings
+surface for the operator to set the absolute path, validates the path
+server-side (containment, symlinks, required files/directories), and exposes
+`ctx.localFolders.readText()` and `ctx.localFolders.writeTextAtomic()` in the
+worker.
+
+```ts
+export const manifest = {
+  capabilities: ["local.folders"],
+  localFolders: [
+    {
+      folderKey: "content-root",
+      displayName: "Content root",
+      access: "readWrite",
+      requiredDirectories: ["sources", "pages"],
+      requiredFiles: ["schema.md"],
+    },
+  ],
+};
+```
+
+Use this when:
+
+- The data lives outside any project workspace.
+- Reads and writes need company-scoped configuration.
+- The operator picks the path once in plugin settings and the worker resolves
+  files relative to that root.
+
+Do not use `localFolders` to grant the UI direct browser-side access to the
+filesystem — there is no such capability. The browser still goes through the
+worker via `getData` / `performAction`, and the worker only exposes paths it
+chose to expose.
+
+### When to keep worker-mediated project workspace browsing
+
+When the data lives inside an existing project workspace, keep the browsing
+flow worker-mediated:
+
+- The worker uses `ctx.projects.listWorkspaces()` to resolve the workspace
+  path, then reads its filesystem with normal Node APIs.
+- The plugin UI calls a `getData` handler for the root listing and an action
+  for lazy children, then renders them through `FileTree`.
+- The worker is the only side that touches the disk. The browser receives a
+  serializable tree and never sees raw absolute paths it can replay.
+
+The example `plugin-file-browser-example` is the reference for this pattern:
+the worker registers `fileList` (data) and `loadFileList` (action) over the
+same handler, and the UI uses the action for on-toggle directory loading so the
+shared `FileTree` stays the rendering surface.
+
+### Mixing surfaces
+
+A single plugin can use more than one of these. The LLM Wiki uses
+`localFolders` for its content root, then renders the resulting page list
+through `FileTree`. The file browser example uses `ctx.projects.listWorkspaces`
+to pick a workspace and renders its on-disk tree through `FileTree` with lazy
+loading. Pick the boundary per data source, not per plugin.
 
 ## Company routes
 

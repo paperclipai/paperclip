@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createRef, forwardRef, useImperativeHandle } from "react";
+import { act, createRef, forwardRef, useImperativeHandle, useState } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -601,6 +601,71 @@ describe("IssueChatThread", () => {
     scrollHost.remove();
   });
 
+  it("cancels jump-to-latest settling when the user scrolls manually", () => {
+    vi.useFakeTimers();
+    container.remove();
+    const scrollHost = document.createElement("main");
+    scrollHost.id = "main-content";
+    scrollHost.style.overflowY = "auto";
+    scrollHost.style.overflow = "auto";
+    scrollHost.style.height = "640px";
+    document.body.appendChild(scrollHost);
+    container = document.createElement("div");
+    scrollHost.appendChild(container);
+
+    const elementScrollToMock = vi.fn();
+    scrollHost.scrollTo = elementScrollToMock as unknown as typeof scrollHost.scrollTo;
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoViewMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewMock as unknown as typeof Element.prototype.scrollIntoView;
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    expect(elementScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(true);
+    const scrollCallsAfterClick = elementScrollToMock.mock.calls.length;
+
+    act(() => {
+      scrollHost.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(elementScrollToMock).toHaveBeenCalledTimes(scrollCallsAfterClick);
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    act(() => {
+      root.unmount();
+    });
+    scrollHost.remove();
+  });
+
   // Regression for PAP-2672: when the merged feed ends with a non-comment row
   // (run/timeline/embedded output) we still want Jump to latest to land on the
   // last comment, not whichever activity row sorts last.
@@ -752,6 +817,78 @@ describe("IssueChatThread", () => {
 
     expect(refreshMock).toHaveBeenCalledTimes(1);
 
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses comments rendered by onRefreshLatestComments before resolving latest", async () => {
+    const scrolledIds: string[] = [];
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn(function scrollIntoView(this: Element) {
+      scrolledIds.push(this.id);
+    }) as unknown as typeof Element.prototype.scrollIntoView;
+
+    const olderComment = {
+      id: "comment-before-refresh",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: "agent-perf-codex",
+      authorUserId: null,
+      body: "Older loaded comment",
+      createdAt: new Date("2026-04-06T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    };
+    const latestComment = {
+      ...olderComment,
+      id: "comment-after-refresh",
+      body: "Latest fetched comment",
+      createdAt: new Date("2026-04-06T12:01:00.000Z"),
+      updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+    };
+
+    function RefreshingThread() {
+      const [comments, setComments] = useState([olderComment]);
+      return (
+        <IssueChatThread
+          comments={comments}
+          linkedRuns={[]}
+          timelineEvents={[]}
+          liveRuns={[]}
+          agentMap={issueChatLongThreadAgentMap}
+          currentUserId="user-board"
+          onAdd={async () => {}}
+          enableLiveTranscriptPolling={false}
+          onRefreshLatestComments={async () => {
+            setComments([olderComment, latestComment]);
+            await new Promise((resolve) => window.requestAnimationFrame(resolve));
+          }}
+        />
+      );
+    }
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RefreshingThread />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    await act(async () => {
+      jump?.click();
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(scrolledIds).toContain("comment-comment-after-refresh");
+
+    Element.prototype.scrollIntoView = originalScrollIntoView;
     act(() => {
       root.unmount();
     });
@@ -1343,6 +1480,49 @@ describe("IssueChatThread", () => {
         kind: "ask_user_questions",
       }),
       [{ questionId: "scope", optionIds: ["phase-1"] }],
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("invokes the cancel callback for pending question interactions", async () => {
+    const root = createRoot(container);
+    const onCancelInteraction = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createQuestionInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onCancelInteraction={onCancelInteraction}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Cancel question"),
+    );
+    expect(cancelButton).toBeTruthy();
+
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onCancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-question-1",
+        kind: "ask_user_questions",
+      }),
     );
 
     act(() => {
