@@ -547,6 +547,20 @@
       "when": 1777933347806,
       "tag": "0077_unusual_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1777933347807,
+      "tag": "0078_routine_pre_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1777933347808,
+      "tag": "0079_provider_rate_limit_blocks",
+      "breakpoints": true
     }
   ]
 }

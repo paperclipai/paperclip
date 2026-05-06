@@ -999,6 +999,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             lastEnqueuedAt: null,
             latestRevisionId: null,
             latestRevisionNumber: 1,
+            preGate: null,
             createdAt: now,
             updatedAt: now,
             managedByPlugin: {

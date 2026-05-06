@@ -137,6 +137,7 @@ function createRoutine(overrides: Partial<Routine> = {}): Routine {
     variables: [],
     latestRevisionId: "revision-2",
     latestRevisionNumber: 2,
+    preGate: null,
     createdByAgentId: null,
     createdByUserId: "user-1",
     updatedByAgentId: null,
