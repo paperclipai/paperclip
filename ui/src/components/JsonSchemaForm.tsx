@@ -153,6 +153,7 @@ export interface PaperclipActionDecl {
 
 /** Resolve the primary type string from a schema node. */
 export function resolveType(schema: JsonSchemaNode): string {
+  if (schema["x-paperclip-optionsFromSibling"]) return "sibling-enum";
   if (schema["x-paperclip-optionsFrom"]) return "dynamic-enum";
   if (schema.enum) return "enum";
   if (schema.const !== undefined) return "const";
@@ -206,6 +207,7 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
     case "boolean":
       return false;
     case "dynamic-enum":
+    case "sibling-enum":
       return "";
     case "enum":
       return schema.enum?.[0] ?? "";
@@ -648,6 +650,139 @@ const DynamicEnumField = React.memo(({
 });
 
 DynamicEnumField.displayName = "DynamicEnumField";
+
+// ---------------------------------------------------------------------------
+// SiblingEnumField — dropdown whose options come from a sibling array's items
+// ---------------------------------------------------------------------------
+//
+// Common pattern across plugins: a "Default <thing> key" string field paired
+// with a sibling array of { key, displayName, ... } items where the default
+// must be one of the items' keys. Free-text inputs let operators typo a key
+// that doesn't exist; this widget reads the live form values (via rootRef so
+// it updates as the array is edited) and renders the keys as dropdown options.
+//
+// Schema shape:
+//   "x-paperclip-optionsFromSibling": {
+//     sibling: "workspaces",      // sibling key on the same parent object
+//     valueKey: "key",            // item property used as the option value
+//     labelKey: "displayName"     // optional; falls back to valueKey
+//   }
+//
+// Empty/blank items (no value at valueKey) are filtered out. A "(no default)"
+// sentinel option is always available so operators can opt out of a default
+// without deleting the array. If the saved value isn't currently present in
+// the sibling array (orphan from an item that got renamed/deleted), it shows
+// up as a marked option so the operator can see and correct it.
+
+interface OptionsFromSiblingConfig {
+  sibling?: string;
+  valueKey?: string;
+  labelKey?: string;
+}
+
+const SIBLING_ENUM_NONE = "__none__";
+
+const SiblingEnumField = React.memo(({
+  schema,
+  value,
+  onChange,
+  disabled,
+  label,
+  isRequired,
+  description,
+  error,
+  fieldPath,
+}: {
+  schema: JsonSchemaNode;
+  value: unknown;
+  onChange: (val: unknown) => void;
+  disabled: boolean;
+  label: string;
+  isRequired?: boolean;
+  description?: string;
+  error?: string;
+  fieldPath: string;
+}) => {
+  const ctx = React.useContext(FormRootContext);
+  const root = ctx?.rootRef.current ?? {};
+  const cfg = (schema["x-paperclip-optionsFromSibling"] as OptionsFromSiblingConfig | undefined) ?? {};
+  const valueKey = cfg.valueKey ?? "key";
+  const labelKey = cfg.labelKey;
+
+  // Resolve the parent of this field, then read the named sibling off it.
+  const parts = fieldPath.split("/").filter(Boolean);
+  parts.pop();
+  const parentPath = parts.length > 0 ? "/" + parts.join("/") : "";
+  const parent = readPath(root, parentPath);
+  const siblingArr =
+    cfg.sibling && parent && typeof parent === "object"
+      ? (parent as Record<string, unknown>)[cfg.sibling]
+      : undefined;
+
+  const options: { value: string; label: string }[] = Array.isArray(siblingArr)
+    ? siblingArr
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const obj = item as Record<string, unknown>;
+          const v = obj[valueKey];
+          if (typeof v !== "string" || v.trim().length === 0) return null;
+          const labelRaw = labelKey ? obj[labelKey] : null;
+          const labelText =
+            typeof labelRaw === "string" && labelRaw.trim().length > 0
+              ? `${labelRaw} (${v})`
+              : v;
+          return { value: v, label: labelText };
+        })
+        .filter((o): o is { value: string; label: string } => o !== null)
+    : [];
+
+  const stringValue = String(value ?? "");
+  const matchInOptions = options.some((o) => o.value === stringValue);
+  const showOrphan = stringValue.length > 0 && !matchInOptions;
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
+      disabled={disabled}
+    >
+      <Select
+        value={stringValue.length > 0 ? stringValue : SIBLING_ENUM_NONE}
+        onValueChange={(v) => onChange(v === SIBLING_ENUM_NONE ? "" : v)}
+        disabled={disabled}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue
+            placeholder={
+              options.length === 0
+                ? "Add an entry below to populate"
+                : "Select…"
+            }
+          />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SIBLING_ENUM_NONE}>
+            — None (require explicit per call) —
+          </SelectItem>
+          {options.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value}>
+              {opt.label}
+            </SelectItem>
+          ))}
+          {showOrphan ? (
+            <SelectItem value={stringValue}>
+              {stringValue} (no longer in list)
+            </SelectItem>
+          ) : null}
+        </SelectContent>
+      </Select>
+    </FieldWrapper>
+  );
+});
+
+SiblingEnumField.displayName = "SiblingEnumField";
 
 /**
  * Specialized field for secret-ref values.
@@ -1777,6 +1912,21 @@ const FormField = React.memo(({
           isRequired={isRequired}
           description={propSchema.description}
           error={error}
+        />
+      );
+
+    case "sibling-enum":
+      return (
+        <SiblingEnumField
+          schema={propSchema}
+          value={value}
+          onChange={onChange}
+          disabled={isReadOnly}
+          label={label}
+          isRequired={isRequired}
+          description={propSchema.description}
+          error={error}
+          fieldPath={path}
         />
       );
 
