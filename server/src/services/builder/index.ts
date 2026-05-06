@@ -11,6 +11,7 @@ import {
 } from "./tool-registry.js";
 import type { BuilderToolDescriptor, BuilderToolCatalog } from "@paperclipai/shared";
 import { unprocessable } from "../../errors.js";
+import { BUILDER_SUPPORTED_ADAPTER_TYPES } from "./adapter-executor.js";
 
 export { registerBuilderTool, _resetBuilderToolExtensions } from "./tool-registry.js";
 export { runBuilderTurn } from "./runner.js";
@@ -144,7 +145,10 @@ export function builderService(db: Db) {
         capability: tool.capability,
         source: tool.source,
       }));
-      return { tools: descriptors };
+      return {
+        tools: descriptors,
+        supportedAdapterTypes: [...BUILDER_SUPPORTED_ADAPTER_TYPES],
+      };
     },
 
     listProposals: proposals.list,

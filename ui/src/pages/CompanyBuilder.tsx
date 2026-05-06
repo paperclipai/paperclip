@@ -32,23 +32,11 @@ import type {
 
 const QUERY_KEY = ["builder"] as const;
 
-// Supported local CLI adapters for Builder
-// These are the adapters that spawn processes and work with the adapter executor
-const SUPPORTED_BUILDER_ADAPTER_TYPES = [
-  "claude_local",
-  "codex_local",
-  "opencode_local",
-  "cursor_local",
-  "gemini_local",
-  "pi_local",
-] as const;
-
 // Get available adapters dynamically from the UI adapter registry
-function getAvailableBuilderAdapters() {
+function getAvailableBuilderAdapters(supportedAdapterTypes: string[]) {
+  const supported = new Set(supportedAdapterTypes);
   const allAdapters = listUIAdapters();
-  return allAdapters.filter((adapter) =>
-    SUPPORTED_BUILDER_ADAPTER_TYPES.includes(adapter.type as any)
-  );
+  return allAdapters.filter((adapter) => supported.has(adapter.type));
 }
 
 // Get models for a specific adapter type
@@ -211,6 +199,10 @@ function deriveFormFromSettings(settings: BuilderProviderSettings | null): Setti
 function SettingsPanel({ companyId }: { companyId: string }) {
   const queryClient = useQueryClient();
   const toast = useToastActions();
+  const toolsQuery = useQuery({
+    queryKey: [...QUERY_KEY, "tools", companyId] as const,
+    queryFn: () => builderApi.getTools(companyId),
+  });
   const settingsQuery = useQuery({
     queryKey: [...QUERY_KEY, "settings", companyId] as const,
     queryFn: () => builderApi.getSettings(companyId),
@@ -220,7 +212,10 @@ function SettingsPanel({ companyId }: { companyId: string }) {
   const [loadingModels, setLoadingModels] = useState(false);
 
   // Get available Builder-compatible adapters dynamically
-  const availableAdapters = useMemo(() => getAvailableBuilderAdapters(), []);
+  const availableAdapters = useMemo(
+    () => getAvailableBuilderAdapters(toolsQuery.data?.supportedAdapterTypes ?? []),
+    [toolsQuery.data?.supportedAdapterTypes],
+  );
 
   useEffect(() => {
     if (settingsQuery.data) {
@@ -274,7 +269,9 @@ function SettingsPanel({ companyId }: { companyId: string }) {
     },
   });
 
-  if (!form) return <div className="text-xs text-muted-foreground">Loading settings…</div>;
+  if (!form || !toolsQuery.data) {
+    return <div className="text-xs text-muted-foreground">Loading settings…</div>;
+  }
 
   const selectedAdapter = availableAdapters.find((a) => a.type === form.adapterType);
 

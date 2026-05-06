@@ -114,6 +114,7 @@ export interface BuilderToolDescriptor {
 
 export interface BuilderToolCatalog {
   tools: BuilderToolDescriptor[];
+  supportedAdapterTypes: string[];
 }
 
 export interface BuilderProposal {

@@ -71,6 +71,15 @@ export interface BuilderAdapterResponse {
   };
 }
 
+export const BUILDER_SUPPORTED_ADAPTER_TYPES = [
+  "claude_local",
+  "codex_local",
+  "opencode_local",
+  "cursor",
+  "gemini_local",
+  "pi_local",
+] as const;
+
 /**
  * Execute a Builder turn via an adapter process (claude, codex, opencode, etc.).
  *
@@ -91,7 +100,7 @@ export async function executeBuilderTurn(
   const adapter = getServerAdapter(adapterType);
   if (!adapter) {
     throw new Error(
-      `Adapter type "${adapterType}" not found. Available adapters: claude_local, codex_local, opencode_local, cursor_local, gemini_local, pi_local`,
+      `Adapter type "${adapterType}" not found. Available adapters: ${BUILDER_SUPPORTED_ADAPTER_TYPES.join(", ")}`,
     );
   }
 
