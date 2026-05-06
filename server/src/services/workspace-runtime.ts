@@ -547,7 +547,7 @@ async function executeProcess(input: {
           timedOut = true;
           child.kill("SIGTERM");
           globalThis.setTimeout(() => {
-            if (!child.killed) child.kill("SIGKILL");
+            if (child.exitCode === null) child.kill("SIGKILL");
           }, 2_000).unref();
         }, timeoutMs)
       : null;
@@ -832,6 +832,12 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
 
     const prefix = match.groups.prefix ?? "";
     const suffix = match.groups.suffix ?? "";
+    if (suffix && /[;&|`$(){}<>!]|&&|\|\|/.test(suffix)) {
+      throw new Error(
+        "Workspace hook command suffix contains shell operators or metacharacters. " +
+          "Only simple arguments to the governed script are allowed.",
+      );
+    }
     return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
   }
 
@@ -1477,9 +1483,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   for (const command of cleanupCommands) {
     try {
-      const resolvedCommand = repoRoot
-        ? resolveRepoManagedWorkspaceCommand(command, repoRoot)
-        : command;
+      if (!repoRoot) {
+        warnings.push(
+          `Skipping cleanup command "${command}" — cannot validate governed hook without resolved repo root.`,
+        );
+        continue;
+      }
+      const resolvedCommand = resolveRepoManagedWorkspaceCommand(command, repoRoot);
       const timeoutMs = resolveWorkspaceHookTimeoutMs();
       await recordWorkspaceCommandOperation(input.recorder, {
         phase: "workspace_teardown",
