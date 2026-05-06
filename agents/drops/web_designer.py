@@ -8,8 +8,9 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 from api_client import post_issue_result, post_issue_comment, resolve_issue_context, call_llm, fetch_skill
 sys.stdout.reconfigure(encoding="utf-8")
 
-DROPS_COMPANY    = "0b4751e7-24e7-4e8b-98e0-5b5ed73b6d7c"
-REFERENCE_FILE   = __import__("pathlib").Path(__file__).parent / "reference_landings.md"
+DROPS_COMPANY  = "0b4751e7-24e7-4e8b-98e0-5b5ed73b6d7c"
+REFERENCE_FILE = __import__("pathlib").Path(__file__).parent / "reference_landings.md"
+PEXELS_API     = "https://api.pexels.com/v1/search"
 
 
 def load_reference_landings() -> str:
@@ -21,6 +22,83 @@ def load_reference_landings() -> str:
     except Exception as e:
         print(f"  ⚠️  No se pudo cargar reference_landings.md: {e}", flush=True)
         return ""
+
+
+def fetch_pexels_images(product_name: str, pexels_key: str) -> dict:
+    """
+    Busca imágenes en Pexels para el producto.
+    Devuelve dict con URLs para hero, product_shots y lifestyle.
+
+    Pexels API: GET /v1/search?query=...&per_page=N&orientation=landscape
+    Auth: Authorization: {API_KEY}  (sin Bearer)
+    """
+    if not pexels_key:
+        print("  ⚠️  PEXELS_API_KEY no configurada — sin imágenes", flush=True)
+        return {}
+
+    def search(query: str, count: int = 3, orientation: str = "landscape") -> list:
+        try:
+            params = urllib.parse.urlencode({
+                "query":       query,
+                "per_page":    count,
+                "orientation": orientation,
+            })
+            req = urllib.request.Request(
+                f"{PEXELS_API}?{params}",
+                headers={"Authorization": pexels_key, "Accept": "application/json"},
+                method="GET"
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            photos = data.get("photos", [])
+            return [p["src"]["large"] for p in photos if p.get("src", {}).get("large")]
+        except Exception as e:
+            print(f"  ⚠️  Pexels search '{query}': {e}", flush=True)
+            return []
+
+    # Extraer keywords del nombre del producto
+    # Ej: "Arnés de paso para perros pequeños" → "dog harness small breed"
+    name_lower = product_name.lower()
+    keywords   = product_name
+
+    # Queries específicas por tipo de producto detectado
+    hero_query    = f"{keywords} lifestyle"
+    product_query = f"{keywords}"
+    context_query = f"{keywords} person using"
+
+    # Detectar contexto del producto para queries más precisas
+    if any(w in name_lower for w in ["perro", "dog", "mascota", "pet", "gato", "cat"]):
+        hero_query    = "dog owner happy outdoors"
+        product_query = f"{keywords} product"
+        context_query = "cute small dog walking"
+    elif any(w in name_lower for w in ["cocina", "kitchen", "gadget", "comida", "food"]):
+        hero_query    = "modern kitchen cooking"
+        product_query = f"{keywords}"
+        context_query = "person cooking kitchen"
+    elif any(w in name_lower for w in ["fitness", "gym", "banda", "ejercicio", "deporte"]):
+        hero_query    = "fitness home workout"
+        product_query = f"{keywords}"
+        context_query = "person exercising home"
+    elif any(w in name_lower for w in ["belleza", "beauty", "crema", "serum", "skincare"]):
+        hero_query    = "skincare beauty routine"
+        product_query = f"{keywords}"
+        context_query = "woman skincare applying"
+
+    hero_urls    = search(hero_query,    count=2, orientation="landscape")
+    product_urls = search(product_query, count=3, orientation="landscape")
+    context_urls = search(context_query, count=2, orientation="landscape")
+
+    all_urls = {
+        "hero":     hero_urls[:1],
+        "product":  product_urls[:3],
+        "context":  context_urls[:2],
+        "all":      (hero_urls + product_urls + context_urls)[:6],
+    }
+
+    total = len(all_urls["all"])
+    print(f"  ✅ Pexels: {total} imágenes ({len(hero_urls)} hero + "
+          f"{len(product_urls)} producto + {len(context_urls)} contexto)", flush=True)
+    return all_urls
 
 STRUCTURE_SYSTEM = """Eres experto en CRO para Shopify en el mercado español.
 Generas landing pages de alto rendimiento para dropshipping.
@@ -185,6 +263,7 @@ def upload_preview(html: str, api_url: str, secret: str) -> str:
 
 def main():
     api_key    = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    pexels_key = os.environ.get("PEXELS_API_KEY", "").strip()
     # Usar PUBLIC_URL para el preview (no localhost)
     api_url    = (os.environ.get("PUBLIC_URL") or
                   os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100")).rstrip("/")
@@ -295,7 +374,32 @@ Responde SOLO con JSON:
 
     print(f"  ✅ Skill context: {len(skill_context)} chars", flush=True)
 
-    # ── PASO 0: Scraping de competidores ─────────────────────────────────────
+    # ── PASO 0a: Imágenes de Pexels ───────────────────────────────────────────
+    print(f"\n🖼️  Buscando imágenes en Pexels para: {name}", flush=True)
+    images = fetch_pexels_images(name, pexels_key)
+    hero_img    = images.get("hero", [""])[0] if images else ""
+    product_imgs = images.get("product", []) if images else []
+    context_imgs = images.get("context", []) if images else []
+
+    # Construir bloque de imagen para inyectar en el HTML
+    img_block = ""
+    if hero_img:
+        img_block += f'\n<!-- HERO IMAGE -->\n<img src="{hero_img}" alt="{name}" class="hero-img">\n'
+    for i, url in enumerate(product_imgs[:3]):
+        img_block += f'\n<!-- PRODUCT IMAGE {i+1} -->\n<img src="{url}" alt="{name} imagen {i+1}" class="product-img">\n'
+
+    images_context = ""
+    if images.get("all"):
+        images_context = "\n\nIMÁGENES DISPONIBLES (úsalas en el HTML):\n"
+        all_imgs = images.get("all", [])
+        if all_imgs:
+            images_context += f"- Hero/Banner: {all_imgs[0]}\n"
+        for i, url in enumerate(all_imgs[1:4], 2):
+            images_context += f"- Producto {i-1}: {url}\n"
+        for i, url in enumerate(all_imgs[4:], 5):
+            images_context += f"- Contexto {i-4}: {url}\n"
+
+    # ── PASO 0b: Scraping de competidores ────────────────────────────────────
     print(f"\n🔍 Buscando competidores para: {name}", flush=True)
     competitor_context = scrape_competitor_landings(name, max_pages=3)
     if competitor_context:
@@ -352,20 +456,30 @@ Genera estas secciones con copy real en español:
 PRODUCTO: {name}
 PRECIO: €{price}
 HOOK: {hook}
-
+{images_context}
 COPY GENERADO:
-{structure[:3000]}
+{structure[:2500]}
+
+REGLAS DE IMÁGENES:
+{"- USA las imágenes de Pexels proporcionadas arriba en las secciones correspondientes" if images.get("all") else "- Usa placeholders descriptivos: <img src='https://via.placeholder.com/800x400?text=Producto' alt='...'>"}
+- Hero section: imagen grande (100% ancho, 500px altura mínima) con overlay oscuro y texto encima
+- Sección de producto: 2-3 imágenes en grid
+- NO dejes secciones sin imágenes — usa las URLs proporcionadas
 
 Genera HTML completo con:
-- <head> con meta tags y Google Fonts
-- <style> con CSS moderno (colores: fondo oscuro #0f0f0f o blanco limpio, CTA naranja #f97316)
-- Secciones: hero, beneficios, reseñas, garantía, FAQ, CTA final
-- Botón CTA grande y llamativo
-- Footer con badges de pago seguro
-- Totalmente en español
-- Responsive mobile-first
+- <head> con meta tags, Google Fonts (Inter o Poppins)
+- <style> con CSS moderno mobile-first
+  * Fondo blanco limpio o #0f0f0f oscuro según el producto
+  * CTA naranja #f97316 o verde #22c55e
+  * Tipografía clara, jerarquía visual fuerte
+  * Hero con imagen de fondo real (background-image o <img> con overlay)
+  * Secciones con padding generoso, máx-width 1200px centrado
+- Secciones: hero con imagen, beneficios con iconos, imágenes del producto, reseñas, garantía, FAQ, CTA final
+- Botón CTA grande prominente (repetido 3+ veces)
+- Footer con badges de pago seguro (Visa, Mastercard, PayPal, SSL)
+- Responsive: 1 columna en móvil, 2-3 en desktop
 
-Devuelve SOLO el HTML completo, sin explicaciones."""
+Devuelve SOLO el HTML completo, sin explicaciones ni markdown."""
 
     try:
         html_content = call_llm(
