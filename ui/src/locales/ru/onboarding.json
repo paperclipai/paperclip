@@ -37,7 +37,7 @@
     "hint_prefix": "Подсказка:",
     "manual_debug": "Ручная отладка",
     "prompt_label": "Запрос:",
-    "prompt_value": "Respond with hello.",
+    "prompt_value": "Ответь словом «привет».",
     "anthropic_key_warning": "Claude не прошёл, пока установлен {{key}}. Вы можете очистить его в конфигурации адаптера CEO и повторить зонд.",
     "unset_anthropic": "Сбросить ANTHROPIC_API_KEY",
     "retrying": "Повтор...",

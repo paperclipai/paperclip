@@ -64,7 +64,7 @@
     "usage": "использование",
     "tok": "ток",
     "in_out_tokens": "вх. {{inTokens}} · исх. {{outTokens}}",
-    "api_runs": "{{count}} api",
+    "api_runs": "{{count}} запусков api",
     "subscription_runs": "{{count}} подписка"
   },
   "cards": {
