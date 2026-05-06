@@ -37,17 +37,13 @@ fi
 
 TITLE="Rollcall Probe - $AGENT_NAME"
 
-DESCRIPTION="This is a rollcall probe. Your only job is to confirm you are operational.
+DESCRIPTION="Perform a recursive rollcall of your **direct reports** using the **\`agent-rollcall\`** skill. 
 
-If you have direct reports, run your own rollcall recursively and include a summary comment on this issue.
-
-Once done, set this issue to \`done\`.
-
-Do not write files to disk. Do not simulate. Use the API."
+If you have direct reports, you must follow the protocol in your skill's \`SKILL.md\` strictly. If you have no direct reports, set this issue to \`done\` immediately to confirm you are operational."
 
 exec "$DELEGATE_DIR/agent-create-issue.sh" \
   --title "$TITLE" \
   --assignee "$AGENT_ID" \
   --parent "$PARENT" \
-  --origin-kind "rolecall_probe" \
+  --origin-kind "rollcall_probe" \
   --description "$DESCRIPTION"

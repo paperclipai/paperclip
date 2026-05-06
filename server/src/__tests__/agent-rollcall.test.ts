@@ -150,11 +150,11 @@ describe("agent-rollcall skill", () => {
     expect(req.method).toBe("POST");
     expect(req.url).toContain("/issues");
     expect(req.body.title).toBe("Rollcall Probe - Natasha");
-    expect(req.body.description).toContain("rollcall probe");
+    expect(req.body.description).toContain("agent-rollcall");
     expect(req.body.description).toContain("done");
     expect(req.body.assigneeAgentId).toBe("agent-abc");
     expect(req.body.parentId).toBe("parent-uuid-123");
-    expect(req.body.originKind).toBe("rolecall_probe");
+    expect(req.body.originKind).toBe("rollcall_probe");
   });
 
   it("unit: probe script fails without required args", async () => {

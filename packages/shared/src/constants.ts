@@ -200,7 +200,7 @@ export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
 export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
 
-export const AGENT_DECLARABLE_ORIGIN_KINDS = ["health_check", "rolecall_probe"] as const;
+export const AGENT_DECLARABLE_ORIGIN_KINDS = ["health_check", "rollcall_probe"] as const;
 export type AgentDeclarableOriginKind = (typeof AGENT_DECLARABLE_ORIGIN_KINDS)[number];
 
 export const ISSUE_ORIGIN_KINDS = [
