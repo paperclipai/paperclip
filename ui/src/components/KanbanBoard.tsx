@@ -140,6 +140,7 @@ function KanbanColumn({
           isOver ? "bg-accent/40" : "bg-muted/20"
         }`}
       >
+        {/* Hidden cards are intentionally excluded from sort targets until revealed. */}
         <SortableContext
           items={visibleIssues.map((i) => i.id)}
           strategy={verticalListSortingStrategy}
@@ -163,12 +164,7 @@ function KanbanColumn({
             Show {nextRevealCount} more
           </button>
         ) : null}
-        {issues.length > visibleIssues.length ? null : issues.length > 0 && issues.length >= visibleCount ? (
-          <p className="px-1 pt-1 text-[11px] text-muted-foreground">
-            Showing {visibleIssues.length} of {issues.length}
-          </p>
-        ) : null}
-        {hiddenCount > 0 ? (
+        {issues.length > 0 && (hiddenCount > 0 || issues.length >= visibleCount) ? (
           <p className="px-1 pt-1 text-[11px] text-muted-foreground">
             Showing {visibleIssues.length} of {issues.length}
           </p>
