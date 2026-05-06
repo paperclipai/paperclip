@@ -318,6 +318,7 @@ export const issueCommentMetadataSectionSchema = z.object({
 
 export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
+  sourceRunId: z.string().uuid().nullable().optional(),
   sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
 }).strict();
 

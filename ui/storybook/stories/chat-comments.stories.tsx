@@ -404,6 +404,7 @@ const issueChatComments: IssueChatComment[] = [
     },
     metadata: {
       version: 1,
+      sourceRunId: "run-issue-chat-01",
       sections: [
         {
           title: "Required action",
@@ -455,6 +456,73 @@ const issueTimelineEvents: IssueTimelineEvent[] = [
     assigneeChange: {
       from: { agentId: null, userId: null },
       to: { agentId: codexAgent.id, userId: null },
+    },
+  }),
+];
+
+const issueThreadNoticeReviewComments: IssueChatComment[] = [
+  createComment({
+    id: "comment-notice-board",
+    body: "The issue thread needs to show workspace routing changes and make old missing-disposition warnings feel resolved.",
+    createdAt: new Date("2026-04-20T13:44:00.000Z"),
+  }),
+  createComment({
+    id: "comment-notice-system-warning",
+    authorType: "system",
+    authorAgentId: null,
+    authorUserId: null,
+    runId: "run-notice-source",
+    runAgentId: codexAgent.id,
+    body: "Paperclip needs a disposition before this issue can continue.",
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Missing issue disposition",
+      detailsDefaultOpen: false,
+    },
+    metadata: {
+      version: 1,
+      sourceRunId: "run-notice-source",
+      sections: [
+        {
+          title: "Required action",
+          rows: [
+            { type: "issue_link", label: "Source issue", issueId, identifier: "PAP-3660", title: "Show issue-thread notices" },
+            { type: "agent_link", label: "Assignee", agentId: codexAgent.id, name: codexAgent.name },
+            { type: "key_value", label: "Missing disposition", value: "clear_next_step" },
+          ],
+        },
+        {
+          title: "Run evidence",
+          rows: [
+            { type: "run_link", label: "Completed run", runId: "run-notice-source", title: "succeeded" },
+            { type: "key_value", label: "Normalized cause", value: "successful_run_missing_state" },
+          ],
+        },
+      ],
+    },
+    createdAt: new Date("2026-04-20T13:48:00.000Z"),
+  }),
+];
+
+const issueThreadNoticeReviewTimelineEvents: IssueTimelineEvent[] = [
+  createSystemEvent({
+    id: "event-notice-workspace-change",
+    createdAt: new Date("2026-04-20T13:46:00.000Z"),
+    statusChange: undefined,
+    workspaceChange: {
+      from: {
+        label: "Project primary workspace",
+        projectWorkspaceId: "workspace-primary",
+        executionWorkspaceId: null,
+        mode: "shared_workspace",
+      },
+      to: {
+        label: "PAP-3660 issue-thread-notices",
+        projectWorkspaceId: null,
+        executionWorkspaceId: "execution-workspace-notices",
+        mode: "isolated_workspace",
+      },
     },
   }),
 ];
@@ -701,6 +769,43 @@ function IssueChatMatrix() {
   );
 }
 
+function IssueThreadNoticeReview() {
+  return (
+    <div className="paperclip-story">
+      <main className="paperclip-story__inner max-w-4xl">
+        <Section eyebrow="IssueChatThread" title="Workspace changes and stale disposition notices">
+          <div className="rounded-lg border border-border bg-background/70 p-4">
+            <IssueChatThread
+              comments={issueThreadNoticeReviewComments}
+              timelineEvents={issueThreadNoticeReviewTimelineEvents}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              issueStatus="done"
+              successfulRunHandoff={{
+                state: "resolved",
+                required: false,
+                sourceRunId: "run-notice-source",
+                correctiveRunId: "run-notice-corrective",
+                assigneeAgentId: codexAgent.id,
+                detectedProgressSummary: "Captured screenshots for the issue thread notice states.",
+                createdAt: new Date("2026-04-20T13:49:00.000Z"),
+              }}
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              userLabelMap={boardUserLabels}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              showJumpToLatest={false}
+            />
+          </div>
+        </Section>
+      </main>
+    </div>
+  );
+}
+
 function ChatCommentsStories() {
   return (
     <div className="paperclip-story">
@@ -770,4 +875,8 @@ export const IssueChatWithTimeline: Story = {
       </main>
     </div>
   ),
+};
+
+export const IssueThreadNotices: Story = {
+  render: () => <IssueThreadNoticeReview />,
 };
