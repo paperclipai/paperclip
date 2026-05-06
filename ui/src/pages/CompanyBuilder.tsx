@@ -258,6 +258,11 @@ function SettingsPanel({ companyId }: { companyId: string }) {
     mutationFn: async () => {
       if (!formValues || !uiAdapter) return null;
       
+      // Validate required fields
+      if (!formValues.model?.trim()) {
+        throw new Error("Please select a model before saving.");
+      }
+      
       // Build final adapter config using the adapter's own buildAdapterConfig
       const adapterConfig = uiAdapter.buildAdapterConfig(formValues);
 
@@ -333,12 +338,18 @@ function SettingsPanel({ companyId }: { companyId: string }) {
 
       <Button
         onClick={() => mutation.mutate()}
-        disabled={mutation.isPending || !formValues.model?.trim()}
+        disabled={mutation.isPending}
         size="sm"
         className="w-full"
       >
         {mutation.isPending ? "Saving…" : "Save settings"}
       </Button>
+      
+      {!formValues.model?.trim() && (
+        <div className="text-xs text-amber-600 dark:text-amber-400">
+          ⚠️ Please select a model above to save settings
+        </div>
+      )}
     </div>
   );
 }
