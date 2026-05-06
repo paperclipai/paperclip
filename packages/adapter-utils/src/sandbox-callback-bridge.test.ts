@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import {
+  authorizeSandboxCallbackBridgeRequestWithRoutes,
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
@@ -612,5 +613,96 @@ describe("sandbox callback bridge", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringMatching(/JSON|Unexpected|Unterminated/i),
     });
+  });
+
+  it("permits the documented heartbeat surface and denies unrelated routes", () => {
+    const allowed: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/agents/me" },
+      { method: "GET", path: "/api/agents/me/inbox-lite" },
+      { method: "GET", path: "/api/agents/me/inbox/mine" },
+      { method: "GET", path: "/api/agents/agent-1" },
+      { method: "GET", path: "/api/agents/agent-1/skills" },
+      { method: "POST", path: "/api/agents/agent-1/skills/sync" },
+      { method: "PATCH", path: "/api/agents/agent-1/instructions-path" },
+      { method: "GET", path: "/api/companies/co-1" },
+      { method: "GET", path: "/api/companies/co-1/dashboard" },
+      { method: "GET", path: "/api/companies/co-1/agents" },
+      { method: "GET", path: "/api/companies/co-1/issues" },
+      { method: "GET", path: "/api/companies/co-1/projects" },
+      { method: "GET", path: "/api/companies/co-1/goals" },
+      { method: "GET", path: "/api/companies/co-1/org" },
+      { method: "GET", path: "/api/companies/co-1/approvals" },
+      { method: "GET", path: "/api/companies/co-1/routines" },
+      { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/projects/proj-1" },
+      { method: "GET", path: "/api/goals/goal-1" },
+      { method: "GET", path: "/api/issues/issue-1" },
+      { method: "GET", path: "/api/issues/issue-1/heartbeat-context" },
+      { method: "GET", path: "/api/issues/issue-1/comments" },
+      { method: "GET", path: "/api/issues/issue-1/comments/c-1" },
+      { method: "POST", path: "/api/issues/issue-1/comments" },
+      { method: "GET", path: "/api/issues/issue-1/documents" },
+      { method: "GET", path: "/api/issues/issue-1/documents/plan" },
+      { method: "GET", path: "/api/issues/issue-1/documents/plan/revisions" },
+      { method: "PUT", path: "/api/issues/issue-1/documents/plan" },
+      { method: "POST", path: "/api/issues/issue-1/checkout" },
+      { method: "POST", path: "/api/issues/issue-1/release" },
+      { method: "PATCH", path: "/api/issues/issue-1" },
+      { method: "GET", path: "/api/issues/issue-1/approvals" },
+      { method: "GET", path: "/api/issues/issue-1/interactions" },
+      { method: "GET", path: "/api/issues/issue-1/interactions/inter-1" },
+      { method: "POST", path: "/api/issues/issue-1/interactions" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/accept" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/reject" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/respond" },
+      { method: "POST", path: "/api/companies/co-1/issues" },
+      { method: "GET", path: "/api/approvals/ap-1" },
+      { method: "GET", path: "/api/approvals/ap-1/issues" },
+      { method: "GET", path: "/api/approvals/ap-1/comments" },
+      { method: "POST", path: "/api/approvals/ap-1/comments" },
+      { method: "POST", path: "/api/companies/co-1/approvals" },
+      { method: "GET", path: "/api/execution-workspaces/ws-1" },
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/start" },
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/stop" },
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/restart" },
+      { method: "GET", path: "/api/routines/r-1" },
+      { method: "GET", path: "/api/routines/r-1/runs" },
+      { method: "POST", path: "/api/companies/co-1/routines" },
+      { method: "PATCH", path: "/api/routines/r-1" },
+      { method: "POST", path: "/api/routines/r-1/run" },
+      { method: "POST", path: "/api/routines/r-1/triggers" },
+      { method: "PATCH", path: "/api/routine-triggers/t-1" },
+      { method: "DELETE", path: "/api/routine-triggers/t-1" },
+    ];
+    for (const request of allowed) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBeNull();
+    }
+
+    const denied: Array<{ method: string; path: string }> = [
+      { method: "DELETE", path: "/api/secrets" },
+      // Pin the runtime-services regex to start/stop/restart only — anything
+      // else (delete, reset, wipe, etc.) must stay denied even if the API
+      // grows new actions later.
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/delete" },
+      { method: "POST", path: "/api/companies/co-1/agents" },
+      { method: "POST", path: "/api/agents/agent-1/pause" },
+      { method: "POST", path: "/api/agents/agent-1/terminate" },
+      { method: "POST", path: "/api/agents/agent-1/keys" },
+      { method: "POST", path: "/api/companies/co-1/exports" },
+      { method: "POST", path: "/api/companies/co-1/imports/apply" },
+      { method: "POST", path: "/api/companies/co-1/archive" },
+      { method: "DELETE", path: "/api/issues/issue-1/documents/plan" },
+      { method: "DELETE", path: "/api/issues/issue-1/approvals/ap-1" },
+      { method: "POST", path: "/api/approvals/ap-1/approve" },
+      { method: "POST", path: "/api/approvals/ap-1/reject" },
+      { method: "POST", path: "/api/companies/co-1/logo" },
+      { method: "GET", path: "/api/companies/co-1/secrets" },
+      { method: "PATCH", path: "/api/secrets/secret-1" },
+    ];
+    for (const request of denied) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
+        `Route not allowed: ${request.method} ${request.path}`,
+      );
+    }
   });
 });
