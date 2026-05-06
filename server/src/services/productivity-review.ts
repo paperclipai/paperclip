@@ -33,6 +33,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const ACTIONABLE_SOURCE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
@@ -91,6 +92,10 @@ type EnqueueWakeup = (
     contextSnapshot?: Record<string, unknown>;
   },
 ) => Promise<unknown | null>;
+type CancelRun = (runId: string, reason?: string) => Promise<unknown | null>;
+
+const PRODUCTIVITY_REVIEW_RESOLVED_CANCEL_REASON =
+  "Cancelled because productivity review source issue is no longer actionable";
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
@@ -136,6 +141,14 @@ function readPositiveInteger(value: number, fallback: number) {
 function coerceDate(value: Date | string | null | undefined) {
   if (!value) return null;
   return value instanceof Date ? value : new Date(value);
+}
+
+function maxDate(...values: Array<Date | string | null | undefined>) {
+  const dates = values
+    .map(coerceDate)
+    .filter((value): value is Date => Boolean(value));
+  if (dates.length === 0) return null;
+  return dates.reduce((latest, value) => value.getTime() > latest.getTime() ? value : latest, dates[0]!);
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
@@ -200,7 +213,16 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   return "Long active duration";
 }
 
-export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
+function isActionableSourceIssue(issue: IssueRow | null | undefined) {
+  if (!issue || issue.hiddenAt) return false;
+  if (!issue.assigneeAgentId || issue.assigneeUserId) return false;
+  if (issue.originKind === PRODUCTIVITY_REVIEW_ORIGIN_KIND) return false;
+  return ACTIONABLE_SOURCE_ISSUE_STATUSES.includes(
+    issue.status as (typeof ACTIONABLE_SOURCE_ISSUE_STATUSES)[number],
+  );
+}
+
+export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup; cancelRun?: CancelRun }) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
 
@@ -571,6 +593,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ? evidence.usageSamples.map((sample) => `- \`${sample.runId}\`: \`${JSON.stringify(sample.usageJson).slice(0, 500)}\``).join("\n")
       : "- no usage payloads on sampled runs";
     return [
+      "Expected output: technical_audit",
+      "",
       "Paperclip detected an unusual productivity/progression pattern on an assigned issue.",
       "",
       "## Source",
@@ -612,11 +636,35 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       usage,
       "",
-      "## Manager Decision",
+      "## Owner Action",
       "",
       "- Close as productive if this pattern is expected.",
       "- Continue with a snooze window if the current work should keep running without repeat review spam.",
       "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+    ].join("\n");
+  }
+
+  function buildResolvedReviewMarkdown(input: {
+    review: IssueRow;
+    sourceIssue: IssueRow | null;
+    prefix: string;
+    resolvedAt: Date;
+  }) {
+    const existing = input.review.description?.trim() || "Expected output: technical_audit";
+    const source = input.sourceIssue
+      ? issueUiLink(input.sourceIssue, input.prefix)
+      : `\`${input.review.originId ?? "unknown"}\``;
+    const sourceStatus = input.sourceIssue?.status ?? "missing";
+    return [
+      existing,
+      "",
+      "## Disposition",
+      "",
+      "Disposition: cancelled diagnostic review.",
+      `- Source issue: ${source}`,
+      `- Source issue state: \`${sourceStatus}\``,
+      "- Reason: source issue is no longer in an actionable assigned execution state.",
+      `- Cancelled at: ${input.resolvedAt.toISOString()}`,
     ].join("\n");
   }
 
@@ -640,14 +688,20 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
-      const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
+      const lastRefreshOrCreationAt = maxDate(refreshState.latestCreatedAt, existing.updatedAt, existing.createdAt) ?? existing.createdAt;
       if (
-        refreshState.count >= opts.thresholds.maxRefreshComments ||
         evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
       ) {
         return { kind: "existing" as const, reviewIssueId: existing.id };
       }
-      await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+      await db
+        .update(issues)
+        .set({ description: buildReviewMarkdown(evidence, opts.prefix), updatedAt: evidence.generatedAt })
+        .where(eq(issues.id, existing.id));
+      const refreshCommentAdded = refreshState.count < opts.thresholds.maxRefreshComments;
+      if (refreshCommentAdded) {
+        await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+      }
       await logActivity(db, {
         companyId: evidence.sourceIssue.companyId,
         actorType: "system",
@@ -663,6 +717,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
+          refreshCommentAdded,
+          refreshCommentCount: refreshState.count + (refreshCommentAdded ? 1 : 0),
         },
       });
       return { kind: "updated" as const, reviewIssueId: existing.id };
@@ -758,6 +814,96 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, reviewIssueId: review.id };
   }
 
+  async function cancelResolvedOpenReviews(opts: { now: Date; companyId?: string }) {
+    const openReviews = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          opts.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(MAX_CANDIDATE_ISSUES);
+    if (openReviews.length === 0) return 0;
+
+    const sourceIssueIds = [
+      ...new Set(openReviews.map((review) => review.originId).filter((id): id is string => Boolean(id))),
+    ];
+    const sourceIssues = sourceIssueIds.length > 0
+      ? await db
+        .select()
+        .from(issues)
+        .where(inArray(issues.id, sourceIssueIds))
+      : [];
+    const sourceIssueByKey = new Map(
+      sourceIssues.map((issue) => [`${issue.companyId}:${issue.id}`, issue]),
+    );
+
+    const prefixCache = new Map<string, string>();
+    let resolved = 0;
+    for (const review of openReviews) {
+      const sourceIssue = review.originId
+        ? sourceIssueByKey.get(`${review.companyId}:${review.originId}`) ?? null
+        : null;
+      if (isActionableSourceIssue(sourceIssue)) continue;
+
+      let prefix = prefixCache.get(review.companyId);
+      if (!prefix) {
+        prefix = await getCompanyIssuePrefix(review.companyId);
+        prefixCache.set(review.companyId, prefix);
+      }
+      if (review.executionRunId && deps?.cancelRun) {
+        try {
+          await deps.cancelRun(review.executionRunId, PRODUCTIVITY_REVIEW_RESOLVED_CANCEL_REASON);
+        } catch (err) {
+          logger.warn(
+            { err, reviewIssueId: review.id, runId: review.executionRunId },
+            "failed to cancel productivity review run for resolved source issue",
+          );
+        }
+      }
+      await db
+        .update(issues)
+        .set({
+          status: "cancelled",
+          description: buildResolvedReviewMarkdown({
+            review,
+            sourceIssue,
+            prefix,
+            resolvedAt: opts.now,
+          }),
+          completedAt: null,
+          cancelledAt: opts.now,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: opts.now,
+        })
+        .where(eq(issues.id, review.id));
+      await logActivity(db, {
+        companyId: review.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_resolved",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: review.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: review.originId,
+          sourceIssueStatus: sourceIssue?.status ?? null,
+        },
+      });
+      resolved += 1;
+    }
+    return resolved;
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -765,6 +911,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
+    const resolved = await cancelResolvedOpenReviews({ now, companyId: opts?.companyId });
     const candidates = await db
       .select()
       .from(issues)
@@ -788,6 +935,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
+      resolved,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
