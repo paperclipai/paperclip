@@ -1364,9 +1364,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .returning();
     if (!claimed) return null;
 
-    const updated = await issuesSvc.update(input.issue.id, {
-      blockedByIssueIds: blockerIds,
-    });
+    await db
+      .delete(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, input.issue.companyId),
+          eq(issueRelations.relatedIssueId, input.issue.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    if (blockerIds.length > 0) {
+      await db.insert(issueRelations).values(
+        blockerIds.map((blockerIssueId) => ({
+          companyId: input.issue.companyId,
+          issueId: blockerIssueId,
+          relatedIssueId: input.issue.id,
+          type: "blocks" as const,
+        })),
+      );
+    }
 
     const retryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot)?.retryReason) ?? "unknown";
     const interventionLine = [
@@ -1404,7 +1420,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     });
 
-    return updated ?? claimed;
+    return claimed;
   }
 
   async function reconcileStrandedAssignedIssues() {
