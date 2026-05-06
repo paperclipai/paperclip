@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
@@ -28,6 +29,8 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
+const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+const PRODUCTIVITY_REVIEW_REFRESH_SIGNATURE_PREFIX = "productivity-review-refresh-signature:";
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -64,6 +67,16 @@ type ProductivityReviewEvidence = {
   nextAction: string | null;
   thresholds: ProductivityReviewThresholds;
   generatedAt: Date;
+};
+
+type ProductivityReviewRefreshSignature = {
+  trigger: ProductivityReviewTrigger;
+  noCommentStreak: number;
+  runCountLastHour: number;
+  commentCountLastHour: number;
+  runCountLastSixHours: number;
+  commentCountLastSixHours: number;
+  nextAction: string;
 };
 
 type EnqueueWakeup = (
@@ -164,6 +177,10 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   if (trigger === "no_comment_streak") return "No-comment streak";
   if (trigger === "high_churn") return "High churn";
   return "Long active duration";
+}
+
+function refreshSignatureMarker(signature: string) {
+  return `<!-- ${PRODUCTIVITY_REVIEW_REFRESH_SIGNATURE_PREFIX}${signature} -->`;
 }
 
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
@@ -460,6 +477,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }
 
   function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+    const refreshSignature = buildRefreshCommentSignature(evidence);
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
         `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
@@ -520,20 +538,107 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "- Close as productive if this pattern is expected.",
       "- Continue with a snooze window if the current work should keep running without repeat review spam.",
       "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+      "",
+      refreshSignatureMarker(refreshSignature),
     ].join("\n");
   }
 
   function buildRefreshComment(evidence: ProductivityReviewEvidence, prefix: string) {
+    const nextAction = evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded";
+    const refreshSignature = buildRefreshCommentSignature(evidence);
     return [
-      "Productivity review evidence refreshed.",
+      PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
       `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
       `- No-comment streak: ${evidence.noCommentStreak}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
-      `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
+      `- Next action: ${nextAction}`,
+      "",
+      refreshSignatureMarker(refreshSignature),
     ].join("\n");
+  }
+
+  function buildRefreshCommentSignature(evidence: ProductivityReviewEvidence) {
+    const signature: ProductivityReviewRefreshSignature = {
+      trigger: evidence.trigger,
+      noCommentStreak: evidence.noCommentStreak,
+      runCountLastHour: evidence.runCountLastHour,
+      commentCountLastHour: evidence.commentCountLastHour,
+      runCountLastSixHours: evidence.runCountLastSixHours,
+      commentCountLastSixHours: evidence.commentCountLastSixHours,
+      nextAction: evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded",
+    };
+    return createHash("sha256").update(JSON.stringify(signature)).digest("hex");
+  }
+
+  function extractRefreshCommentSignature(commentBody: string) {
+    const match = commentBody.match(
+      new RegExp(`<!--\\s*${PRODUCTIVITY_REVIEW_REFRESH_SIGNATURE_PREFIX}([a-f0-9]{64})\\s*-->\\s*$`),
+    );
+    return match?.[1] ?? null;
+  }
+
+  function normalizeRefreshCommentForDedupe(commentBody: string) {
+    return commentBody
+      .replace(
+        new RegExp(`\\n<!--\\s*${PRODUCTIVITY_REVIEW_REFRESH_SIGNATURE_PREFIX}[a-f0-9]{64}\\s*-->\\s*$`),
+        "",
+      )
+      .split("\n")
+      .filter((line) => !line.startsWith("- Reasons:"))
+      .join("\n")
+      .trim();
+  }
+
+  async function getLatestRefreshComment(issueId: string) {
+    return db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, issueId),
+          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0]?.body ?? null);
+  }
+
+  async function collapseDuplicateRefreshComments(
+    issueId: string,
+    refreshSignature: string,
+    insertedCommentId: string,
+  ) {
+    const signatureMarker = `${PRODUCTIVITY_REVIEW_REFRESH_SIGNATURE_PREFIX}${refreshSignature}`;
+    const matching = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, issueId),
+          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+          sql`${issueComments.body} like ${`%${signatureMarker}%`}`,
+        ),
+      )
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+
+    if (matching.length <= 1) {
+      return { removedCount: 0, insertedRemoved: false };
+    }
+
+    const [oldest, ...rest] = matching;
+    const duplicateIds = rest.map((row) => row.id);
+    if (duplicateIds.length > 0) {
+      await db.delete(issueComments).where(inArray(issueComments.id, duplicateIds));
+    }
+
+    return {
+      removedCount: duplicateIds.length,
+      insertedRemoved: oldest?.id !== insertedCommentId,
+    };
   }
 
   async function createOrUpdateReview(
@@ -542,7 +647,28 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
-      await issuesSvc.addComment(existing.id, buildRefreshComment(evidence, opts.prefix), {});
+      const refreshComment = buildRefreshComment(evidence, opts.prefix);
+      const refreshSignature = buildRefreshCommentSignature(evidence);
+      const latestRefreshComment = await getLatestRefreshComment(existing.id);
+      const latestSignature = latestRefreshComment
+        ? extractRefreshCommentSignature(latestRefreshComment)
+        : null;
+      const baselineDescriptionSignature = latestRefreshComment
+        ? null
+        : extractRefreshCommentSignature(existing.description ?? "");
+      const latestIsEquivalentWithoutReasons = latestRefreshComment
+        ? normalizeRefreshCommentForDedupe(latestRefreshComment) === normalizeRefreshCommentForDedupe(refreshComment)
+        : false;
+      const shouldSkipUsingBaselineSignature =
+        baselineDescriptionSignature === refreshSignature && isSoftStopTrigger(evidence.trigger);
+      if (latestSignature === refreshSignature || latestIsEquivalentWithoutReasons || shouldSkipUsingBaselineSignature) {
+        return { kind: "existing" as const, reviewIssueId: existing.id };
+      }
+      const insertedRefreshComment = await issuesSvc.addComment(existing.id, refreshComment, {});
+      const collapse = await collapseDuplicateRefreshComments(existing.id, refreshSignature, insertedRefreshComment.id);
+      if (collapse.insertedRemoved) {
+        return { kind: "existing" as const, reviewIssueId: existing.id };
+      }
       await logActivity(db, {
         companyId: evidence.sourceIssue.companyId,
         actorType: "system",
@@ -558,6 +684,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
+          runCountLastSixHours: evidence.runCountLastSixHours,
+          commentCountLastSixHours: evidence.commentCountLastSixHours,
+          refreshSignature,
+          duplicateRefreshCommentsRemoved: collapse.removedCount,
         },
       });
       return { kind: "updated" as const, reviewIssueId: existing.id };

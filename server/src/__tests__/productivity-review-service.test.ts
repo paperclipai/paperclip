@@ -165,7 +165,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       .orderBy(issues.createdAt);
   }
 
-  it("creates exactly one manager-assigned review for a no-comment run streak and refreshes it idempotently", async () => {
+  it("creates exactly one manager-assigned review for a no-comment run streak and skips unchanged refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
     await insertRuns({
@@ -181,7 +181,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     const second = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
 
     expect(first.created).toBe(1);
-    expect(second.updated).toBe(1);
+    expect(second.updated).toBe(0);
+    expect(second.existing).toBe(1);
     const reviews = await listProductivityReviews(seeded.companyId);
     expect(reviews).toHaveLength(1);
     expect(reviews[0]?.parentId).toBe(seeded.issueId);
@@ -195,7 +196,83 @@ describeEmbeddedPostgres("productivity review service", () => {
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, reviews[0]!.id));
-    expect(comments.some((comment) => comment.body.includes("Productivity review evidence refreshed"))).toBe(true);
+    expect(comments.some((comment) => comment.body.includes("Productivity review evidence refreshed"))).toBe(false);
+  });
+
+  it("dedupes legacy refresh comments when only long-active reason text drifts", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+    const first = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(first.created).toBe(1);
+
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review).toBeTruthy();
+
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: review!.id,
+      body: [
+        "Productivity review evidence refreshed.",
+        "",
+        `- Source issue: [${seeded.issuePrefix}-1](/${seeded.issuePrefix}/issues/${seeded.issuePrefix}-1)`,
+        "- Trigger: `long_active_duration` (Long active duration)",
+        "- Reasons: current active episode has lasted 7h 0m",
+        "- No-comment streak: 0",
+        "- Runs/assignee comments: 0/0 in 1h, 0/0 in 6h",
+        "- Next action: none recorded",
+      ].join("\n"),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const second = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 60_000),
+      companyId: seeded.companyId,
+    });
+
+    expect(second.updated).toBe(0);
+    expect(second.existing).toBe(1);
+
+    const refreshComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, review!.id));
+    expect(refreshComments).toHaveLength(1);
+  });
+
+  it("collapses concurrent refresh writes with the same evidence signature", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+    const first = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(first.created).toBe(1);
+
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review).toBeTruthy();
+
+    const refreshAt = new Date(now.getTime() + 60_000);
+    await Promise.all([
+      service.reconcileProductivityReviews({ now: refreshAt, companyId: seeded.companyId }),
+      service.reconcileProductivityReviews({ now: refreshAt, companyId: seeded.companyId }),
+    ]);
+
+    const refreshComments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, review!.id),
+          sql`${issueComments.body} like ${"Productivity review evidence refreshed.%"}`,
+        ),
+      );
+    expect(refreshComments).toHaveLength(1);
   });
 
   it("creates a long-active review without enabling a continuation hold", async () => {
