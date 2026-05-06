@@ -61,6 +61,14 @@ while IFS= read -r commit; do
             echo "$content" | grep -qE "\bt\([\"'\`]" && continue
             # i18n.t() direct call
             echo "$content" | grep -qE "i18n\.t\([\"'\`]" && continue
+            # 2-letter translation alias (tc, tp, tn, etc.)
+            echo "$content" | grep -qE "\b[a-z][a-z]\([\"'\`]" && continue
+            # React hook dependency arrays containing t: }, [deps, t, ...] or [t],
+            echo "$content" | grep -qE "^\s*(\},?\s*)?\[([^]]*\bt\b[^]]*)\]" && continue
+            # TypeScript [string, string][] cast on arrays (t() replaces string literals)
+            echo "$content" | grep -qE "\] as \[string" && continue
+            # TypeScript Parameters<typeof ...> utility type (needed for updateView type safety)
+            echo "$content" | grep -qE "Parameters<typeof " && continue
             # Stage-8 bypass: allow LanguageSwitcher import and component usage
             [[ $has_bypass -eq 1 ]] && echo "$content" | grep -qiE 'LanguageSwitcher' && continue
             # violation

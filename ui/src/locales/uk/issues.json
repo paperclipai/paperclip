@@ -38,7 +38,8 @@
     "assignee": "Виконавець",
     "workspace": "Простір роботи",
     "parent": "Батьківська задача",
-    "none": "Без групи"
+    "none": "Без групи",
+    "project": "Project"
   },
   "no_project": "Без проєкту",
   "properties": {

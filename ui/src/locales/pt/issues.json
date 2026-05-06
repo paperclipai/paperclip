@@ -36,7 +36,8 @@
     "assignee": "Responsável",
     "workspace": "Espaço de trabalho",
     "parent": "Tarefa Pai",
-    "none": "Nenhum"
+    "none": "Nenhum",
+    "project": "Project"
   },
   "no_project": "Sem projeto",
   "properties": {

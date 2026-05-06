@@ -36,7 +36,8 @@
     "assignee": "Bearbeiter",
     "workspace": "Arbeitsbereich",
     "parent": "Übergeordnete Aufgabe",
-    "none": "Keine"
+    "none": "Keine",
+    "project": "Project"
   },
   "no_project": "Kein Projekt",
   "properties": {

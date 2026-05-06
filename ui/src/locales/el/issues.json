@@ -36,7 +36,8 @@
     "assignee": "Εκχωρημένος",
     "workspace": "Χώρος εργασίας",
     "parent": "Γονικό ζήτημα",
-    "none": "Κανένα"
+    "none": "Κανένα",
+    "project": "Project"
   },
   "no_project": "Χωρίς έργο",
   "properties": {

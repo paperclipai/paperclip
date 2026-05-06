@@ -36,7 +36,8 @@
     "assignee": "负责人",
     "workspace": "工作空间",
     "parent": "父任务",
-    "none": "无"
+    "none": "无",
+    "project": "Project"
   },
   "no_project": "无项目",
   "properties": {

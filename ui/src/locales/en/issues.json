@@ -36,7 +36,8 @@
     "assignee": "Assignee",
     "workspace": "Workspace",
     "parent": "Parent Issue",
-    "none": "None"
+    "none": "None",
+    "project": "Project"
   },
   "no_project": "No project",
   "properties": {
@@ -236,7 +237,7 @@
     "copy_message_item": "Copy message",
     "more_actions": "More actions",
     "stop_run": "Stop run",
-    "stopping": "Stopping\u2026",
+    "stopping": "Stopping…",
     "view_run": "View run",
     "helpful": "Helpful",
     "needs_work": "Needs work",
@@ -555,7 +556,7 @@
     "reuse_pending": "This issue will reuse an existing workspace when it runs.",
     "default_pending": "This issue will use the project default workspace configuration when it runs.",
     "reusing": "Reusing:",
-    "view_workspace_details": "View workspace details \u2192",
+    "view_workspace_details": "View workspace details →",
     "copied": "Copied!",
     "copy": "Copy"
   },
