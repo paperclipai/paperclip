@@ -9,6 +9,8 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Preview)" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (Preview)" },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
@@ -47,7 +49,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
-- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
+- sandbox (boolean, optional): ignored. Note: this adapter permanently forces the sandbox off internally to prevent crashes in headless/Docker environments.
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

@@ -94,6 +94,9 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (env.GEMINI_CLI_NO_RELAUNCH === undefined) env.GEMINI_CLI_NO_RELAUNCH = 'true';
+  if (env.GEMINI_SANDBOX === undefined) env.GEMINI_SANDBOX = 'false';
+
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
@@ -166,7 +169,7 @@ export async function testEnvironment(
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
-      const sandbox = asBoolean(config.sandbox, false);
+      const sandbox = false; // Always force off for Gemini Local
       const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);

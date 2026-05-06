@@ -8,6 +8,12 @@ async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): 
   const commandPath = path.join(binDir, "gemini");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
+
+if (process.argv.includes("--help")) {
+  console.log("--sandbox --sandbox=none");
+  process.exit(0);
+}
+
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
 if (outPath) {
   fs.writeFileSync(outPath, JSON.stringify(process.argv.slice(2)), "utf8");
@@ -23,12 +29,17 @@ console.log(JSON.stringify({
 }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  if (process.platform === "win32") {
+    await fs.writeFile(`${commandPath}.cmd`, `@echo off\nnode "%~dp0\\gemini" %*`, "utf8");
+  } else {
+    await fs.chmod(commandPath, 0o755);
+  }
   return commandPath;
 }
 
 async function writeQuotaGeminiCommand(binDir: string): Promise<string> {
   const commandPath = path.join(binDir, "gemini");
+  const isWin = process.platform === "win32";
   const script = `#!/usr/bin/env node
 if (process.argv.includes("--help")) {
   process.exit(0);
@@ -37,7 +48,11 @@ console.error("429 RESOURCE_EXHAUSTED: You exceeded your current quota and billi
 process.exit(1);
 `;
   await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  if (isWin) {
+    await fs.writeFile(`${commandPath}.cmd`, `@echo off\nnode "%~dp0\\gemini" %*`, "utf8");
+  } else {
+    await fs.chmod(commandPath, 0o755);
+  }
   return commandPath;
 }
 
@@ -77,12 +92,14 @@ describe("gemini_local environment diagnostics", () => {
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
     await writeFakeGeminiCommand(binDir, argsCapturePath);
+    const actualCommand = process.platform === "win32" ? "gemini.cmd" : "gemini";
+    await fs.copyFile(process.execPath, path.join(binDir, process.platform === "win32" ? "node.exe" : "node"));
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: actualCommand,
         cwd,
         model: "gemini-2.5-pro",
         yolo: true,
@@ -94,6 +111,9 @@ describe("gemini_local environment diagnostics", () => {
       },
     });
 
+    if (result.status === "fail") {
+      console.log(JSON.stringify(result.checks, null, 2));
+    }
     expect(result.status).not.toBe("fail");
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
     expect(args).toContain("--model");
@@ -112,13 +132,15 @@ describe("gemini_local environment diagnostics", () => {
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
     await fs.mkdir(binDir, { recursive: true });
-    await writeQuotaGeminiCommand(binDir);
+    const commandPath = await writeQuotaGeminiCommand(binDir);
+    const actualCommand = process.platform === "win32" ? `${commandPath}.cmd` : commandPath;
+    await fs.copyFile(process.execPath, path.join(binDir, process.platform === "win32" ? "node.exe" : "node"));
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: actualCommand,
         cwd,
         env: {
           GEMINI_API_KEY: "test-key",

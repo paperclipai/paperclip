@@ -1,22 +1,39 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
 function collectMessageText(message: unknown): string[] {
+  const lines: string[] = [];
   if (typeof message === "string") {
     const trimmed = message.trim();
-    return trimmed ? [trimmed] : [];
+    if (trimmed) lines.push(trimmed);
+    return lines;
   }
 
   const record = parseObject(message);
-  const direct = asString(record.text, "").trim();
-  const lines: string[] = direct ? [direct] : [];
-  const content = Array.isArray(record.content) ? record.content : [];
 
-  for (const partRaw of content) {
-    const part = parseObject(partRaw);
-    const type = asString(part.type, "").trim();
-    if (type === "output_text" || type === "text" || type === "content") {
-      const text = asString(part.text, "").trim() || asString(part.content, "").trim();
-      if (text) lines.push(text);
+  if (typeof record.text === "string") {
+    const trimmed = record.text.trim();
+    if (trimmed) {
+      lines.push(trimmed);
+      return lines;
+    }
+  }
+
+  if (typeof record.content === "string") {
+    const trimmed = record.content.trim();
+    if (trimmed) {
+      lines.push(trimmed);
+      return lines;
+    }
+  }
+
+  if (Array.isArray(record.content)) {
+    for (const partRaw of record.content) {
+      const part = parseObject(partRaw);
+      const type = asString(part.type, "").trim();
+      if (type === "output_text" || type === "text" || type === "content") {
+        const text = (asString(part.text, "") || asString(part.content, "")).trim();
+        if (text) lines.push(text);
+      }
     }
   }
 
@@ -99,6 +116,32 @@ export function parseGeminiJsonl(stdout: string) {
     if (foundSessionId) sessionId = foundSessionId;
 
     const type = asString(event.type, "").trim();
+
+    if (type === "message") {
+      const role = asString(event.role, "").trim().toLowerCase();
+      if (role === "assistant") {
+        messages.push(...collectMessageText(event));
+        const content = Array.isArray(event.content) ? event.content : [];
+        for (const partRaw of content) {
+          const part = parseObject(partRaw);
+          if (asString(part.type, "").trim() === "question") {
+            question = {
+              prompt: asString(part.prompt, "").trim(),
+              choices: (Array.isArray(part.choices) ? part.choices : []).map((choiceRaw) => {
+                const choice = parseObject(choiceRaw);
+                return {
+                  key: asString(choice.key, "").trim(),
+                  label: asString(choice.label, "").trim(),
+                  description: asString(choice.description, "").trim() || undefined,
+                };
+              }),
+            };
+            break; // only one question per message
+          }
+        }
+      }
+      continue;
+    }
 
     if (type === "assistant") {
       messages.push(...collectMessageText(event.message));
