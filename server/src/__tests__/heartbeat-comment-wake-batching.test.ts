@@ -786,7 +786,7 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not reopen a finished issue when the deferred comment wake came from another agent", async () => {
+  it("does not reopen a finished issue when the deferred comment wake came from the finishing agent", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -941,14 +941,28 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
         const runs = await db
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.companyId, companyId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 1 && runs[0]?.status === "succeeded";
       }, 90_000);
+
+      await waitFor(async () => {
+        const deferredAfterRelease = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return deferredAfterRelease?.status === "cancelled" &&
+          deferredAfterRelease?.error?.includes("Deferred wake suppressed");
+      });
 
       const issueAfterPromotion = await db
         .select({
@@ -963,23 +977,7 @@ describe("heartbeat comment wake batching", () => {
         status: "done",
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
-
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_comment_mentioned",
-          commentIds: [comment.id],
-          latestCommentId: comment.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Do not reopen from agent mention",
-            status: "done",
-            priority: "medium",
-          },
-        },
-      });
-      expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

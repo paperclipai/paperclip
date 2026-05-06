@@ -144,6 +144,78 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await tempDb?.cleanup();
   });
 
+  it("deduplicates queued wakeup requests by idempotency key but allows completed keys to retry", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const idempotencyKey = `issue_children_completed:${randomUUID()}:12345`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      status: "queued",
+      idempotencyKey,
+    });
+
+    const duplicateRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      idempotencyKey,
+    });
+    expect(duplicateRun).toBeNull();
+
+    let wakeups = await db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+    expect(wakeups).toHaveLength(1);
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "completed", updatedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, wakeups[0]!.id));
+
+    const retryRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      idempotencyKey,
+    });
+    expect(retryRun).not.toBeNull();
+
+    wakeups = await db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+    expect(wakeups).toHaveLength(2);
+  });
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -121,6 +121,7 @@ function makeHeartbeatRun(overrides: Partial<HeartbeatRun>): HeartbeatRun {
     stdoutExcerpt: null,
     stderrExcerpt: null,
     errorCode: null,
+    cancelSource: null,
     externalRunId: null,
     processPid: null,
     processGroupId: null,
