@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
@@ -7,6 +8,7 @@ import {
   updateIssueSchema,
   upsertIssueDocumentSchema,
 } from "./issue.js";
+import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
   it("passes real line breaks through unchanged", () => {
@@ -74,5 +76,105 @@ describe("issue validators", () => {
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
     expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  it("clamps oversized requestDepth values on create", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Clamp request depth",
+      requestDepth: MAX_ISSUE_REQUEST_DEPTH + 500,
+    });
+
+    expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("clamps oversized requestDepth values on update", () => {
+    const parsed = updateIssueSchema.parse({
+      requestDepth: MAX_ISSUE_REQUEST_DEPTH + 1,
+    });
+
+    expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("accepts the cheap model profile in issue assignee adapter overrides", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Run a cheap heartbeat",
+      assigneeAdapterOverrides: {
+        modelProfile: "cheap",
+      },
+    });
+
+    expect(parsed.assigneeAdapterOverrides?.modelProfile).toBe("cheap");
+  });
+
+  it("rejects unknown issue model profile keys", () => {
+    const parsed = updateIssueSchema.safeParse({
+      assigneeAdapterOverrides: {
+        modelProfile: "fast",
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("validates agent runtime cheap model profile config without rejecting other runtime fields", () => {
+    const parsed = createAgentSchema.parse({
+      name: "Coder",
+      adapterType: "codex_local",
+      runtimeConfig: {
+        heartbeat: { enabled: true },
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            label: "Cheap Codex",
+            adapterConfig: {
+              model: "gpt-5.3-codex-spark",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.runtimeConfig.modelProfiles?.cheap?.adapterConfig).toEqual({
+      model: "gpt-5.3-codex-spark",
+    });
+    expect(parsed.runtimeConfig.heartbeat).toEqual({ enabled: true });
+  });
+
+  it("validates cheap model profile env bindings like top-level adapter config", () => {
+    const parsed = createAgentSchema.safeParse({
+      name: "Coder",
+      adapterType: "codex_local",
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: {
+                API_TOKEN: 123,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects unknown agent runtime model profile keys", () => {
+    const parsed = createAgentSchema.safeParse({
+      name: "Coder",
+      adapterType: "codex_local",
+      runtimeConfig: {
+        modelProfiles: {
+          fast: {
+            adapterConfig: {
+              model: "gpt-5-mini",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
   });
 });

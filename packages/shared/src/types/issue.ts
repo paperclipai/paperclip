@@ -1,11 +1,17 @@
 import type {
+  IssueExecutionMonitorClearReason,
+  IssueExecutionMonitorKind,
+  IssueExecutionMonitorRecoveryPolicy,
+  IssueExecutionMonitorStateStatus,
   IssueExecutionDecisionOutcome,
+  IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
@@ -59,6 +65,7 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }
@@ -139,6 +146,22 @@ export interface IssueBlockerAttention {
   sampleStalledBlockerIdentifier: string | null;
 }
 
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus;
+  priority: IssuePriority;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface IssueRelation {
   id: string;
   companyId: string;
@@ -183,10 +206,40 @@ export interface IssueExecutionStage {
   participants: IssueExecutionStageParticipant[];
 }
 
+export interface IssueExecutionMonitorPolicy {
+  nextCheckAt: string;
+  notes: string | null;
+  scheduledBy: IssueMonitorScheduledBy;
+  kind?: IssueExecutionMonitorKind | null;
+  serviceName?: string | null;
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
+  monitor?: IssueExecutionMonitorPolicy | null;
+}
+
+export interface IssueExecutionMonitorState {
+  status: IssueExecutionMonitorStateStatus;
+  nextCheckAt: string | null;
+  lastTriggeredAt: string | null;
+  attemptCount: number;
+  notes: string | null;
+  scheduledBy: IssueMonitorScheduledBy | null;
+  kind?: IssueExecutionMonitorKind | null;
+  serviceName?: string | null;
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+  clearedAt: string | null;
+  clearReason: IssueExecutionMonitorClearReason | null;
 }
 
 export interface IssueReviewRequest {
@@ -204,6 +257,7 @@ export interface IssueExecutionState {
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
+  monitor?: IssueExecutionMonitorState | null;
 }
 
 export interface IssueExecutionDecision {
@@ -252,6 +306,11 @@ export interface Issue {
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
+  monitorNextCheckAt?: Date | null;
+  monitorLastTriggeredAt?: Date | null;
+  monitorAttemptCount?: number;
+  monitorNotes?: string | null;
+  monitorScheduledBy?: IssueMonitorScheduledBy | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
@@ -264,6 +323,7 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
+  productivityReview?: IssueProductivityReview | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -369,6 +429,8 @@ export interface AskUserQuestionsAnswer {
 export interface AskUserQuestionsResult {
   version: 1;
   answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
   summaryMarkdown?: string | null;
 }
 

@@ -12,6 +12,8 @@ import {
   createContext,
   Component,
   forwardRef,
+  memo,
+  useCallback,
   useContext,
   useEffect,
   useImperativeHandle,
@@ -88,6 +90,7 @@ import {
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import {
@@ -107,24 +110,23 @@ import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loa
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 
 interface IssueChatMessageContext {
-  feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-  activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
-  stoppingRunId?: string | null;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
-  interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
@@ -138,13 +140,14 @@ interface IssueChatMessageContext {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
-  feedbackVoteByTargetId: new Map(),
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
-  activeRunIds: new Set<string>(),
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -209,6 +212,21 @@ function useLiveElapsed(startMs: number | null | undefined, active: boolean): st
   return formatDurationWords(Date.now() - startMs);
 }
 
+function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
+  const callbackRef = useRef(callback);
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  return useMemo(() => {
+    if (!callback) return undefined;
+    return ((...args: Parameters<T>) => callbackRef.current?.(...args)) as T;
+    // Keep the wrapper stable while the callback identity changes; the ref above
+    // carries the current callback implementation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(callback)]);
+}
+
 interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -261,6 +279,9 @@ interface IssueChatThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
   imageUploadHandler?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
@@ -296,7 +317,16 @@ interface IssueChatThreadProps {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  /**
+   * Hook for the parent to refetch comments when the user explicitly asks
+   * to jump to the latest comment. Used to make sure the absolute newest
+   * comment is in the loaded set before we scroll to it.
+   */
+  onRefreshLatestComments?: () => Promise<unknown> | void;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -538,6 +568,10 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
+function isUnassignedReassignValue(value: string): boolean {
+  return !value || value === "__none__";
+}
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function commentDateLabel(date: Date | string | undefined): string {
@@ -547,7 +581,7 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
-function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
+const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
   return (
     <MarkdownBody
@@ -559,7 +593,7 @@ function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolea
       {text}
     </MarkdownBody>
   );
-}
+});
 
 function humanizeValue(value: string | null) {
   if (!value) return "None";
@@ -1047,7 +1081,7 @@ function getThreadMessageCopyText(message: ThreadMessage) {
     .join("\n\n");
 }
 
-function IssueChatTextParts({
+const IssueChatTextParts = memo(function IssueChatTextParts({
   message,
   recessed = false,
 }: {
@@ -1067,7 +1101,7 @@ function IssueChatTextParts({
         ))}
     </>
   );
-}
+});
 
 function groupAssistantParts(
   content: readonly ThreadMessage["content"][number][],
@@ -1105,16 +1139,17 @@ function groupAssistantParts(
   return groups;
 }
 
-function IssueChatAssistantParts({
+const IssueChatAssistantParts = memo(function IssueChatAssistantParts({
   message,
   hasCoT,
 }: {
   message: ThreadMessage;
   hasCoT: boolean;
 }) {
+  const groupedParts = useMemo(() => groupAssistantParts(message.content), [message.content]);
   return (
     <>
-      {groupAssistantParts(message.content).map((group) => {
+      {groupedParts.map((group) => {
         if (group.type === "text") {
           return (
             <IssueChatTextPart
@@ -1134,13 +1169,18 @@ function IssueChatAssistantParts({
       })}
     </>
   );
-}
+});
 
-function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
+function IssueChatUserMessage({
+  message,
+  isInterruptingQueuedRun,
+}: {
+  message: ThreadMessage;
+  isInterruptingQueuedRun: boolean;
+}) {
   const {
     onInterruptQueued,
     onCancelQueued,
-    interruptingQueuedRunId,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1201,10 +1241,10 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
                 size="sm"
                 variant="outline"
                 className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queueTargetRunId}
+                disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -1290,16 +1330,26 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   );
 }
 
-function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
+function IssueChatAssistantMessage({
+  message,
+  activeVote,
+  isRunActive,
+  isStoppingRun,
+}: {
+  message: ThreadMessage;
+  activeVote: FeedbackVoteValue | null;
+  isRunActive: boolean;
+  isStoppingRun: boolean;
+}) {
   const {
-    feedbackVoteByTargetId,
     feedbackDataSharingPreference,
     feedbackTermsUrl,
     onVote,
     agentMap,
-    activeRunIds,
     onStopRun,
-    stoppingRunId,
+    stopRunLabel = "Stop run",
+    stoppingRunLabel = "Stopping...",
+    stopRunVariant = "stop",
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1321,7 +1371,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
-  const canStopRun = canStopIssueChatRun({ runId, runStatus, activeRunIds });
+  const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
@@ -1355,7 +1405,6 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
     await onVote(commentId, vote, options);
   };
 
-  const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
   const followUpRequested = custom.followUpRequested === true;
 
   return (
@@ -1493,14 +1542,22 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                     </DropdownMenuItem>
                     {canStopRun && onStopRun && runId ? (
                       <DropdownMenuItem
-                        disabled={stoppingRunId === runId}
-                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                        disabled={isStoppingRun}
+                        className={cn(
+                          stopRunVariant === "pause"
+                            ? "text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
+                            : "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200",
+                        )}
                         onSelect={() => {
                           void onStopRun(runId);
                         }}
                       >
-                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {stoppingRunId === runId ? "Stopping…" : "Stop run"}
+                        {stopRunVariant === "pause" ? (
+                          <PauseCircle className="mr-2 h-3.5 w-3.5" />
+                        ) : (
+                          <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                        )}
+                        {isStoppingRun ? stoppingRunLabel : stopRunLabel}
                       </DropdownMenuItem>
                     ) : null}
                     {runHref ? (
@@ -1757,6 +1814,7 @@ function ExpiredRequestConfirmationActivity({
     userLabelMap,
     onAcceptInteraction,
     onRejectInteraction,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -1835,6 +1893,7 @@ function ExpiredRequestConfirmationActivity({
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       ) : null}
@@ -1850,6 +1909,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1895,6 +1955,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       </div>
@@ -2022,6 +2083,546 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   return null;
 }
 
+function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
+  return (message.metadata?.custom ?? {}) as Record<string, unknown>;
+}
+
+function issueChatMessageKind(message: ThreadMessage): string {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.kind === "string" ? custom.kind : message.role;
+}
+
+function issueChatMessageCommentId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.commentId === "string" ? custom.commentId : null;
+}
+
+function issueChatMessageRunId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.runId === "string" ? custom.runId : null;
+}
+
+function issueChatMessageQueueTargetRunId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+}
+
+function issueChatMessageActiveVote(
+  message: ThreadMessage,
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>,
+): FeedbackVoteValue | null {
+  const commentId = issueChatMessageCommentId(message);
+  return commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+}
+
+function issueChatMessageRunIsActive(
+  message: ThreadMessage,
+  activeRunIds: ReadonlySet<string>,
+): boolean {
+  const runId = issueChatMessageRunId(message);
+  return Boolean(runId && activeRunIds.has(runId));
+}
+
+function issueChatMessageRunIsStopping(
+  message: ThreadMessage,
+  stoppingRunId: string | null | undefined,
+): boolean {
+  const runId = issueChatMessageRunId(message);
+  return Boolean(runId && stoppingRunId === runId);
+}
+
+function issueChatMessageQueuedRunIsInterrupting(
+  message: ThreadMessage,
+  interruptingQueuedRunId: string | null | undefined,
+): boolean {
+  const queueTargetRunId = issueChatMessageQueueTargetRunId(message);
+  return Boolean(queueTargetRunId && interruptingQueuedRunId === queueTargetRunId);
+}
+
+// Above ~150 merged rows the direct render path forces React to mount and
+// re-render hundreds of Markdown bodies, feedback controls, and avatars on
+// unrelated parent updates. Above this threshold we switch to a windowed
+// render path so only visible rows plus overscan stay mounted.
+export const VIRTUALIZED_THREAD_ROW_THRESHOLD = 150;
+const VIRTUALIZED_THREAD_OVERSCAN = 6;
+// Rough "average row" estimate. The virtualizer measures real heights as
+// rows mount, so this only affects offscreen rows it has not seen yet.
+const VIRTUALIZED_THREAD_ROW_ESTIMATE_PX = 220;
+const VIRTUALIZED_THREAD_GAP_FULL_PX = 16;
+const VIRTUALIZED_THREAD_GAP_EMBEDDED_PX = 12;
+
+interface VirtualizedIssueChatThreadListProps {
+  messages: readonly ThreadMessage[];
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>;
+  activeRunIds: ReadonlySet<string>;
+  stoppingRunId?: string | null;
+  interruptingQueuedRunId?: string | null;
+  variant: "full" | "embedded";
+}
+
+interface VirtualizedIssueChatThreadListHandle {
+  scrollToIndex: (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => void;
+  scrollToLatest: (options?: { behavior?: ScrollBehavior }) => void;
+  measure: () => void;
+}
+
+function issueChatMessageAnchorId(message: ThreadMessage): string | null {
+  const custom = message.metadata.custom as { anchorId?: unknown } | undefined;
+  return typeof custom?.anchorId === "string" ? custom.anchorId : null;
+}
+
+function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
+  return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+}
+
+export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const anchorId = issueChatMessageAnchorId(messages[index]);
+    if (anchorId && anchorId.startsWith("comment-")) return index;
+  }
+  return -1;
+}
+
+type VirtualizedVisibleAnchorSnapshot = {
+  anchorId: string;
+  index: number;
+  viewportTop: number;
+};
+
+type VirtualizedScrollMode =
+  | { kind: "window" }
+  | { kind: "element"; element: HTMLElement };
+
+type SimpleVirtualItem = {
+  index: number;
+  key: React.Key;
+  start: number;
+  size: number;
+};
+
+function useIssueThreadVirtualizer({
+  count,
+  estimateSize,
+  overscan,
+  scrollMargin,
+  gap,
+  getItemKey,
+  mode,
+}: {
+  count: number;
+  estimateSize: () => number;
+  overscan: number;
+  scrollMargin: number;
+  gap: number;
+  getItemKey: (index: number) => React.Key;
+  mode: VirtualizedScrollMode;
+}) {
+  const measuredSizeByKeyRef = useRef(new Map<React.Key, number>());
+  const [, rerender] = useState(0);
+  const estimatedSize = estimateSize();
+
+  const itemStarts: number[] = [];
+  const itemSizes: number[] = [];
+  let nextStart = scrollMargin;
+  for (let index = 0; index < count; index += 1) {
+    const key = getItemKey(index);
+    const size = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+    itemStarts.push(nextStart);
+    itemSizes.push(size);
+    nextStart += size + gap;
+  }
+  const totalSize = Math.max(0, nextStart - scrollMargin - gap);
+
+  const viewportHeight = () => (mode.kind === "window" ? window.innerHeight : mode.element.clientHeight);
+  const scrollOffset = () => (mode.kind === "window" ? window.scrollY : mode.element.scrollTop);
+  const maxScrollOffset = () => {
+    const targetScrollHeight = mode.kind === "window"
+      ? document.documentElement.scrollHeight
+      : mode.element.scrollHeight;
+    return Math.max(0, Math.max(targetScrollHeight, totalSize) - viewportHeight());
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target: Window | HTMLElement = mode.kind === "window" ? window : mode.element;
+    const update = () => rerender((value) => value + 1);
+    target.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      target.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const rawStart = Math.max(scrollMargin, scrollOffset());
+  const rawEnd = rawStart + viewportHeight();
+  let visibleStartIndex = 0;
+  while (
+    visibleStartIndex < count - 1
+    && itemStarts[visibleStartIndex] + itemSizes[visibleStartIndex] < rawStart
+  ) {
+    visibleStartIndex += 1;
+  }
+  let visibleEndIndex = visibleStartIndex;
+  while (visibleEndIndex < count - 1 && itemStarts[visibleEndIndex] <= rawEnd) {
+    visibleEndIndex += 1;
+  }
+  const startIndex = Math.max(0, visibleStartIndex - overscan);
+  const endIndex = Math.min(count - 1, visibleEndIndex + overscan);
+  const virtualItems: SimpleVirtualItem[] = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    virtualItems.push({
+      index,
+      key: getItemKey(index),
+      start: itemStarts[index] ?? scrollMargin,
+      size: itemSizes[index] ?? estimatedSize,
+    });
+  }
+
+  const scrollToIndex = (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => {
+    const clampedIndex = Math.max(0, Math.min(index, count - 1));
+    const targetMax = maxScrollOffset();
+    let top = itemStarts[clampedIndex] ?? scrollMargin;
+    if (options?.align === "center") {
+      top = top - viewportHeight() / 2 + (itemSizes[clampedIndex] ?? estimatedSize) / 2;
+    } else if (options?.align === "end") {
+      top = top + (itemSizes[clampedIndex] ?? estimatedSize) - viewportHeight();
+    }
+    top = Math.max(0, Math.min(top, targetMax));
+    if (mode.kind === "window") {
+      window.scrollTo({ top, behavior: options?.behavior });
+    } else {
+      mode.element.scrollTo({ top, behavior: options?.behavior });
+    }
+    rerender((value) => value + 1);
+  };
+
+  return {
+    getVirtualItems: () => virtualItems,
+    getTotalSize: () => totalSize,
+    scrollToIndex,
+    measure: () => undefined,
+    measureElement: (element?: HTMLElement | null) => {
+      if (!element) return;
+      const index = Number(element.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= count) return;
+      const measuredSize = element.getBoundingClientRect().height || element.offsetHeight;
+      if (!Number.isFinite(measuredSize) || measuredSize <= 0) return;
+      const key = getItemKey(index);
+      const previousSize = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+      if (Math.abs(previousSize - measuredSize) < 1) return;
+      measuredSizeByKeyRef.current.set(key, measuredSize);
+      rerender((value) => value + 1);
+    },
+  };
+}
+
+// The chat thread renders inside `<main id="main-content">` on the real issue
+// page (overflow-auto on desktop), but lives at document scope on mobile (main
+// is overflow-visible) and in the auth-free perf fixture. Walk the DOM to find
+// the actual scroll container so the virtualizer binds to the right offset
+// source — otherwise it stays anchored at offset 0 forever and the visible
+// chat area renders blank past the first viewport (PAP-2660).
+function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
+  if (!el || typeof window === "undefined") return null;
+  let current: HTMLElement | null = el.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+const VirtualizedIssueChatThreadList = forwardRef<VirtualizedIssueChatThreadListHandle, VirtualizedIssueChatThreadListProps>(function VirtualizedIssueChatThreadList(props, ref) {
+  const probeRef = useRef<HTMLDivElement | null>(null);
+  // Default to window scroll on first render so the imperative handle is
+  // available immediately for hash-target / submit-scroll effects. After mount
+  // we probe the DOM and remount via key={modeKey} if the actual scroll
+  // container is an element ancestor (e.g. desktop <main id="main-content">).
+  const [mode, setMode] = useState<VirtualizedScrollMode>({ kind: "window" });
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    const detect = () => {
+      const probe = probeRef.current;
+      if (!probe) return;
+      const container = findScrollContainer(probe);
+      setMode((prev) => {
+        if (container === null) {
+          return prev.kind === "window" ? prev : { kind: "window" };
+        }
+        if (prev.kind === "element" && prev.element === container) return prev;
+        return { kind: "element", element: container };
+      });
+    };
+    detect();
+    window.addEventListener("resize", detect);
+    return () => {
+      window.removeEventListener("resize", detect);
+    };
+  }, []);
+
+  return (
+    <VirtualizedIssueChatThreadListInner
+      key={mode.kind === "window" ? "window" : "element"}
+      ref={ref}
+      probeRef={probeRef}
+      mode={mode}
+      {...props}
+    />
+  );
+});
+
+interface VirtualizedIssueChatThreadListInnerProps extends VirtualizedIssueChatThreadListProps {
+  mode: VirtualizedScrollMode;
+  probeRef: React.MutableRefObject<HTMLDivElement | null>;
+}
+
+const VirtualizedIssueChatThreadListInner = forwardRef<
+  VirtualizedIssueChatThreadListHandle,
+  VirtualizedIssueChatThreadListInnerProps
+>(function VirtualizedIssueChatThreadListInner({
+  messages,
+  feedbackVoteByTargetId,
+  activeRunIds,
+  stoppingRunId,
+  interruptingQueuedRunId,
+  variant,
+  mode,
+  probeRef,
+}, ref) {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const pendingPrependAnchorRef = useRef<VirtualizedVisibleAnchorSnapshot | null>(null);
+
+  const setRefs = useCallback((element: HTMLDivElement | null) => {
+    parentRef.current = element;
+    probeRef.current = element;
+  }, [probeRef]);
+
+  useLayoutEffect(() => {
+    const element = parentRef.current;
+    if (!element || typeof window === "undefined") return;
+    const update = () => {
+      if (!parentRef.current) return;
+      const rect = parentRef.current.getBoundingClientRect();
+      const offset = mode.kind === "window"
+        ? rect.top + window.scrollY
+        : rect.top - mode.element.getBoundingClientRect().top + mode.element.scrollTop;
+      setScrollMargin((previous) => (Math.abs(previous - offset) < 0.5 ? previous : offset));
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const gap = variant === "embedded"
+    ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
+    : VIRTUALIZED_THREAD_GAP_FULL_PX;
+
+  const virtualizer = useIssueThreadVirtualizer({
+    count: messages.length,
+    estimateSize: () => VIRTUALIZED_THREAD_ROW_ESTIMATE_PX,
+    overscan: VIRTUALIZED_THREAD_OVERSCAN,
+    scrollMargin,
+    gap,
+    getItemKey: (index) => messages[index]?.id ?? index,
+    mode,
+  });
+
+  useImperativeHandle(ref, () => ({
+    scrollToIndex: (index, options) => {
+      if (index < 0 || index >= messages.length) return;
+      virtualizer.scrollToIndex(index, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    scrollToLatest: (options) => {
+      if (messages.length === 0) return;
+      virtualizer.scrollToIndex(messages.length - 1, {
+        align: "end",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    measure: () => {
+      virtualizer.measure();
+    },
+  }), [messages.length, virtualizer]);
+
+  useLayoutEffect(() => {
+    return () => {
+      const element = parentRef.current;
+      if (!element || typeof window === "undefined") return;
+      const rows = Array.from(
+        element.querySelectorAll<HTMLElement>("[data-anchor-id][data-index]"),
+      );
+      const visibleRow = rows.find((row) => row.getBoundingClientRect().bottom >= 0);
+      if (!visibleRow) return;
+      const anchorId = visibleRow.dataset.anchorId;
+      const index = Number(visibleRow.dataset.index);
+      if (!anchorId || !Number.isFinite(index)) return;
+      pendingPrependAnchorRef.current = {
+        anchorId,
+        index,
+        viewportTop: visibleRow.getBoundingClientRect().top,
+      };
+    };
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const pendingAnchor = pendingPrependAnchorRef.current;
+    pendingPrependAnchorRef.current = null;
+    virtualizer.measure();
+    if (!pendingAnchor || typeof window === "undefined") return;
+    const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
+    if (nextIndex <= pendingAnchor.index) return;
+
+    virtualizer.scrollToIndex(nextIndex, { align: "start", behavior: "auto" });
+    requestAnimationFrame(() => {
+      const element = document.getElementById(pendingAnchor.anchorId);
+      if (!element) return;
+      const delta = element.getBoundingClientRect().top - pendingAnchor.viewportTop;
+      if (Math.abs(delta) > 1) {
+        if (mode.kind === "window") {
+          window.scrollBy({ top: delta, behavior: "auto" });
+        } else {
+          mode.element.scrollBy({ top: delta, behavior: "auto" });
+        }
+      }
+      virtualizer.measure();
+    });
+  }, [messages, virtualizer, mode]);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  return (
+    <div
+      ref={setRefs}
+      data-testid="issue-chat-thread-virtualizer"
+      data-virtual-count={messages.length}
+      style={{ position: "relative", width: "100%", height: totalSize }}
+    >
+      {virtualItems.map((virtualItem) => {
+        const message = messages[virtualItem.index];
+        if (!message) return null;
+        const anchorId = issueChatMessageAnchorId(message);
+        return (
+          <div
+            key={virtualItem.key}
+            data-index={virtualItem.index}
+            data-anchor-id={anchorId ?? undefined}
+            data-testid="issue-chat-thread-virtual-row"
+            ref={(element) => {
+              if (element) virtualizer.measureElement(element);
+            }}
+            onLoadCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            onClickCapture={(event) => {
+              const row = event.currentTarget;
+              requestAnimationFrame(() => {
+                virtualizer.measureElement(row);
+              });
+            }}
+            onTransitionEndCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              transform: `translateY(${virtualItem.start - scrollMargin}px)`,
+            }}
+          >
+            <IssueChatMessageRow
+              message={message}
+              feedbackVoteByTargetId={feedbackVoteByTargetId}
+              activeRunIds={activeRunIds}
+              stoppingRunId={stoppingRunId}
+              interruptingQueuedRunId={interruptingQueuedRunId}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+interface IssueChatMessageRowProps {
+  message: ThreadMessage;
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>;
+  activeRunIds: ReadonlySet<string>;
+  stoppingRunId?: string | null;
+  interruptingQueuedRunId?: string | null;
+}
+
+const IssueChatMessageRow = memo(function IssueChatMessageRow({
+  message,
+  feedbackVoteByTargetId,
+  activeRunIds,
+  stoppingRunId,
+  interruptingQueuedRunId,
+}: IssueChatMessageRowProps) {
+  const kind = issueChatMessageKind(message);
+  const activeVote = issueChatMessageActiveVote(message, feedbackVoteByTargetId);
+  const isRunActive = issueChatMessageRunIsActive(message, activeRunIds);
+  const isStoppingRun = issueChatMessageRunIsStopping(message, stoppingRunId);
+  const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(message, interruptingQueuedRunId);
+  const renderedMessage = message.role === "user"
+    ? (
+      <IssueChatUserMessage
+        message={message}
+        isInterruptingQueuedRun={isInterruptingQueuedRun}
+      />
+    )
+    : message.role === "assistant"
+      ? (
+        <IssueChatAssistantMessage
+          message={message}
+          activeVote={activeVote}
+          isRunActive={isRunActive}
+          isStoppingRun={isStoppingRun}
+        />
+      )
+      : <IssueChatSystemMessage message={message} />;
+
+  return (
+    <div
+      data-testid="issue-chat-message-row"
+      data-message-role={message.role}
+      data-message-kind={kind}
+    >
+      {renderedMessage}
+    </div>
+  );
+}, areIssueChatMessageRowPropsEqual);
+
+function areIssueChatMessageRowPropsEqual(
+  prev: IssueChatMessageRowProps,
+  next: IssueChatMessageRowProps,
+) {
+  if (prev.message !== next.message) return false;
+  if (issueChatMessageActiveVote(prev.message, prev.feedbackVoteByTargetId) !== issueChatMessageActiveVote(next.message, next.feedbackVoteByTargetId)) return false;
+  if (issueChatMessageRunIsActive(prev.message, prev.activeRunIds) !== issueChatMessageRunIsActive(next.message, next.activeRunIds)) return false;
+  if (issueChatMessageRunIsStopping(prev.message, prev.stoppingRunId) !== issueChatMessageRunIsStopping(next.message, next.stoppingRunId)) return false;
+  if (issueChatMessageQueuedRunIsInterrupting(prev.message, prev.interruptingQueuedRunId) !== issueChatMessageQueuedRunIsInterrupting(next.message, next.interruptingQueuedRunId)) return false;
+  return true;
+}
+
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
   onImageUpload,
   onAttachImage,
@@ -2037,6 +2638,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   issueStatus,
 }, forwardedRef) {
   const api = useAui();
+  const toastActions = useOptionalToastActions();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -2045,6 +2647,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
+  const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2091,6 +2694,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
+  useEffect(() => {
+    setUnassignedConfirmed(false);
+  }, [reassignTarget]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -2108,6 +2715,22 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const trimmed = body.trim();
     if (!trimmed || submitting) return;
 
+    const composerHasAssigneePicker = enableReassign && reassignOptions.length > 0;
+    if (
+      composerHasAssigneePicker
+      && isUnassignedReassignValue(reassignTarget)
+      && !unassignedConfirmed
+    ) {
+      toastActions?.pushToast({
+        title: "No assignee selected",
+        body: "Pick an assignee or click Send again to post without one.",
+        tone: "warn",
+        dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
+      });
+      setUnassignedConfirmed(true);
+      return;
+    }
+
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
     const reopen = shouldImplicitlyReopenComment(
@@ -2119,6 +2742,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
     setSubmitting(true);
     setBody("");
+    setUnassignedConfirmed(false);
     try {
       const appendPromise = api.thread().append({
         role: "user",
@@ -2464,6 +3088,9 @@ export function IssueChatThread({
   onAdd,
   onCancelRun,
   onStopRun,
+  stopRunLabel,
+  stoppingRunLabel,
+  stopRunVariant,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -2490,10 +3117,13 @@ export function IssueChatThread({
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  onCancelInteraction,
   composerRef,
+  onRefreshLatestComments,
 }: IssueChatThreadProps) {
   const location = useLocation();
-  const hasScrolledRef = useRef(false);
+  const lastScrolledHashRef = useRef<string | null>(null);
+  const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
@@ -2502,6 +3132,8 @@ export function IssueChatThread({
   const lastUserMessageIdRef = useRef<string | null>(null);
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
+  const latestSettleTimeoutsRef = useRef<number[]>([]);
+  const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -2542,6 +3174,17 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const clearLatestSettleTimeouts = useCallback(() => {
+    for (const timeout of latestSettleTimeoutsRef.current) {
+      window.clearTimeout(timeout);
+    }
+    latestSettleTimeoutsRef.current = [];
+    latestSettleCleanupRef.current?.();
+    latestSettleCleanupRef.current = null;
+  }, []);
+
+  useEffect(() => clearLatestSettleTimeouts, [clearLatestSettleTimeouts]);
+
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
@@ -2595,6 +3238,8 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
+  latestMessagesRef.current = messages;
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -2614,6 +3259,47 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
+  const useVirtualizedThread = messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  const messageAnchorIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    messages.forEach((message, index) => {
+      const anchorId = issueChatMessageAnchorId(message);
+      if (anchorId) map.set(anchorId, index);
+    });
+    return map;
+  }, [messages]);
+
+  function scrollToThreadAnchor(
+    anchorId: string,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    messageSnapshot: readonly ThreadMessage[] = messages,
+  ) {
+    const snapshotUsesVirtualizer = messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const virtualIndex =
+      messageSnapshot === messages
+        ? messageAnchorIndex.get(anchorId)
+        : findMessageAnchorIndex(messageSnapshot, anchorId);
+    if (snapshotUsesVirtualizer && virtualIndex !== undefined && virtualIndex >= 0) {
+      if (!virtualizedThreadRef.current) return false;
+      virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+      return true;
+    }
+
+    const element = document.getElementById(anchorId);
+    if (!element) return false;
+    element.scrollIntoView({
+      behavior: options?.behavior ?? "smooth",
+      block: options?.align === "start"
+        ? "start"
+        : options?.align === "end"
+          ? "end"
+          : "center",
+    });
+    return true;
+  }
 
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -2643,14 +3329,13 @@ export function IssueChatThread({
         spacerInitialReserveRef.current = reserve;
         setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
-          const el = document.getElementById(anchorId);
-          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+          scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
         });
       }
     }
 
     lastUserMessageIdRef.current = lastUserId;
-  }, [messages]);
+  }, [messageAnchorIndex, messages, useVirtualizedThread]);
 
   useLayoutEffect(() => {
     const anchorId = spacerBaselineAnchorRef.current;
@@ -2683,7 +3368,7 @@ export function IssueChatThread({
   }, [messages]);
 
   useEffect(() => {
-    const hash = location.hash;
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
     if (
       !(
         hash.startsWith("#comment-")
@@ -2692,58 +3377,246 @@ export function IssueChatThread({
         || hash.startsWith("#interaction-")
       )
     ) return;
-    if (messages.length === 0 || hasScrolledRef.current) return;
+    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
-    const element = document.getElementById(targetId);
-    if (!element) return;
-    hasScrolledRef.current = true;
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [location.hash, messages]);
+    let cancelled = false;
+    const attemptScroll = (finalAttempt = false) => {
+      if (cancelled || lastScrolledHashRef.current === hash) return;
+      const didScroll = scrollToThreadAnchor(targetId, { align: "center", behavior: "smooth" });
+      if (!didScroll) return;
+      if (finalAttempt || !useVirtualizedThread || document.getElementById(targetId)) {
+        lastScrolledHashRef.current = hash;
+      }
+    };
 
-  function handleJumpToLatest() {
+    attemptScroll();
+    const frame = requestAnimationFrame(() => attemptScroll());
+    const timeout = window.setTimeout(() => attemptScroll(true), 250);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+
+  function jumpToLatestFallback() {
+    if (useVirtualizedThread) {
+      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      return;
+    }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
+  // Lands on the latest `comment-*` row and then drives the scroll the rest
+  // of the way home as the virtualizer's per-row measurements arrive.
+  //
+  // The virtualizer estimates 220px for unmeasured rows. On long threads
+  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
+  // underestimated until rows render and get measured. A single scroll
+  // lands above the actual bottom; rendered rows then expand, the layout
+  // grows, and the user has to keep clicking Jump-to-latest to walk closer
+  // to the real bottom. The convergence loop below issues `scrollIntoView`
+  // on the latest comment element on every tick until the DOM bottom of
+  // that element is at the scroll container's bottom (or scroll position
+  // and content height stop changing).
+  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    if (latestCommentIndex < 0) {
+      jumpToLatestFallback();
+      return;
+    }
+    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
+    if (!latestCommentAnchor) {
+      jumpToLatestFallback();
+      return;
+    }
+
+    const initial = scrollToThreadAnchor(
+      latestCommentAnchor,
+      { align: "end", behavior: "smooth" },
+      messageSnapshot,
+    );
+    if (!initial) {
+      jumpToLatestFallback();
+      return;
+    }
+
+    if (typeof window === "undefined") return;
+
+    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const MAX_DURATION_MS = 4000;
+    const TICK_MS = 80;
+    const TOLERANCE_PX = 4;
+
+    clearLatestSettleTimeouts();
+    const resolveScrollContainer = (): HTMLElement | null =>
+      (document.getElementById("main-content") as HTMLElement | null);
+    const cancelTarget = resolveScrollContainer() ?? window;
+
+    let lastScrollTop = -1;
+    let lastScrollHeight = -1;
+    let stableTicks = 0;
+    let cancelled = false;
+
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    const cleanup = () => {
+      cancelTarget.removeEventListener("wheel", cancel);
+      cancelTarget.removeEventListener("touchstart", cancel);
+    };
+
+    cancelTarget.addEventListener("wheel", cancel, { once: true, passive: true });
+    cancelTarget.addEventListener("touchstart", cancel, { once: true, passive: true });
+    latestSettleCleanupRef.current = cleanup;
+
+    const finish = () => {
+      cleanup();
+      latestSettleCleanupRef.current = null;
+      for (const timeout of latestSettleTimeoutsRef.current) {
+        window.clearTimeout(timeout);
+      }
+      latestSettleTimeoutsRef.current = [];
+    };
+
+    const scheduleTick = (delay: number) => {
+      const timeout = window.setTimeout(() => {
+        latestSettleTimeoutsRef.current = latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
+        tick();
+      }, delay);
+      latestSettleTimeoutsRef.current.push(timeout);
+    };
+
+    const tick = () => {
+      const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      if (cancelled || now - startedAt > MAX_DURATION_MS) {
+        finish();
+        return;
+      }
+
+      if (typeof document === "undefined") {
+        finish();
+        return;
+      }
+
+      const el = document.getElementById(latestCommentAnchor);
+      if (!el) {
+        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
+        // the offset (instant) so it gets mounted, then keep settling.
+        virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
+          align: "end",
+          behavior: "auto",
+        });
+        scheduleTick(TICK_MS);
+        return;
+      }
+
+      const container = resolveScrollContainer();
+      const containerBottom = container
+        ? container.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const elBottom = el.getBoundingClientRect().bottom;
+      const offBottom = elBottom - containerBottom;
+
+      if (Math.abs(offBottom) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      const currentScrollTop = container?.scrollTop ?? window.scrollY;
+      const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
+      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
+      const heightStable = currentScrollHeight === lastScrollHeight;
+      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atBottom) {
+        stableTicks += 1;
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+      } else {
+        stableTicks = 0;
+      }
+      lastScrollTop = currentScrollTop;
+      lastScrollHeight = currentScrollHeight;
+      scheduleTick(TICK_MS);
+    };
+
+    // Hold the first iteration off for one frame so the initial smooth
+    // scroll has begun (and the virtualizer has rendered the buffer around
+    // the target) before we start settling.
+    scheduleTick(120);
+  }
+
+  function handleJumpToLatest() {
+    if (onRefreshLatestComments) {
+      // Refetching the comments query (page 0 first) brings any comment that
+      // arrived after the initial load — including ones live updates may
+      // have missed during reconnects — into the loaded set before we
+      // resolve the latest target. Otherwise we'd land on the latest
+      // *loaded* comment but not the absolute newest. (PAP-2672 follow-up.)
+      const refreshed = onRefreshLatestComments();
+      if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
+        (refreshed as Promise<unknown>).then(
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+        );
+        return;
+      }
+    }
+    scrollToLatestCommentWithSettle(latestMessagesRef.current);
+  }
+
+  const stableOnVote = useStableEvent(onVote);
+  const stableOnStopRun = useStableEvent(onStopRun);
+  const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
+  const stableOnCancelQueued = useStableEvent(onCancelQueued);
+  const stableOnImageClick = useStableEvent(onImageClick);
+  const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
+  const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
+  const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
+  const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
-      feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
       currentUserId,
       userLabelMap,
       userProfileMap,
-      activeRunIds,
-      onVote,
-      onStopRun,
-      stoppingRunId,
-      onInterruptQueued,
-      onCancelQueued,
-      interruptingQueuedRunId,
-      onImageClick,
-      onAcceptInteraction,
-      onRejectInteraction,
-      onSubmitInteractionAnswers,
+      onVote: stableOnVote,
+      onStopRun: stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      onInterruptQueued: stableOnInterruptQueued,
+      onCancelQueued: stableOnCancelQueued,
+      onImageClick: stableOnImageClick,
+      onAcceptInteraction: stableOnAcceptInteraction,
+      onRejectInteraction: stableOnRejectInteraction,
+      onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
+      onCancelInteraction: stableOnCancelInteraction,
     }),
     [
-      feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
       currentUserId,
       userLabelMap,
       userProfileMap,
-      activeRunIds,
-      onVote,
-      onStopRun,
-      stoppingRunId,
-      onInterruptQueued,
-      onCancelQueued,
-      interruptingQueuedRunId,
-      onImageClick,
-      onAcceptInteraction,
-      onRejectInteraction,
-      onSubmitInteractionAnswers,
+      stableOnVote,
+      stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      stableOnInterruptQueued,
+      stableOnCancelQueued,
+      stableOnImageClick,
+      stableOnAcceptInteraction,
+      stableOnRejectInteraction,
+      stableOnSubmitInteractionAnswers,
+      stableOnCancelInteraction,
     ],
   );
 
@@ -2752,10 +3625,13 @@ export function IssueChatThread({
     ?? (variant === "embedded"
       ? "No run output yet."
       : "This issue conversation is empty. Start with a message below.");
-  const errorBoundaryResetKey = useMemo(
-    () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
-    [messages],
-  );
+  const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
+  const errorBoundaryResetVersionRef = useRef(0);
+  if (previousErrorBoundaryMessagesRef.current !== messages) {
+    previousErrorBoundaryMessagesRef.current = messages;
+    errorBoundaryResetVersionRef.current += 1;
+  }
+  const errorBoundaryResetKey = String(errorBoundaryResetVersionRef.current);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -2793,19 +3669,30 @@ export function IssueChatThread({
                 )}>
                   {resolvedEmptyMessage}
                 </div>
+              ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
+                <VirtualizedIssueChatThreadList
+                  ref={virtualizedThreadRef}
+                  messages={messages}
+                  feedbackVoteByTargetId={feedbackVoteByTargetId}
+                  activeRunIds={activeRunIds}
+                  stoppingRunId={stoppingRunId}
+                  interruptingQueuedRunId={interruptingQueuedRunId}
+                  variant={variant}
+                />
               ) : (
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => {
-                  if (message.role === "user") {
-                    return <IssueChatUserMessage key={message.id} message={message} />;
-                  }
-                  if (message.role === "assistant") {
-                    return <IssueChatAssistantMessage key={message.id} message={message} />;
-                  }
-                  return <IssueChatSystemMessage key={message.id} message={message} />;
-                })
+                messages.map((message) => (
+                  <IssueChatMessageRow
+                    key={message.id}
+                    message={message}
+                    feedbackVoteByTargetId={feedbackVoteByTargetId}
+                    activeRunIds={activeRunIds}
+                    stoppingRunId={stoppingRunId}
+                    interruptingQueuedRunId={interruptingQueuedRunId}
+                  />
+                ))
               )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">

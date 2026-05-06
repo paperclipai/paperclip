@@ -39,4 +39,12 @@ describe("issuesApi.list", () => {
       "/companies/company-1/issues?workspaceId=workspace-1&limit=1000",
     );
   });
+
+  it("passes pagination offsets through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { limit: 500, offset: 1500 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?limit=500&offset=1500",
+    );
+  });
 });

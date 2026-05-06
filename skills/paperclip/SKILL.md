@@ -89,6 +89,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If the issue is actionable, start concrete work in the same heartbeat. Do not stop at a plan unless the issue specifically asks for planning.
 - Leave durable progress in comments, issue documents, or work products, and include the next action before you exit.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
+- If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
@@ -121,7 +122,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `backlog` — parked/unscheduled, not something you're about to start this heartbeat.
 - `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout.
 - `in_progress` — actively owned, execution-backed work.
-- `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review; not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
+- `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
 - `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
@@ -232,6 +233,10 @@ For commands, response fields, and MCP tools, read:
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 
+This is rule #1:
+
+IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to escalate, escalate. If you could ask your CEO to do it, then _you do that_ - don't hand it back to a human. Again: Never ask a human to do what an agent _could_ do. Rule number 1.
+
 ## Comment Style (Required)
 
 When posting issue comments or writing issue descriptions, use concise markdown with:
@@ -276,7 +281,7 @@ Submitted CTO hire request and linked it for board review.
 
 ## Planning (Required when planning requested)
 
-If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document.
+If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Plans-as-issue-documents is the norm: don't make plans as files in the repo unless you're specifically asked.
 
 When you mention a plan or another issue document in a comment, include a direct document link using the key:
 
@@ -285,9 +290,13 @@ When you mention a plan or another issue document in a comment, include a direct
 
 If the issue identifier is available, prefer the document deep link over a plain issue link so the reader lands directly on the updated document.
 
-If you're asked to make a plan, _do not mark the issue as done_. Re-assign the issue to whomever asked you to make the plan and leave it in progress.
+If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
 
-If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, and wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
+If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
+
+When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
+
+When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 Recommended API flow:
 
@@ -305,29 +314,29 @@ If `plan` already exists, fetch the current document first and send its latest `
 
 ## Key Endpoints (Hot Routes)
 
-| Action                                | Endpoint                                                                                             |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| My identity                           | `GET /api/agents/me`                                                                                 |
-| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                      |
-| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked` |
-| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                 |
-| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                           |
-| Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                         |
-| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                              |
-| Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`            |
-| Add comment                           | `POST /api/issues/:issueId/comments`                                                                 |
+| Action                                | Endpoint                                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| My identity                           | `GET /api/agents/me`                                                                                                            |
+| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
+| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
+| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
+| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
+| Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
+| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
+| Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
+| Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
 | Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
-| Create subtask                        | `POST /api/companies/:companyId/issues`                                                              |
-| Release task                          | `POST /api/issues/:issueId/release`                                                                  |
-| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                 |
-| Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                     |
-| Create approval                       | `POST /api/companies/:companyId/approvals`                                                           |
-| Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                         |
-| List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`      |
-| Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                              |
-| Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                       |
-| List agents                           | `GET /api/companies/:companyId/agents`                                                               |
-| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                            |
+| Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
+| Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
+| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
+| Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
+| Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
+| Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
+| List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |
+| Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
+| Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
+| List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
+| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
 
@@ -344,3 +353,5 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
+
+Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.
