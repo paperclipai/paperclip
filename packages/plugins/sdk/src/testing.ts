@@ -1802,6 +1802,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return out.slice(offset, offset + limit);
       },
       onResolved(approvalId, handler) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
         approvalResolutionCallbacks.set(approvalId, handler);
         return () => {
           approvalResolutionCallbacks.delete(approvalId);

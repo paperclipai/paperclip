@@ -1125,6 +1125,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         onResolved(approvalId, handler) {
           approvalResolutionCallbacks.set(approvalId, handler);
+          void callHost("approvals.subscribe", { approvalId }).catch((err) => {
+            approvalResolutionCallbacks.delete(approvalId);
+            notifyHost("log", {
+              level: "error",
+              message: `approvals.subscribe failed for ${approvalId}: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
           return () => {
             approvalResolutionCallbacks.delete(approvalId);
           };
