@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, LogOut, Plus, Settings, UserPlus } from "lucide-react";
 import type { Company } from "@paperclipai/shared";
@@ -37,6 +38,7 @@ function WorkspaceIcon({ company }: { company: Company }) {
 }
 
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
+  const { t } = useTranslation("common");
   const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
@@ -98,12 +100,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         <Button
           variant="ghost"
           className="h-9 flex-1 justify-start gap-2 px-2 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
+          aria-label={selectedCompany ? t("sidebar_company.open_switcher", { company: selectedCompany.name }) : t("sidebar_company.open_switcher_generic")}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             <span className="truncate text-sm font-bold text-foreground">
-              {selectedCompany?.name ?? "Select workspace"}
+              {selectedCompany?.name ?? t("sidebar_company.select_company")}
             </span>
           </span>
           <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -111,7 +113,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <DropdownMenuLabel className="px-2 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground">
-          Switch workspace
+          {t("sidebar_company.switch_workspace")}
         </DropdownMenuLabel>
         <div className="max-h-96 overflow-y-auto">
           {sidebarCompanies.map((company) => {
@@ -135,27 +137,27 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             );
           })}
           {sidebarCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
+            <DropdownMenuItem disabled>{t("sidebar_company.no_workspaces")}</DropdownMenuItem>
           ) : null}
         </div>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={addCompany} className="gap-2 py-2 text-muted-foreground">
           <Plus className="size-4" />
-          <span>Add company...</span>
+          <span>{t("company_rail.add_company")}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/company/settings/invites" onClick={closeNavigationChrome}>
             <UserPlus className="size-4" />
             <span className="truncate">
-              {selectedCompany ? `Invite people to ${selectedCompany.name}` : "Invite people"}
+              {selectedCompany ? t("sidebar_company.invite_people", { company: selectedCompany.name }) : t("sidebar_company.invite_people_generic")}
             </span>
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/company/settings" onClick={closeNavigationChrome}>
             <Settings className="size-4" />
-            <span>Company settings</span>
+            <span>{t("sidebar_company.company_settings")}</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (
@@ -167,7 +169,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span>{signOutMutation.isPending ? t("sidebar_company.signing_out") : t("sidebar_company.sign_out")}</span>
             </DropdownMenuItem>
           </>
         ) : null}

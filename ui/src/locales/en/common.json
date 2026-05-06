@@ -3,6 +3,7 @@
     "activity": "Activity",
     "agents": "Agents",
     "issues": "Issues",
+    "search": "Search",
     "my_issues": "My Issues",
     "costs": "Costs",
     "goals": "Goals",
@@ -153,10 +154,15 @@
     "no_results": "No results found.",
     "group_actions": "Actions",
     "group_pages": "Pages",
+    "group_search": "Search",
     "create_issue": "Create new issue",
     "create_agent": "Create new agent",
     "create_project": "Create new project",
-    "title": "Command Palette"
+    "title": "Command Palette",
+    "no_quick_matches": "No quick issue matches. Press",
+    "to_search_all_hint": "to search all or keep typing to refine.",
+    "search_all_for": "Search all for \"{{query}}\"",
+    "open_full_search": "open full search"
   },
   "company_switcher": {
     "companies": "Companies",

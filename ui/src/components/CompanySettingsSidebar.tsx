@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
@@ -9,6 +10,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation("company");
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { data: badges } = useQuery({
@@ -41,33 +43,33 @@ export function CompanySettingsSidebar() {
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         >
           <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{selectedCompany?.name ?? "Company"}</span>
+          <span className="truncate">{selectedCompany?.name ?? t("settings.breadcrumb_company")}</span>
         </Link>
         <div className="flex items-center gap-2 px-2 py-1">
           <Settings className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="flex-1 truncate text-sm font-bold text-foreground">
-            Company Settings
+            {t("settings.title")}
           </span>
         </div>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/settings" label={t("settings.sections.general")} icon={SlidersHorizontal} end />
           <SidebarNavItem
             to="/company/settings/environments"
-            label="Environments"
+            label={t("environments.breadcrumb_page")}
             icon={MonitorCog}
             end
           />
           <SidebarNavItem
             to="/company/settings/access"
-            label="Access"
+            label={t("access.title_short")}
             icon={Shield}
             badge={badges?.joinRequests ?? 0}
             end
           />
-          <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
+          <SidebarNavItem to="/company/settings/invites" label={t("settings.sections.invites")} icon={MailPlus} end />
         </div>
       </nav>
     </aside>
