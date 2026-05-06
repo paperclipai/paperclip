@@ -1845,6 +1845,7 @@ async function buildPaperclipWakePayload(input: {
           .where(
             and(
               eq(issueComments.companyId, input.companyId),
+              issueId ? eq(issueComments.issueId, issueId) : undefined,
               inArray(issueComments.id, commentIds),
             ),
           );
