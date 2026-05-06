@@ -155,7 +155,10 @@ const legacyProjectLinkedIssue = {
   assigneeAgentId: "33333333-3333-4333-8333-333333333333",
   assigneeUserId: null,
   updatedAt: new Date("2026-03-24T12:00:00Z"),
+  projectWorkspaceId: null,
   executionWorkspaceId: null,
+  executionWorkspacePreference: null,
+  executionWorkspaceSettings: null,
   labels: [],
   labelIds: [],
 };
@@ -169,6 +172,30 @@ const projectGoal = {
   status: "active",
   parentId: null,
   ownerAgentId: null,
+  createdAt: new Date("2026-03-20T00:00:00Z"),
+  updatedAt: new Date("2026-03-20T00:00:00Z"),
+};
+
+const primaryProjectWorkspace = {
+  id: "77777777-7777-4777-8777-777777777777",
+  companyId: "company-1",
+  projectId: legacyProjectLinkedIssue.projectId,
+  name: "Main workspace",
+  sourceType: "git_repo",
+  cwd: "/tmp/company-1/project-1",
+  repoUrl: "https://github.com/paperclipai/paperclip.git",
+  repoRef: null,
+  defaultRef: "main",
+  visibility: "default",
+  setupCommand: null,
+  cleanupCommand: null,
+  remoteProvider: null,
+  remoteWorkspaceRef: null,
+  sharedWorkspaceKey: null,
+  metadata: null,
+  runtimeConfig: null,
+  isPrimary: true,
+  runtimeServices: [],
   createdAt: new Date("2026-03-20T00:00:00Z"),
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
@@ -227,8 +254,8 @@ describe.sequential("issue goal context routes", () => {
         effectiveLocalFolder: "/tmp/company-1/project-1",
         origin: "managed_checkout",
       },
-      workspaces: [],
-      primaryWorkspace: null,
+      workspaces: [primaryProjectWorkspace],
+      primaryWorkspace: primaryProjectWorkspace,
       archivedAt: null,
       createdAt: new Date("2026-03-20T00:00:00Z"),
       updatedAt: new Date("2026-03-20T00:00:00Z"),
@@ -274,6 +301,44 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("surfaces canonical issue and project workspace fields from GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectWorkspaceId: primaryProjectWorkspace.id,
+      executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        environmentId: "env-main",
+      },
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue).toEqual(expect.objectContaining({
+      projectId: legacyProjectLinkedIssue.projectId,
+      projectWorkspaceId: primaryProjectWorkspace.id,
+      executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        environmentId: "env-main",
+      },
+    }));
+    expect(res.body.project).toEqual(expect.objectContaining({
+      id: legacyProjectLinkedIssue.projectId,
+      workspaces: [expect.objectContaining({
+        id: primaryProjectWorkspace.id,
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+      })],
+      primaryWorkspace: expect.objectContaining({
+        id: primaryProjectWorkspace.id,
+        isPrimary: true,
+      }),
+    }));
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

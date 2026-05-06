@@ -1527,8 +1527,12 @@ export function issueRoutes(
         productivityReview,
         priority: issue.priority,
         projectId: issue.projectId,
+        projectWorkspaceId: issue.projectWorkspaceId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        executionWorkspacePreference: issue.executionWorkspacePreference,
+        executionWorkspaceSettings: issue.executionWorkspaceSettings,
         blockedBy: relations.blockedBy,
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
@@ -1550,6 +1554,8 @@ export function issueRoutes(
             name: project.name,
             status: project.status,
             targetDate: project.targetDate,
+            workspaces: project.workspaces ?? [],
+            primaryWorkspace: project.primaryWorkspace ?? null,
           }
         : null,
       goal: goal
