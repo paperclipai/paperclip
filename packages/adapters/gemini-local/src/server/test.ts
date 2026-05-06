@@ -167,7 +167,7 @@ export async function testEnvironment(
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
