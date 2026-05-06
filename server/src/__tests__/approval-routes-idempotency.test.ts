@@ -514,6 +514,11 @@ describe("approval routes idempotent retries", () => {
       "user-1",
       "Need changes",
     );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "issue-1",
+      "🔁 Changes requested: Need changes",
+      { userId: "user-1" },
+    );
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {

@@ -98,7 +98,17 @@ export function approvalRoutes(db: Db) {
             decision,
             error: err instanceof Error ? err.message : String(err),
           },
-        }).catch(() => undefined);
+        }).catch((logErr) => {
+          logger.warn(
+            {
+              err: logErr,
+              approvalId: approval.id,
+              issueId,
+              decision,
+            },
+            "failed to record approval decision comment failure in activity log",
+          );
+        });
       }
     }
   }
@@ -393,6 +403,17 @@ export function approvalRoutes(db: Db) {
       const decidedByUserId = req.actor.userId ?? "board";
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
 
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+
+      await postDecisionCommentsForApproval(
+        approval,
+        linkedIssueIds,
+        "revision_requested",
+        decidedByUserId,
+        req.body.decisionNote,
+      );
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -400,7 +421,7 @@ export function approvalRoutes(db: Db) {
         action: "approval.revision_requested",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, linkedIssueIds },
       });
 
       res.json(redactApprovalPayload(approval));
