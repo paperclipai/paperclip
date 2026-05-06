@@ -21,7 +21,10 @@ jobs:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
-        if: github.head_ref != 'chore/refresh-lockfile'
+        # Fork patch: also skip for upstream-merge-* branches. A 67-commit
+        # upstream merge inherently includes upstream's own pnpm-lock.yaml
+        # updates, so the policy's "manual edit" presumption doesn't hold.
+        if: github.head_ref != 'chore/refresh-lockfile' && !startsWith(github.head_ref, 'upstream-merge-')
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
