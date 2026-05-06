@@ -22,6 +22,9 @@ export type ClaudeRateLimitInfo = {
   status: string;
   rateLimitType: string | null;
   resetsAt: number | null;
+  overageStatus?: string | null;
+  overageDisabledReason?: string | null;
+  isUsingOverage?: boolean | null;
 };
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -52,6 +55,9 @@ export function parseClaudeStreamJson(stdout: string) {
           status,
           rateLimitType: asString(info.rateLimitType, "") || null,
           resetsAt: typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt) ? info.resetsAt : null,
+          overageStatus: asString(info.overageStatus, "") || null,
+          overageDisabledReason: asString(info.overageDisabledReason, "") || null,
+          isUsingOverage: typeof info.isUsingOverage === "boolean" ? info.isUsingOverage : null,
         };
       }
       continue;
@@ -421,6 +427,9 @@ export function extractClaudeHardLimitBlock(
       : null;
     const raw = input.errorMessage ?? input.stderr ?? input.stdout ?? "";
     return { limitKind, modelFamily, resetsAt, message: raw.slice(0, 1000) };
+  }
+  if (info?.status) {
+    return null;
   }
 
   const haystack = buildClaudeTransientHaystack(input);
