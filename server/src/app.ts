@@ -377,19 +377,37 @@ export async function createApp(
   });
 
   // ── Supabase proxy — expone datos de vídeos sin revelar la clave secreta ──────
+  // SUPABASE_URL puede venir como "https://xxx.supabase.co/rest/v1" (con path) o
+  // como "https://xxx.supabase.co" (sin path). Normalizamos al base URL.
+  function supabaseBase(): string {
+    const raw = process.env.SUPABASE_URL || "https://nuaajypknpjbsyhssclm.supabase.co";
+    // Quitar /rest/v1 si ya viene incluido en la variable de entorno
+    return raw.replace(/\/rest\/v1\/?$/, "");
+  }
+  function supabaseKey(): string {
+    return process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+  }
+  function sbFetch(path: string, extra?: HeadersInit) {
+    const base = supabaseBase();
+    const key  = supabaseKey();
+    return fetch(`${base}/rest/v1/${path}`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}`, ...extra }
+    });
+  }
+
   // GET /api/content/videos?limit=30&offset=0
-  // GET /api/content/stats
   app.get("/api/content/videos", async (req, res) => {
-    const supabaseUrl = process.env.SUPABASE_URL || "https://nuaajypknpjbsyhssclm.supabase.co";
-    const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
     const limit  = Math.min(Number(req.query.limit)  || 30, 100);
     const offset = Number(req.query.offset) || 0;
     try {
-      const r = await fetch(
-        `${supabaseUrl}/rest/v1/videos?select=id,created_at,tema,video_url,audio_url,image_urls,status&order=created_at.desc&limit=${limit}&offset=${offset}`,
-        { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+      const r = await sbFetch(
+        `videos?select=id,created_at,tema,video_url,audio_url,image_urls,status&order=created_at.desc&limit=${limit}&offset=${offset}`
       );
-      if (!r.ok) { res.status(r.status).json({ error: "Supabase error", status: r.status }); return; }
+      if (!r.ok) {
+        const errBody = await r.text().catch(() => "");
+        res.status(r.status).json({ error: "Supabase error", status: r.status, detail: errBody.slice(0,200) });
+        return;
+      }
       const rows = await r.json();
       res.setHeader("Cache-Control", "no-store");
       res.json(rows);
@@ -398,29 +416,19 @@ export async function createApp(
     }
   });
 
+  // GET /api/content/stats
   app.get("/api/content/stats", async (req, res) => {
-    const supabaseUrl = process.env.SUPABASE_URL || "https://nuaajypknpjbsyhssclm.supabase.co";
-    const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
     try {
-      // Contar total y los que tienen vídeo final
-      const [totalR, withVideoR] = await Promise.all([
-        fetch(`${supabaseUrl}/rest/v1/videos?select=id&limit=1`, {
-          headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, Prefer: "count=exact" }
-        }),
-        fetch(`${supabaseUrl}/rest/v1/videos?select=id,created_at,tema,video_url,image_urls&order=created_at.desc&limit=100`, {
-          headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` }
-        }),
+      const [totalR, videosR] = await Promise.all([
+        sbFetch("videos?select=id&limit=1", { Prefer: "count=exact" }),
+        sbFetch("videos?select=id,created_at,tema,video_url,image_urls&order=created_at.desc&limit=100"),
       ]);
       const total     = parseInt(totalR.headers.get("content-range")?.split("/")[1] || "0", 10);
-      const videos    = withVideoR.ok ? await withVideoR.json() : [];
+      const videos    = videosR.ok ? await videosR.json() : [];
       const withVideo = Array.isArray(videos) ? videos.filter((v: any) => v.video_url).length : 0;
       const withImages= Array.isArray(videos) ? videos.filter((v: any) => v.image_urls?.length).length : 0;
-      const recent    = Array.isArray(videos) ? videos.slice(0, 5).map((v: any) => ({
-        id: v.id, tema: v.tema, created_at: v.created_at,
-        has_video: !!v.video_url, has_images: !!(v.image_urls?.length),
-      })) : [];
       res.setHeader("Cache-Control", "no-store");
-      res.json({ total, withVideo, withImages, recent, costPerVideo: 2.30 });
+      res.json({ total, withVideo, withImages, costPerVideo: 2.30 });
     } catch (e) {
       res.status(500).json({ error: String(e) });
     }
