@@ -496,11 +496,28 @@ export function executionWorkspaceRoutes(db: Db) {
       }
 
       const closedAt = new Date();
+      const baseCloseMetadata = (
+        (patch.metadata as Record<string, unknown> | null | undefined) ??
+        existing.metadata ??
+        {}
+      ) as Record<string, unknown>;
+      const closeSnapshot = {
+        version: 1,
+        closedAt: closedAt.toISOString(),
+        statusBeforeClose: existing.status,
+        cleanupStatus: "pending",
+        plannedActionCount: readiness.plannedActions.length,
+        warningCount: readiness.warnings.length,
+      };
       const archivedWorkspace = await svc.update(id, {
         ...patch,
         status: "archived",
         closedAt,
         cleanupReason: null,
+        metadata: {
+          ...baseCloseMetadata,
+          closeSnapshot,
+        },
       });
       if (!archivedWorkspace) {
         res.status(404).json({ error: "Execution workspace not found" });
@@ -536,7 +553,7 @@ export function executionWorkspaceRoutes(db: Db) {
                 cleanupCommand: projectWorkspaces.cleanupCommand,
               })
               .from(projectWorkspaces)
-            .where(
+              .where(
                 and(
                   eq(projectWorkspaces.id, existing.projectWorkspaceId),
                   eq(projectWorkspaces.companyId, existing.companyId),
@@ -564,23 +581,42 @@ export function executionWorkspaceRoutes(db: Db) {
           }),
         });
         cleanupWarnings = cleanupResult.warnings;
+        const cleanupStatus = cleanupResult.cleaned ? "completed" : "incomplete";
+        const metadataWithCleanupEvidence = {
+          ...((workspace.metadata as Record<string, unknown> | null) ?? {}),
+          closeSnapshot: {
+            ...closeSnapshot,
+            cleanupStatus,
+            cleanupWarnings,
+            cleaned: cleanupResult.cleaned,
+          },
+        };
         const cleanupPatch: Record<string, unknown> = {
           closedAt,
           cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
+          metadata: metadataWithCleanupEvidence,
         };
         if (!cleanupResult.cleaned) {
           cleanupPatch.status = "cleanup_failed";
         }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
-        }
+        workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
       } catch (error) {
         const failureReason = error instanceof Error ? error.message : String(error);
+        const metadataWithCleanupFailure = {
+          ...((workspace.metadata as Record<string, unknown> | null) ?? {}),
+          closeSnapshot: {
+            ...closeSnapshot,
+            cleanupStatus: "failed",
+            cleanupWarnings: [failureReason],
+            cleaned: false,
+          },
+        };
         workspace =
           (await svc.update(id, {
             status: "cleanup_failed",
             closedAt,
             cleanupReason: failureReason,
+            metadata: metadataWithCleanupFailure,
           })) ?? workspace;
         res.status(500).json({
           error: `Failed to archive execution workspace: ${failureReason}`,
