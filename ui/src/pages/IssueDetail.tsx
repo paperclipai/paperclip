@@ -217,6 +217,15 @@ function resolveRunningIssueRun(
     : (liveRuns ?? []).find((run) => run.status === "running") ?? null;
 }
 
+function dedupeLiveRunsById(liveRuns: readonly LiveRunForIssue[]) {
+  const seen = new Set<string>();
+  return liveRuns.filter((run) => {
+    if (seen.has(run.id)) return false;
+    seen.add(run.id);
+    return true;
+  });
+}
+
 function readIssueRunStateFromCache(queryClient: QueryClient, issueId: string) {
   const liveRuns = queryClient.getQueryData<LiveRunForIssue[]>(
     queryKeys.issues.liveRuns(issueId),
@@ -1524,23 +1533,36 @@ export function IssueDetail() {
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueId ?? "Issue";
+  const issueCacheRefs = useMemo(() => {
+    const refs = new Set<string>();
+    if (issueId) refs.add(issueId);
+    if (issue?.id) refs.add(issue.id);
+    if (issue?.identifier) refs.add(issue.identifier);
+    return [...refs];
+  }, [issue?.id, issue?.identifier, issueId]);
 
   const invalidateIssueDetail = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!) });
-  }, [issueId, queryClient]);
+    for (const ref of issueCacheRefs) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+    }
+  }, [issueCacheRefs, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!), refetchType: "inactive" });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!), refetchType: "inactive" });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!), refetchType: "inactive" });
-  }, [issueId, queryClient]);
+    for (const ref of issueCacheRefs) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), refetchType: "inactive" });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), refetchType: "inactive" });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), refetchType: "inactive" });
+    }
+  }, [issueCacheRefs, queryClient]);
 
   const invalidateIssueRunState = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
-  }, [issueId, queryClient]);
+    for (const ref of issueCacheRefs) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
+    }
+  }, [issueCacheRefs, queryClient]);
 
   const removeCommentFromCache = useCallback((commentId: string) => {
     queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
@@ -2203,18 +2225,26 @@ export function IssueDetail() {
   const interruptQueuedComment = useMutation({
     mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
     onMutate: async (runId) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.runs(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
-      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      await Promise.all(issueCacheRefs.flatMap((ref) => [
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.runs(ref) }),
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.liveRuns(ref) }),
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.activeRun(ref) }),
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(ref) }),
+      ]));
 
-      const previousRuns = queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueId!));
-      const previousLiveRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueId!));
-      const previousActiveRun = queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(issueId!));
-      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const previousRunState = issueCacheRefs.map((ref) => ({
+        ref,
+        runs: queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(ref)),
+        liveRuns: queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(ref)),
+        activeRun: queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(ref)),
+        issue: queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)),
+      }));
       const previousLocalQueuedCommentRunIds = locallyQueuedCommentRunIds;
-      const liveRunList = previousLiveRuns ?? [];
-      const cachedActiveRun = previousActiveRun ?? null;
+      const cachedActiveRun =
+        previousRunState.find((state) => state.activeRun?.id === runId)?.activeRun ??
+        previousRunState.find((state) => state.activeRun)?.activeRun ??
+        null;
+      const liveRunList = dedupeLiveRunsById(previousRunState.flatMap((state) => state.liveRuns ?? []));
       const runningIssueRun = resolveRunningIssueRun(cachedActiveRun, liveRunList);
       const targetRun =
         cachedActiveRun?.id === runId
@@ -2223,34 +2253,35 @@ export function IssueDetail() {
 
       if (targetRun) {
         const interruptedAt = new Date().toISOString();
-        queryClient.setQueryData<RunForIssue[] | undefined>(
-          queryKeys.issues.runs(issueId!),
-          (current) => upsertInterruptedRun(current, targetRun, interruptedAt),
-        );
+        for (const ref of issueCacheRefs) {
+          queryClient.setQueryData<RunForIssue[] | undefined>(
+            queryKeys.issues.runs(ref),
+            (current) => upsertInterruptedRun(current, targetRun, interruptedAt),
+          );
+        }
       }
 
-      queryClient.setQueryData(
-        queryKeys.issues.liveRuns(issueId!),
-        (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
-      );
-      queryClient.setQueryData(
-        queryKeys.issues.activeRun(issueId!),
-        (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
-      );
-      queryClient.setQueryData(
-        queryKeys.issues.detail(issueId!),
-        (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
-      );
+      for (const ref of issueCacheRefs) {
+        queryClient.setQueryData(
+          queryKeys.issues.liveRuns(ref),
+          (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+        );
+        queryClient.setQueryData(
+          queryKeys.issues.activeRun(ref),
+          (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+        );
+        queryClient.setQueryData(
+          queryKeys.issues.detail(ref),
+          (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
+        );
+      }
       setLocallyQueuedCommentRunIds((current) => {
         const next = new Map([...current].filter(([, targetRunId]) => targetRunId !== runId));
         return next.size === current.size ? current : next;
       });
 
       return {
-        previousRuns,
-        previousLiveRuns,
-        previousActiveRun,
-        previousIssue,
+        previousRunState,
         previousLocalQueuedCommentRunIds,
       };
     },
@@ -2264,10 +2295,12 @@ export function IssueDetail() {
       });
     },
     onError: (err, _runId, context) => {
-      queryClient.setQueryData(queryKeys.issues.runs(issueId!), context?.previousRuns);
-      queryClient.setQueryData(queryKeys.issues.liveRuns(issueId!), context?.previousLiveRuns);
-      queryClient.setQueryData(queryKeys.issues.activeRun(issueId!), context?.previousActiveRun);
-      queryClient.setQueryData(queryKeys.issues.detail(issueId!), context?.previousIssue);
+      for (const state of context?.previousRunState ?? []) {
+        queryClient.setQueryData(queryKeys.issues.runs(state.ref), state.runs);
+        queryClient.setQueryData(queryKeys.issues.liveRuns(state.ref), state.liveRuns);
+        queryClient.setQueryData(queryKeys.issues.activeRun(state.ref), state.activeRun);
+        queryClient.setQueryData(queryKeys.issues.detail(state.ref), state.issue);
+      }
       if (context?.previousLocalQueuedCommentRunIds) {
         setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
       }
