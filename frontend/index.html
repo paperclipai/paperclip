@@ -656,6 +656,44 @@
     .card:hover { border-color: rgba(255,255,255,0.1); }
     .running-log { border-color: rgba(168,85,247,0.2); }
 
+    /* ── Gallery card styles ── */
+    .gallery-card {
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.15s;
+      position: relative;
+    }
+    .gallery-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .gallery-card-thumb {
+      aspect-ratio: 9/16;
+      background: var(--muted);
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+    .gallery-card-thumb img   { width:100%; height:100%; object-fit:cover; display:block; }
+    .gallery-card-thumb video { width:100%; height:100%; object-fit:cover; display:block; }
+    .gallery-card-thumb .gallery-icon { font-size:28px; opacity:0.3; }
+    .gallery-card-meta {
+      padding: 6px 8px;
+      font-size: 10px;
+      color: var(--sub);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: 'Barlow', sans-serif;
+    }
+    .gallery-card-tema {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     /* ══════════════════════════════════════
        DISCONTROLCREATOR — Visual Upgrade v2
     ══════════════════════════════════════ */
@@ -2917,44 +2955,6 @@ function updateVideoPanel(videoUrl, raw) {
   _sfx.success();
   // Auto-cambiar a la pestaña de video cuando llega
   switchArtTab('videoTab', document.querySelector('[data-art="videoTab"]'));
-}
-
-/* ── Gallery styles ── */
-.gallery-card {
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  cursor: pointer;
-  transition: border-color 0.2s, transform 0.15s;
-  position: relative;
-}
-.gallery-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.gallery-card-thumb {
-  aspect-ratio: 9/16;
-  background: var(--muted);
-  display: flex; align-items: center; justify-content: center;
-  overflow: hidden;
-}
-.gallery-card-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
-.gallery-card-thumb video { width:100%; height:100%; object-fit:cover; display:block; }
-.gallery-card-thumb .gallery-icon { font-size:28px; opacity:0.3; }
-.gallery-card-meta {
-  padding: 6px 8px;
-  font-size: 10px;
-  color: var(--sub);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-family: 'Barlow', sans-serif;
-}
-.gallery-card-tema {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ── Sound Effects ── */
