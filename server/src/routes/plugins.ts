@@ -2322,6 +2322,12 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
+    // Slack url_verification: echo challenge back immediately, no delivery record needed
+    if (payload.type === "url_verification" && payload.challenge) {
+      res.status(200).json({ challenge: payload.challenge });
+      return;
+    }
+
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
     const [delivery] = await db
