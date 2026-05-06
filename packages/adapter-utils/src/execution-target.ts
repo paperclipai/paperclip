@@ -26,6 +26,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
@@ -95,6 +96,8 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
   stop(): Promise<void>;
 }
 
+export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -123,6 +126,11 @@ function resolveDefaultPaperclipApiUrl(): string {
   // 3100 matches the default Paperclip dev server port when the runtime does not provide one.
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   return `http://${runtimeHost}:${runtimePort}`;
+}
+
+function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.PAPERCLIP_BRIDGE_DEBUG?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }
 
 function isAdapterExecutionTargetInstance(value: unknown): value is AdapterExecutionTarget {
@@ -225,13 +233,91 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   target: AdapterExecutionTarget | null | undefined,
   cwd: string,
   env: NodeJS.ProcessEnv,
+  options: { installCommand?: string | null } = {},
 ) {
   if (target?.kind === "remote" && target.transport === "sandbox") {
+    await ensureSandboxCommandResolvable(command, target, options.installCommand?.trim() || null);
     return;
   }
   await ensureCommandResolvable(command, cwd, env, {
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+}
+
+async function probeSandboxCommandResolvable(
+  command: string,
+  target: AdapterSandboxExecutionTarget,
+): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
+  const runner = requireSandboxRunner(target);
+  const probeScript = `command -v ${shellQuote(command)}`;
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c", probeScript],
+    cwd: target.remoteCwd,
+    timeoutMs: target.timeoutMs ?? 15_000,
+  });
+  return {
+    resolved: !result.timedOut && (result.exitCode ?? 1) === 0,
+    timedOut: result.timedOut,
+    stderr: result.stderr.trim(),
+  };
+}
+
+async function ensureSandboxCommandResolvable(
+  command: string,
+  target: AdapterSandboxExecutionTarget,
+  installCommand: string | null,
+): Promise<void> {
+  // Probe whether the binary is resolvable inside the sandbox. We previously
+  // short-circuited this for sandbox targets, which let the caller report a
+  // success message even when the CLI was missing from the image. Now we run
+  // a real `command -v` through the same runner the hello probe will use, so
+  // the first step honestly reflects whether the binary is on PATH. The
+  // sandbox provider is responsible for sourcing login profiles (e2b mirrors
+  // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
+  let probe = await probeSandboxCommandResolvable(command, target);
+  if (probe.resolved) return;
+  if (probe.timedOut) {
+    throw new Error(`Timed out checking command "${command}" on sandbox target.`);
+  }
+
+  // If the caller supplied an install command, attempt the install once via
+  // the sandbox runner (which the sandbox provider wraps in a login shell)
+  // and re-probe before reporting failure. This lets fresh sandbox leases
+  // bring up the CLI before the resolvability gate, mirroring the test path.
+  let installFailureDetail: string | null = null;
+  if (installCommand) {
+    const runner = requireSandboxRunner(target);
+    try {
+      const installResult = await runner.execute({
+        command: "sh",
+        args: ["-lc", installCommand],
+        cwd: target.remoteCwd,
+        timeoutMs: target.timeoutMs ?? 300_000,
+      });
+      if (installResult.timedOut) {
+        installFailureDetail = `install command timed out: ${installCommand}`;
+      } else if ((installResult.exitCode ?? 0) !== 0) {
+        const tail = (text: string) =>
+          text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-2).join(" | ").slice(0, 240);
+        const reason = tail(installResult.stderr || installResult.stdout) || `exit ${installResult.exitCode ?? "?"}`;
+        installFailureDetail = `install command exited ${installResult.exitCode ?? "?"}: ${reason}`;
+      }
+    } catch (err) {
+      installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    probe = await probeSandboxCommandResolvable(command, target);
+    if (probe.resolved) return;
+    if (probe.timedOut) {
+      throw new Error(`Timed out checking command "${command}" on sandbox target.`);
+    }
+  }
+
+  const probeStderr = probe.stderr.length > 0 ? ` probe stderr: ${probe.stderr}` : "";
+  const installDetail = installFailureDetail ? `; ${installFailureDetail}` : "";
+  throw new Error(
+    `Command "${command}" is not installed or not on PATH in the sandbox environment${installDetail}.${probeStderr}`,
+  );
 }
 
 export async function resolveAdapterExecutionTargetCommandForLogs(
@@ -257,11 +343,12 @@ export async function runAdapterExecutionTargetProcess(
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
+    const env = sanitizeRemoteExecutionEnv(options.env);
     return await runner.execute({
       command,
       args,
       cwd: target.remoteCwd,
-      env: options.env,
+      env,
       stdin: options.stdin,
       timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
       onLog: options.onLog,
@@ -271,9 +358,14 @@ export async function runAdapterExecutionTargetProcess(
     });
   }
 
+  const env =
+    target?.kind === "remote" && target.transport === "ssh"
+      ? sanitizeRemoteExecutionEnv(options.env)
+      : options.env;
+
   return await runChildProcess(runId, command, args, {
     cwd: options.cwd,
-    env: options.env,
+    env,
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
@@ -293,9 +385,16 @@ export async function runAdapterExecutionTargetShellCommand(
   const onLog = options.onLog ?? (async () => {});
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();
+    const env = sanitizeRemoteExecutionEnv(options.env);
     if (target.transport === "ssh") {
       try {
-        const result = await runSshCommand(target.spec, `sh -lc ${shellQuote(command)}`, {
+        // Pass the raw command — `runSshCommand` owns profile sourcing and
+        // the outer `sh -lc` wrapper. Wrapping again here would nest a second
+        // `sh -lc` after the explicit `env KEY=VAL` overrides, re-sourcing
+        // login profiles AFTER the override and silently undoing any
+        // identity var (NVM_DIR / PATH / etc.) that a profile re-exports.
+        const result = await runSshCommand(target.spec, command, {
+          env,
           timeoutMs: (options.timeoutSec ?? 15) * 1000,
         });
         if (result.stdout) await onLog("stdout", result.stdout);
@@ -352,7 +451,7 @@ export async function runAdapterExecutionTargetShellCommand(
       command: shellCommand,
       args: ["-lc", command],
       cwd: target.remoteCwd,
-      env: options.env,
+      env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
     });
@@ -373,6 +472,111 @@ export async function runAdapterExecutionTargetShellCommand(
   );
 }
 
+export interface AdapterSandboxInstallCommandCheck {
+  code: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  detail?: string;
+  hint?: string;
+}
+
+// Best-effort run of an adapter-supplied install command on a sandbox target
+// before the resolvability + hello probe. Returns null for non-sandbox
+// targets so callers can no-op. Returns a structured check otherwise — never
+// throws — so the rest of the test still runs and reports the post-install
+// state honestly. Caller pushes the check into its result array; the test
+// report shows whether install was attempted and what came back.
+export async function maybeRunSandboxInstallCommand(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  adapterKey: string;
+  installCommand: string;
+  /** When provided, skip the install if `command -v <detectCommand>` succeeds. */
+  detectCommand?: string | null;
+  env?: Record<string, string>;
+  timeoutSec?: number;
+}): Promise<AdapterSandboxInstallCommandCheck | null> {
+  const { target, adapterKey, installCommand } = input;
+  if (!target || target.kind !== "remote" || target.transport !== "sandbox") {
+    return null;
+  }
+  const trimmed = installCommand.trim();
+  if (trimmed.length === 0) return null;
+
+  const code = `${adapterKey}_install_command_run`;
+
+  // Skip install when the binary is already on PATH. Avoids running
+  // network-dependent installers (e.g. `curl ... | bash`) on every test
+  // probe when the CLI is preinstalled on the lease/template.
+  const detectCommand = input.detectCommand?.trim();
+  if (detectCommand) {
+    try {
+      const probe = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        target,
+        `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+        {
+          cwd: target.remoteCwd,
+          env: input.env ?? {},
+          timeoutSec: 30,
+          graceSec: 5,
+        },
+      );
+      if (!probe.timedOut && probe.exitCode === 0) {
+        return {
+          code,
+          level: "info",
+          message: `${detectCommand} already on PATH; skipped install.`,
+        };
+      }
+    } catch {
+      // Fall through to actually running the install — failure to probe
+      // is not a reason to skip the install gate.
+    }
+  }
+
+  let result;
+  try {
+    result = await runAdapterExecutionTargetShellCommand(input.runId, target, trimmed, {
+      cwd: target.remoteCwd,
+      env: input.env ?? {},
+      timeoutSec: input.timeoutSec ?? 240,
+      graceSec: 10,
+    });
+  } catch (err) {
+    return {
+      code,
+      level: "warn",
+      message: "Install command threw before completion.",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const tail = (text: string) =>
+    text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-3).join(" | ").slice(0, 480);
+  if (result.timedOut) {
+    return {
+      code,
+      level: "warn",
+      message: `Install command timed out: ${trimmed}`,
+      detail: tail(result.stderr || result.stdout),
+    };
+  }
+  if ((result.exitCode ?? 1) === 0) {
+    return {
+      code,
+      level: "info",
+      message: `Install command ran: ${trimmed}`,
+      ...(tail(result.stdout) ? { detail: tail(result.stdout) } : {}),
+    };
+  }
+  return {
+    code,
+    level: "warn",
+    message: `Install command exited ${result.exitCode}: ${trimmed}`,
+    detail: tail(result.stderr || result.stdout),
+  };
+}
+
 export async function readAdapterExecutionTargetHomeDir(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -386,6 +590,91 @@ export async function readAdapterExecutionTargetHomeDir(
   );
   const homeDir = result.stdout.trim();
   return homeDir.length > 0 ? homeDir : null;
+}
+
+export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  installCommand?: string | null;
+  detectCommand?: string | null;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec?: number;
+  graceSec?: number;
+  onLog?: AdapterExecutionTargetShellOptions["onLog"];
+}): Promise<void> {
+  const installCommand = input.installCommand?.trim();
+  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+    return;
+  }
+
+  const detectCommand = input.detectCommand?.trim();
+  if (detectCommand) {
+    const probe = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec,
+        graceSec: input.graceSec,
+      },
+    );
+    if (!probe.timedOut && probe.exitCode === 0) {
+      return;
+    }
+  }
+
+  const result = await runAdapterExecutionTargetShellCommand(
+    input.runId,
+    input.target,
+    installCommand,
+    {
+      cwd: input.cwd,
+      env: input.env,
+      timeoutSec: input.timeoutSec,
+      graceSec: input.graceSec,
+      onLog: input.onLog,
+    },
+  );
+
+  // A failed or timed-out install is not necessarily fatal: the CLI may already
+  // be on PATH from a previous lease's install, the template image, or another
+  // path entry. Re-run the detect probe (when one is configured) so a transient
+  // install failure does not abort the agent run when the binary is reachable.
+  const installFailed = result.timedOut || (result.exitCode ?? 0) !== 0;
+  if (!installFailed) {
+    return;
+  }
+  if (detectCommand) {
+    const recheck = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec,
+        graceSec: input.graceSec,
+      },
+    );
+    if (!recheck.timedOut && recheck.exitCode === 0) {
+      if (input.onLog) {
+        const reason = result.timedOut ? "timed out" : `exited ${result.exitCode ?? "?"}`;
+        await input.onLog(
+          "stderr",
+          `[paperclip] Install command ${reason} (${installCommand}) but ${detectCommand} is on PATH; continuing.\n`,
+        );
+      }
+      return;
+    }
+  }
+
+  if (result.timedOut) {
+    throw new Error(`Timed out while installing the adapter runtime command via: ${installCommand}`);
+  }
+  throw new Error(`Failed to install the adapter runtime command via: ${installCommand}`);
 }
 
 export async function ensureAdapterExecutionTargetFile(
@@ -576,6 +865,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
   installCommand?: string | null;
+  /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
+  detectCommand?: string | null;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -617,6 +908,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     installCommand: input.installCommand,
+    detectCommand: input.detectCommand,
   });
   return {
     target,
@@ -743,11 +1035,25 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: adapterExecutionTargetTimeoutMs(target),
       shellCommand,
     });
+    // PAPERCLIP_BRIDGE_DEBUG opts into verbose stdout logs of every bridge
+    // proxy request/response. The query string is logged verbatim, so callers
+    // who pass auth tokens or other sensitive values as query parameters
+    // should be aware those values appear in the host process's stdout when
+    // this flag is enabled. Only intended for active debugging in trusted
+    // environments.
+    const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
       maxBodyBytes,
       handleRequest: async (request) => {
+        const method = request.method.trim().toUpperCase() || "GET";
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
         const headers = new Headers();
         for (const [key, value] of Object.entries(request.headers)) {
           if (value.trim().length === 0) continue;
@@ -755,13 +1061,18 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
-        const method = request.method.trim().toUpperCase() || "GET";
         const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
           method,
           headers,
           ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
           signal: AbortSignal.timeout(30_000),
         });
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),

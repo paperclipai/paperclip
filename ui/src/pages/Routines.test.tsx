@@ -247,6 +247,8 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    latestRevisionId: null,
+    latestRevisionNumber: 1,
     createdByAgentId: null,
     createdByUserId: null,
     updatedByAgentId: null,
@@ -306,6 +308,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: new Date("2026-04-01T00:00:00.000Z"),
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 

@@ -16,6 +16,7 @@ import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
+import { ResizableSidebarPane } from "./ResizableSidebarPane";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { useDialogActions } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
@@ -39,8 +40,17 @@ import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
+import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
+
+function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
+  if (!companyPrefix) return null;
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
+  return segments[1]?.toLowerCase() ?? null;
+}
 
 function readRememberedInstanceSettingsPath(): string {
   if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
@@ -83,6 +93,38 @@ export function Layout() {
   }, [companies, companyPrefix]);
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
+  const pluginRoutePath = useMemo(
+    () => getCompanyRouteSegment(location.pathname, companyPrefix),
+    [companyPrefix, location.pathname],
+  );
+  const routeSidebarCompanyId = matchedCompany?.id ?? null;
+  const routeSidebarCompanyPrefix = matchedCompany?.issuePrefix ?? null;
+  const { slots: routeSidebarSlots } = usePluginSlots({
+    slotTypes: ["page", "routeSidebar"],
+    companyId: routeSidebarCompanyId,
+    enabled: Boolean(routeSidebarCompanyId && pluginRoutePath),
+  });
+  const routeSidebarSlot = useMemo(
+    () => resolveRouteSidebarSlot(routeSidebarSlots, pluginRoutePath),
+    [pluginRoutePath, routeSidebarSlots],
+  );
+  const sidebarContext = useMemo(
+    () => ({
+      companyId: routeSidebarCompanyId,
+      companyPrefix: routeSidebarCompanyPrefix,
+    }),
+    [routeSidebarCompanyId, routeSidebarCompanyPrefix],
+  );
+  const companySidebar = routeSidebarSlot ? (
+    <PluginSlotMount
+      slot={routeSidebarSlot}
+      context={sidebarContext}
+      className="h-full w-full"
+      missingBehavior="placeholder"
+    />
+  ) : (
+    <Sidebar />
+  );
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -335,13 +377,15 @@ export function Layout() {
             )}
           >
             <div className="flex flex-1 min-h-0 overflow-hidden">
-              {isInstanceSettingsRoute ? (
-                <InstanceSidebar />
-              ) : isCompanySettingsRoute ? (
-                <CompanySettingsSidebar />
-              ) : (
-                <Sidebar />
-              )}
+              <div className="w-60 shrink-0 overflow-hidden">
+                {isInstanceSettingsRoute ? (
+                  <InstanceSidebar />
+                ) : isCompanySettingsRoute ? (
+                  <CompanySettingsSidebar />
+                ) : (
+                  companySidebar
+                )}
+              </div>
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
@@ -352,20 +396,15 @@ export function Layout() {
         ) : (
           <div className="flex h-full flex-col shrink-0">
             <div className="flex flex-1 min-h-0">
-              <div
-                className={cn(
-                  "overflow-hidden transition-[width] duration-100 ease-out",
-                  sidebarOpen ? "w-60" : "w-0"
-                )}
-              >
+              <ResizableSidebarPane open={sidebarOpen} resizable className="h-full shrink-0">
                 {isInstanceSettingsRoute ? (
                   <InstanceSidebar />
                 ) : isCompanySettingsRoute ? (
                   <CompanySettingsSidebar />
                 ) : (
-                  <Sidebar />
+                  companySidebar
                 )}
-              </div>
+              </ResizableSidebarPane>
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}

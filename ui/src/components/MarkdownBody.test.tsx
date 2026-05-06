@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -33,7 +33,11 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
-function renderMarkdown(children: string, seededIssues: Array<{ identifier: string; status: string; title?: string }> = []) {
+function renderMarkdown(
+  children: string,
+  seededIssues: Array<{ identifier: string; status: string; title?: string }> = [],
+  props: Partial<ComponentProps<typeof MarkdownBody>> = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -54,7 +58,7 @@ function renderMarkdown(children: string, seededIssues: Array<{ identifier: stri
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MarkdownBody>{children}</MarkdownBody>
+        <MarkdownBody {...props}>{children}</MarkdownBody>
       </ThemeProvider>
     </QueryClientProvider>,
   );
@@ -279,6 +283,64 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="PAP-1271"');
   });
 
+  it("leaves wiki links as text unless explicitly enabled", () => {
+    const html = renderMarkdown("See [[wiki/entities/paperclip]].");
+
+    expect(html).toContain("[[wiki/entities/paperclip]]");
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/paperclip.md"');
+  });
+
+  it("renders wiki links with a custom resolver when enabled", () => {
+    const html = renderMarkdown(
+      "See [[wiki/entities/paperclip|Paperclip]] and [[wiki/entities/dotta-b]].",
+      [],
+      {
+        enableWikiLinks: true,
+        resolveWikiLinkHref: (target) => `/wiki/page/${target.endsWith(".md") ? target : `${target}.md`}`,
+      },
+    );
+
+    expect(html).toContain('href="/wiki/page/wiki/entities/paperclip.md"');
+    expect(html).toContain('data-paperclip-wiki-link="true"');
+    expect(html).toContain('data-paperclip-wiki-target="wiki/entities/paperclip"');
+    expect(html).toContain(">Paperclip</a>");
+    expect(html).toContain('href="/wiki/page/wiki/entities/dotta-b.md"');
+    expect(html).toContain(">wiki/entities/dotta-b</a>");
+    expect(html).not.toContain("[[wiki/entities/paperclip");
+  });
+
+  it("keeps wiki links as text when the custom resolver rejects them", () => {
+    const html = renderMarkdown(
+      "See [[wiki/entities/paperclip]].",
+      [],
+      {
+        enableWikiLinks: true,
+        wikiLinkRoot: "/wiki/page",
+        resolveWikiLinkHref: () => null,
+      },
+    );
+
+    expect(html).toContain("[[wiki/entities/paperclip]]");
+    expect(html).not.toContain('data-paperclip-wiki-link="true"');
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/paperclip"');
+  });
+
+  it("does not render wiki links inside code spans or code blocks", () => {
+    const html = renderMarkdown(
+      "Inline `[[wiki/entities/paperclip]]`.\n\n```md\n[[wiki/entities/dotta-b]]\n```",
+      [],
+      {
+        enableWikiLinks: true,
+        wikiLinkRoot: "/wiki/page",
+      },
+    );
+
+    expect(html).toContain("[[wiki/entities/paperclip]]");
+    expect(html).toContain("[[wiki/entities/dotta-b]]");
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/paperclip"');
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/dotta-b"');
+  });
+
   it("applies wrap-friendly styles to long inline content", () => {
     const html = renderMarkdown("averyveryveryveryveryveryveryveryveryverylongtoken");
 
@@ -292,6 +354,20 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain('<a href="https://example.com/reallyreallyreallyreallyreallyreallyreallyreallylong"');
     expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
+  });
+
+  it("renders markdown tables in a horizontally scrollable region", () => {
+    const html = renderMarkdown([
+      "| Time UTC | Source | Finding | Stalled leaf | Escalation |",
+      "| --- | --- | --- | --- | --- |",
+      "| 2026-04-30T14:31:35Z | PAP-2505 | in_review_without_action_path | PAP-2779 | PAP-2910 |",
+    ].join("\n"));
+
+    expect(html).toContain('class="paperclip-markdown-table-scroll"');
+    expect(html).toContain('aria-label="Scrollable table"');
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain("<table>");
+    expect(html).toContain('style="overflow-wrap:anywhere;word-break:normal"');
   });
 
   it("opens external links in a new tab with safe rel attributes", () => {

@@ -12,6 +12,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
+  wakeup: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -25,6 +26,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
+
+const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -210,16 +213,24 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+    });
   });
 
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
     expect(res.body).toMatchObject({
       id: "run-1",
@@ -268,7 +279,7 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -523,5 +534,67 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(4);
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({
+          reason: "issue_assigned",
+          payload: {
+            issueId: "issue-1",
+            taskId: "issue-1",
+            taskKey: "issue-1",
+          },
+          forceFreshSession: true,
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    // The legacy /heartbeat/invoke endpoint forwards only the wake fields the
+    // caller actually supplied so empty-body callers (e.g. e2e suites) match
+    // the original fixed-arg `heartbeat.invoke()` shape exactly. When the
+    // caller supplies reason / payload / forceFreshSession those are
+    // forwarded; idempotencyKey is omitted unless explicitly set.
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      payload: {
+        issueId: "issue-1",
+        taskId: "issue-1",
+        taskKey: "issue-1",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        forceFreshSession: true,
+      },
+    });
+  });
+
+  it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+      },
+    });
   });
 });

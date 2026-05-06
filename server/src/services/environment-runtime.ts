@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases } from "@paperclipai/db";
@@ -102,7 +103,13 @@ export interface EnvironmentDriverAcquireInput {
   companyId: string;
   environment: Environment;
   issueId: string | null;
-  heartbeatRunId: string;
+  /**
+   * UUID of the owning heartbeat run, or null for ad-hoc invocations
+   * (e.g. operator-initiated `Test` probes) that are not tied to a run.
+   * Null leases must be released by id via `getDriver(...).releaseRunLease`
+   * since `releaseRunLeases(heartbeatRunId)` cannot find them.
+   */
+  heartbeatRunId: string | null;
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
 }
@@ -407,14 +414,21 @@ function createSandboxEnvironmentDriver(
 
         const workerConfig = stripSandboxProviderEnvelope(parsed.config);
         const storedConfig = storedParsed.config;
-        const existingLeases = parsed.config.reuseLease
-          ? await environmentsSvc.listLeases(input.environment.id)
+        // Ad-hoc tests (heartbeatRunId === null) must never resume an existing
+        // provider lease. If they did, releasing the test lease at the end of
+        // the probe would tear down the live heartbeat run that owns it.
+        // We also filter out leases whose policy is not reuse_by_environment
+        // so any non-reusable lease (including ad-hoc test leases that
+        // landed in the table from older code paths) cannot be matched.
+        const reusableExistingLeases = parsed.config.reuseLease && input.heartbeatRunId !== null
+          ? (await environmentsSvc.listLeases(input.environment.id))
+              .filter((lease) => lease.leasePolicy === "reuse_by_environment")
           : [];
-        const reusableProviderLeaseId = parsed.config.reuseLease
-          ? findReusableSandboxLeaseId({ config: storedConfig, leases: existingLeases })
+        const reusableProviderLeaseId = parsed.config.reuseLease && input.heartbeatRunId !== null
+          ? findReusableSandboxLeaseId({ config: storedConfig, leases: reusableExistingLeases })
           : null;
         const reusableLease = reusableProviderLeaseId
-          ? existingLeases.find((lease) => lease.providerLeaseId === reusableProviderLeaseId)
+          ? reusableExistingLeases.find((lease) => lease.providerLeaseId === reusableProviderLeaseId)
           : null;
 
         const providerLease = reusableLease?.providerLeaseId
@@ -443,12 +457,18 @@ function createSandboxEnvironmentDriver(
             companyId: input.companyId,
             environmentId: input.environment.id,
             config: workerConfig,
-            runId: input.heartbeatRunId,
+            // Plugin SDK requires a string; ad-hoc test leases use a fresh
+            // UUID so providers that validate or persist the runId still see
+            // a well-formed identifier.
+            runId: input.heartbeatRunId ?? randomUUID(),
             workspaceMode: input.executionWorkspaceMode ?? undefined,
           },
         );
 
-        const resolvedLeasePolicy = parsed.config.reuseLease
+        // Ad-hoc test leases are never publishable for reuse: storing them
+        // as `reuse_by_environment` would let a concurrent heartbeat resume
+        // the test's provider lease and lose its sandbox when the test ends.
+        const resolvedLeasePolicy = parsed.config.reuseLease && input.heartbeatRunId !== null
           ? "reuse_by_environment"
           : "ephemeral";
 
@@ -477,22 +497,33 @@ function createSandboxEnvironmentDriver(
         });
       }
 
-      // Built-in sandbox provider path.
-      const reusableProviderLeaseId = parsed.config.reuseLease
+      // Built-in sandbox provider path. Same guard as the plugin-backed path:
+      // ad-hoc tests (heartbeatRunId === null) must never resume an existing
+      // provider lease, or releasing the test lease will terminate the live
+      // heartbeat run that shares it. Filter to leases whose policy is
+      // reuse_by_environment so non-reusable rows can never be matched.
+      const reusableProviderLeaseId = parsed.config.reuseLease && input.heartbeatRunId !== null
         ? (await environmentsSvc
             .listLeases(input.environment.id)
-            .then((leases) => findReusableSandboxLeaseId({ config: parsed.config, leases })))
+            .then((leases) =>
+              findReusableSandboxLeaseId({
+                config: parsed.config,
+                leases: leases.filter((lease) => lease.leasePolicy === "reuse_by_environment"),
+              }),
+            ))
         : null;
 
       const providerLease = await acquireSandboxProviderLease({
         config: parsed.config,
         environmentId: input.environment.id,
-        heartbeatRunId: input.heartbeatRunId,
+        heartbeatRunId: input.heartbeatRunId ?? randomUUID(),
         issueId: input.issueId,
         reusableProviderLeaseId,
       });
 
-      const resolvedLeasePolicy = parsed.config.reuseLease
+      // Same ephemeral-policy-for-tests guard as the plugin-backed path:
+      // ad-hoc test leases must not be publishable for reuse.
+      const resolvedLeasePolicy = parsed.config.reuseLease && input.heartbeatRunId !== null
         ? "reuse_by_environment"
         : "ephemeral";
 
@@ -831,7 +862,7 @@ function createPluginEnvironmentDriver(
         companyId: input.companyId,
         environmentId: input.environment.id,
         config: parsed.config.driverConfig,
-        runId: input.heartbeatRunId,
+        runId: input.heartbeatRunId ?? randomUUID(),
         workspaceMode: input.executionWorkspaceMode ?? undefined,
       });
 
@@ -1040,7 +1071,8 @@ export function environmentRuntimeService(
       companyId: string;
       environment: Environment;
       issueId: string | null;
-      heartbeatRunId: string;
+      /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
+      heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
       if (input.environment.status !== "active") {
