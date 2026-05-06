@@ -1322,9 +1322,69 @@ describe("inbox helpers", () => {
     ]);
   });
 
-  it("persists workspace grouping preferences", () => {
+  it("groups assignee sections by latest issue activity while preserving non-issue sections", () => {
+    const agentIssue = makeIssue("agent", true);
+    agentIssue.assigneeAgentId = "agent-1";
+
+    const userIssue = makeIssue("user", false);
+    userIssue.assigneeUserId = "user-1";
+
+    const unassignedIssue = makeIssue("unassigned", false);
+
+    const items: InboxWorkItem[] = [
+      { kind: "issue", timestamp: 5, issue: agentIssue },
+      { kind: "approval", timestamp: 8, approval: makeApproval("pending") },
+      { kind: "issue", timestamp: 7, issue: userIssue },
+      { kind: "issue", timestamp: 2, issue: unassignedIssue },
+    ];
+
+    expect(groupInboxWorkItems(items, "assignee", {
+      agentById: new Map([["agent-1", "Coder"]]),
+      userLabelById: new Map([["user-1", "Riley"]]),
+    })).toEqual([
+      { key: "kind:approval", label: "Approvals", items: [items[1]] },
+      { key: "assignee:user:user-1", label: "Riley", items: [items[2]] },
+      { key: "assignee:agent:agent-1", label: "Coder", items: [items[0]] },
+      { key: "assignee:none", label: "Unassigned", items: [items[3]] },
+    ]);
+  });
+
+  it("groups project sections by latest issue activity while preserving non-issue sections", () => {
+    const paperclipIssue = makeIssue("paperclip", true);
+    paperclipIssue.projectId = "project-1";
+
+    const onboardingIssue = makeIssue("onboarding", false);
+    onboardingIssue.projectId = "project-2";
+
+    const noProjectIssue = makeIssue("no-project", false);
+
+    const items: InboxWorkItem[] = [
+      { kind: "issue", timestamp: 9, issue: paperclipIssue },
+      { kind: "issue", timestamp: 4, issue: onboardingIssue },
+      { kind: "join_request", timestamp: 6, joinRequest: makeJoinRequest("join-1") },
+      { kind: "issue", timestamp: 2, issue: noProjectIssue },
+    ];
+
+    expect(groupInboxWorkItems(items, "project", {
+      projectById: new Map([
+        ["project-1", { name: "Paperclip App" }],
+        ["project-2", { name: "Onboarding" }],
+      ]),
+    })).toEqual([
+      { key: "project:project-1", label: "Paperclip App", items: [items[0]] },
+      { key: "kind:join_request", label: "Join requests", items: [items[2]] },
+      { key: "project:project-2", label: "Onboarding", items: [items[1]] },
+      { key: "project:none", label: "No project", items: [items[3]] },
+    ]);
+  });
+
+  it("persists inbox grouping preferences", () => {
     saveInboxWorkItemGroupBy("workspace");
     expect(loadInboxWorkItemGroupBy()).toBe("workspace");
+    saveInboxWorkItemGroupBy("assignee");
+    expect(loadInboxWorkItemGroupBy()).toBe("assignee");
+    saveInboxWorkItemGroupBy("project");
+    expect(loadInboxWorkItemGroupBy()).toBe("project");
   });
 
   it("persists collapsed inbox groups per company", () => {

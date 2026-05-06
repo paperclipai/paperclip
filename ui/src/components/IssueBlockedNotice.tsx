@@ -17,6 +17,7 @@ export function IssueBlockedNotice({
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   agentName?: string | null;
 }) {
+  if (issueStatus === "done" || issueStatus === "cancelled") return null;
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
 
