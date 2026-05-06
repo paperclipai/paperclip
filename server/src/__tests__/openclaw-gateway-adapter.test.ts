@@ -149,6 +149,22 @@ async function createMockGatewayServer(options?: {
             },
           }),
         );
+        return;
+      }
+
+      // Fork-only: openclaw-gateway/execute.ts calls sessions.usage after
+      // agent.wait to fetch token totals. Tests don't assert on the result,
+      // so a permissive empty-shape response is enough to unblock them.
+      if (frame.method === "sessions.usage") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { totals: {}, aggregates: { byModel: [] } },
+          }),
+        );
+        return;
       }
     });
   });
@@ -351,6 +367,19 @@ async function createMockGatewayServerWithPairing() {
             },
           }),
         );
+        return;
+      }
+
+      if (frame.method === "sessions.usage") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { totals: {}, aggregates: { byModel: [] } },
+          }),
+        );
+        return;
       }
     });
   });
@@ -489,7 +518,10 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload?.idempotencyKey).toBe("run-123");
-      expect(payload?.sessionKey).toBe("paperclip:issue:issue-123");
+      // Fork-only: session keys are prefixed with `agent:<id>:` for tenant
+      // isolation (see prefixSessionKeyForAgent in execute.ts). Upstream's
+      // test asserts the unprefixed key.
+      expect(payload?.sessionKey).toBe("agent:agent-123:paperclip:issue:issue-123");
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
