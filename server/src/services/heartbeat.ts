@@ -6142,6 +6142,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     // When setting status to error, also update agentRuntimeState.lastError
     // to prevent error status with null lastError (BRA-469, BRA-464 pattern)
+    console.log('[BRA-469 trace] finalizeAgentStatus:', { agentId, nextStatus, errorMessage, outcome });
     if (nextStatus === "error") {
       await db
         .update(agentRuntimeState)
@@ -6150,8 +6151,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: new Date(),
         })
         .where(eq(agentRuntimeState.agentId, agentId));
-    } else if (nextStatus === "idle" || nextStatus === "running") {
-      // Clear lastError when returning to normal operation
+    } else if ((nextStatus === "idle" || nextStatus === "running") && outcome === "succeeded") {
+      // Clear lastError only on successful completion, not manual recovery
+      // This preserves diagnostic evidence when errors are manually cleared
       await db
         .update(agentRuntimeState)
         .set({
