@@ -293,19 +293,32 @@ i18n.use(initReactI18next).init({
   },
   lng: getInitialLanguage(),
   fallbackLng: "en",
+  supportedLngs: SUPPORTED_LANGUAGES as unknown as string[],
+  nonExplicitSupportedLngs: true,
+  load: "languageOnly",
+  cleanCode: true,
   defaultNS: "common",
   returnEmptyString: false,
   returnNull: false,
-  saveMissing: false,
+  saveMissing: import.meta.env.DEV,
+  appendNamespaceToMissingKey: true,
   parseMissingKeyHandler: (key, defaultValue) => defaultValue ?? key,
-  missingKeyHandler: (lngs, ns, key) => {
-    if (import.meta.env.DEV) console.warn(`[i18n] missing key: ${ns}:${key} for ${lngs}`);
+  missingKeyHandler: (lngs, ns, key, _fallbackValue) => {
+    if (import.meta.env.DEV) {
+      console.warn(`[i18n] missing key: ${ns}:${key} for ${Array.isArray(lngs) ? lngs.join(",") : lngs} — falling back to en`);
+    }
   },
   interpolation: {
     escapeValue: false,
   },
   react: { useSuspense: false },
 });
+
+if (import.meta.env.DEV) {
+  i18n.on("languageChanged", (lng) => {
+    console.info(`[i18n] language changed to ${lng}`);
+  });
+}
 
 /** Switches app language without restart and persists choice. */
 export function setLanguage(lang: SupportedLanguage): void {
