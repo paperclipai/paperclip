@@ -16,7 +16,7 @@
 - Modify `ui/src/components/KanbanBoard.tsx`: add compact cards, collapsed rail lanes, visible-card limits, and per-column reveal behavior.
 - Create `ui/src/components/KanbanBoard.test.tsx`: focused tests for high-volume behavior and drag/drop update callback.
 - Modify `ui/src/components/IssuesList.test.tsx`: update the mocked `KanbanBoard` expectations for new props.
-- Keep `docs/superpowers/specs/2026-05-05-scaled-kanban-board-design.md` as the design source of truth.
+- Keep `doc/plans/2026-05-05-scaled-kanban-board-design.md` as the design source of truth.
 
 ## Task 1: Add Kanban Board Scaling Mechanics
 
@@ -29,8 +29,8 @@
 Create `ui/src/components/KanbanBoard.test.tsx` with tests that render 60 todo issues and assert:
 
 ```tsx
-renderBoard({ issues: createIssues(60, "todo"), compactCards: true, initialVisibleCount: 50, revealIncrement: 50 });
-expect(container.textContent).toContain("Showing 50 of 60");
+renderBoard({ issues: createIssues(60, "todo"), compactCards: true, initialVisibleCount: 10, revealIncrement: 10 });
+expect(container.textContent).toContain("Showing 10 of 60");
 expect(container.textContent).toContain("Show 10 more");
 ```
 
@@ -59,8 +59,8 @@ In `KanbanBoard.tsx`, add exported constants:
 
 ```ts
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
-export const KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT = 50;
-export const KANBAN_COLUMN_REVEAL_INCREMENT = 50;
+export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
+export const KANBAN_COLUMN_DEFAULT_PAGE_SIZE = 10;
 export const KANBAN_COLD_STATUSES = ["backlog", "done", "cancelled"] as const;
 ```
 
@@ -74,6 +74,8 @@ revealIncrement?: number;
 ```
 
 Add per-status visible-count state keyed by status. Expanded columns render `issues.slice(0, visibleCount)` and show a button when hidden issues remain. Collapsed columns render a narrow droppable rail with status icon, label, and count, but no cards.
+
+Reset per-status visible-count state when `initialVisibleCount` or `revealIncrement` changes so choosing a smaller cards-per-column preset does not leave a column expanded past the newly selected page size.
 
 - [ ] **Step 4: Preserve drag/drop**
 
@@ -119,8 +121,8 @@ Add a test that stores board mode in localStorage, renders more than 100 issues,
 expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
   compactCards: true,
   collapsedStatuses: expect.arrayContaining(["backlog", "done", "cancelled"]),
-  initialVisibleCount: 50,
-  revealIncrement: 50,
+  initialVisibleCount: 10,
+  revealIncrement: 10,
 }));
 ```
 
@@ -141,9 +143,10 @@ Extend `IssueViewState`:
 ```ts
 boardCardDensity: "auto" | "compact" | "comfortable";
 boardColdLaneMode: "auto" | "collapsed" | "expanded";
+boardColumnPageSize: 10 | 25 | 50;
 ```
 
-Default both to `"auto"`. Derive:
+Default the density modes to `"auto"` and page size to `10`. Derive:
 
 ```ts
 const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
@@ -162,6 +165,7 @@ When `viewState.viewMode === "board"`, add small outline/icon buttons near the e
 ```tsx
 <Button ... title={boardCompactCards ? "Use comfortable cards" : "Use compact cards"}>...</Button>
 <Button ... title={boardCollapsedStatuses.length > 0 ? "Expand cold lanes" : "Collapse cold lanes"}>...</Button>
+<Button ... title="Cards per column">...</Button>
 <Button ... title="Reset board density">...</Button>
 ```
 
@@ -178,8 +182,8 @@ Update the `KanbanBoard` call:
   liveIssueIds={liveIssueIds}
   compactCards={boardCompactCards}
   collapsedStatuses={boardCollapsedStatuses}
-  initialVisibleCount={KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT}
-  revealIncrement={KANBAN_COLUMN_REVEAL_INCREMENT}
+  initialVisibleCount={viewState.boardColumnPageSize}
+  revealIncrement={viewState.boardColumnPageSize}
   onUpdateIssue={onUpdateIssue}
 />
 ```
@@ -241,6 +245,6 @@ Read `.github/PULL_REQUEST_TEMPLATE.md` and use it for the PR body. Include:
 
 ## Self-Review
 
-- Spec coverage: The plan covers compact high-volume board cards, collapsed cold lanes, per-column reveal controls, persisted board preferences, current API reuse, and focused tests.
+- Spec coverage: The plan covers compact high-volume board cards, collapsed cold lanes, cards-per-column presets, per-column reveal controls, persisted board preferences, current API reuse, and focused tests.
 - Placeholder scan: No unresolved markers or unspecified implementation placeholders remain.
-- Type consistency: The plan consistently uses `boardCardDensity`, `boardColdLaneMode`, `compactCards`, `collapsedStatuses`, `initialVisibleCount`, and `revealIncrement`.
+- Type consistency: The plan consistently uses `boardCardDensity`, `boardColdLaneMode`, `boardColumnPageSize`, `compactCards`, `collapsedStatuses`, `initialVisibleCount`, and `revealIncrement`.

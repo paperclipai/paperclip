@@ -22,21 +22,23 @@ Default high-volume behavior activates when the filtered board has more than 100
 - Compact cards are used by default.
 - `backlog`, `done`, and `cancelled` auto-collapse to narrow rails.
 - `todo`, `in_progress`, `in_review`, and `blocked` remain expanded by default.
-- Each expanded column renders an initial 50 cards.
-- The user can reveal 50 more cards per column without changing other columns.
+- Each expanded column renders an initial 10 cards by default.
+- The user can choose a page size of 10, 25, or 50 cards per column.
+- The user can reveal one additional page at a time in each column without changing other columns.
 - Drag and drop continues to work for visible cards.
 
 The toolbar should expose compact controls for:
 
 - toggling compact cards
 - hiding or showing cold lanes
+- choosing cards per column
 - resetting board density to defaults
 
 These preferences should persist through the existing issue view-state/localStorage mechanism and remain scoped by company.
 
 ## Component Shape
 
-`IssuesList` remains the owner of issue board view state. It should store board-density preferences alongside the existing issue view state, including compact card preference, collapsed statuses, and any per-column visible limits needed by the UI.
+`IssuesList` remains the owner of issue board view state. It should store board-density preferences alongside the existing issue view state, including compact card preference, cold-lane mode, and cards-per-column page size.
 
 `KanbanBoard` receives board tuning props from `IssuesList` and delegates per-lane display to `KanbanColumn`.
 
