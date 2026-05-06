@@ -6,6 +6,7 @@ import { runBuilderTurn } from "./runner.js";
 import { builderSessionStore } from "./session-store.js";
 import { builderProviderSettingsStore } from "./settings-store.js";
 import { proposalService } from "./proposal-service.js";
+import { secretService } from "../secrets.js";
 import {
   getBuilderToolCatalog,
 } from "./tool-registry.js";
@@ -26,6 +27,7 @@ export function builderService(db: Db) {
   const sessions = builderSessionStore(db);
   const settings = builderProviderSettingsStore(db);
   const proposals = proposalService(db);
+  const secrets = secretService(db);
 
   return {
     listSessions: (companyId: string) => sessions.listSessions(companyId),
@@ -112,11 +114,18 @@ export function builderService(db: Db) {
         },
       );
 
+      // Resolve secrets in adapter config before passing to the adapter.
+      // This converts authTokenRef and env secret_refs to actual values.
+      const { config: resolvedAdapterConfig } = await secrets.resolveAdapterConfigForRuntime(
+        input.companyId,
+        config.adapterConfig,
+      );
+
       const turn = await runBuilderTurn({
         db,
         adapterConfig: {
           adapterType: config.adapterType,
-          adapterConfig: config.adapterConfig,
+          adapterConfig: resolvedAdapterConfig,
         },
         sessionId: input.sessionId,
         companyId: input.companyId,
