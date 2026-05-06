@@ -53,7 +53,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
     } else {
       const baseUrl = process.env.OPENAI_BASE_URL
         ? process.env.OPENAI_BASE_URL.replace(/\/$/, "")
-        : "https://api.openai.com";
+        : "https://api.openai.com/v1";
       const res = await fetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${config.llm.apiKey}` },
       });
