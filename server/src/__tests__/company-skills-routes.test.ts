@@ -271,14 +271,36 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: can manage skills");
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
-  it("allows agents with canCreateAgents to mutate company skills", async () => {
+  it("blocks same-company agents with only canCreateAgents from mutating company skills", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
       permissions: { canCreateAgents: true },
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: can manage skills");
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("allows agents with canManageSkills to mutate company skills", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canManageSkills: true },
     });
 
     const res = await request(await createApp({

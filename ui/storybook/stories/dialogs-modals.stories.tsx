@@ -434,7 +434,7 @@ const HERMES_AGENT: Agent = {
   spentMonthlyCents: 9_000,
   pauseReason: null,
   pausedAt: null,
-  permissions: { canCreateAgents: false },
+  permissions: { canCreateAgents: false, canManageSkills: false },
   lastHeartbeatAt: new Date("2026-04-29T08:30:00.000Z"),
   metadata: null,
   createdAt: new Date("2026-04-12T08:00:00.000Z"),
