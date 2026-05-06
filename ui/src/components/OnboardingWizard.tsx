@@ -225,6 +225,17 @@ export function OnboardingWizard() {
     adapterType === "claude_local" &&
     adapterEnvResult?.status === "fail" &&
     hasAnthropicApiKeyOverrideCheck;
+  // Step 2 Next button — derived from probe state.
+  const stepTwoTestFailed =
+    isLocalAdapter && adapterEnvResult?.status === "fail";
+  const stepTwoTestNotRun = isLocalAdapter && adapterEnvResult === null;
+  const stepTwoLabel = loading
+    ? "Creating..."
+    : stepTwoTestFailed
+      ? "Fix issues above"
+      : stepTwoTestNotRun
+        ? "Test & next"
+        : "Next";
   const filteredModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
     return (adapterModels ?? []).filter((entry) => {
@@ -415,6 +426,12 @@ export function OnboardingWizard() {
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
+        // The probe is advisory: a `fail` result does NOT block hire here.
+        // Visible gating happens via the disabled state on the Step 2 Next
+        // button when the user has explicitly run the probe and seen the
+        // failure. Clicking "Test & next" before the probe has run still
+        // proceeds through a failing probe by design — tightening that to
+        // block in the handler is a separate decision.
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
@@ -1120,7 +1137,10 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
+                        !agentName.trim()
+                        || loading
+                        || adapterEnvLoading
+                        || stepTwoTestFailed
                       }
                       onClick={handleStep2Next}
                     >
@@ -1129,7 +1149,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {stepTwoLabel}
                     </Button>
                   )}
                   {step === 3 && (
