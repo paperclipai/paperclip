@@ -86,6 +86,7 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { emitIssueLifecycleTerminated } from "../services/issue-lifecycle-handler.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -2867,6 +2868,23 @@ export function issueRoutes(
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
+
+    // Emit IssueLifecycleTerminated v1 when status first transitions to a terminal state.
+    // Fire-and-forget: workspace teardown must not block or fail the issue PATCH response.
+    const terminalStatus: "done" | "cancelled" | null =
+      issue.status === "done" ? "done"
+      : issue.status === "cancelled" ? "cancelled"
+      : null;
+    if (terminalStatus && existing.status !== "done" && existing.status !== "cancelled") {
+      emitIssueLifecycleTerminated({
+        id: issue.id,
+        companyId: issue.companyId,
+        status: terminalStatus,
+        completedAt: issue.completedAt,
+        cancelledAt: issue.cancelledAt,
+        executionWorkspaceId: issue.executionWorkspaceId,
+      });
+    }
 
     res.json({ ...issueResponse, comment });
   });

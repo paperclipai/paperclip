@@ -93,6 +93,7 @@ function registerRouteMocks() {
 
   vi.doMock("../services/activity-log.js", () => ({
     logActivity: vi.fn(async () => undefined),
+    publishPluginDomainEvent: vi.fn(),
   }));
 
   vi.doMock("../services/index.js", () => ({
