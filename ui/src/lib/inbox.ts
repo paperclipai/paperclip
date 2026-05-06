@@ -12,6 +12,7 @@ import {
   normalizeIssueFilterState,
   type IssueFilterState,
 } from "./issue-filters";
+import { formatAssigneeUserLabel } from "./assignees";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -33,7 +34,7 @@ export type InboxCategoryFilter =
   | "failed_runs"
   | "alerts";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
-export type InboxWorkItemGroupBy = "none" | "type" | "workspace";
+export type InboxWorkItemGroupBy = "none" | "type" | "assignee" | "project" | "workspace";
 export const inboxIssueColumns = [
   "status",
   "id",
@@ -137,6 +138,10 @@ export interface InboxWorkspaceGroupingOptions {
   executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
   projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
   defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+  projectById?: ReadonlyMap<string, { name: string | null | undefined }>;
+  agentById?: ReadonlyMap<string, string | null | undefined>;
+  userLabelById?: ReadonlyMap<string, string>;
+  currentUserId?: string | null;
 }
 
 const defaultInboxFilterPreferences: InboxFilterPreferences = {
@@ -342,7 +347,7 @@ export function saveInboxIssueColumns(columns: InboxIssueColumn[]) {
 export function loadInboxWorkItemGroupBy(): InboxWorkItemGroupBy {
   try {
     const raw = localStorage.getItem(INBOX_GROUP_BY_KEY);
-    return raw === "type" || raw === "workspace" ? raw : "none";
+    return raw === "type" || raw === "assignee" || raw === "project" || raw === "workspace" ? raw : "none";
   } catch {
     return "none";
   }
@@ -805,6 +810,86 @@ const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
   join_request: "Join requests",
 };
 
+function resolveIssueAssigneeGroup(
+  issue: Pick<Issue, "assigneeAgentId" | "assigneeUserId">,
+  {
+    agentById,
+    currentUserId,
+    userLabelById,
+  }: Pick<InboxWorkspaceGroupingOptions, "agentById" | "currentUserId" | "userLabelById">,
+): { key: string; label: string } {
+  if (issue.assigneeAgentId) {
+    const agentName = agentById?.get(issue.assigneeAgentId)?.trim();
+    return {
+      key: `assignee:agent:${issue.assigneeAgentId}`,
+      label: agentName || issue.assigneeAgentId.slice(0, 8),
+    };
+  }
+
+  if (issue.assigneeUserId) {
+    return {
+      key: `assignee:user:${issue.assigneeUserId}`,
+      label: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelById) ?? "User",
+    };
+  }
+
+  return { key: "assignee:none", label: "Unassigned" };
+}
+
+function resolveIssueProjectGroup(
+  issue: Pick<Issue, "projectId">,
+  { projectById }: Pick<InboxWorkspaceGroupingOptions, "projectById">,
+): { key: string; label: string } {
+  if (!issue.projectId) return { key: "project:none", label: "No project" };
+
+  const projectName = projectById?.get(issue.projectId)?.name?.trim();
+  return {
+    key: `project:${issue.projectId}`,
+    label: projectName || issue.projectId.slice(0, 8),
+  };
+}
+
+function groupInboxWorkItemsByIssueGroup(
+  items: InboxWorkItem[],
+  resolveIssueGroup: (issue: Issue) => { key: string; label: string },
+): InboxWorkItemGroup[] {
+  const groups = new Map<string, { label: string; items: InboxWorkItem[]; latestTimestamp: number }>();
+  for (const item of items) {
+    const resolvedGroup = item.kind === "issue"
+      ? resolveIssueGroup(item.issue)
+      : { key: `kind:${item.kind}`, label: inboxWorkItemKindLabels[item.kind] };
+    const existing = groups.get(resolvedGroup.key);
+    if (existing) {
+      existing.items.push(item);
+      existing.latestTimestamp = Math.max(existing.latestTimestamp, item.timestamp);
+    } else {
+      groups.set(resolvedGroup.key, {
+        label: resolvedGroup.label,
+        items: [item],
+        latestTimestamp: item.timestamp,
+      });
+    }
+  }
+
+  return [...groups.entries()]
+    .map(([key, value]) => ({
+      key,
+      label: value.label,
+      items: value.items,
+      latestTimestamp: value.latestTimestamp,
+    }))
+    .sort((a, b) => {
+      const timestampDiff = b.latestTimestamp - a.latestTimestamp;
+      if (timestampDiff !== 0) return timestampDiff;
+      return a.label.localeCompare(b.label);
+    })
+    .map(({ key, label, items: groupItems }) => ({
+      key,
+      label,
+      items: groupItems,
+    }));
+}
+
 export function groupInboxWorkItems(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
@@ -815,41 +900,15 @@ export function groupInboxWorkItems(
   }
 
   if (groupBy === "workspace") {
-    const groups = new Map<string, { label: string; items: InboxWorkItem[]; latestTimestamp: number }>();
-    for (const item of items) {
-      const resolvedGroup = item.kind === "issue"
-        ? resolveIssueWorkspaceGroup(item.issue, options)
-        : { key: `kind:${item.kind}`, label: inboxWorkItemKindLabels[item.kind] };
-      const existing = groups.get(resolvedGroup.key);
-      if (existing) {
-        existing.items.push(item);
-        existing.latestTimestamp = Math.max(existing.latestTimestamp, item.timestamp);
-      } else {
-        groups.set(resolvedGroup.key, {
-          label: resolvedGroup.label,
-          items: [item],
-          latestTimestamp: item.timestamp,
-        });
-      }
-    }
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueWorkspaceGroup(issue, options));
+  }
 
-    return [...groups.entries()]
-      .map(([key, value]) => ({
-        key,
-        label: value.label,
-        items: value.items,
-        latestTimestamp: value.latestTimestamp,
-      }))
-      .sort((a, b) => {
-        const timestampDiff = b.latestTimestamp - a.latestTimestamp;
-        if (timestampDiff !== 0) return timestampDiff;
-        return a.label.localeCompare(b.label);
-      })
-      .map(({ key, label, items: groupItems }) => ({
-        key,
-        label,
-        items: groupItems,
-      }));
+  if (groupBy === "assignee") {
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueAssigneeGroup(issue, options));
+  }
+
+  if (groupBy === "project") {
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueProjectGroup(issue, options));
   }
 
   const groups = new Map<InboxWorkItem["kind"], InboxWorkItem[]>();

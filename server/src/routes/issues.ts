@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, issueExecutionDecisions } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
+  companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
@@ -32,6 +33,8 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  type CompanySearchQuery,
+  type CompanySearchResponse,
   type ExecutionWorkspace,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -44,6 +47,7 @@ import {
   accessService,
   agentService,
   companyService,
+  companySearchService,
   executionWorkspaceService,
   goalService,
   heartbeatService,
@@ -82,6 +86,10 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
+  createCompanySearchRateLimiter,
+  type CompanySearchRateLimiter,
+} from "../services/company-search-rate-limit.js";
+import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -97,6 +105,9 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
+type CompanySearchService = {
+  search(companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse>;
+};
 type ActivityIssueRelationSummary = {
   id: string;
   identifier: string | null;
@@ -189,25 +200,27 @@ async function listSuccessfulRunHandoffStates(
   issueIds: string[],
 ): Promise<Map<string, SuccessfulRunHandoffState>> {
   if (issueIds.length === 0) return new Map();
-  const result = await db.execute(sql`
-    SELECT DISTINCT ON (${activityLog.entityId})
-      ${activityLog.entityId} AS "entityId",
-      ${activityLog.action} AS "action",
-      ${activityLog.agentId} AS "agentId",
-      ${activityLog.runId} AS "runId",
-      ${activityLog.details} AS "details",
-      ${activityLog.createdAt} AS "createdAt"
-    FROM ${activityLog}
-    WHERE ${activityLog.companyId} = ${companyId}
-      AND ${activityLog.entityType} = 'issue'
-      AND ${activityLog.entityId} IN (${sql.join(issueIds.map((id) => sql`${id}`), sql`, `)})
-      AND ${activityLog.action} IN (${sql.join(SUCCESSFUL_RUN_HANDOFF_ACTIONS.map((action) => sql`${action}`), sql`, `)})
-    ORDER BY ${activityLog.entityId}, ${activityLog.createdAt} DESC, ${activityLog.id} DESC
-  `);
-  const rows = Array.from(result as Iterable<SuccessfulRunHandoffActivityRow>);
+  const rows = await db
+    .select({
+      entityId: activityLog.entityId,
+      action: activityLog.action,
+      agentId: activityLog.agentId,
+      runId: activityLog.runId,
+      details: activityLog.details,
+      createdAt: activityLog.createdAt,
+    })
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityType, "issue"),
+      inArray(activityLog.entityId, issueIds),
+      inArray(activityLog.action, [...SUCCESSFUL_RUN_HANDOFF_ACTIONS]),
+    ))
+    .orderBy(activityLog.entityId, desc(activityLog.createdAt), desc(activityLog.id)) as SuccessfulRunHandoffActivityRow[];
 
   const states = new Map<string, SuccessfulRunHandoffState>();
   for (const row of rows) {
+    if (states.has(row.entityId)) continue;
     const state = successfulRunHandoffStateFromActivity(row);
     if (state) states.set(row.entityId, state);
   }
@@ -248,6 +261,23 @@ function summarizeIssueRelationForActivity(relation: {
     id: relation.id,
     identifier: relation.identifier,
     title: relation.title,
+  };
+}
+
+const defaultCompanySearchRateLimiter = createCompanySearchRateLimiter();
+
+function companySearchRateLimitActor(req: Request, companyId: string) {
+  if (req.actor.type === "agent") {
+    return {
+      companyId,
+      actorType: "agent" as const,
+      actorId: req.actor.agentId ?? req.actor.keyId ?? "unknown-agent",
+    };
+  }
+  return {
+    companyId,
+    actorType: "board" as const,
+    actorId: req.actor.userId ?? req.actor.source ?? "board",
   };
 }
 
@@ -546,6 +576,8 @@ export function issueRoutes(
         now?: Date;
       }): Promise<unknown>;
     };
+    searchService?: CompanySearchService;
+    searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
   } = {},
 ) {
@@ -557,6 +589,12 @@ export function issueRoutes(
   });
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
+  let searchSvc = opts.searchService ?? null;
+  const getSearchService = () => {
+    searchSvc ??= companySearchService(db);
+    return searchSvc;
+  };
+  const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -1046,6 +1084,25 @@ export function issueRoutes(
     });
   });
 
+  router.get("/companies/:companyId/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const query = companySearchQuerySchema.parse(req.query);
+    const rateLimit = searchRateLimiter.consume(companySearchRateLimitActor(req, companyId));
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    if (!rateLimit.allowed) {
+      res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Search rate limit exceeded",
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
+      return;
+    }
+    const result = await getSearchService().search(companyId, query);
+    res.json(result);
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -1247,6 +1304,7 @@ export function issueRoutes(
         title: issue.title,
         description: issue.description,
         status: issue.status,
+        workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
         priority: issue.priority,
@@ -2545,6 +2603,33 @@ export function issueRoutes(
         ),
       },
     });
+
+    if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
+      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])
+        .then(async (handoffStates) => {
+          const handoff = handoffStates.get(issue.id);
+          if (handoff?.state !== "required") return;
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.successful_run_handoff_resolved",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              sourceRunId: handoff.sourceRunId,
+              correctiveRunId: handoff.correctiveRunId,
+              resolvedByStatus: issue.status,
+            },
+          });
+        })
+        .catch((err) => {
+          logger.warn({ err, issueId: issue.id }, "failed to log successful run handoff resolution");
+        });
+    }
 
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));

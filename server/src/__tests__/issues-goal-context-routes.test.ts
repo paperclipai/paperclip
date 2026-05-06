@@ -147,6 +147,7 @@ const legacyProjectLinkedIssue = {
   title: "Legacy onboarding task",
   description: "Seed the first CEO task",
   status: "todo",
+  workMode: "planning",
   priority: "medium",
   projectId: "22222222-2222-4222-8222-222222222222",
   goalId: null,
@@ -264,6 +265,7 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.issue.workMode).toBe("planning");
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,

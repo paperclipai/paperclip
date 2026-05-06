@@ -60,4 +60,46 @@ describe("IssueBlockedNotice", () => {
     expect(node.textContent).not.toContain("Work on this issue is blocked until");
     expect(node.querySelector('[data-successful-run-handoff="required"]')).not.toBeNull();
   });
+
+  it("does not render when the issue is done even if a stale handoff state is required", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="done"
+        blockers={[]}
+        agentName="CodexCoder"
+        successfulRunHandoff={{
+          state: "required",
+          required: true,
+          sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
+          correctiveRunId: null,
+          assigneeAgentId: "agent-1",
+          detectedProgressSummary: "Updated the plan and left follow-up work.",
+          createdAt: "2026-05-01T00:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(node.textContent).toBe("");
+  });
+
+  it("does not render when the issue is cancelled even if blockers remain", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="cancelled"
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "PAP-123",
+            title: "Blocker",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    expect(node.textContent).toBe("");
+  });
 });

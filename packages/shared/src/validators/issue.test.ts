@@ -127,6 +127,26 @@ describe("issue validators", () => {
     expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
 
+  it("defaults issue work mode to standard and accepts planning", () => {
+    expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
+    expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "planning-child",
+      title: "Plan child",
+      workMode: "planning",
+    }).workMode).toBe("planning");
+  });
+
+  it("rejects unknown issue work modes", () => {
+    expect(createIssueSchema.safeParse({ title: "Plan first", workMode: "normal" }).success).toBe(false);
+    expect(suggestedTaskDraftSchema.safeParse({
+      clientKey: "bad-child",
+      title: "Bad child",
+      workMode: "analysis",
+    }).success).toBe(false);
+  });
+
   it("clamps oversized requestDepth values on update", () => {
     const parsed = updateIssueSchema.parse({
       requestDepth: MAX_ISSUE_REQUEST_DEPTH + 1,

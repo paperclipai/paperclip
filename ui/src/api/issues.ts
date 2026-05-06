@@ -174,7 +174,10 @@ export const issuesApi = {
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
-  getCostSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
+  getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {
+    const qs = options.excludeRoot ? "?excludeRoot=true" : "";
+    return api.get<IssueCostSummary>(`/issues/${id}/cost-summary${qs}`);
+  },
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters ?? {})) {
