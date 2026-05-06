@@ -19,6 +19,7 @@ describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -138,6 +139,92 @@ describe("sandbox adapter execution targets", () => {
       args: ["-lc", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
+    }));
+  });
+
+  it("strips inherited host identity env before sandbox execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+    vi.stubEnv("TMPDIR", "/var/folders/local/T");
+
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess("run-1b", target, "agent-cli", ["--json"], {
+      cwd: "/local/workspace",
+      env: {
+        PATH: "/host/bin:/usr/bin",
+        HOME: "/Users/local",
+        TMPDIR: "/var/folders/local/T",
+        SAFE_VALUE: "visible",
+      },
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        SAFE_VALUE: "visible",
+      },
+    }));
+  });
+
+  it("preserves explicit remote identity env overrides for sandbox execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess("run-1c", target, "agent-cli", ["--json"], {
+      cwd: "/local/workspace",
+      env: {
+        PATH: "/custom/remote/bin:/usr/bin",
+        HOME: "/home/sandbox",
+        SAFE_VALUE: "visible",
+      },
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        PATH: "/custom/remote/bin:/usr/bin",
+        HOME: "/home/sandbox",
+        SAFE_VALUE: "visible",
+      },
     }));
   });
 
