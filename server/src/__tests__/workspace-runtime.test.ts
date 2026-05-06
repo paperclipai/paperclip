@@ -1459,14 +1459,17 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(operations.map((operation) => operation.phase)).toEqual([
       "worktree_prepare",
+      "worktree_prepare",
       "workspace_provision",
     ]);
-    expect(operations[0]?.command).toContain("git worktree add");
-    expect(operations[0]?.metadata).toMatchObject({
+    expect(operations[0]?.command).toBe("git fetch origin");
+    expect(operations[0]?.metadata).toMatchObject({ fetchOrigin: true });
+    expect(operations[1]?.command).toContain("git worktree add");
+    expect(operations[1]?.metadata).toMatchObject({
       branchName: "PAP-540-record-workspace-operations",
       created: true,
     });
-    expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
+    expect(operations[2]?.command).toBe("bash ./scripts/provision.sh");
   });
 
   it("truncates oversized provision command output before storing it in memory", async () => {
@@ -1847,6 +1850,214 @@ describe("realizeExecutionWorkspace", () => {
     expect(worktreeOp).toBeDefined();
     expect(worktreeOp!.metadata!.baseRef).toBe("master");
   }, 10_000);
+
+  it("fetches origin before branching a new worktree so the base ref is current", async () => {
+    // Set up a local repo + bare remote, push initial commit, then advance
+    // the remote independently so the local origin/master is stale.
+    // Provisioning a new worktree should fetch first and branch from the
+    // current remote tip, not the stale local copy.
+    // Using "master" (matching the auto-detect tests above) sidesteps
+    // init.defaultBranch portability issues across CI environments.
+    const repoRoot = await createTempRepo("master");
+    const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-fetch-"));
+    await runGit(bareRemote, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
+    await runGit(repoRoot, ["push", "-u", "origin", "master"]);
+    // The push above creates refs/heads/master on the bare repo but does not
+    // update its HEAD. Set HEAD explicitly so the subsequent `git clone`
+    // checks out master (otherwise it lands detached and the next push fails).
+    await runGit(bareRemote, ["symbolic-ref", "HEAD", "refs/heads/master"]);
+
+    // Advance the remote from a side clone so the local repo's origin/master
+    // remains pointing at the initial commit.
+    const sideClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-side-"));
+    await runGit(sideClone, ["clone", bareRemote, "."]);
+    await runGit(sideClone, ["config", "user.email", "side@example.com"]);
+    await runGit(sideClone, ["config", "user.name", "Side Author"]);
+    await fs.writeFile(path.join(sideClone, "DRIFT.md"), "advanced on remote\n", "utf8");
+    await runGit(sideClone, ["add", "DRIFT.md"]);
+    await runGit(sideClone, ["commit", "-m", "Advance remote master"]);
+    await runGit(sideClone, ["push", "origin", "master"]);
+    const remoteTip = (await execFileAsync("git", ["rev-parse", "master"], { cwd: sideClone })).stdout.trim();
+
+    // Sanity: the local repo has not seen the new commit yet.
+    const staleOriginMaster = (await execFileAsync("git", ["rev-parse", "origin/master"], { cwd: repoRoot })).stdout.trim();
+    expect(staleOriginMaster).not.toBe(remoteTip);
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "origin/master",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/master",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-fetch",
+        title: "Fetch before branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    // The fetch must be recorded, and must come before the worktree-add.
+    const fetchOpIndex = operations.findIndex(op => op.metadata?.fetchOrigin === true);
+    const worktreeOpIndex = operations.findIndex(op => op.metadata?.created === true);
+    expect(fetchOpIndex).toBeGreaterThanOrEqual(0);
+    expect(worktreeOpIndex).toBeGreaterThan(fetchOpIndex);
+
+    // The new worktree's HEAD should match the current remote tip — proof
+    // that we branched from the freshly-fetched ref, not the stale local one.
+    const worktreeHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
+    expect(worktreeHead).toBe(remoteTip);
+  }, 15_000);
+
+  it("proceeds with possibly-stale refs when fetch fails (best-effort)", async () => {
+    // No origin remote configured — git fetch origin will fail. Provisioning
+    // must still succeed using local refs, with a warning logged.
+    const repoRoot = await createTempRepo("main");
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "main",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-fetch-fail",
+        title: "Fetch failure tolerated",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.strategy).toBe("git_worktree");
+    expect(workspace.created).toBe(true);
+    // The fetch attempt should be recorded but its result was a failure.
+    const fetchOp = operations.find(op => op.metadata?.fetchOrigin === true);
+    expect(fetchOp).toBeDefined();
+    expect(fetchOp!.result.status).toBe("failed");
+  }, 10_000);
+
+  it("fetches origin when ensurePersistedExecutionWorkspaceAvailable recreates a missing branch", async () => {
+    // Persisted workspace exists in DB-like state, but both the worktree
+    // directory AND the branch are gone (e.g., disk wipe + branch deleted).
+    // Reattach via `git worktree add path branchName` will fail with
+    // "invalid reference", and the recreate fall-through must fetch origin
+    // before running `git worktree add -b branchName path baseRef`.
+    const repoRoot = await createTempRepo("main");
+    const branchName = "PAP-recreate-feature";
+
+    // First, realize a workspace so the worktree + branch exist as state we
+    // can later remove.
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: branchName,
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-recreate",
+        title: "Recreate missing branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    // Tear down both the worktree directory and the branch so the reattach
+    // path fails and the recreate fall-through fires.
+    await execFileAsync("git", ["worktree", "remove", "--force", initial.cwd], { cwd: repoRoot });
+    await execFileAsync("git", ["branch", "-D", branchName], { cwd: repoRoot });
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+        config: {},
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-recreate",
+        title: "Recreate missing branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(restored).not.toBeNull();
+    // Reattach attempt → fails. Fetch → recorded. Recreate (with -b) → succeeds.
+    const reattachOpIndex = operations.findIndex(
+      op => op.metadata?.restored === true && op.metadata?.created === false,
+    );
+    const fetchOpIndex = operations.findIndex(op => op.metadata?.fetchOrigin === true);
+    const recreateOpIndex = operations.findIndex(
+      op => op.metadata?.restored === true && op.metadata?.created === true,
+    );
+    expect(reattachOpIndex).toBeGreaterThanOrEqual(0);
+    expect(fetchOpIndex).toBeGreaterThan(reattachOpIndex);
+    expect(recreateOpIndex).toBeGreaterThan(fetchOpIndex);
+  }, 15_000);
 
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();
