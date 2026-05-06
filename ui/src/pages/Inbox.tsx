@@ -982,11 +982,23 @@ export function Inbox() {
   }, [executionWorkspaces]);
   const inboxWorkspaceGrouping = useMemo<InboxWorkspaceGroupingOptions>(
     () => ({
+      agentById,
       executionWorkspaceById,
       projectWorkspaceById,
       defaultProjectWorkspaceIdByProjectId,
+      projectById,
+      userLabelById: companyUserLabelMap,
+      currentUserId,
     }),
-    [defaultProjectWorkspaceIdByProjectId, executionWorkspaceById, projectWorkspaceById],
+    [
+      agentById,
+      companyUserLabelMap,
+      currentUserId,
+      defaultProjectWorkspaceIdByProjectId,
+      executionWorkspaceById,
+      projectById,
+      projectWorkspaceById,
+    ],
   );
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
@@ -1990,6 +2002,8 @@ export function Inbox() {
                 {([
                   ["none", "None"],
                   ["type", "Type"],
+                  ["assignee", "Assignee"],
+                  ["project", "Project"],
                   ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
                 ] as const).map(([value, label]) => (
                   <button
@@ -2122,7 +2136,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl bg-card">
+            <div ref={listRef} className="overflow-hidden rounded-xl">
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2436,6 +2450,55 @@ export function Inbox() {
                     const hasChildren = childIssues.length > 0;
                     const isExpanded = hasChildren && !collapsedInboxParents.has(issue.id);
                     const canArchiveIssue = canArchiveFromTab && group.searchSection === "none";
+                    const renderChildIssueRows = (
+                      children: Issue[],
+                      depth: number,
+                      seen: ReadonlySet<string>,
+                    ): ReactNode[] =>
+                      children.flatMap((child) => {
+                        if (seen.has(child.id)) return [];
+                        const nextSeen = new Set(seen);
+                        nextSeen.add(child.id);
+                        const childNavIdx = childFlatIndex.get(child.id) ?? -1;
+                        const isChildSelected = selectedIndex === childNavIdx;
+                        const grandchildIssues = group.childrenByIssueId.get(child.id) ?? [];
+                        const childHasChildren = grandchildIssues.length > 0;
+                        const childIsExpanded = childHasChildren && !collapsedInboxParents.has(child.id);
+                        const childRow = renderInboxIssue({
+                          issue: child,
+                          depth,
+                          selected: isChildSelected,
+                          hasChildren: childHasChildren,
+                          isExpanded: childIsExpanded,
+                          childCount: grandchildIssues.length,
+                          collapseParentId: child.id,
+                          allowArchive: canArchiveIssue,
+                        });
+                        const isChildArchiving = archivingIssueIds.has(child.id);
+                        const row = (
+                          <div
+                            key={`sel-issue:${child.id}`}
+                            data-inbox-item
+                            className="relative"
+                            onClick={() => setSelectedIndex(childNavIdx)}
+                          >
+                            {canArchiveIssue ? (
+                              <SwipeToArchive
+                                key={`issue:${child.id}`}
+                                selected={isChildSelected}
+                                disabled={isChildArchiving || archiveIssueMutation.isPending}
+                                onArchive={() => archiveIssueMutation.mutate(child.id)}
+                              >
+                                {childRow}
+                              </SwipeToArchive>
+                            ) : childRow}
+                          </div>
+                        );
+
+                        return childIsExpanded
+                          ? [row, ...renderChildIssueRows(grandchildIssues, depth + 1, nextSeen)]
+                          : [row];
+                      });
                     const parentRow = renderInboxIssue({
                       issue,
                       depth: 0,
@@ -2459,36 +2522,7 @@ export function Inbox() {
                     ) : parentRow));
 
                     if (isExpanded) {
-                      for (const child of childIssues) {
-                        const childNavIdx = childFlatIndex.get(child.id) ?? -1;
-                        const isChildSelected = selectedIndex === childNavIdx;
-                        const childRow = renderInboxIssue({
-                          issue: child,
-                          depth: 1,
-                          selected: isChildSelected,
-                          allowArchive: canArchiveIssue,
-                        });
-                        const isChildArchiving = archivingIssueIds.has(child.id);
-                        elements.push(
-                          <div
-                            key={`sel-issue:${child.id}`}
-                            data-inbox-item
-                            className="relative"
-                            onClick={() => setSelectedIndex(childNavIdx)}
-                          >
-                            {canArchiveIssue ? (
-                              <SwipeToArchive
-                                key={`issue:${child.id}`}
-                                selected={isChildSelected}
-                                disabled={isChildArchiving || archiveIssueMutation.isPending}
-                                onArchive={() => archiveIssueMutation.mutate(child.id)}
-                              >
-                                {childRow}
-                              </SwipeToArchive>
-                            ) : childRow}
-                          </div>,
-                        );
-                      }
+                      elements.push(...renderChildIssueRows(childIssues, 1, new Set([issue.id])));
                     }
                   }
 

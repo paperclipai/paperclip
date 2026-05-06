@@ -13,7 +13,6 @@ export interface SandboxRemoteExecutionSpec {
   remoteCwd: string;
   timeoutMs: number;
   apiKey: string | null;
-  paperclipApiUrl?: string | null;
 }
 
 export interface SandboxManagedRuntimeAsset {
@@ -27,6 +26,7 @@ export interface SandboxManagedRuntimeClient {
   makeDir(remotePath: string): Promise<void>;
   writeFile(remotePath: string, bytes: ArrayBuffer): Promise<void>;
   readFile(remotePath: string): Promise<Buffer | Uint8Array | ArrayBuffer>;
+  listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
   run(command: string, options: { timeoutMs: number }): Promise<void>;
 }
@@ -84,7 +84,6 @@ export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteEx
     remoteCwd,
     timeoutMs,
     apiKey: asString(parsed.apiKey).trim() || null,
-    paperclipApiUrl: asString(parsed.paperclipApiUrl).trim() || null,
   };
 }
 
@@ -95,7 +94,6 @@ export function buildSandboxExecutionSessionIdentity(spec: SandboxRemoteExecutio
     provider: spec.provider,
     sandboxId: spec.sandboxId,
     remoteCwd: spec.remoteCwd,
-    ...(spec.paperclipApiUrl ? { paperclipApiUrl: spec.paperclipApiUrl } : {}),
   } as const;
 }
 
@@ -107,8 +105,7 @@ export function sandboxExecutionSessionMatches(saved: unknown, current: SandboxR
     asString(parsedSaved.transport) === currentIdentity.transport &&
     asString(parsedSaved.provider) === currentIdentity.provider &&
     asString(parsedSaved.sandboxId) === currentIdentity.sandboxId &&
-    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd &&
-    asString(parsedSaved.paperclipApiUrl) === asString(currentIdentity.paperclipApiUrl)
+    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd
   );
 }
 

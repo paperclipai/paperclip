@@ -68,6 +68,7 @@ const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetMobileToolbar = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssuesListRender = vi.hoisted(() => vi.fn());
+const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -190,7 +191,25 @@ vi.mock("../components/InlineEditor", () => ({
 }));
 
 vi.mock("../components/IssueChatThread", () => ({
-  IssueChatThread: () => <div data-testid="issue-chat-thread">Chat thread</div>,
+  IssueChatThread: (props: {
+    onWorkModeChange?: (workMode: string) => void;
+    issueWorkMode?: string;
+    onStopRun?: (runId: string) => Promise<void>;
+    stopRunLabel?: string;
+    stoppingRunLabel?: string;
+  }) => {
+    mockIssueChatThreadRender(props);
+    return (
+      <div data-testid="issue-chat-thread">
+        Chat thread
+        {props.onStopRun ? (
+          <button type="button" onClick={() => void props.onStopRun?.("run-active-1")}>
+            {props.stopRunLabel ?? "Stop run"}
+          </button>
+        ) : null}
+      </div>
+    );
+  },
 }));
 
 vi.mock("../components/IssueDocumentsSection", () => ({
@@ -786,6 +805,7 @@ describe("IssueDetail", () => {
       feedbackDataSharingPreference: "prompt",
     });
     mockIssuesListRender.mockClear();
+    mockIssueChatThreadRender.mockClear();
   });
 
   afterEach(async () => {
@@ -1033,6 +1053,223 @@ describe("IssueDetail", () => {
       mode: "pause",
       reason: null,
       releasePolicy: { strategy: "manual", note: "full_pause" },
+    });
+  });
+
+  it("exposes leaf pause controls and routes issue active-run stop through Pause work", async () => {
+    const pausePreview = createPausePreview();
+    pausePreview.totals = {
+      ...pausePreview.totals,
+      totalIssues: 1,
+      affectedIssues: 1,
+      skippedIssues: 0,
+      activeRuns: 1,
+    };
+    pausePreview.issues = [pausePreview.issues[0]!];
+    pausePreview.skippedIssues = [];
+    const pauseHold = createPauseHold({
+      id: "leaf-pause-hold-1",
+      mode: "pause",
+      reason: "Paused from active run controls.",
+      releasePolicy: { strategy: "manual", note: "leaf_pause" },
+      members: [],
+    });
+
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+      executionRunId: "run-active-1",
+    }));
+    mockIssuesApi.previewTreeControl.mockResolvedValue(pausePreview);
+    mockIssuesApi.createTreeHold.mockResolvedValue({ hold: pauseHold, preview: pausePreview });
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      stopRunLabel: "Pause work",
+      stoppingRunLabel: "Pausing...",
+      issueWorkMode: "standard",
+    });
+
+    const chatPauseButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Pause work");
+    expect(chatPauseButton).toBeTruthy();
+
+    await act(async () => {
+      chatPauseButton!.click();
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
+      mode: "pause",
+      reason: "Paused from active run controls.",
+      releasePolicy: { strategy: "manual", note: "leaf_pause" },
+      metadata: { source: "issue_active_run_control", runId: "run-active-1" },
+    });
+
+    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    expect(moreButton).toBeTruthy();
+    await act(async () => {
+      moreButton!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await flushReact();
+
+    const pauseMenuButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Pause work...");
+    expect(pauseMenuButton).toBeTruthy();
+  });
+
+  it("passes planning work mode to the issue chat thread", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "planning" }));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      issueWorkMode: "planning",
+    });
+    expect(container.textContent).toContain("Planning");
+  });
+
+  it("forwards composer work mode changes to the issues API", async () => {
+    const issue = createIssue();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listAttachments.mockResolvedValue([
+      {
+        id: "attachment-1",
+        issueId: issue.id,
+        issueCommentId: null,
+        originalFilename: "planning-notes.txt",
+        contentPath: "/attachments/planning-notes.txt",
+        contentType: "text/plain",
+        byteSize: 4096,
+        uploadedByUserId: null,
+        uploadedAt: new Date("2026-04-21T00:02:00.000Z"),
+      },
+    ]);
+    localStorage.setItem("paperclip:issue-comment-draft:issue-1", "Draft follow-up message");
+    mockIssuesApi.update.mockResolvedValue(createIssue({ workMode: "planning" }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const lastChatThreadProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    expect(lastChatThreadProps?.issueWorkMode).toBe("standard");
+    expect(typeof lastChatThreadProps?.onWorkModeChange).toBe("function");
+
+    await act(async () => {
+      lastChatThreadProps?.onWorkModeChange?.("planning");
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "planning" });
+    expect(localStorage.getItem("paperclip:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
+    expect(container.textContent).toContain("planning-notes.txt");
+    localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
+  });
+
+  it("renders Paused by board distinctly and defaults leaf resume to wake the assignee", async () => {
+    const activeHold = createPauseHold();
+    const releasedHold = createPauseHold({
+      status: "released",
+      releasedAt: new Date("2026-04-21T00:01:00.000Z"),
+      releasedByActorType: "user",
+      releasedByUserId: "user-1",
+      releaseReason: "Ready to continue",
+      updatedAt: new Date("2026-04-21T00:01:00.000Z"),
+    });
+
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review",
+      assigneeAgentId: "agent-1",
+    }));
+    mockIssuesApi.getTreeControlState.mockResolvedValue({
+      activePauseHold: {
+        holdId: "hold-1",
+        rootIssueId: "issue-1",
+        issueId: "issue-1",
+        isRoot: true,
+        mode: "pause",
+        reason: null,
+        releasePolicy: { strategy: "manual", note: "leaf_pause" },
+      },
+    });
+    mockIssuesApi.listTreeHolds.mockResolvedValue([activeHold]);
+    mockIssuesApi.previewTreeControl.mockResolvedValue(createResumePreview());
+    mockIssuesApi.releaseTreeHold.mockResolvedValue(releasedHold);
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Paused by board.");
+      expect(container.textContent).toContain("in_review");
+      expect(container.textContent).not.toContain("Subtree pause is active.");
+    });
+
+    const resumeButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Resume work");
+    expect(resumeButton).toBeTruthy();
+
+    await act(async () => {
+      resumeButton!.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const wakeCheckbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+    expect(wakeCheckbox?.checked).toBe(true);
+
+    const applyResumeButton = Array.from(container.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Resume work")
+      .at(-1);
+    expect(applyResumeButton).toBeTruthy();
+
+    await act(async () => {
+      applyResumeButton!.click();
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.releaseTreeHold).toHaveBeenCalledWith("PAP-1", "hold-1", {
+      reason: null,
+      metadata: { wakeAgents: true },
     });
   });
 

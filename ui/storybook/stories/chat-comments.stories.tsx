@@ -84,6 +84,7 @@ function ScenarioCard({
 
 function createComment(overrides: Partial<StoryComment>): StoryComment {
   const createdAt = overrides.createdAt ?? new Date("2026-04-20T14:00:00.000Z");
+  const authorAgentId = overrides.authorAgentId ?? null;
   return {
     id: "comment-default",
     companyId,
@@ -91,6 +92,9 @@ function createComment(overrides: Partial<StoryComment>): StoryComment {
     authorAgentId: null,
     authorUserId: currentUserId,
     body: "",
+    authorType: authorAgentId ? "agent" : "user",
+    presentation: null,
+    metadata: null,
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
@@ -385,6 +389,42 @@ const issueChatComments: IssueChatComment[] = [
     runAgentId: codexAgent.id,
   }),
   createComment({
+    id: "comment-issue-system-warning",
+    authorType: "system",
+    authorAgentId: null,
+    authorUserId: null,
+    runId: "run-issue-chat-01",
+    runAgentId: codexAgent.id,
+    body: "Paperclip needs a disposition before this issue can continue.",
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Missing issue disposition",
+      detailsDefaultOpen: false,
+    },
+    metadata: {
+      version: 1,
+      sections: [
+        {
+          title: "Required action",
+          rows: [
+            { type: "issue_link", label: "Source issue", issueId: issueId, identifier: "PAP-3440", title: "Successful run handoff" },
+            { type: "agent_link", label: "Assignee", agentId: codexAgent.id, name: codexAgent.name },
+            { type: "key_value", label: "Status before", value: "in_progress" },
+          ],
+        },
+        {
+          title: "Run evidence",
+          rows: [
+            { type: "run_link", label: "Successful run", runId: "run-issue-chat-01", title: "succeeded" },
+            { type: "key_value", label: "Normalized cause", value: "Run completed without disposition" },
+          ],
+        },
+      ],
+    },
+    createdAt: new Date("2026-04-20T13:54:00.000Z"),
+  }),
+  createComment({
     id: "comment-issue-queued",
     body: "@QAChecker please do a quick visual pass after the Storybook build is green.",
     createdAt: new Date("2026-04-20T13:56:00.000Z"),
@@ -633,6 +673,26 @@ function IssueChatMatrix() {
               showJumpToLatest={false}
               enableLiveTranscriptPolling={false}
               composerDisabledReason="This issue is in review. Request changes or approve it from the review controls."
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Planning mode composer"
+            description="Issue is in planning mode. The composer turns amber and surfaces a Planning chip next to the paperclip — clicking it stages a Standard submission without immediately changing the issue mode."
+          >
+            <IssueChatThread
+              comments={[]}
+              timelineEvents={[]}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              issueWorkMode="planning"
+              onWorkModeChange={() => undefined}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              emptyMessage="Planning mode reply box example."
             />
           </ScenarioCard>
         </div>

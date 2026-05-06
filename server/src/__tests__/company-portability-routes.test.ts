@@ -49,6 +49,7 @@ vi.mock("../services/activity-log.js", () => ({
 
 vi.mock("../services/agents.js", () => ({
   agentService: () => mockAgentService,
+  documentService: () => ({}),
 }));
 
 vi.mock("../services/budgets.js", () => ({
@@ -70,6 +71,7 @@ vi.mock("../services/feedback.js", () => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  documentService: () => ({}),
   budgetService: () => mockBudgetService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
@@ -81,6 +83,7 @@ function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    documentService: () => ({}),
     budgetService: () => mockBudgetService,
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,

@@ -15,7 +15,7 @@ permissions:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     concurrency:
       group: docker-${{ github.ref }}
       cancel-in-progress: true
@@ -48,7 +48,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
