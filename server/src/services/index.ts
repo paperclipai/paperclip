@@ -45,7 +45,13 @@ export { companyPortabilityService } from "./company-portability.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { environmentService } from "./environments.js";
 export { workspaceOperationService } from "./workspace-operations.js";
-export { workProductService } from "./work-products.js";
+export {
+  workProductService,
+  clampDeliverableLimit,
+  DELIVERABLE_LIST_DEFAULT_LIMIT,
+  DELIVERABLE_LIST_MAX_LIMIT,
+  type ListDeliverablesOptions,
+} from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

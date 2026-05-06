@@ -1,7 +1,13 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueWorkProducts } from "@paperclipai/db";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import { issueWorkProducts, issues } from "@paperclipai/db";
+import {
+  type DeliverableDetail,
+  type DeliverableIssueRef,
+  type DeliverableListItem,
+  type IssueWorkProduct,
+  parseIssueArtifactWorkProductMetadata,
+} from "@paperclipai/shared";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 
@@ -186,7 +192,272 @@ export function workProductService(db: Db) {
         .then((rows) => rows[0] ?? null);
       return row ? toIssueWorkProduct(row) : null;
     },
+
+    listDeliverablesForCompany: async (
+      companyId: string,
+      opts: ListDeliverablesOptions = {},
+    ): Promise<DeliverableListItem[]> => {
+      const limit = clampDeliverableLimit(opts.limit);
+      const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+
+      const filters: SQL[] = [];
+      if (opts.projectId) filters.push(sql`wp.project_id = ${opts.projectId}`);
+      if (opts.agentId) filters.push(sql`a.id = ${opts.agentId}`);
+      if (opts.q && opts.q.trim().length > 0) {
+        const like = `%${opts.q.trim()}%`;
+        filters.push(sql`wp.title ILIKE ${like}`);
+      }
+      const extraWhere = filters.length > 0 ? sql` AND ${sql.join(filters, sql` AND `)}` : sql``;
+
+      const rows = await db.execute<DeliverableQueryRow>(sql`
+        WITH RECURSIVE seeds AS (
+          SELECT DISTINCT issue_id AS id
+          FROM issue_work_products
+          WHERE company_id = ${companyId} AND type = 'artifact'
+        ),
+        issue_chain AS (
+          SELECT s.id AS start_id, i.id AS current_id, i.parent_id, 0 AS depth
+          FROM seeds s
+          JOIN issues i ON i.id = s.id
+          UNION ALL
+          SELECT ic.start_id, p.id, p.parent_id, ic.depth + 1
+          FROM issue_chain ic
+          JOIN issues p ON p.id = ic.parent_id
+          WHERE ic.parent_id IS NOT NULL AND ic.depth < 50
+        ),
+        roots AS (
+          SELECT DISTINCT ON (start_id) start_id, current_id AS root_id
+          FROM issue_chain
+          WHERE parent_id IS NULL
+          ORDER BY start_id, depth DESC
+        )
+        SELECT
+          wp.id, wp.company_id, wp.project_id, wp.issue_id, wp.type, wp.provider,
+          wp.external_id, wp.title, wp.url, wp.status, wp.review_state, wp.is_primary,
+          wp.health_status, wp.summary, wp.metadata, wp.created_by_run_id,
+          wp.execution_workspace_id, wp.runtime_service_id,
+          wp.created_at, wp.updated_at,
+          ci.id AS ci_id, ci.identifier AS ci_identifier, ci.title AS ci_title, ci.status AS ci_status,
+          ri.id AS ri_id, ri.identifier AS ri_identifier, ri.title AS ri_title, ri.status AS ri_status,
+          a.id AS agent_id, a.name AS agent_name, a.icon AS agent_icon
+        FROM issue_work_products wp
+        JOIN issues ci ON ci.id = wp.issue_id
+        LEFT JOIN roots r ON r.start_id = wp.issue_id
+        LEFT JOIN issues ri ON ri.id = r.root_id
+        LEFT JOIN heartbeat_runs hr ON hr.id = wp.created_by_run_id
+        LEFT JOIN agents a ON a.id = hr.agent_id
+        WHERE wp.company_id = ${companyId}
+          AND wp.type = 'artifact'${extraWhere}
+        ORDER BY wp.created_at DESC, wp.id DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `);
+
+      const list: DeliverableListItem[] = [];
+      for (const row of toRowArray<DeliverableQueryRow>(rows)) {
+        const item = rowToDeliverableListItem(row);
+        if (item) list.push(item);
+      }
+      return list;
+    },
+
+    getDeliverableById: async (id: string): Promise<DeliverableDetail | null> => {
+      const rows = await db.execute<DeliverableQueryRow>(sql`
+        WITH RECURSIVE seeds AS (
+          SELECT issue_id AS id
+          FROM issue_work_products
+          WHERE id = ${id} AND type = 'artifact'
+        ),
+        issue_chain AS (
+          SELECT s.id AS start_id, i.id AS current_id, i.parent_id, 0 AS depth
+          FROM seeds s
+          JOIN issues i ON i.id = s.id
+          UNION ALL
+          SELECT ic.start_id, p.id, p.parent_id, ic.depth + 1
+          FROM issue_chain ic
+          JOIN issues p ON p.id = ic.parent_id
+          WHERE ic.parent_id IS NOT NULL AND ic.depth < 50
+        ),
+        roots AS (
+          SELECT DISTINCT ON (start_id) start_id, current_id AS root_id
+          FROM issue_chain
+          WHERE parent_id IS NULL
+          ORDER BY start_id, depth DESC
+        )
+        SELECT
+          wp.id, wp.company_id, wp.project_id, wp.issue_id, wp.type, wp.provider,
+          wp.external_id, wp.title, wp.url, wp.status, wp.review_state, wp.is_primary,
+          wp.health_status, wp.summary, wp.metadata, wp.created_by_run_id,
+          wp.execution_workspace_id, wp.runtime_service_id,
+          wp.created_at, wp.updated_at,
+          ci.id AS ci_id, ci.identifier AS ci_identifier, ci.title AS ci_title, ci.status AS ci_status,
+          ri.id AS ri_id, ri.identifier AS ri_identifier, ri.title AS ri_title, ri.status AS ri_status,
+          a.id AS agent_id, a.name AS agent_name, a.icon AS agent_icon
+        FROM issue_work_products wp
+        JOIN issues ci ON ci.id = wp.issue_id
+        LEFT JOIN roots r ON r.start_id = wp.issue_id
+        LEFT JOIN issues ri ON ri.id = r.root_id
+        LEFT JOIN heartbeat_runs hr ON hr.id = wp.created_by_run_id
+        LEFT JOIN agents a ON a.id = hr.agent_id
+        WHERE wp.id = ${id}
+        LIMIT 1
+      `);
+      const row = toRowArray<DeliverableQueryRow>(rows)[0];
+      if (!row) return null;
+      const base = rowToDeliverableListItem(row);
+      if (!base) return null;
+
+      // Walk the parent chain to produce the ordered ancestor list (nearest -> root).
+      const ancestors = await loadAncestorChain(db, base.childIssue.id);
+      return { ...base, ancestors };
+    },
   };
+}
+
+export const DELIVERABLE_LIST_DEFAULT_LIMIT = 50;
+export const DELIVERABLE_LIST_MAX_LIMIT = 200;
+
+export interface ListDeliverablesOptions {
+  limit?: number;
+  offset?: number;
+  projectId?: string;
+  agentId?: string;
+  q?: string;
+}
+
+export function clampDeliverableLimit(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DELIVERABLE_LIST_DEFAULT_LIMIT;
+  return Math.min(Math.floor(n), DELIVERABLE_LIST_MAX_LIMIT);
+}
+
+interface DeliverableQueryRow extends Record<string, unknown> {
+  id: string;
+  company_id: string;
+  project_id: string | null;
+  issue_id: string;
+  type: string;
+  provider: string;
+  external_id: string | null;
+  title: string;
+  url: string | null;
+  status: string;
+  review_state: string;
+  is_primary: boolean;
+  health_status: string;
+  summary: string | null;
+  metadata: Record<string, unknown> | null;
+  created_by_run_id: string | null;
+  execution_workspace_id: string | null;
+  runtime_service_id: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  ci_id: string;
+  ci_identifier: string | null;
+  ci_title: string;
+  ci_status: string;
+  ri_id: string | null;
+  ri_identifier: string | null;
+  ri_title: string | null;
+  ri_status: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
+  agent_icon: string | null;
+}
+
+function toRowArray<T>(result: unknown): T[] {
+  // drizzle-orm/postgres-js returns the array directly; node-postgres returns { rows }.
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === "object" && Array.isArray((result as { rows?: unknown[] }).rows)) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
+}
+
+function toIsoString(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function rowToDeliverableListItem(row: DeliverableQueryRow): DeliverableListItem | null {
+  const metadata = parseIssueArtifactWorkProductMetadata({
+    type: row.type as IssueWorkProduct["type"],
+    metadata: row.metadata,
+  });
+  if (!metadata) return null;
+
+  // Treat the child issue as the root only when there is no resolvable parent
+  // chain. The recursive CTE returns the same id for issues with no parent.
+  const rootIsSelf = row.ri_id == null || row.ri_id === row.ci_id;
+
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    projectId: row.project_id,
+    title: row.title,
+    summary: row.summary,
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
+    contentPath: metadata.contentPath,
+    contentType: metadata.contentType,
+    byteSize: metadata.byteSize,
+    originalFilename: metadata.originalFilename,
+    childIssue: {
+      id: row.ci_id,
+      identifier: row.ci_identifier,
+      title: row.ci_title,
+      status: row.ci_status,
+    },
+    rootIssue:
+      rootIsSelf || row.ri_id == null || row.ri_title == null || row.ri_status == null
+        ? null
+        : {
+            id: row.ri_id,
+            identifier: row.ri_identifier,
+            title: row.ri_title,
+            status: row.ri_status,
+          },
+    agent:
+      row.agent_id && row.agent_name
+        ? { id: row.agent_id, name: row.agent_name, icon: row.agent_icon }
+        : null,
+    runId: row.created_by_run_id,
+  };
+}
+
+async function loadAncestorChain(db: Db, startIssueId: string): Promise<DeliverableIssueRef[]> {
+  const chain: DeliverableIssueRef[] = [];
+  const visited = new Set<string>([startIssueId]);
+
+  const start = await db
+    .select({ parentId: issues.parentId })
+    .from(issues)
+    .where(eq(issues.id, startIssueId))
+    .then((rows) => rows[0] ?? null);
+  let currentId = start?.parentId ?? null;
+
+  while (currentId && !visited.has(currentId) && chain.length < 50) {
+    visited.add(currentId);
+    const parent = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        parentId: issues.parentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, currentId))
+      .then((rows) => rows[0] ?? null);
+    if (!parent) break;
+    chain.push({
+      id: parent.id,
+      identifier: parent.identifier ?? null,
+      title: parent.title,
+      status: parent.status,
+    });
+    currentId = parent.parentId ?? null;
+  }
+  return chain;
 }
 
 export { toIssueWorkProduct };

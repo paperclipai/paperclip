@@ -114,6 +114,12 @@ export {
   parseIssueArtifactWorkProductMetadata,
 } from "./work-product.js";
 export type {
+  DeliverableAgentRef,
+  DeliverableDetail,
+  DeliverableIssueRef,
+  DeliverableListItem,
+} from "./deliverable.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueReferenceSource,
