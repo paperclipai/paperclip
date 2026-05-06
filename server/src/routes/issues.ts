@@ -1291,15 +1291,16 @@ export function issueRoutes(
       updatedAfter = parsed;
     }
 
-    const includeAutoRaw = req.query.includeAutoOrigins as string | undefined;
-    const includeAutoOrigins = includeAutoRaw === "true" || includeAutoRaw === "1";
+    const includeRoutineRaw = req.query.includeRoutineExecutions as string | undefined;
+    const includeRoutineExecutions =
+      includeRoutineRaw === "true" || includeRoutineRaw === "1";
 
     const docs = await documentsSvc.listCompanyDocuments(companyId, {
       projectId: req.query.projectId as string | undefined,
       q: req.query.q as string | undefined,
       updatedAfter,
       limit: parsedLimit ?? undefined,
-      includeAutoOrigins,
+      includeRoutineExecutions,
     });
     res.json(docs);
   });

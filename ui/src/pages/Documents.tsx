@@ -37,7 +37,7 @@ interface DocsViewState {
   sortField: SortField;
   sortDir: SortDir;
   statuses: string[];
-  showAutoOrigins: boolean;
+  showRoutineExecutions: boolean;
   groupBy: GroupField;
   collapsedGroups: string[];
 }
@@ -46,7 +46,7 @@ const defaultViewState: DocsViewState = {
   sortField: "updated",
   sortDir: "desc",
   statuses: [],
-  showAutoOrigins: false,
+  showRoutineExecutions: false,
   groupBy: "none",
   collapsedGroups: [],
 };
@@ -195,9 +195,9 @@ export function Documents() {
     () => ({
       projectId: projectFilter === ALL_PROJECTS_VALUE ? undefined : projectFilter,
       q: deferredSearch.trim() || undefined,
-      includeAutoOrigins: viewState.showAutoOrigins || undefined,
+      includeRoutineExecutions: viewState.showRoutineExecutions || undefined,
     }),
-    [projectFilter, deferredSearch, viewState.showAutoOrigins],
+    [projectFilter, deferredSearch, viewState.showRoutineExecutions],
   );
 
   const { data: documents, isLoading, error } = useQuery({
@@ -340,12 +340,12 @@ export function Documents() {
               <button
                 type="button"
                 onClick={() =>
-                  updateView({ showAutoOrigins: !viewState.showAutoOrigins })
+                  updateView({ showRoutineExecutions: !viewState.showRoutineExecutions })
                 }
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent/50"
               >
-                <Checkbox checked={viewState.showAutoOrigins} className="pointer-events-none" />
-                <span>Show auto-generated docs</span>
+                <Checkbox checked={viewState.showRoutineExecutions} className="pointer-events-none" />
+                <span>Show routine docs</span>
               </button>
             </div>
             {activeFilterCount > 0 && (
@@ -459,8 +459,8 @@ export function Documents() {
           message={
             committedSearch || projectFilter !== ALL_PROJECTS_VALUE || activeFilterCount > 0
               ? "No documents match the current filters."
-              : !viewState.showAutoOrigins
-                ? "No documents from manual issues. Auto-generated docs (routines, productivity reviews, recovery) are hidden — use the filter to include them."
+              : !viewState.showRoutineExecutions
+                ? "No documents. Routine-spawned docs are hidden — use the filter to include them."
                 : "No documents yet. Documents created on issues will show up here."
           }
         />

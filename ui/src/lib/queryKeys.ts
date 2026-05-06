@@ -38,7 +38,7 @@ export const queryKeys = {
         q?: string;
         updatedAfter?: string;
         limit?: number;
-        includeAutoOrigins?: boolean;
+        includeRoutineExecutions?: boolean;
       },
     ) =>
       [
@@ -48,7 +48,7 @@ export const queryKeys = {
         filters?.q ?? "",
         filters?.updatedAfter ?? "",
         filters?.limit ?? "__no-limit__",
-        filters?.includeAutoOrigins ? "include-auto" : "manual-only",
+        filters?.includeRoutineExecutions ? "include-routine" : "no-routine",
       ] as const,
   },
   issues: {

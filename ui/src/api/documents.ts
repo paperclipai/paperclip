@@ -8,8 +8,8 @@ export interface CompanyDocumentsListFilters {
   updatedAfter?: string;
   /** Server caps at 200; default is 50. */
   limit?: number;
-  /** Default false — server only returns docs whose issue has originKind=manual. */
-  includeAutoOrigins?: boolean;
+  /** Default false — server hides docs whose issue has originKind=routine_execution. */
+  includeRoutineExecutions?: boolean;
 }
 
 export const documentsApi = {
@@ -23,7 +23,7 @@ export const documentsApi = {
     if (filters?.q) params.set("q", filters.q);
     if (filters?.updatedAfter) params.set("updatedAfter", filters.updatedAfter);
     if (filters?.limit) params.set("limit", String(filters.limit));
-    if (filters?.includeAutoOrigins) params.set("includeAutoOrigins", "true");
+    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     const qs = params.toString();
     return api.get<CompanyDocumentListItem[]>(
       `/companies/${companyId}/documents${qs ? `?${qs}` : ""}`,

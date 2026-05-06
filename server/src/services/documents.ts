@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues, projects } from "@paperclipai/db";
 import type { CompanyDocumentListItem, IssueOriginKind, IssueStatus } from "@paperclipai/shared";
@@ -194,7 +194,7 @@ export function documentService(db: Db) {
         q?: string;
         updatedAfter?: Date;
         limit?: number;
-        includeAutoOrigins?: boolean;
+        includeRoutineExecutions?: boolean;
       } = {},
     ): Promise<CompanyDocumentListItem[]> => {
       const limit = Math.min(
@@ -203,8 +203,8 @@ export function documentService(db: Db) {
       );
 
       const conditions = [eq(issueDocuments.companyId, companyId)];
-      if (!filters.includeAutoOrigins) {
-        conditions.push(eq(issues.originKind, "manual"));
+      if (!filters.includeRoutineExecutions) {
+        conditions.push(ne(issues.originKind, "routine_execution"));
       }
       if (filters.projectId) {
         conditions.push(eq(issues.projectId, filters.projectId));

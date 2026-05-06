@@ -103,7 +103,7 @@ describe("GET /companies/:companyId/documents", () => {
       q: undefined,
       updatedAfter: undefined,
       limit: undefined,
-      includeAutoOrigins: false,
+      includeRoutineExecutions: false,
     });
   });
 
@@ -116,7 +116,7 @@ describe("GET /companies/:companyId/documents", () => {
         q: "wirex",
         updatedAfter: "2026-04-20T00:00:00Z",
         limit: "25",
-        includeAutoOrigins: "true",
+        includeRoutineExecutions: "true",
       });
 
     expect(mockDocumentsService.listCompanyDocuments).toHaveBeenCalledWith(companyId, {
@@ -124,7 +124,7 @@ describe("GET /companies/:companyId/documents", () => {
       q: "wirex",
       updatedAfter: new Date("2026-04-20T00:00:00Z"),
       limit: 25,
-      includeAutoOrigins: true,
+      includeRoutineExecutions: true,
     });
   });
 
