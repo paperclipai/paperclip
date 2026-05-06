@@ -43,7 +43,9 @@ function registerRouteMocks() {
       getById: vi.fn(),
     }),
     companyService: () => mockCompanyService,
-    documentService: () => ({}),
+    documentService: () => ({
+      getIssueDocumentByKey: vi.fn(async () => null),
+    }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),

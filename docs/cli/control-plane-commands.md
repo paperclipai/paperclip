@@ -23,12 +23,24 @@ pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."
 # Add comment
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
 
+# Draft or attach a mission contract document
+pnpm paperclipai issue mission:draft --request "..." --scope route:/trips --acceptance "..."
+pnpm paperclipai issue mission:upsert <issue-id> --request "..." --scope route:/trips --acceptance "..."
+
+# Append structured gate evidence
+pnpm paperclipai issue evidence:append <issue-id> --id prod-smoke-1 --gate-id production-smoke --gate-type production_smoke --url "Production=https://app.example.com" --screenshot "desktop=.paperclip/artifacts/prod.png"
+
 # Checkout task
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id>
 
 # Release task
 pnpm paperclipai issue release <issue-id>
 ```
+
+Mission commands write the reserved `mission` issue document. `--scope` and `--acceptance`
+are repeatable, and `--gates` defaults to `implementation,review,qa,release,production_smoke`.
+Evidence commands write the reserved `evidence_records` issue document so gate proof is
+machine-checkable.
 
 ## Company Commands
 
@@ -61,7 +73,12 @@ pnpm paperclipai company import \
 ```sh
 pnpm paperclipai agent list
 pnpm paperclipai agent get <agent-id>
+pnpm paperclipai agent snapshot --company-id <company-id> --out agents.snapshot.json
+pnpm paperclipai agent snapshot --company-id <company-id> --compare agents.snapshot.json
 ```
+
+`agent snapshot` writes a redacted agent/org configuration fixture and can compare live
+company agents against that fixture to detect drift.
 
 ## Approval Commands
 

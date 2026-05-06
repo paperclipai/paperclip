@@ -1,6 +1,10 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  MISSION_CONTRACT_DOCUMENT_KEY,
+  formatMissionContractDocumentBody,
+} from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
@@ -283,6 +287,49 @@ describe.sequential("issue goal context routes", () => {
     expect(res.body.continuationSummary).toEqual(expect.objectContaining({
       key: "continuation-summary",
       body: "# Handoff",
+    }));
+  });
+
+  it("surfaces parsed mission contracts in GET /issues/:id/heartbeat-context", async () => {
+    const missionBody = formatMissionContractDocumentBody({
+      version: 1,
+      request: "Ensure /belly-trip creates the couple itinerary and pins",
+      scope: ["route:/belly-trip", "route:/trips"],
+      acceptanceCriteria: [
+        "Generated itinerary appears in /trips",
+        "Map pins render for planned stops",
+      ],
+      requiredGates: ["implementation", "review", "qa", "release", "production_smoke"],
+      boardDecisions: [],
+    });
+    mockDocumentsService.getIssueDocumentByKey.mockImplementation(async (_issueId: string, key: string) => {
+      if (key !== MISSION_CONTRACT_DOCUMENT_KEY) return null;
+      return {
+        key: MISSION_CONTRACT_DOCUMENT_KEY,
+        title: "Mission Contract",
+        body: missionBody,
+        latestRevisionId: "mission-revision-1",
+        latestRevisionNumber: 1,
+        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+      };
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockDocumentsService.getIssueDocumentByKey).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      MISSION_CONTRACT_DOCUMENT_KEY,
+    );
+    expect(res.body.missionDocument).toEqual(expect.objectContaining({
+      key: MISSION_CONTRACT_DOCUMENT_KEY,
+      latestRevisionId: "mission-revision-1",
+    }));
+    expect(res.body.missionContract).toEqual(expect.objectContaining({
+      request: "Ensure /belly-trip creates the couple itinerary and pins",
+      donePolicy: "all_required_gates_passed",
     }));
   });
 

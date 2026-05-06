@@ -8,10 +8,12 @@ const {
   ensureCommandResolvable,
   resolveCommandForLogs,
   prepareWorkspaceForSshExecution,
+  readPaperclipRuntimeSkillEntries,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  prepareOpenCodeRuntimeConfig,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]) => {
     if (args.includes("models")) {
@@ -46,6 +48,7 @@ const {
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: opencode"),
   prepareWorkspaceForSshExecution: vi.fn(async () => undefined),
+  readPaperclipRuntimeSkillEntries: vi.fn(async () => []),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({
     stdout: "/home/agent",
@@ -61,6 +64,16 @@ const {
     },
     stop: async () => {},
   })),
+  prepareOpenCodeRuntimeConfig: vi.fn(async ({ env }: { env: Record<string, string> }) => ({
+    env: {
+      ...env,
+      XDG_CONFIG_HOME: "/tmp/paperclip-opencode-config-test",
+    },
+    notes: [
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    ],
+    cleanup: async () => undefined,
+  })),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -70,6 +83,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   return {
     ...actual,
     ensureCommandResolvable,
+    readPaperclipRuntimeSkillEntries,
     resolveCommandForLogs,
     runChildProcess,
   };
@@ -97,6 +111,10 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
     startAdapterExecutionTargetPaperclipBridge,
   };
 });
+
+vi.mock("./runtime-config.js", () => ({
+  prepareOpenCodeRuntimeConfig,
+}));
 
 import { execute } from "./execute.js";
 

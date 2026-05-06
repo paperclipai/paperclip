@@ -8,7 +8,11 @@ import {
   issueDocuments,
   issues,
 } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import {
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  MISSION_CONTRACT_DOCUMENT_KEY,
+  formatMissionContractDocumentBody,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -111,5 +115,32 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
       body: "# Handoff",
     }));
+  });
+
+  it("parses mission contracts into the issue document payload", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    await svc.upsertIssueDocument({
+      issueId,
+      key: MISSION_CONTRACT_DOCUMENT_KEY,
+      title: "Mission Contract",
+      format: "markdown",
+      body: formatMissionContractDocumentBody({
+        version: 1,
+        request: "Ensure /belly-trip creates a correct couple itinerary with pins",
+        scope: ["route:/belly-trip", "route:/trips"],
+        acceptanceCriteria: ["Generated trip appears in /trips"],
+        requiredGates: ["implementation", "review", "qa", "release", "production_smoke"],
+        boardDecisions: [],
+      }),
+    });
+
+    const payload = await svc.getIssueDocumentPayload({ id: issueId, description: null });
+
+    expect(payload.missionDocument?.key).toBe(MISSION_CONTRACT_DOCUMENT_KEY);
+    expect(payload.missionContract).toEqual(expect.objectContaining({
+      request: "Ensure /belly-trip creates a correct couple itinerary with pins",
+      donePolicy: "all_required_gates_passed",
+    }));
+    expect(payload.missionContractError).toBeNull();
   });
 });

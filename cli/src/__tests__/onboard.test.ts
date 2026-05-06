@@ -85,6 +85,8 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    delete process.env.PAPERCLIP_DISABLE_TAILNET_AUTODETECT;
   });
 
   afterEach(() => {
@@ -141,6 +143,7 @@ describe("onboard", () => {
   it("keeps tailnet quickstart on loopback until tailscale is available", async () => {
     const configPath = createFreshConfigPath();
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    process.env.PAPERCLIP_DISABLE_TAILNET_AUTODETECT = "1";
 
     await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
 
