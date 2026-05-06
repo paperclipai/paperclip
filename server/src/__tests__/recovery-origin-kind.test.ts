@@ -8,7 +8,7 @@ import {
   heartbeatRuns,
   issues,
   issueRelations,
-  activityLogs,
+  activityLog,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -28,7 +28,7 @@ vi.mock("../telemetry.ts", () => ({
 }));
 
 vi.mock("../middleware/logger.ts", () => ({
-  log: {
+  logger: {
     info: vi.fn(),
     error: vi.fn(),
     warn: vi.fn(),
@@ -145,19 +145,6 @@ describeEmbeddedPostgres("declarable origin kinds in recovery flows", () => {
     const issueId = randomUUID();
     const runId = randomUUID();
 
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Transient intent issue",
-      status: "in_progress",
-      priority: "medium",
-      assigneeAgentId: coderId,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
-      originKind: "intent:test",
-      executionRunId: runId,
-    });
-
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -174,6 +161,19 @@ describeEmbeddedPostgres("declarable origin kinds in recovery flows", () => {
       logBytes: 0,
     });
 
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Transient intent issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      originKind: "intent:test",
+      executionRunId: runId,
+    });
+
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
     
     const result = await recovery.reconcileStrandedAssignedIssues();
@@ -184,7 +184,7 @@ describeEmbeddedPostgres("declarable origin kinds in recovery flows", () => {
     const [updated] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated?.status).toBe("cancelled");
 
-    const logs = await db.select().from(activityLogs).where(eq(activityLogs.entityId, issueId));
+    const logs = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
     expect(logs.length).toBeGreaterThan(0);
     const cancelLog = logs.find((l) => (l.details as any)?.source === "recovery.silent_cancel_declarable_origin");
     expect(cancelLog).toBeDefined();
@@ -223,7 +223,8 @@ describeEmbeddedPostgres("declarable origin kinds in recovery flows", () => {
     });
 
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
-    const result = await recovery.getIssueGraphLivenessAutoRecoveryPreview(companyId);
+
+    const result = await recovery.buildIssueGraphLivenessAutoRecoveryPreview();
     
     // We don't really care about the auto recovery preview, but we do care about the findings query
     const dbFindings = await db.select().from(issues).where(eq(issues.companyId, companyId));
@@ -231,7 +232,7 @@ describeEmbeddedPostgres("declarable origin kinds in recovery flows", () => {
     // We expect `collectIssueGraphLivenessFindings` to not return declarableIssueId, 
     // so we can test it directly if exported, or via the `reconcileIssueGraphLiveness` or similar method
     // Wait, collectIssueGraphLivenessFindings is internal. Let's run reconcileIssueGraphLiveness
-    const reconcileResult = await recovery.reconcileIssueGraphLiveness();
+    const reconcileResult = await recovery.reconcileIssueGraphLiveness({ force: true, lookbackHours: 24 * 7 });
     
     // Since normal issue is blocked but doesn't have blockers in issueRelations, it should show up
     // as "blocked_by_unassigned_issue" or similar based on liveness classifier.

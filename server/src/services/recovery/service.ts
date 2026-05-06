@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, not, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -1795,6 +1795,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      if (isAgentDeclarableOriginKind(issue.originKind)) {
+        if (latestRun && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(latestRun.status as any)) {
+          await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as any,
+            latestRun,
+            comment: "Paperclip detected failure in a transient orchestrator issue. Silently cancelling.",
+          });
+          result.skipped += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -2036,11 +2050,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(
           and(
+            notInArray(issues.status, ["done", "cancelled"]),
             isNull(issues.hiddenAt),
             notInArray(issues.originKind, [
               RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
               ...AGENT_DECLARABLE_ORIGIN_KINDS,
             ]),
+            not(like(issues.originKind, "skill:%")),
+            not(like(issues.originKind, "intent:%")),
+            not(like(issues.originKind, "plugin:%")),
           ),
         ),
       db
@@ -2087,6 +2105,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
               ...AGENT_DECLARABLE_ORIGIN_KINDS,
             ]),
+            not(like(issues.originKind, "skill:%")),
+            not(like(issues.originKind, "intent:%")),
+            not(like(issues.originKind, "plugin:%")),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
           ),
         ),
