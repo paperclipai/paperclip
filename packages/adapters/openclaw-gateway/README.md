@@ -70,3 +70,26 @@ Structured gateway event logs use:
 - `[openclaw-gateway:event] run=<id> stream=<stream> data=<json>` for `event agent` frames
 
 UI/CLI parsers consume these lines to render transcript updates.
+
+## Multi-Organization Session Isolation
+
+When a single Paperclip instance manages multiple organizations through one OpenClaw gateway, each agent wake request includes a `sessionKey` (format: `agent:<agent-id>:<context>`) to isolate sessions per agent.
+
+By default, the OpenClaw gateway ignores this field and routes all requests into a shared default session. To enable per-agent session isolation, the following must be set in the gateway's `openclaw.json`:
+
+```json
+{
+  "hooks": {
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": ["agent:", "hook:"]
+  }
+}
+```
+
+Without this configuration, multi-organization deployments will appear to work but sessions will not be isolated — all agents across all organizations share a single session context.
+
+## Gateway Schema Compatibility
+
+The adapter builds `agentParams` as the gateway request body. OpenClaw's `AgentParamsSchema` enforces `additionalProperties: false`, so only known fields are accepted: `message`, `sessionKey`, `idempotencyKey`, `agentId`, `timeout`.
+
+The `includePaperclipPayload` adapter config option (default: `false`) controls whether the full Paperclip context payload is included in `agentParams.paperclip`. Only enable this if your gateway has been configured to accept the `paperclip` property.
