@@ -497,6 +497,9 @@ describe("applyFreshSessionPolicyToWakeContext", () => {
     const result = applyFreshSessionPolicyToWakeContext({
       source: "scheduler",
       reason: "interval_elapsed",
+      issueId: "BRAA-755",
+      taskId: "BRAA-755",
+      taskKey: "BRAA-755",
       resumeSessionDisplayId: "session-1",
     });
 
@@ -573,6 +576,38 @@ describe("comment wake batching", () => {
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
+  });
+
+  it("re-sanitizes coalesced generic timer wakes so stale session and task fields cannot survive the merge", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        wakeSource: "on_demand",
+        wakeReason: "issue_commented",
+        issueId: "BRAA-755",
+        taskId: "BRAA-755",
+        taskKey: "BRAA-755",
+        resumeFromRunId: "run-1",
+        resumeSessionDisplayId: "session-1",
+        resumeSessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/workspace",
+        },
+      },
+      {
+        wakeSource: "timer",
+        wakeReason: "heartbeat_timer",
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    );
+
+    expect(merged).toEqual({
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      source: "scheduler",
+      reason: "interval_elapsed",
+      forceFreshSession: true,
+    });
   });
 });
 

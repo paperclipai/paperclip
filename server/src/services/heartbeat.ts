@@ -6547,8 +6547,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return null;
         }
 
-        enrichedContextSnapshot.treeHoldInteraction = true;
-        enrichedContextSnapshot.activeTreeHold = {
+        wakeContextSnapshot.treeHoldInteraction = true;
+        wakeContextSnapshot.activeTreeHold = {
           holdId: activePauseHold.holdId,
           rootIssueId: activePauseHold.rootIssueId,
           mode: activePauseHold.mode,
@@ -6768,13 +6768,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          allowsIssueInteractionWake(wakeContextSnapshot);
 
         if (blockedInteractionWake) {
-          enrichedContextSnapshot.dependencyBlockedInteraction = true;
-          enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
-          enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
-          enrichedContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
+          wakeContextSnapshot.dependencyBlockedInteraction = true;
+          wakeContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
+          wakeContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
+          wakeContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
             tx,
             issue.companyId,
             issue.id,
@@ -6815,7 +6815,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
           const shouldQueueFollowupForRunningWake =
-            shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
+            shouldQueueFollowupForRunningIssueWake({ contextSnapshot: wakeContextSnapshot, wakeCommentId }) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
 
@@ -6856,7 +6856,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const deferredPayload = {
             ...(payload ?? {}),
             issueId,
-            [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
+            [DEFERRED_WAKE_CONTEXT_KEY]: wakeContextSnapshot,
           };
 
           const existingDeferred = await tx
@@ -7005,7 +7005,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQueueFollowupForRunningWake =
       Boolean(sameScopeRunningRun) &&
       !sameScopeQueuedRun &&
-      shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId });
+      shouldQueueFollowupForRunningIssueWake({ contextSnapshot: wakeContextSnapshot, wakeCommentId });
 
     const coalescedTargetRun =
       sameScopeQueuedRun ??

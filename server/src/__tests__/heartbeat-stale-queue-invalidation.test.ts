@@ -223,6 +223,47 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     return { runId, wakeupRequestId };
   }
 
+  async function seedRunningRun(input: {
+    companyId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown>;
+    invocationSource?: "timer" | "assignment" | "automation" | "on_demand";
+  }) {
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: input.invocationSource ?? "on_demand",
+      triggerDetail: "system",
+      reason: readReason(input.contextSnapshot),
+      payload: null,
+      status: "coalesced",
+      finishedAt: new Date(),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: input.invocationSource ?? "on_demand",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId,
+      contextSnapshot: input.contextSnapshot,
+      startedAt: new Date(),
+    });
+    return { runId, wakeupRequestId };
+  }
+
+  function readReason(contextSnapshot: Record<string, unknown>) {
+    return typeof contextSnapshot.wakeReason === "string"
+      ? contextSnapshot.wakeReason
+      : typeof contextSnapshot.reason === "string"
+        ? contextSnapshot.reason
+        : null;
+  }
+
   it("cancels queued runs when the issue assignee changes before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
     const replacementAgentId = randomUUID();
@@ -343,6 +384,53 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBe("issue_terminal_status");
     expect(wakeup?.status).toBe("skipped");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("re-sanitizes coalesced generic timer wakes before persisting merged run context", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { runId } = await seedRunningRun({
+      companyId,
+      agentId,
+      contextSnapshot: {
+        wakeSource: "on_demand",
+        wakeReason: "issue_commented",
+        issueId: "BRAA-755",
+        taskId: "BRAA-755",
+        taskKey: "BRAA-755",
+        resumeFromRunId: "run-1",
+        resumeSessionDisplayId: "019d4bda-8818-7c70-a35d-58cc17eafce2",
+        resumeSessionParams: {
+          sessionId: "019d4bda-8818-7c70-a35d-58cc17eafce2",
+          cwd: "/tmp/stale-workspace",
+        },
+      },
+    });
+
+    const coalesced = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(coalesced?.id).toBe(runId);
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.contextSnapshot).toEqual({
+      wakeSource: "timer",
+      wakeReason: "heartbeat_timer",
+      source: "scheduler",
+      reason: "interval_elapsed",
+      forceFreshSession: true,
+    });
   });
 
   it("cancels queued in_review runs when the current participant changes before the run starts", async () => {
