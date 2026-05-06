@@ -74,7 +74,9 @@ describeEmbeddedPostgres("per-issue recovery rate limit", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedIssueWithRecentRuns(runCount: number) {
+  async function seedInProgressIssueWithRecentRecoveryRuns(
+    retryReasons: Array<"assignment_recovery" | "issue_continuation_needed">,
+  ) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -109,13 +111,14 @@ describeEmbeddedPostgres("per-issue recovery rate limit", () => {
     });
 
     // Seed runs within the last 5 minutes
-    for (let i = 0; i < runCount; i++) {
-      const createdAt = new Date(Date.now() - (runCount - i) * 30_000);
+    for (let i = 0; i < retryReasons.length; i++) {
+      const createdAt = new Date(Date.now() - (retryReasons.length - i) * 30_000);
       await db.insert(heartbeatRuns).values({
         id: randomUUID(),
         companyId,
         agentId,
         status: "succeeded",
+        livenessState: "advanced",
         invocationSource: "automation",
         triggerDetail: "system",
         startedAt: createdAt,
@@ -123,7 +126,7 @@ describeEmbeddedPostgres("per-issue recovery rate limit", () => {
         createdAt,
         contextSnapshot: {
           issueId,
-          retryReason: "issue_continuation_needed",
+          retryReason: retryReasons[i],
         },
         logBytes: 0,
       });
@@ -132,13 +135,19 @@ describeEmbeddedPostgres("per-issue recovery rate limit", () => {
     return { companyId, agentId, issueId };
   }
 
-  it("trips rate limit, escalates to blocked, and pauses agent after 5 enqueues in window", async () => {
-    const { issueId, agentId } = await seedIssueWithRecentRuns(5);
+  async function seedInProgressIssueWithRecentContinuationRuns(runCount: number) {
+    return seedInProgressIssueWithRecentRecoveryRuns(Array(runCount).fill("issue_continuation_needed"));
+  }
+
+  it("trips the continuation-path rate limit, escalates to blocked, and pauses agent after 5 enqueues in window", async () => {
+    const { issueId, agentId } = await seedInProgressIssueWithRecentContinuationRuns(5);
     const enqueueWakeup = vi.fn();
     const recovery = recoveryService(db, { enqueueWakeup });
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
     expect(result.rateLimitTripped).toBe(1);
     expect(result.continuationRequeued).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
@@ -159,7 +168,29 @@ describeEmbeddedPostgres("per-issue recovery rate limit", () => {
   });
 
   it("does not trip when fewer than 5 enqueues in window", async () => {
-    const { issueId } = await seedIssueWithRecentRuns(4);
+    const { issueId } = await seedInProgressIssueWithRecentContinuationRuns(4);
+    const enqueueWakeup = vi.fn().mockResolvedValue({ id: randomUUID() });
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.rateLimitTripped).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
+  });
+
+  it("does not count assignment recovery runs against the continuation rate limit", async () => {
+    const { issueId } = await seedInProgressIssueWithRecentRecoveryRuns([
+      "assignment_recovery",
+      "assignment_recovery",
+      "assignment_recovery",
+      "assignment_recovery",
+      "issue_continuation_needed",
+    ]);
     const enqueueWakeup = vi.fn().mockResolvedValue({ id: randomUUID() });
     const recovery = recoveryService(db, { enqueueWakeup });
 

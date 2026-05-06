@@ -120,6 +120,7 @@ describeEmbeddedPostgres("continuation cycle cap", () => {
         companyId,
         agentId,
         status: "succeeded",
+        livenessState: "advanced",
         invocationSource: "automation",
         triggerDetail: "system",
         startedAt: createdAt,

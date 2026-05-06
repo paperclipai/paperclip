@@ -53,7 +53,6 @@ const ISSUE_RECOVERY_RATE_WINDOW_MS = 5 * 60 * 1000;
 const ISSUE_RECOVERY_RATE_CAP = 5;
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
-const ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_MIN_STALE_MS = 24 * 60 * 60 * 1000;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
@@ -429,6 +428,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     companyId: string,
     agentId: string,
     issueId: string,
+    retryReason: "assignment_recovery" | "issue_continuation_needed",
     windowMs: number,
   ) {
     const since = new Date(Date.now() - windowMs);
@@ -440,7 +440,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' IN ('assignment_recovery', 'issue_continuation_needed')`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = ${retryReason}`,
           gt(heartbeatRuns.createdAt, since),
         ),
       );
@@ -1868,6 +1868,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           issue.companyId,
           agentId,
           issue.id,
+          "assignment_recovery",
           ISSUE_RECOVERY_RATE_WINDOW_MS,
         );
         if (assignmentEnqueueCount >= ISSUE_RECOVERY_RATE_CAP) {
@@ -1912,74 +1913,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      if (isSuccessfulInProgressContinuationRun(latestRun)) {
-        const successfulRun = latestRun;
 
-        if (!isProductiveContinuationRun(successfulRun)) {
-          result.successfulContinuationObserved += 1;
-          result.skipped += 1;
-          continue;
-        }
-
-        if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "in_progress",
-            latestRun: successfulRun,
-            comment:
-              "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-              "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
-          continue;
-        }
-
-        if (await isInvocationBudgetBlocked(issue, agentId)) {
-          result.skipped += 1;
-          continue;
-        }
-
-        const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
-          agentId,
-          reason: "issue_continuation_needed",
-          retryReason: "issue_continuation_needed",
-          source: "issue.productive_terminal_continuation_recovery",
-          retryOfRunId: successfulRun.id,
-        });
-        if (queued) {
-          result.continuationRequeued += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
-        }
-        continue;
-      }
-      if (didAutomaticRecoveryExhaust(latestRun, "issue_continuation_needed")) {
-        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
-        const updated = await escalateStrandedAssignedIssue({
-          issue,
-          previousStatus: "in_progress",
-          latestRun,
-          comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
-            "Moving it to `blocked` so it is visible for intervention.",
-        });
-        if (updated) {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
-        }
-        continue;
-      }
-
+      // Recovery-loop caps must run before the productive-continuation
+      // branch below: a productive succeeded continuation run that has
+      // already churned the per-issue rate-limit, daily-cap, or
+      // consecutive-cycle thresholds is itself the loop the caps are
+      // designed to break. Evaluating productivity first would re-enqueue
+      // the very loop the caps are meant to stop, since the productive
+      // branch returns before reaching the cap checks.
       if (await hasExhaustedConsecutiveContinuationCycles(issue.companyId, issue.id, issue.updatedAt)) {
         const updated = await escalateStrandedAssignedIssue({
           issue,
@@ -2046,6 +1987,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue.companyId,
         agentId,
         issue.id,
+        "issue_continuation_needed",
         ISSUE_RECOVERY_RATE_WINDOW_MS,
       );
       if (continuationEnqueueCount >= ISSUE_RECOVERY_RATE_CAP) {
@@ -2057,6 +1999,74 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (didEscalate) {
           result.rateLimitTripped += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      if (isSuccessfulInProgressContinuationRun(latestRun)) {
+        const successfulRun = latestRun;
+
+        if (!isProductiveContinuationRun(successfulRun)) {
+          result.successfulContinuationObserved += 1;
+          result.skipped += 1;
+          continue;
+        }
+
+        if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+              "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (await isInvocationBudgetBlocked(issue, agentId)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const queued = await enqueueStrandedIssueRecovery({
+          issueId: issue.id,
+          agentId,
+          reason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.productive_terminal_continuation_recovery",
+          retryOfRunId: successfulRun.id,
+        });
+        if (queued) {
+          result.continuationRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (didAutomaticRecoveryExhaust(latestRun, "issue_continuation_needed")) {
+        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
+            "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;
