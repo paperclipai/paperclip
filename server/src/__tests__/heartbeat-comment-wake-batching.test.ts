@@ -186,9 +186,9 @@ describe("heartbeat comment wake batching", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
-      source: "scheduler",
+      source: "timer",
       triggerDetail: "system",
-      reason: "interval_elapsed",
+      reason: "heartbeat_timer",
       contextSnapshot: {
         source: "scheduler",
         reason: "interval_elapsed",
@@ -251,7 +251,7 @@ describe("heartbeat comment wake batching", () => {
       id: runId,
       companyId,
       agentId,
-      invocationSource: "scheduler",
+      invocationSource: "timer",
       triggerDetail: "system",
       status: "queued",
       contextSnapshot: {
@@ -267,9 +267,9 @@ describe("heartbeat comment wake batching", () => {
     });
 
     const mergedRun = await heartbeat.wakeup(agentId, {
-      source: "scheduler",
+      source: "timer",
       triggerDetail: "system",
-      reason: "interval_elapsed",
+      reason: "heartbeat_timer",
       contextSnapshot: {
         source: "scheduler",
         reason: "interval_elapsed",
