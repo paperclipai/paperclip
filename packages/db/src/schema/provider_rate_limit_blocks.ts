@@ -1,4 +1,5 @@
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const providerRateLimitBlocks = pgTable(
@@ -21,5 +22,8 @@ export const providerRateLimitBlocks = pgTable(
       .on(table.companyId, table.adapterType),
     companyAdapterResolvedIdx: index("provider_rate_limit_blocks_resolved_idx")
       .on(table.companyId, table.adapterType, table.resolvedAt),
+    activeBlockUq: uniqueIndex("provider_rate_limit_blocks_active_idx")
+      .on(table.companyId, table.adapterType, table.limitKind, sql`COALESCE(${table.modelFamily}, '')`)
+      .where(sql`${table.resolvedAt} IS NULL`),
   }),
 );
