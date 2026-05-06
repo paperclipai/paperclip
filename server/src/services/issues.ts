@@ -1857,6 +1857,13 @@ export function issueService(db: Db) {
       }
 
       applyStatusSideEffects(issueData.status, patch);
+      if (issueData.status === "blocked" && !issueData.blockReason) {
+        patch.blockReason =
+          blockedByIssueIds !== undefined && blockedByIssueIds.length > 0 ? "upstream" : "manual";
+      }
+      if (issueData.status && issueData.status !== "blocked") {
+        patch.blockReason = null;
+      }
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }

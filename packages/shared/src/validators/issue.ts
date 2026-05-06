@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  ISSUE_BLOCK_REASONS,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
@@ -123,6 +124,7 @@ export const createIssueSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  blockReason: z.enum(ISSUE_BLOCK_REASONS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),

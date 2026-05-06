@@ -421,6 +421,13 @@
       "when": 1776542246000,
       "tag": "0059_plugin_database_namespaces",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1746579161000,
+      "tag": "0060_block_reason",
+      "breakpoints": true
     }
   ]
 }

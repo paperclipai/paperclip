@@ -3630,6 +3630,7 @@ export function heartbeatService(db: Db) {
   }) {
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      blockReason: "stale_heartbeat",
     });
     if (!updated) return null;
 
