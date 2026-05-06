@@ -167,6 +167,7 @@ function MonitorSurfaceStories() {
             <IssueProperties
               issue={baseIssue}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>
@@ -180,6 +181,7 @@ function MonitorSurfaceStories() {
             <IssueProperties
               issue={monitoredIssue}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>
@@ -193,6 +195,7 @@ function MonitorSurfaceStories() {
             <IssueProperties
               issue={triggeredIssue}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>
@@ -206,6 +209,7 @@ function MonitorSurfaceStories() {
             <IssueProperties
               issue={clearedIssue}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>

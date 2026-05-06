@@ -19,6 +19,13 @@ import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { isViewerActiveExecutionParticipant } from "../lib/issue-execution-state";
+
+// Statuses to disable on the StatusIcon dropdown when the viewer is the active
+// executionPolicy participant — the gate handles those transitions because they
+// require a comment in the same PATCH body. Other statuses (e.g. cancelled)
+// stay reachable.
+const STATUS_GATE_DISABLED = ["done", "in_progress"] as const;
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -1832,6 +1839,15 @@ export function IssueDetail() {
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
+  const handleExecutionDecisionSubmit = useCallback(
+    async (input: { status: "done" | "in_progress"; comment: string }) => {
+      // Single PATCH so the server's commentRequired guard at
+      // server/src/services/issue-execution-policy.ts is satisfied. The mutation's
+      // existing onError handler shows a toast; the gate also surfaces err.message inline.
+      await updateIssue.mutateAsync(input);
+    },
+    [updateIssue.mutateAsync],
+  );
 
   const updateChildIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
@@ -2573,12 +2589,14 @@ export function IssueDetail() {
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
+        onSubmitExecutionDecision={handleExecutionDecisionSubmit}
       />
     );
     return () => closePanel();
   }, [
     closePanel,
     handleIssuePropertiesUpdate,
+    handleExecutionDecisionSubmit,
     issuePanelKey,
     openNewSubIssue,
     openPanel,
@@ -3204,6 +3222,16 @@ export function IssueDetail() {
           <StatusIcon
             status={issue.status}
             blockerAttention={issue.blockerAttention}
+            disabledStatuses={
+              isViewerActiveExecutionParticipant({
+                issueStatus: issue.status,
+                executionState: issue.executionState,
+                currentUserId: currentUserId ?? null,
+              })
+                ? STATUS_GATE_DISABLED
+                : undefined
+            }
+            disabledStatusReason="Use the approval form in the properties panel to advance this stage."
             onChange={(status) => updateIssue.mutate({ status })}
           />
           <PriorityIcon
@@ -4047,6 +4075,7 @@ export function IssueDetail() {
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
+                onSubmitExecutionDecision={handleExecutionDecisionSubmit}
                 inline
               />
             </div>

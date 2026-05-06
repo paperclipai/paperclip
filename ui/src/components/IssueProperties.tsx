@@ -24,6 +24,8 @@ import {
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { deriveExecutionGateView } from "../lib/issue-execution-state";
+import { ExecutionPolicyGate } from "./ExecutionPolicyGate";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { formatMonitorOffset } from "../lib/issue-monitor";
 import { formatRetryReason } from "../lib/runRetryState";
@@ -142,6 +144,15 @@ interface IssuePropertiesProps {
   childIssues?: Issue[];
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
+  /**
+   * Async submit for execution-stage decisions. Required so the gate can
+   * surface PATCH rejections inline (e.g. stage drift 422). The caller is
+   * expected to wrap a mutation's mutateAsync.
+   */
+  onSubmitExecutionDecision: (input: {
+    status: "done" | "in_progress";
+    comment: string;
+  }) => Promise<void>;
   inline?: boolean;
 }
 
@@ -378,6 +389,7 @@ export function IssueProperties({
   childIssues = [],
   onAddSubIssue,
   onUpdate,
+  onSubmitExecutionDecision,
   inline,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
@@ -842,6 +854,23 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  // ExecutionPolicyGate is rendered when the viewer is the active stage participant
+  // (kind === "self") OR — to deduplicate copy with currentExecutionLabel — when the
+  // policy is in pending review/approval and someone else is the participant.
+  const executionGateView = deriveExecutionGateView({
+    issueStatus: issue.status,
+    executionState: issue.executionState,
+    currentUserId: currentUserId ?? null,
+    agentName,
+    userLabel,
+  });
+  const handleExecutionDecisionSubmit = useCallback(
+    async ({ decision, comment }: { decision: "approve" | "request_changes"; comment: string }) => {
+      const status = decision === "approve" ? "done" : "in_progress";
+      await onSubmitExecutionDecision({ status, comment });
+    },
+    [onSubmitExecutionDecision],
+  );
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
     setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
@@ -1955,11 +1984,22 @@ export function IssueProperties({
         </PropertyPicker>
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
-        {currentExecutionLabel && (
+        {executionGateView.kind === "self" ? (
+          // Render outside PropertyRow so the gate spans the full panel width:
+          // PropertyRow's 80px label column would otherwise crowd the textarea
+          // and button row in the sidebar. The gate's own heading carries the
+          // stage context that the row label would normally provide.
+          <div className="py-1.5">
+            <ExecutionPolicyGate
+              view={executionGateView}
+              onSubmitDecision={handleExecutionDecisionSubmit}
+            />
+          </div>
+        ) : currentExecutionLabel ? (
           <PropertyRow label="Execution">
             <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
-        )}
+        ) : null}
 
         {showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker
