@@ -26,7 +26,6 @@ interface SecretProvidersOptions extends BaseClientOptions {
 interface SecretCreateOptions extends BaseClientOptions {
   companyId?: string;
   name: string;
-  value?: string;
   valueStdin?: boolean;
   provider?: string;
   description?: string;
@@ -34,7 +33,6 @@ interface SecretCreateOptions extends BaseClientOptions {
 }
 
 interface SecretRotateOptions extends BaseClientOptions {
-  value?: string;
   valueStdin?: boolean;
   externalRef?: string;
 }
@@ -144,11 +142,10 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secret
       .command("create")
-      .description("Create a new secret. Pass value via --value-stdin to avoid shell history.")
+      .description("Create a new secret. The value is read from stdin via --value-stdin to keep it out of process argv and shell history.")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .requiredOption("--name <name>", "Secret name (env var key)")
-      .option("--value <value>", "Secret value (prefer --value-stdin)")
-      .option("--value-stdin", "Read secret value from stdin")
+      .requiredOption("--value-stdin", "Read secret value from stdin (the only supported channel)")
       .option("--provider <provider>", "Secret provider (local_encrypted, aws_secrets_manager, gcp_secret_manager, vault)")
       .option("--description <text>", "Description")
       .option("--external-ref <ref>", "External reference (for non-local providers)")
@@ -156,15 +153,12 @@ export function registerSecretCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
 
-          if (opts.value !== undefined && opts.valueStdin) {
-            throw new Error("Pass either --value or --value-stdin, not both.");
+          if (!opts.valueStdin) {
+            throw new Error("--value-stdin is required. Pipe the secret value on stdin.");
           }
-          let value = opts.value;
-          if (opts.valueStdin) {
-            value = await readStdinValue();
-          }
-          if (value === undefined || value.length === 0) {
-            throw new Error("A non-empty secret value is required (use --value or --value-stdin).");
+          const value = await readStdinValue();
+          if (value.length === 0) {
+            throw new Error("Secret value read from stdin was empty.");
           }
 
           const payload: Record<string, unknown> = { name: opts.name, value };
@@ -188,24 +182,20 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secret
       .command("rotate")
-      .description("Rotate a secret to a new value. Prefer --value-stdin.")
+      .description("Rotate a secret to a new value. The new value is read from stdin via --value-stdin to keep it out of process argv and shell history.")
       .argument("<secretId>", "Secret ID")
-      .option("--value <value>", "New value (prefer --value-stdin)")
-      .option("--value-stdin", "Read new value from stdin")
+      .requiredOption("--value-stdin", "Read new value from stdin (the only supported channel)")
       .option("--external-ref <ref>", "Updated external reference")
       .action(async (secretId: string, opts: SecretRotateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
 
-          if (opts.value !== undefined && opts.valueStdin) {
-            throw new Error("Pass either --value or --value-stdin, not both.");
+          if (!opts.valueStdin) {
+            throw new Error("--value-stdin is required. Pipe the new secret value on stdin.");
           }
-          let value = opts.value;
-          if (opts.valueStdin) {
-            value = await readStdinValue();
-          }
-          if (value === undefined || value.length === 0) {
-            throw new Error("A non-empty rotation value is required (use --value or --value-stdin).");
+          const value = await readStdinValue();
+          if (value.length === 0) {
+            throw new Error("Rotation value read from stdin was empty.");
           }
 
           const payload: Record<string, unknown> = { value };

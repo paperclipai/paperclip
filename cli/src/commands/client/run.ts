@@ -49,15 +49,6 @@ interface WorkspaceOperationLogOptions extends BaseClientOptions {
 
 const WATCHDOG_DECISIONS = ["snooze", "continue", "dismissed_false_positive"] as const;
 
-function parseIntOpt(value: string | undefined, name: string): number | undefined {
-  if (value === undefined) return undefined;
-  const n = Number(value);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
-    throw new Error(`--${name} must be a non-negative integer`);
-  }
-  return n;
-}
-
 function isoOrThrow(value: string, name: string): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) {
@@ -378,9 +369,9 @@ export function registerRunCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+}
 
-  // Workspace operation log lives at /api/workspace-operations/:id/log,
-  // logically grouped here since it's the per-operation log for run actions.
+export function registerWorkspaceOperationCommands(program: Command): void {
   const workspaceOp = program
     .command("workspace-operation")
     .description("Workspace operation observability");
@@ -409,7 +400,4 @@ export function registerRunCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
-
-  // Suppress unused warning if parseIntOpt isn't called in this file revision.
-  void parseIntOpt;
 }

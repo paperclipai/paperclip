@@ -30,7 +30,10 @@ import { registerEnvironmentCommands } from "./commands/client/environment.js";
 import { registerCostCommands } from "./commands/client/cost.js";
 import { registerFinanceCommands } from "./commands/client/finance.js";
 import { registerBudgetCommands } from "./commands/client/budget.js";
-import { registerRunCommands } from "./commands/client/run.js";
+import {
+  registerRunCommands,
+  registerWorkspaceOperationCommands,
+} from "./commands/client/run.js";
 import { registerRoutineClientCommands } from "./commands/client/routine.js";
 import { registerExecutionWorkspaceCommands } from "./commands/client/execution-workspace.js";
 import { registerAdapterCommands } from "./commands/client/adapter.js";
@@ -182,6 +185,7 @@ registerCostCommands(program);
 registerFinanceCommands(program);
 registerBudgetCommands(program);
 registerRunCommands(program);
+registerWorkspaceOperationCommands(program);
 registerRoutineClientCommands(program);
 registerExecutionWorkspaceCommands(program);
 registerAdapterCommands(program);
