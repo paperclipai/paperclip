@@ -102,3 +102,5 @@ CREATE INDEX IF NOT EXISTS "builder_proposals_company_idx" ON "builder_proposals
 CREATE INDEX IF NOT EXISTS "builder_proposals_session_idx" ON "builder_proposals" USING btree ("session_id");
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "builder_proposals_company_status_idx" ON "builder_proposals" USING btree ("company_id","status");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "builder_proposals_approval_id_idx" ON "builder_proposals" USING btree ("approval_id") WHERE "approval_id" IS NOT NULL;

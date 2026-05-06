@@ -3499,6 +3499,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "builder_proposals_approval_id_idx": {
+          "name": "builder_proposals_approval_id_idx",
+          "columns": [
+            {
+              "expression": "approval_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"builder_proposals\".\"approval_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {

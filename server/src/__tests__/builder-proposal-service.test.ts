@@ -168,7 +168,7 @@ describe("proposalService", () => {
     expect((result as { status: string } | null)?.status).toBe("rejected");
   });
 
-  it("treats failed concurrent re-fetches as a no-op instead of surfacing a 500", async () => {
+  it("surfaces failed concurrent re-fetches without marking the proposal failed", async () => {
     const apply = vi.fn(async () => ({ summary: "ran", entityId: "ent-1", entityType: "thing" }));
     const tool = defineMutationTool({
       name: "concurrent_thing",
@@ -196,6 +196,7 @@ describe("proposalService", () => {
       .fn()
       .mockResolvedValueOnce(mockProposals.get("p4"))
       .mockRejectedValueOnce(new Error("transient read failure"));
+    const markFailed = vi.fn();
     const txDb = {
       __builderProposalStoreOverrides: {
         markApplied: vi.fn(async () => null),
@@ -204,14 +205,17 @@ describe("proposalService", () => {
     const mockDb = {
       __builderProposalStoreOverrides: {
         getById: outerGetById,
+        markFailed,
       },
       transaction: vi.fn(async (fn) => fn(txDb)),
     } as unknown as Db;
 
     const svc = proposalService(mockDb);
-    const result = await svc.apply(companyId, "p4", "user-1");
+    await expect(svc.apply(companyId, "p4", "user-1")).rejects.toThrow(
+      "concurrent apply: could not fetch current proposal",
+    );
 
-    expect(result).toBeNull();
+    expect(markFailed).not.toHaveBeenCalled();
   });
 
   it("preserves the original applier error when markFailed also fails", async () => {

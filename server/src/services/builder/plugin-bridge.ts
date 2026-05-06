@@ -23,9 +23,9 @@ import type {
  * the host doesn't know the semantic shape of arbitrary plugin actions.
  * Plugin authors that need governed, board-approved mutations should expose
  * those tools on the **agent** surface and rely on the existing Approvals
- * flow there. The `requiresApproval` field in the manifest is propagated to
- * the Builder UI so operators can see which tools self-declare as
- * side-effecting and scrutinise them before invoking.
+ * flow there. Builder intentionally hides plugin tools that declare
+ * `requiresApproval`, because the builder runtime cannot convert arbitrary
+ * plugin side effects into native `builder_proposals`.
  */
 
 let _dispatcher: PluginToolDispatcher | null = null;
@@ -42,6 +42,7 @@ export function getPluginBuilderTools(_db: Db): BuilderTool[] {
 
   for (const tool of registry.listTools()) {
     if (!tool.surfaces?.includes("builder")) continue;
+    if (tool.requiresApproval) continue;
 
     const dispatcher = _dispatcher;
     tools.push({

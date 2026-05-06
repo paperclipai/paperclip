@@ -91,7 +91,18 @@ export function proposalService(db: Db) {
             // Concurrent race — transaction rolled back, re-fetch the current proposal
             wonRace = false;
             result = null; // Clear stale result from rolled-back apply
-            return store.getById(companyId, proposalId).catch(() => null);
+            try {
+              const current = await store.getById(companyId, proposalId);
+              if (!current) {
+                throw new Error("proposal missing after concurrent apply");
+              }
+              return current;
+            } catch (refetchErr) {
+              throw Object.assign(
+                new Error("concurrent apply: could not fetch current proposal"),
+                { concurrentRefetch: true, cause: refetchErr },
+              );
+            }
           }
           throw err; // Re-throw non-concurrent errors
         });
@@ -123,7 +134,9 @@ export function proposalService(db: Db) {
           { proposalId, kind: proposal.kind, err },
           "builder proposal apply failed",
         );
-        await markFailedBestEffort(proposalId, decidedByUserId, reason);
+        if (!(err && typeof err === "object" && "concurrentRefetch" in err)) {
+          await markFailedBestEffort(proposalId, decidedByUserId, reason);
+        }
         throw err;
       }
     },

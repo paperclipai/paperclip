@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 /**
@@ -111,6 +112,9 @@ export const builderProposals = pgTable(
     companyIdx: index("builder_proposals_company_idx").on(table.companyId),
     sessionIdx: index("builder_proposals_session_idx").on(table.sessionId),
     statusIdx: index("builder_proposals_company_status_idx").on(table.companyId, table.status),
+    approvalIdIdx: index("builder_proposals_approval_id_idx")
+      .on(table.approvalId)
+      .where(sql`${table.approvalId} IS NOT NULL`),
   }),
 );
 

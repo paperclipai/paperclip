@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { setBuilderPluginBridge } from "../services/builder/plugin-bridge.js";
 import { runBuilderTurn } from "../services/builder/runner.js";
 import {
   _resetBuilderToolExtensions,
+  getBuilderToolCatalog,
   registerBuilderTool,
 } from "../services/builder/tool-registry.js";
 import type { BuilderTool } from "../services/builder/types.js";
@@ -88,6 +90,7 @@ const config = {
 
 afterEach(() => {
   _resetBuilderToolExtensions();
+  setBuilderPluginBridge(null);
   vi.restoreAllMocks();
 });
 
@@ -307,5 +310,37 @@ describe("builder tool registry", () => {
       error:
         "Plugin builder tools that require approval cannot run directly. Expose them through the agent surface or remove requiresApproval.",
     });
+  });
+
+  it("omits approval-gated plugin tools from the builder catalog", () => {
+    setBuilderPluginBridge({
+      getRegistry: () => ({
+        listTools: () => [
+          {
+            pluginId: "example",
+            namespacedName: "example:safe_plugin_read",
+            name: "safe_plugin_read",
+            description: "",
+            parametersSchema: { type: "object" },
+            surfaces: ["builder"],
+            requiresApproval: false,
+          },
+          {
+            pluginId: "example",
+            namespacedName: "example:dangerous_plugin_write",
+            name: "dangerous_plugin_write",
+            description: "",
+            parametersSchema: { type: "object" },
+            surfaces: ["builder"],
+            requiresApproval: true,
+          },
+        ],
+      }),
+    } as never);
+
+    const catalog = getBuilderToolCatalog({} as Db);
+
+    expect(catalog.has("plugin.example.safe_plugin_read")).toBe(true);
+    expect(catalog.has("plugin.example.dangerous_plugin_write")).toBe(false);
   });
 });
