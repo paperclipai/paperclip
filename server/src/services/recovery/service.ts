@@ -579,6 +579,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           "- Next action: resolve this blocker or reassign it to the right owner.",
         ].join("\n"),
         {},
+        {
+          authorType: "system",
+          presentation: {
+            kind: "system_notice",
+            tone: "warning",
+            title: "Assigned orphan blocker",
+            detailsDefaultOpen: false,
+          },
+        },
       );
 
       await logActivity(db, {
@@ -2617,6 +2626,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue.id,
       buildLivenessOriginalIssueComment(input.finding, escalation),
       { runId: input.runId ?? null },
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Issue graph liveness escalation",
+          detailsDefaultOpen: false,
+        },
+      },
     );
 
     await logActivity(db, {
