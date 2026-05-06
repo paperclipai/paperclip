@@ -12,12 +12,9 @@ app.ops.binelek.io {
 	# Validate the session JWT minted by ops-portal on Vercel.
 	# Cookie name: jaban_session  Domain: .binelek.io  Algorithm: HS256
 	jwtauth {
-		sign_key    {$SESSION_JWT_SECRET}
-		sign_alg    HS256
+		sign_key     {$SESSION_JWT_SECRET}
+		sign_alg     HS256
 		from_cookies jaban_session
-		issuer_allow ops-portal-vercel
-		audience_allow paperclip-ops-caddy
-		user_claims  email sub
 	}
 
 	# Missing or invalid token → redirect to Vercel login

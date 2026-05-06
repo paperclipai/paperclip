@@ -17,8 +17,9 @@ export async function GET(): Promise<NextResponse> {
   try {
     const session = await requireOperatorSession();
 
-    const email = session.user.email ?? '';
-    const sub = (session.user as { id?: string }).id ?? email;
+    const user = session.user ?? {};
+    const email = ('email' in user ? (user as { email?: string | null }).email : null) ?? '';
+    const sub = ('id' in user ? (user as { id?: string }).id : undefined) ?? email;
 
     const jwt = await mintCaddyJwt({
       email,
