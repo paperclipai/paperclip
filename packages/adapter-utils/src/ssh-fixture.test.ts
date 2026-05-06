@@ -14,6 +14,7 @@ import {
   syncDirectoryToSsh,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
+  WorkspaceImportConflictError,
 } from "./ssh.js";
 
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -307,5 +308,119 @@ describe("ssh env-lab fixture", () => {
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     expect(await git(localRepo, ["status", "--short"])).toContain("M tracked.txt");
     expect(await git(localRepo, ["status", "--short"])).not.toContain("._tracked.txt");
+  });
+
+  // BLO-1497: stale files at incoming paths used to crash the import with
+  // "Cannot open: File exists" and strand the next adapter run. The remote
+  // tar extract now passes --overwrite, so two consecutive syncs over the
+  // same destination must succeed.
+  it("overwrites pre-existing files when re-syncing into the same remote workspace", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping SSH overwrite-on-import test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-overlay");
+
+    await mkdir(path.join(localDir, "release-eng-tmp", "magma-blo-1475", "orc8r", "cloud", "go", "serde"), {
+      recursive: true,
+    });
+    await writeFile(path.join(localDir, "tracked.txt"), "first run\n", "utf8");
+    await writeFile(
+      path.join(localDir, "release-eng-tmp", "magma-blo-1475", "orc8r", "cloud", "go", "serde", "doc.go"),
+      "// first run\n",
+      "utf8",
+    );
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remoteDir = path.posix.join(started.workspaceDir, "overlay-overwrite");
+
+    await syncDirectoryToSsh({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      localDir,
+      remoteDir,
+    });
+
+    await writeFile(path.join(localDir, "tracked.txt"), "second run\n", "utf8");
+    await writeFile(
+      path.join(localDir, "release-eng-tmp", "magma-blo-1475", "orc8r", "cloud", "go", "serde", "doc.go"),
+      "// second run\n",
+      "utf8",
+    );
+
+    await syncDirectoryToSsh({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      localDir,
+      remoteDir,
+    });
+
+    const result = await runSshCommand(
+      config,
+      `sh -lc 'cat ${JSON.stringify(path.posix.join(remoteDir, "tracked.txt"))} && cat ${JSON.stringify(path.posix.join(remoteDir, "release-eng-tmp/magma-blo-1475/orc8r/cloud/go/serde/doc.go"))}'`,
+    );
+    expect(result.stdout).toContain("second run");
+    expect(result.stdout).toContain("// second run");
+    expect(result.stdout).not.toContain("first run");
+  });
+
+  // BLO-1497: when the remote already has a non-empty directory at the path
+  // the incoming archive wants to occupy with a regular file, --overwrite
+  // cannot unlink the directory. The import must surface a structured
+  // WorkspaceImportConflictError carrying the offending path(s) so the
+  // recovery owner can act in one heartbeat instead of inspecting the run
+  // log.
+  it("raises WorkspaceImportConflictError on a file-vs-dir path conflict", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping SSH import-conflict test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-overlay");
+
+    // Local has a *file* at "conflict"; we will pre-seed the remote with a
+    // non-empty *directory* at the same path so the regular-file extract
+    // cannot reconcile the type mismatch.
+    await mkdir(localDir, { recursive: true });
+    await writeFile(path.join(localDir, "conflict"), "from local\n", "utf8");
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remoteDir = path.posix.join(started.workspaceDir, "overlay-conflict");
+
+    const remoteConflictDir = path.posix.join(remoteDir, "conflict");
+    await runSshCommand(
+      config,
+      `sh -lc 'mkdir -p ${JSON.stringify(path.posix.join(remoteConflictDir, "child"))} && printf "blocker\\n" > ${JSON.stringify(path.posix.join(remoteConflictDir, "child", "leftover.txt"))}'`,
+    );
+
+    let caught: unknown;
+    try {
+      await syncDirectoryToSsh({
+        spec: { ...config, remoteCwd: started.workspaceDir },
+        localDir,
+        remoteDir,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(WorkspaceImportConflictError);
+    const conflict = caught as WorkspaceImportConflictError;
+    expect(conflict.code).toBe("workspace_import_conflict");
+    expect(conflict.paths.length).toBeGreaterThan(0);
+    expect(conflict.paths.some((entry) => entry.includes("conflict"))).toBe(true);
   });
 });

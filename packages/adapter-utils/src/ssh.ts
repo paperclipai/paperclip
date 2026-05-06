@@ -16,6 +16,54 @@ export interface SshConnectionConfig {
   strictHostKeyChecking: boolean;
 }
 
+/**
+ * Thrown when the remote tar extract during workspace import hits a path it
+ * cannot reconcile (file-vs-dir or symlink conflict that --overwrite cannot
+ * resolve). Carries the offending paths so the orchestrator can re-emit as
+ * `EnvironmentRunError("workspace_import_conflict", { paths })` for the
+ * recovery owner without parsing logs. See BLO-1497.
+ */
+export class WorkspaceImportConflictError extends Error {
+  readonly code = "workspace_import_conflict" as const;
+  readonly paths: string[];
+  readonly stderr: string;
+
+  constructor(input: { paths: string[]; stderr: string; remoteDir: string }) {
+    const preview = input.paths.slice(0, 3).join(", ");
+    const suffix = input.paths.length > 3 ? `, +${input.paths.length - 3} more` : "";
+    super(
+      `Workspace import into ${input.remoteDir} hit ${input.paths.length} unrecoverable path conflict${input.paths.length === 1 ? "" : "s"}: ${preview}${suffix}`,
+    );
+    this.name = "WorkspaceImportConflictError";
+    this.paths = input.paths;
+    this.stderr = input.stderr;
+  }
+}
+
+const TAR_CONFLICT_PATH_PATTERNS: RegExp[] = [
+  /tar:\s+(?<path>[^:]+):\s+Cannot open:\s+(?:File exists|Is a directory|Not a directory|Permission denied)\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot mkdir:\s+File exists\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot create symlink to .*:\s+File exists\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot hard link to .*:\s+File exists\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot create directory:\s+(?:Not a directory|File exists)\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot unlink:\s+(?:Is a directory|Permission denied|Directory not empty)\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot rmdir:\s+(?:Directory not empty|Permission denied)\.?/g,
+];
+
+export function extractTarConflictPaths(stderr: string): string[] {
+  if (!stderr) return [];
+  const seen = new Set<string>();
+  for (const pattern of TAR_CONFLICT_PATH_PATTERNS) {
+    for (const match of stderr.matchAll(pattern)) {
+      const raw = match.groups?.path ?? match[1];
+      if (!raw) continue;
+      const trimmed = raw.trim().replace(/^\.\//, "");
+      if (trimmed.length > 0) seen.add(trimmed);
+    }
+  }
+  return [...seen];
+}
+
 export interface SshCommandResult {
   stdout: string;
   stderr: string;
@@ -939,12 +987,24 @@ export async function syncDirectoryToSsh(input: {
   followSymlinks?: boolean;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
+  // --overwrite keeps the remote extract idempotent when the destination
+  // already has files at incoming paths. Without it, leftover scratch from a
+  // prior run (e.g. release-eng-tmp/) crashes the extract with "Cannot open:
+  // File exists" and strands the next adapter run. See BLO-1497. --overwrite
+  // alone resolves the file-over-file case driving the bug; we do not pair
+  // --overwrite-dir because no flag will let tar clobber a non-empty
+  // directory with a regular file. Those genuine type-mismatch collisions
+  // still error and surface through WorkspaceImportConflictError below so
+  // the recovery owner sees the offending path. We also force LC_ALL=C on
+  // the remote so tar emits English error strings — extractTarConflictPaths
+  // matches on those signatures, and a localised host (LANG=de_DE etc.)
+  // would otherwise silently fail to surface as workspace_import_conflict.
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
+    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && LC_ALL=C tar --overwrite -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -983,6 +1043,17 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       if ((sshExitCode ?? 0) !== 0) {
+        const conflictPaths = extractTarConflictPaths(sshStderr);
+        if (conflictPaths.length > 0) {
+          reject(
+            new WorkspaceImportConflictError({
+              paths: conflictPaths,
+              stderr: sshStderr,
+              remoteDir: input.remoteDir,
+            }),
+          );
+          return;
+        }
         reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
         return;
       }
@@ -999,12 +1070,23 @@ export async function syncDirectoryToSsh(input: {
       reject(error);
     };
 
+    // Cap stderr accumulation. spawn() has no maxBuffer, and a misconfigured
+    // remote shell or pathological tar output could otherwise grow these
+    // strings until OOM. 512 KiB is well above what a real conflict report
+    // produces; once the cap is hit we keep the head (where the conflict
+    // signatures live) and drop further bytes.
+    const STDERR_CAP_BYTES = 512 * 1024;
+    const appendCapped = (current: string, chunk: unknown) => {
+      if (current.length >= STDERR_CAP_BYTES) return current;
+      const next = current + String(chunk);
+      return next.length > STDERR_CAP_BYTES ? next.slice(0, STDERR_CAP_BYTES) : next;
+    };
     tar.stdout?.pipe(ssh.stdin ?? null);
     tar.stderr?.on("data", (chunk) => {
-      tarStderr += String(chunk);
+      tarStderr = appendCapped(tarStderr, chunk);
     });
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderr = appendCapped(sshStderr, chunk);
     });
 
     tar.on("error", fail);

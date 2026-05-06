@@ -130,6 +130,43 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   return null;
 }
 
+// Run failures that the recovery sweep must NOT retry. These are environment
+// preconditions that no amount of re-dispatch will resolve — the next run will
+// fail in the same way until a human (or the workspace owner) intervenes. We
+// escalate to `blocked` on the first occurrence rather than burning a recovery
+// cycle and producing another `Latest retry failure withheld` comment. See
+// BLO-1498 (recovery loop spun 5+ cycles on a single tar conflict).
+const NON_RETRYABLE_RUN_ERROR_CODES = new Set<string>([
+  "workspace_import_conflict",
+]);
+
+function isNonRetryableTerminalRun(latestRun: LatestIssueRun) {
+  if (!latestRun) return false;
+  if (
+    !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+      latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+    )
+  ) {
+    return false;
+  }
+  const errorCode = readNonEmptyString(latestRun.errorCode);
+  return Boolean(errorCode && NON_RETRYABLE_RUN_ERROR_CODES.has(errorCode));
+}
+
+function buildNonRetryableEscalationComment(input: {
+  status: "todo" | "in_progress";
+  latestRun: LatestIssueRun;
+}) {
+  const errorCode = readNonEmptyString(input.latestRun?.errorCode) ?? "non_retryable_failure";
+  const verb = input.status === "todo" ? "dispatch" : "continuation";
+  return (
+    `Paperclip skipped automatic ${verb} recovery for this assigned \`${input.status}\` issue because the last run ` +
+    `failed with a non-retryable code \`${errorCode}\`. ` +
+    "Retrying would re-hit the same environment precondition. " +
+    "Moving it to `blocked` so the recovery owner can clear the precondition before resuming."
+  );
+}
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
@@ -1811,6 +1848,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isNonRetryableTerminalRun(latestRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment: buildNonRetryableEscalationComment({ status: "todo", latestRun }),
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
@@ -1921,6 +1974,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (queued) {
           result.continuationRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (isNonRetryableTerminalRun(latestRun)) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment: buildNonRetryableEscalationComment({ status: "in_progress", latestRun }),
+        });
+        if (updated) {
+          result.escalated += 1;
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;

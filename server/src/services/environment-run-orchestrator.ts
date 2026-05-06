@@ -59,6 +59,7 @@ export type EnvironmentErrorCode =
   | "probe_failed"
   | "lease_acquire_failed"
   | "workspace_realization_failed"
+  | "workspace_import_conflict"
   | "transport_resolution_failed"
   | "lease_release_failed"
   | "lease_cleanup_failed";
@@ -69,6 +70,11 @@ export class EnvironmentRunError extends Error {
   driver?: string;
   provider?: string;
   cause?: unknown;
+  /**
+   * Set on `workspace_import_conflict` to surface the offending remote paths
+   * to the recovery owner without requiring run-log inspection (BLO-1497).
+   */
+  paths?: string[];
 
   constructor(
     code: EnvironmentErrorCode,
@@ -78,6 +84,7 @@ export class EnvironmentRunError extends Error {
       driver?: string;
       provider?: string;
       cause?: unknown;
+      paths?: string[];
     },
   ) {
     super(message);
@@ -87,7 +94,40 @@ export class EnvironmentRunError extends Error {
     this.driver = details?.driver;
     this.provider = details?.provider;
     this.cause = details?.cause;
+    if (details?.paths) this.paths = details.paths;
   }
+}
+
+/**
+ * Recognize a `WorkspaceImportConflictError` (or anything compatible) anywhere
+ * in an error chain. We duck-type by `code === "workspace_import_conflict"`
+ * so the orchestrator does not need a hard dependency on the adapter-utils
+ * class identity (avoids cross-package instanceof skew on dual builds).
+ */
+function findWorkspaceImportConflict(
+  err: unknown,
+): { paths: string[]; message: string } | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    const candidate = current as {
+      code?: unknown;
+      paths?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    if (
+      candidate.code === "workspace_import_conflict" &&
+      Array.isArray(candidate.paths)
+    ) {
+      const paths = candidate.paths.filter(
+        (entry): entry is string => typeof entry === "string" && entry.length > 0,
+      );
+      const message = typeof candidate.message === "string" ? candidate.message : "";
+      return { paths, message };
+    }
+    current = candidate.cause;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +438,24 @@ export function environmentRunOrchestrator(
             : null;
         workspaceRealization = parseObject(workspaceRealizationResult.metadata?.workspaceRealization);
       } catch (err) {
+        // Path-conflict failures from the SSH workspace import (see
+        // WorkspaceImportConflictError in @paperclipai/adapter-utils/ssh) are
+        // surfaced with their own code so the recovery owner can act on the
+        // offending paths in one heartbeat instead of inspecting run logs
+        // (BLO-1497).
+        const conflict = findWorkspaceImportConflict(err);
+        if (conflict) {
+          throw new EnvironmentRunError(
+            "workspace_import_conflict",
+            `Workspace import into environment "${environment.name}" (${environment.driver}) hit ${conflict.paths.length} path conflict${conflict.paths.length === 1 ? "" : "s"}: ${conflict.paths.slice(0, 3).join(", ")}${conflict.paths.length > 3 ? `, +${conflict.paths.length - 3} more` : ""}`,
+            {
+              environmentId: environment.id,
+              driver: environment.driver,
+              cause: err,
+              paths: conflict.paths,
+            },
+          );
+        }
         throw new EnvironmentRunError(
           "workspace_realization_failed",
           `Failed to realize workspace for environment "${environment.name}" (${environment.driver}): ${err instanceof Error ? err.message : String(err)}`,

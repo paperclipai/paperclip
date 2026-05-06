@@ -161,7 +161,7 @@ import {
 import { extractSkillMentionIds } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
-import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { environmentRunOrchestrator, EnvironmentRunError } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -7751,13 +7751,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+          // Preserve structured error codes from EnvironmentRunError (e.g.
+          // `workspace_import_conflict`) so the recovery sweep can recognize
+          // non-retryable failures and escalate to `blocked` instead of
+          // re-dispatching another doomed continuation. See BLO-1498.
+          const setupErrorCode =
+            outerErr instanceof EnvironmentRunError ? outerErr.code : "adapter_failed";
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode: setupErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
+                errorCode: setupErrorCode,
                 errorMessage: message,
               }),
             } : {}),

@@ -7,11 +7,15 @@ import { execute } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
   commandPath: string,
-  options: { resultEvent: Record<string, unknown>; exitCode?: number },
+  options: { resultEvent: Record<string, unknown>; exitCode?: number; preludeEvents?: Record<string, unknown>[] },
 ): Promise<void> {
   const payload = JSON.stringify(options.resultEvent);
   const exit = options.exitCode ?? 1;
+  const prelude = (options.preludeEvents ?? [])
+    .map((event) => `console.log(${JSON.stringify(JSON.stringify(event))});`)
+    .join("\n");
   const script = `#!/usr/bin/env node
+${prelude}
 console.log(${JSON.stringify(payload)});
 process.exit(${exit});
 `;
@@ -970,6 +974,79 @@ describe("claude execute", () => {
       expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
         new Date("2026-04-22T21:00:00.000Z").getTime(),
       );
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not classify Paperclip API auth text in Claude output as Claude auth required", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-paperclip-auth-text-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      preludeEvents: [
+        {
+          type: "assistant",
+          session_id: "claude-session-paperclip-auth-text",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "The Paperclip API is returning 401 (Agent authentication required).",
+              },
+            ],
+          },
+        },
+      ],
+      resultEvent: {
+        type: "result",
+        subtype: "success",
+        session_id: "claude-session-paperclip-auth-text",
+        is_error: true,
+        result: "You're out of extra usage · resets 12:10am (UTC)",
+        api_error_status: 429,
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-29T20:42:00.000Z"));
+
+    try {
+      const result = await execute({
+        runId: "run-claude-paperclip-auth-text",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("claude_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.retryNotBefore).toBe("2026-04-30T00:10:00.000Z");
     } finally {
       vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;

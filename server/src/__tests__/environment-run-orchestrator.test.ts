@@ -281,6 +281,32 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
   });
 
+  // BLO-1497: when the SSH workspace import surfaces a structured tar conflict
+  // (anywhere in the cause chain), the orchestrator must re-emit it as
+  // `workspace_import_conflict` with the offending paths so the recovery
+  // owner can act in one heartbeat.
+  it("realization failure with workspace_import_conflict cause → EnvironmentRunError forwards code + paths", async () => {
+    const conflictCause = Object.assign(new Error("import conflict"), {
+      code: "workspace_import_conflict" as const,
+      paths: ["release-eng-tmp/magma-blo-1475/foo.go", "release-eng-tmp/bar.go"],
+    });
+    const wrapped = Object.assign(new Error("realize failed"), { cause: conflictCause });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockRejectedValue(wrapped),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await expect(orchestrator.realizeForRun(makeRealizeInput())).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof EnvironmentRunError &&
+        err.code === "workspace_import_conflict" &&
+        Array.isArray(err.paths) &&
+        err.paths.length === 2 &&
+        err.paths[0] === "release-eng-tmp/magma-blo-1475/foo.go",
+    );
+  });
+
   it("target resolution failure: resolveEnvironmentExecutionTarget throws → EnvironmentRunError with code transport_resolution_failed", async () => {
     mockResolveEnvironmentExecutionTarget.mockRejectedValue(new Error("network error"));
 
