@@ -3497,51 +3497,104 @@ export function accessRoutes(
       }
 
       let autoApprovedJoinRequest = false;
+      const requestingUserId = created.requestingUserId;
 
       if (
         requestType === "human" &&
         autoApproveHumanRole &&
-        created.requestingUserId
+        requestingUserId
       ) {
-        await access.ensureMembership(
-          companyId,
-          "user",
-          created.requestingUserId,
-          autoApproveHumanRole,
-          "active"
-        );
         const grants = humanJoinGrantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
           autoApproveHumanRole
         );
-        await access.setPrincipalGrants(
-          companyId,
-          "user",
-          created.requestingUserId,
-          grants,
-          invite.invitedByUserId ?? req.actor.userId ?? null
-        );
-        if (created.status !== "approved") {
-          created = await db
-            .update(joinRequests)
-            .set({
-              status: "approved",
-              approvedByUserId: invite.invitedByUserId ?? req.actor.userId ?? null,
-              approvedAt: new Date(),
-              updatedAt: new Date()
-            })
-            .where(eq(joinRequests.id, created.id))
-            .returning()
-            .then((rows) => rows[0] ?? created);
-        }
-        await logActivity(db, {
-          companyId,
-          actorType: "user",
-          actorId: invite.invitedByUserId ?? req.actor.userId ?? "board",
-          action: "join.auto_approved",
-          entityType: "join_request",
-          entityId: created.id,
-          details: { requestType: "human", membershipRole: autoApproveHumanRole }
+        const approvedByUserId = invite.invitedByUserId ?? req.actor.userId ?? null;
+        created = await db.transaction(async (tx) => {
+          const existingMembership = await tx
+            .select()
+            .from(companyMemberships)
+            .where(
+              and(
+                eq(companyMemberships.companyId, companyId),
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, requestingUserId)
+              )
+            )
+            .then((rows) => rows[0] ?? null);
+
+          if (existingMembership) {
+            if (
+              existingMembership.status !== "active" ||
+              existingMembership.membershipRole !== autoApproveHumanRole
+            ) {
+              await tx
+                .update(companyMemberships)
+                .set({
+                  status: "active",
+                  membershipRole: autoApproveHumanRole,
+                  updatedAt: new Date()
+                })
+                .where(eq(companyMemberships.id, existingMembership.id));
+            }
+          } else {
+            await tx.insert(companyMemberships).values({
+              companyId,
+              principalType: "user",
+              principalId: requestingUserId,
+              status: "active",
+              membershipRole: autoApproveHumanRole
+            });
+          }
+
+          await tx
+            .delete(principalPermissionGrants)
+            .where(
+              and(
+                eq(principalPermissionGrants.companyId, companyId),
+                eq(principalPermissionGrants.principalType, "user"),
+                eq(principalPermissionGrants.principalId, requestingUserId)
+              )
+            );
+          if (grants.length > 0) {
+            await tx.insert(principalPermissionGrants).values(
+              grants.map((grant) => ({
+                companyId,
+                principalType: "user" as const,
+                principalId: requestingUserId,
+                permissionKey: grant.permissionKey,
+                scope: grant.scope ?? null,
+                grantedByUserId: approvedByUserId,
+                createdAt: new Date(),
+                updatedAt: new Date()
+              }))
+            );
+          }
+
+          let nextCreated = created;
+          if (created.status !== "approved") {
+            nextCreated = await tx
+              .update(joinRequests)
+              .set({
+                status: "approved",
+                approvedByUserId,
+                approvedAt: new Date(),
+                updatedAt: new Date()
+              })
+              .where(eq(joinRequests.id, created.id))
+              .returning()
+              .then((rows) => rows[0] ?? created);
+          }
+          await logActivity(tx as unknown as Db, {
+            companyId,
+            actorType: "user",
+            actorId: approvedByUserId ?? "board",
+            action: "join.auto_approved",
+            entityType: "join_request",
+            entityId: nextCreated.id,
+            details: { requestType: "human", membershipRole: autoApproveHumanRole }
+          });
+
+          return nextCreated;
         });
         autoApprovedJoinRequest = true;
       }
