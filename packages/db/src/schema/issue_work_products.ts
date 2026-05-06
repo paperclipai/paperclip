@@ -5,8 +5,10 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -60,5 +62,8 @@ export const issueWorkProducts = pgTable(
       table.companyId,
       table.updatedAt,
     ),
+    issueExternalIdUniq: uniqueIndex("issue_work_products_issue_external_id_uniq")
+      .on(table.issueId, table.externalId)
+      .where(sql`external_id IS NOT NULL`),
   }),
 );

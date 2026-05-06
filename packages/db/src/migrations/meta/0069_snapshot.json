@@ -1,6 +1,6 @@
 {
-  "id": "9bab734e-22ac-45d4-8dd3-7e126de67e9a",
-  "prevId": "954d015c-9d6a-4879-85a1-de7d41a7a0f3",
+  "id": "4e1fd587-c80d-4251-beca-4aa66ad6191f",
+  "prevId": "13730230-8866-4ba0-b88b-7fd215516e0b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -11228,6 +11228,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_work_products_issue_external_id_uniq": {
+          "name": "issue_work_products_issue_external_id_uniq",
+          "columns": [
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "external_id IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
