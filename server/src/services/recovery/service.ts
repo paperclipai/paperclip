@@ -1364,6 +1364,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .returning();
     if (!claimed) return null;
 
+    type ExistingBlockerRelation = {
+      issueId: string;
+      createdByAgentId: string | null;
+      createdByUserId: string | null;
+      createdAt: Date;
+      updatedAt: Date;
+    };
+    const existingBlockerRelations: ExistingBlockerRelation[] = blockerIds.length > 0
+      ? ((await db
+          .select({
+            issueId: issueRelations.issueId,
+            createdByAgentId: issueRelations.createdByAgentId,
+            createdByUserId: issueRelations.createdByUserId,
+            createdAt: issueRelations.createdAt,
+            updatedAt: issueRelations.updatedAt,
+          })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, input.issue.companyId),
+              eq(issueRelations.relatedIssueId, input.issue.id),
+              eq(issueRelations.type, "blocks"),
+              inArray(issueRelations.issueId, blockerIds),
+            ),
+          )) as ExistingBlockerRelation[])
+      : [];
+    const existingBlockerRelationByIssueId = new Map<string, ExistingBlockerRelation>(
+      existingBlockerRelations.map((relation) => [relation.issueId, relation]),
+    );
+
     await db
       .delete(issueRelations)
       .where(
@@ -1375,12 +1405,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
     if (blockerIds.length > 0) {
       await db.insert(issueRelations).values(
-        blockerIds.map((blockerIssueId) => ({
-          companyId: input.issue.companyId,
-          issueId: blockerIssueId,
-          relatedIssueId: input.issue.id,
-          type: "blocks" as const,
-        })),
+        blockerIds.map((blockerIssueId) => {
+          const existing = existingBlockerRelationByIssueId.get(blockerIssueId);
+          const now = new Date();
+          return {
+            companyId: input.issue.companyId,
+            issueId: blockerIssueId,
+            relatedIssueId: input.issue.id,
+            type: "blocks" as const,
+            createdByAgentId: existing?.createdByAgentId ?? null,
+            createdByUserId: existing?.createdByUserId ?? null,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: existing?.updatedAt ?? now,
+          };
+        }),
       );
     }
 

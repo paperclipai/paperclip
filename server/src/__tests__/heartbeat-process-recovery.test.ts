@@ -1888,6 +1888,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).not.toContain("Recovery issue:");
   });
 
+  it("preserves existing blocker relation audit fields when escalating stranded assigned issues", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const blockerIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const relationCreatedAt = new Date("2030-03-18T00:00:00.000Z");
+    const relationUpdatedAt = new Date("2030-03-18T00:05:00.000Z");
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Human-added blocker",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+      createdByAgentId: agentId,
+      createdByUserId: "operator-1",
+      createdAt: relationCreatedAt,
+      updatedAt: relationUpdatedAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([blockerIssueId]);
+
+    const [relation] = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.issueId, blockerIssueId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(relation?.createdByAgentId).toBe(agentId);
+    expect(relation?.createdByUserId).toBe("operator-1");
+    expect(relation?.createdAt.getTime()).toBe(relationCreatedAt.getTime());
+    expect(relation?.updatedAt.getTime()).toBe(relationUpdatedAt.getTime());
+  });
+
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
