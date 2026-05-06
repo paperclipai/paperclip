@@ -1429,10 +1429,27 @@ export function applyFreshSessionPolicyToWakeContext(
     return nextContext;
   }
 
+  const isHeartbeatTimerWake =
+    readNonEmptyString(nextContext.wakeSource) === "timer" ||
+    readNonEmptyString(nextContext.wakeReason) === "heartbeat_timer" ||
+    (
+      readNonEmptyString(nextContext.source) === "scheduler" &&
+      readNonEmptyString(nextContext.reason) === "interval_elapsed"
+    );
+
   nextContext.forceFreshSession = true;
   delete nextContext.resumeFromRunId;
   delete nextContext.resumeSessionDisplayId;
   delete nextContext.resumeSessionParams;
+  delete nextContext[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  if (isHeartbeatTimerWake) {
+    delete nextContext.issueId;
+    delete nextContext.taskId;
+    delete nextContext.taskKey;
+    delete nextContext.commentId;
+    delete nextContext.wakeCommentId;
+    delete nextContext[WAKE_COMMENT_IDS_KEY];
+  }
   return nextContext;
 }
 
@@ -1681,7 +1698,7 @@ export function mergeCoalescedContextSnapshot(
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
-  return merged;
+  return applyFreshSessionPolicyToWakeContext(merged);
 }
 
 async function buildPaperclipWakePayload(input: {
@@ -6805,7 +6822,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (isSameExecutionAgent && !shouldQueueFollowupForRunningWake) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
-              enrichedContextSnapshot,
+              wakeContextSnapshot,
             );
             const mergedRun = await tx
               .update(heartbeatRuns)
@@ -6862,7 +6879,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
             const mergedDeferredContext = mergeCoalescedContextSnapshot(
               existingDeferredContext,
-              enrichedContextSnapshot,
+              wakeContextSnapshot,
             );
             const mergedDeferredPayload = {
               ...existingDeferredPayload,
@@ -6925,7 +6942,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             status: "queued",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: enrichedContextSnapshot,
+            contextSnapshot: wakeContextSnapshot,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
           })
@@ -6998,7 +7015,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
-        contextSnapshot,
+        wakeContextSnapshot,
       );
       const mergedRun = await db
         .update(heartbeatRuns)
