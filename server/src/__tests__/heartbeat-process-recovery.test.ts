@@ -2339,6 +2339,213 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  // DGG-5210: Helper that adds N additional automatic stranded-recovery runs
+  // to an issue, anchored to wall-clock now so they fall inside the
+  // STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS (24h) used by reconcile.
+  // seedStrandedIssueFixture seeds the canonical run with default `createdAt`
+  // (now via Postgres `defaultNow()`) so we mirror that here — otherwise the
+  // earlier hard-coded 2026-03 anchor would land outside the window and the
+  // cap would never trigger in tests.
+  async function appendAutomaticRecoveryRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    runs: Array<{
+      retryReason: "assignment_recovery" | "issue_continuation_needed";
+      runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
+      runErrorCode?: string | null;
+      runError?: string | null;
+      livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
+      runSource?: string | null;
+      // Minutes before the wall-clock anchor (now). Must stay within the 24h
+      // window so the cap counts the run as recent.
+      minutesBefore: number;
+    }>;
+  }) {
+    const anchor = Date.now();
+    for (const run of input.runs) {
+      const startedAt = new Date(anchor - run.minutesBefore * 60 * 1000);
+      const finishedAt = new Date(startedAt.getTime() + 30 * 1000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: run.runStatus,
+        contextSnapshot: {
+          issueId: input.issueId,
+          taskId: input.issueId,
+          wakeReason: run.retryReason === "assignment_recovery" ? "issue_assignment_recovery" : "issue_continuation_needed",
+          retryReason: run.retryReason,
+          ...(run.runSource ? { source: run.runSource } : {}),
+        },
+        startedAt,
+        finishedAt,
+        createdAt: startedAt,
+        updatedAt: finishedAt,
+        errorCode: run.runStatus === "succeeded" ? null : run.runErrorCode ?? "process_lost",
+        error: run.runStatus === "succeeded" ? null : run.runError ?? "run failed before issue advanced",
+        livenessState: run.livenessState ?? null,
+      });
+    }
+  }
+
+  // DGG-5210 AC-2: cap automatic stranded-recovery retries at 3 inside the 24h budget.
+  it("escalates stranded work to blocked once the 24h automatic recovery budget is exhausted", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "ChatGPT usage limit",
+    });
+    // Two earlier automatic retries (different fingerprints so dedup doesn't trip)
+    // plus the seeded current run = 3 total automatic attempts -> cap reached.
+    await appendAutomaticRecoveryRuns({
+      companyId,
+      agentId,
+      issueId,
+      runs: [
+        {
+          retryReason: "issue_continuation_needed",
+          runStatus: "failed",
+          runErrorCode: "adapter_timeout",
+          runError: "adapter timed out",
+          minutesBefore: 600,
+        },
+        {
+          retryReason: "issue_continuation_needed",
+          runStatus: "failed",
+          runErrorCode: "process_lost",
+          runError: "adapter process lost",
+          minutesBefore: 300,
+        },
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.capEscalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("paused automatic stranded-work recovery");
+    expect(comments[0]?.body).toContain("3 automatic recovery attempts");
+
+    // The cap path escalates via escalateStrandedAssignedIssue — no
+    // *retry* run is queued (would carry retryReason), but the recovery
+    // child issue is created and triggers an `issue_assigned` wake. The
+    // resulting heartbeat run has wakeReason `issue_assigned`, not a retry
+    // reason, so it does not loop back into automatic recovery.
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((row) => row.id)).toContain(runId);
+    const retryRuns = runs.filter((row) => {
+      const ctx = row.contextSnapshot as { retryReason?: unknown } | null;
+      return Boolean(ctx?.retryReason);
+    });
+    // The two seeded retries + the original seeded current run = 3 retry
+    // runs. Critically, the cap path must not enqueue *another* retry on
+    // top of those.
+    expect(retryRuns).toHaveLength(3);
+  });
+
+  // DGG-5210 AC-1: same-source 1h dedup. A retry that fails with the same
+  // errorCode as a previous automatic recovery within the dedup window must not
+  // trigger another retry on the next reconcile tick.
+  it("deduplicates same-source automatic recovery retries inside the 1h fingerprint window", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "ChatGPT usage limit",
+    });
+    // One earlier automatic retry that already failed with the same errorCode
+    // 30 minutes before the seeded current run -> same-source dedup must trip.
+    await appendAutomaticRecoveryRuns({
+      companyId,
+      agentId,
+      issueId,
+      runs: [
+        {
+          retryReason: "issue_continuation_needed",
+          runStatus: "failed",
+          runErrorCode: "openclaw_gateway_wait_error",
+          runError: "ChatGPT usage limit",
+          minutesBefore: 30,
+        },
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    // Cap is not yet reached (only 2 recent attempts) so no escalation; dedup
+    // should suppress the next retry instead.
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.sameSourceDedupSkipped).toBe(1);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    // No new retry comment, no new retry run.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    // Only the original seeded run + the 1 we appended; no new retry was queued.
+    expect(runs).toHaveLength(2);
+  });
+
+  // DGG-5210 AC-1 negative path: when the latest run's failure fingerprint
+  // differs from earlier automatic recovery attempts, dedup must NOT trip.
+  // We can only assert the dedup *counter* directly because the downstream
+  // path is governed by the existing reconcile logic (escalate on repeated
+  // continuation failure), which is unrelated to AC-1.
+  it("does not dedup retries when the failure fingerprint changes between attempts", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "ChatGPT usage limit",
+    });
+    await appendAutomaticRecoveryRuns({
+      companyId,
+      agentId,
+      issueId,
+      runs: [
+        {
+          retryReason: "issue_continuation_needed",
+          runStatus: "failed",
+          runErrorCode: "adapter_timeout",
+          runError: "adapter timed out",
+          minutesBefore: 30,
+        },
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    // The dedup gate must not fire because fingerprints differ. Whether the
+    // downstream path re-queues or escalates is the existing reconcile
+    // contract — the AC-1 gate just shouldn't suppress this.
+    expect(result.sameSourceDedupSkipped).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
     const { issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

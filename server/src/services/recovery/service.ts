@@ -53,6 +53,20 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+// DGG-5210: bound automatic stranded recovery so a single stalled issue cannot
+// loop indefinitely. The 24h window is the lifecycle horizon for an automated
+// retry — anything beyond that is a different incident, not the same retry
+// stream. The cap of 3 attempts in that window matches the COO recovery
+// policy: each retry must surface a distinct failure source, otherwise it is
+// dedup'd by the same-source guard below before counting against the budget.
+const STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1000;
+const STRANDED_RECOVERY_RETRY_BUDGET_MAX_ATTEMPTS = 3;
+// DGG-5210: same-source retry dedup window. If the most recent automatic
+// recovery attempt for an issue failed with the same error fingerprint inside
+// this window, skip re-issuing another attempt — let it surface to manual
+// intervention through the cap path instead of comment-spamming the issue
+// with another identical retry note.
+const STRANDED_RECOVERY_SAME_SOURCE_DEDUP_WINDOW_MS = 60 * 60 * 1000;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -72,7 +86,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "createdAt" | "finishedAt"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -320,6 +334,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        createdAt: heartbeatRuns.createdAt,
+        finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -331,6 +347,117 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  // DGG-5210: pull recent runs for an issue so the stranded-recovery cap and
+  // same-source dedup gate can both reason over them without re-querying. The
+  // window is bounded to STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS so old
+  // unrelated retries from a previous incident never count against the cap.
+  async function getRecentIssueRuns(
+    companyId: string,
+    issueId: string,
+    since: Date,
+  ): Promise<NonNullable<LatestIssueRun>[]> {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
+        createdAt: heartbeatRuns.createdAt,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          gt(heartbeatRuns.createdAt, since),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(100);
+  }
+
+  function isAutomaticStrandedRecoveryRetryReason(value: unknown) {
+    return value === "assignment_recovery" || value === "issue_continuation_needed";
+  }
+
+  // DGG-5210: count automatic stranded-recovery attempts for an issue inside
+  // STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS. Used to enforce the
+  // STRANDED_RECOVERY_RETRY_BUDGET_MAX_ATTEMPTS cap before issuing another
+  // retry. Successful runs still count: a productive run that got us back
+  // here means the recovery loop is alive but not making forward progress.
+  async function countRecentAutomaticStrandedRecoveryAttempts(
+    companyId: string,
+    issueId: string,
+    now = new Date(),
+  ) {
+    const since = new Date(now.getTime() - STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS);
+    const rows = await getRecentIssueRuns(companyId, issueId, since);
+    return rows.filter((run) => {
+      const ctx = parseObject(run.contextSnapshot);
+      return isAutomaticStrandedRecoveryRetryReason(readNonEmptyString(ctx.retryReason));
+    }).length;
+  }
+
+  // DGG-5210: classify a run's failure source so two retries that fail with
+  // the same root cause can be dedup'd inside
+  // STRANDED_RECOVERY_SAME_SOURCE_DEDUP_WINDOW_MS. The fingerprint prefers the
+  // structured `errorCode` (e.g. `openclaw_gateway_wait_error`) and falls back
+  // to the first line of the human-readable `error` text so loosely-typed
+  // adapter failures still group. Successful runs return `null` so they don't
+  // dedup retries: a productive run that the loop ignored should still be
+  // allowed to bump into the cap on the next failure.
+  function recoveryFailureFingerprint(run: NonNullable<LatestIssueRun>): string | null {
+    if (
+      !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+        run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+      )
+    ) {
+      return null;
+    }
+    const code = readNonEmptyString(run.errorCode);
+    if (code) return `code:${code}`;
+    const message = readNonEmptyString(run.error);
+    if (message) {
+      const firstLine = message.split(/\r?\n/)[0]?.trim() ?? "";
+      if (firstLine.length > 0) return `msg:${firstLine.slice(0, 200)}`;
+    }
+    return `status:${run.status}`;
+  }
+
+  // DGG-5210: returns true when the most recent automatic stranded-recovery
+  // run for this issue failed with the same fingerprint as `latestRun` inside
+  // the same-source dedup window. Caller should suppress another retry in
+  // that case — the cap path will eventually escalate to `blocked` once the
+  // 3-attempt budget is exhausted, but we shouldn't comment-spam in the
+  // meantime with identical retry notes.
+  async function isSameSourceRetryDuplicate(
+    companyId: string,
+    issueId: string,
+    latestRun: LatestIssueRun,
+    now = new Date(),
+  ) {
+    if (!latestRun) return false;
+    const fingerprint = recoveryFailureFingerprint(latestRun);
+    if (!fingerprint) return false;
+    const since = new Date(now.getTime() - STRANDED_RECOVERY_SAME_SOURCE_DEDUP_WINDOW_MS);
+    const rows = await getRecentIssueRuns(companyId, issueId, since);
+    let matches = 0;
+    for (const run of rows) {
+      if (run.id === latestRun.id) continue;
+      const ctx = parseObject(run.contextSnapshot);
+      if (!isAutomaticStrandedRecoveryRetryReason(readNonEmptyString(ctx.retryReason))) continue;
+      if (recoveryFailureFingerprint(run) === fingerprint) {
+        matches += 1;
+        if (matches >= 1) return true;
+      }
+    }
+    return false;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -1578,6 +1705,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    // DGG-5210: capture a single "now" so cap counting and same-source dedup
+    // both reason against the same instant for every candidate in this run.
+    const now = new Date();
     const candidates = await db
       .select()
       .from(issues)
@@ -1598,6 +1728,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       escalated: 0,
       skipped: 0,
+      sameSourceDedupSkipped: 0,
+      capEscalated: 0,
       issueIds: [] as string[],
     };
 
@@ -1625,6 +1757,51 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      // DGG-5210 (AC-2): cap automatic stranded-recovery retries inside the
+      // 24h budget window. When the cap is exhausted the issue must escalate
+      // to `blocked` and stop participating in the retry loop — otherwise
+      // each cron tick comments "Paperclip retried..." indefinitely. We
+      // evaluate the cap *before* the same-source dedup gate so a hot loop
+      // failing on one fingerprint still surfaces an explicit recovery issue
+      // once the budget is exhausted.
+      const recentRecoveryAttempts = await countRecentAutomaticStrandedRecoveryAttempts(
+        issue.companyId,
+        issue.id,
+        now,
+      );
+      if (recentRecoveryAttempts >= STRANDED_RECOVERY_RETRY_BUDGET_MAX_ATTEMPTS) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: issue.status as "todo" | "in_progress",
+          latestRun,
+          comment:
+            "Paperclip paused automatic stranded-work recovery for this issue because the same source issue " +
+            `already consumed ${recentRecoveryAttempts} automatic recovery attempts inside 24h. ` +
+            "Moving it to `blocked` for manual/COO intervention instead of continuing the retry loop.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.capEscalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      // DGG-5210 (AC-1): same-source dedup. If the latest failed run shares
+      // an error fingerprint with another automatic recovery run inside the
+      // 1h dedup window, suppress another retry and let the cap path catch
+      // it on the next loop. The cap above only escalates after
+      // STRANDED_RECOVERY_RETRY_BUDGET_MAX_ATTEMPTS, so this guard prevents
+      // bursty back-to-back duplicate retries between cap evaluations.
+      if (await isSameSourceRetryDuplicate(issue.companyId, issue.id, latestRun, now)) {
+        result.skipped += 1;
+        result.sameSourceDedupSkipped += 1;
+        continue;
+      }
+
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
