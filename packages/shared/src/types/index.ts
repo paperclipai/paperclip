@@ -91,6 +91,16 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
+  CompanySearchHighlight,
+  CompanySearchIssueSummary,
+  CompanySearchResponse,
+  CompanySearchResult,
+  CompanySearchResultType,
+  CompanySearchScope,
+  CompanySearchSnippet,
+} from "./search.js";
+export { COMPANY_SEARCH_SCOPES } from "./search.js";
+export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceConfig,
