@@ -23,8 +23,23 @@ export type {
   FeedbackTraceBundleFile,
   FeedbackTraceBundle,
 } from "./feedback.js";
-export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionPolicy } from "./instance.js";
-export { DAILY_RETENTION_PRESETS, WEEKLY_RETENTION_PRESETS, MONTHLY_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION } from "./instance.js";
+export type {
+  InstanceExperimentalSettings,
+  InstanceGeneralSettings,
+  InstanceSettings,
+  BackupRetentionPolicy,
+  IssueGraphLivenessAutoRecoveryPreview,
+  IssueGraphLivenessAutoRecoveryPreviewItem,
+} from "./instance.js";
+export {
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
+  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+} from "./instance.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
@@ -59,7 +74,9 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  AgentModelProfileConfig,
   AgentPermissions,
+  AgentRuntimeConfig,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,
@@ -72,7 +89,17 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type {
+  CompanySearchHighlight,
+  CompanySearchIssueSummary,
+  CompanySearchResponse,
+  CompanySearchResult,
+  CompanySearchResultType,
+  CompanySearchScope,
+  CompanySearchSnippet,
+} from "./search.js";
+export { COMPANY_SEARCH_SCOPES } from "./search.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
@@ -117,15 +144,22 @@ export type {
 } from "./work-product.js";
 export type {
   Issue,
+  IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
+  IssueProductivityReview,
+  IssueProductivityReviewTrigger,
+  SuccessfulRunHandoffState,
+  SuccessfulRunHandoffStateKind,
   IssueReferenceSource,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueExecutionMonitorPolicy,
+  IssueExecutionMonitorState,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,
@@ -134,6 +168,16 @@ export type {
   IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
+  IssueCommentMetadata,
+  IssueCommentMetadataSection,
+  IssueCommentMetadataRow,
+  IssueCommentMetadataTextRow,
+  IssueCommentMetadataCodeRow,
+  IssueCommentMetadataKeyValueRow,
+  IssueCommentMetadataIssueLinkRow,
+  IssueCommentMetadataAgentLinkRow,
+  IssueCommentMetadataRunLinkRow,
+  IssueCommentPresentation,
   IssueThreadInteractionActorFields,
   SuggestedTaskDraft,
   SuggestTasksPayload,
@@ -200,8 +244,14 @@ export type {
 } from "./secrets.js";
 export type {
   Routine,
+  RoutineManagedByPlugin,
   RoutineVariable,
   RoutineVariableDefaultValue,
+  RoutineRevisionSnapshotRoutineV1,
+  RoutineRevisionSnapshotTriggerV1,
+  RoutineRevisionSnapshotV1,
+  RoutineRevisionSnapshot,
+  RoutineRevision,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
@@ -210,7 +260,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,
@@ -269,6 +319,7 @@ export type {
   CompanyPortabilityProjectWorkspaceManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
+  CompanyPortabilityIssueCommentManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
@@ -294,6 +345,15 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  PluginManagedAgentDeclaration,
+  PluginManagedProjectDeclaration,
+  PluginManagedRoutineDeclaration,
+  PluginLocalFolderDeclaration,
+  PluginManagedAgentResolution,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineResolution,
+  PluginManagedResourceKind,
+  PluginManagedResourceRef,
   PluginUiSlotDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,
@@ -310,6 +370,7 @@ export type {
   PluginMigrationRecord,
   PluginStateRecord,
   PluginConfig,
+  PluginCompanySettings,
   PluginEntityRecord,
   PluginEntityQuery,
   PluginJobRecord,

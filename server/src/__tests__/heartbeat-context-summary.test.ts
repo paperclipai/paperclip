@@ -1,8 +1,132 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPaperclipTaskMarkdown,
+  mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
+
+describe("buildPaperclipTaskMarkdown", () => {
+  it("adds planning directives for assignment and comment task context", () => {
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        workMode: "planning",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain("- Work mode: \"planning\"");
+    expect(assignment).toContain("Make the plan only. Do not write code or perform implementation work.");
+
+    const commentWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        workMode: "planning",
+        description: null,
+      },
+      wakeComment: {
+        id: "comment-1",
+        body: "Please revise the plan.",
+      },
+    });
+
+    expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
+
+    const acceptedConfirmation = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        workMode: "planning",
+        description: null,
+      },
+      interaction: {
+        kind: "request_confirmation",
+        status: "accepted",
+      },
+    });
+
+    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).not.toContain("Make the plan only.");
+  });
+
+  it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
+    const commentWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        workMode: "planning",
+        description: null,
+      },
+      wakeComment: {
+        id: "comment-1",
+        body: "Please revise the plan.",
+      },
+      interaction: {
+        kind: "request_confirmation",
+        status: "accepted",
+      },
+    });
+
+    expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
+    expect(commentWake).not.toContain("Create child issues from the approved plan only");
+  });
+});
+
+describe("mergeCoalescedContextSnapshot", () => {
+  it("clears stale accepted-plan interaction state when merging a later ordinary comment wake", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        interactionId: "interaction-1",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        wakeReason: "issue_commented",
+      },
+      {
+        issueId: "issue-1",
+        commentId: "comment-1",
+        wakeCommentId: "comment-1",
+        wakeReason: "issue_commented",
+      },
+    );
+
+    expect(merged.interactionId).toBeUndefined();
+    expect(merged.interactionKind).toBeUndefined();
+    expect(merged.interactionStatus).toBeUndefined();
+    expect(merged.continuationPolicy).toBeUndefined();
+    expect(merged.commentId).toBe("comment-1");
+    expect(merged.wakeCommentId).toBe("comment-1");
+  });
+
+  it("preserves accepted-plan interaction state for the interaction wake itself", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+      },
+      {
+        issueId: "issue-1",
+        interactionId: "interaction-1",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        wakeReason: "issue_commented",
+      },
+    );
+
+    expect(merged.interactionId).toBe("interaction-1");
+    expect(merged.interactionKind).toBe("request_confirmation");
+    expect(merged.interactionStatus).toBe("accepted");
+    expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
+  });
+});
 
 describe("summarizeHeartbeatRunContextSnapshot", () => {
   it("keeps only the small retry/linking fields needed by the client", () => {

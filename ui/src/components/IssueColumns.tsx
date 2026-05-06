@@ -139,18 +139,25 @@ export function InboxIssueMetaLeading({
   showStatus = true,
   showIdentifier = true,
   statusSlot,
+  checklistStepNumber = null,
 }: {
   issue: Issue;
   isLive: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
+  checklistStepNumber?: number | string | null;
 }) {
   return (
     <>
       {showStatus ? (
         <span className="hidden shrink-0 sm:inline-flex">
           {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
+        </span>
+      ) : null}
+      {checklistStepNumber !== null ? (
+        <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
+          {checklistStepNumber}.
         </span>
       ) : null}
       {showIdentifier ? (

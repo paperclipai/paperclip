@@ -677,8 +677,7 @@ export function IssueDocumentsSection({
     };
   }, [autosaveState, commitDraft, documentConflict, draft, markDocumentDirty, resetAutosaveState, sortedDocuments]);
 
-  const documentBodyShellClassName = "mt-3 overflow-hidden rounded-md";
-  const documentBodyPaddingClassName = "";
+  const documentBodyShellClassName = "mt-3";
   const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7";
   const toggleFoldedDocument = (key: string) => {
     setFoldedDocumentKeys((current) =>
@@ -784,9 +783,7 @@ export function IssueDocumentsSection({
               PLAN
             </span>
           </div>
-          <div className={documentBodyPaddingClassName}>
-            {renderFoldableBody(issue.legacyPlanDocument.body, documentBodyContentClassName)}
-          </div>
+          {renderFoldableBody(issue.legacyPlanDocument.body, documentBodyContentClassName)}
         </div>
       ) : null}
 
@@ -1088,14 +1085,12 @@ export function IssueDocumentsSection({
                     />
                   )}
                   <div
-                    className={`${documentBodyShellClassName} ${documentBodyPaddingClassName} ${
-                      activeDraft || isHistoricalPreview ? "" : "hover:bg-accent/10"
+                    className={`${documentBodyShellClassName} ${
+                      activeDraft || isHistoricalPreview ? "" : "rounded-md hover:bg-accent/10"
                     }`}
                   >
                     {isHistoricalPreview ? (
-                      <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
-                        {renderFoldableBody(displayedBody, documentBodyContentClassName)}
-                      </div>
+                      renderFoldableBody(displayedBody, documentBodyContentClassName)
                     ) : activeDraft ? (
                       <MarkdownEditor
                         value={displayedBody}
@@ -1117,9 +1112,7 @@ export function IssueDocumentsSection({
                         onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
                       />
                     ) : (
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        {renderFoldableBody(displayedBody, documentBodyContentClassName)}
-                      </div>
+                      renderFoldableBody(displayedBody, documentBodyContentClassName)
                     )}
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">

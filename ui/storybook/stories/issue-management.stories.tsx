@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { Issue } from "@paperclipai/shared";
+import type { RunForIssue } from "@/api/activity";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownAZ,
@@ -83,7 +84,7 @@ function Section({
 }
 
 function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
+  queryClient.setQueryData(queryKeys.companies.all, { companies: storybookCompanies, unauthorized: false });
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(companyId), storybookProjects);
@@ -334,6 +335,116 @@ function OpenFiltersPopover() {
   );
 }
 
+const modelProfileLedgerRuns: RunForIssue[] = [
+  {
+    runId: "run-cheap-applied",
+    status: "succeeded",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: "2026-04-29T09:30:00.000Z",
+    finishedAt: "2026-04-29T09:32:14.000Z",
+    createdAt: "2026-04-29T09:29:55.000Z",
+    invocationSource: "manual",
+    usageJson: { costCents: 17, inputTokens: 6400, outputTokens: 480 },
+    resultJson: {
+      stopReason: "completed",
+      modelProfile: {
+        requested: "cheap",
+        applied: "cheap",
+        configSource: "agent_runtime_config",
+      },
+    },
+    livenessState: "advanced",
+    livenessReason: "Cheap-lane summary completed inside the planned scope.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: "2026-04-29T09:32:10.000Z",
+    nextAction: "Hand the routine output back to the operator inbox.",
+  },
+  {
+    runId: "run-cheap-fallback",
+    status: "succeeded",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: "2026-04-29T08:10:00.000Z",
+    finishedAt: "2026-04-29T08:14:42.000Z",
+    createdAt: "2026-04-29T08:09:50.000Z",
+    invocationSource: "manual",
+    usageJson: { costCents: 91, inputTokens: 21800, outputTokens: 3200 },
+    resultJson: {
+      stopReason: "completed",
+      modelProfile: {
+        requested: "cheap",
+        applied: "primary",
+        configSource: "adapter_default",
+        fallbackReason: "Cheap profile not configured for this agent",
+      },
+    },
+    livenessState: "advanced",
+    livenessReason: "Routine fell back to the primary model after the cheap lookup missed.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: "2026-04-29T08:14:36.000Z",
+    nextAction: "Configure agent-codex with a cheap profile to avoid the fallback.",
+  },
+  {
+    runId: "run-baseline",
+    status: "succeeded",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: "2026-04-28T18:05:00.000Z",
+    finishedAt: "2026-04-28T18:14:11.000Z",
+    createdAt: "2026-04-28T18:04:50.000Z",
+    invocationSource: "scheduler",
+    usageJson: { costCents: 142, inputTokens: 38400, outputTokens: 7200 },
+    resultJson: { stopReason: "completed" },
+    livenessState: "advanced",
+    livenessReason: "Standard primary-lane run with no profile metadata recorded.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: "2026-04-28T18:13:58.000Z",
+    nextAction: "Continue with the next planned subtask.",
+  },
+];
+
+function ModelProfileBadgeLedger() {
+  return (
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <IssueRunLedgerContent
+        runs={modelProfileLedgerRuns}
+        activeRun={null}
+        liveRuns={[]}
+        issueStatus="in_progress"
+        childIssues={[]}
+        agentMap={storybookAgentMap}
+      />
+      <Card className="shadow-none">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <GitBranch className="h-4 w-4" />
+            Model profile metadata
+          </CardTitle>
+          <CardDescription>
+            Profile badges read <code>resultJson.modelProfile</code> on each run. Applied matching the request renders
+            emerald; an applied fallback renders amber and surfaces the inline reason.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background/70 p-3">
+            <div className="font-mono text-emerald-600 dark:text-emerald-400">Profile: cheap</div>
+            <p className="mt-1">requested + applied both equal cheap → emerald badge.</p>
+          </div>
+          <div className="rounded-md border border-border bg-background/70 p-3">
+            <div className="font-mono text-amber-600 dark:text-amber-400">Profile: cheap → primary</div>
+            <p className="mt-1">cheap requested but primary applied → amber badge plus inline fallback reason.</p>
+          </div>
+          <div className="rounded-md border border-border bg-background/70 p-3">
+            <div className="font-mono text-muted-foreground">No profile badge</div>
+            <p className="mt-1">Run with no <code>modelProfile</code> metadata renders without a badge for visual contrast.</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function RunLedgerWithCostColumns() {
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -549,6 +660,10 @@ function IssueManagementStories() {
             <RunLedgerWithCostColumns />
           </Section>
 
+          <Section eyebrow="IssueRunLedger" title="Model profile badges for cheap, fallback, and baseline runs">
+            <ModelProfileBadgeLedger />
+          </Section>
+
           <Section eyebrow="IssueWorkspaceCard" title="Workspace info card with branch, path, and runtime status">
             <WorkspaceCardWithRuntime />
           </Section>
@@ -599,3 +714,40 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const FullSurfaceMatrix: Story = {};
+
+function ModelProfileLedgerStandalone() {
+  return (
+    <StorybookData>
+      <div className="paperclip-story">
+        <main className="paperclip-story__inner space-y-6">
+          <section className="paperclip-story__frame p-6">
+            <div className="flex flex-wrap items-start justify-between gap-5">
+              <div>
+                <div className="paperclip-story__label">IssueRunLedger</div>
+                <h1 className="mt-2 text-3xl font-semibold tracking-tight">Model profile badges</h1>
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
+                  Run ledger isolated to the cheap-lane visual states: an emerald applied=cheap badge, an amber
+                  cheap-fell-back-to-primary badge with the inline fallback reason, and a baseline run without a
+                  modelProfile so the visual diff stays obvious.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">cheap applied</Badge>
+                <Badge variant="outline">cheap → primary</Badge>
+                <Badge variant="outline">no profile</Badge>
+              </div>
+            </div>
+          </section>
+          <Section eyebrow="IssueRunLedger" title="Cheap, fallback, and baseline runs">
+            <ModelProfileBadgeLedger />
+          </Section>
+        </main>
+      </div>
+    </StorybookData>
+  );
+}
+
+export const RunLedgerModelProfileBadges: Story = {
+  name: "Run ledger - Model profile badges",
+  render: () => <ModelProfileLedgerStandalone />,
+};

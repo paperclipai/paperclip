@@ -1,11 +1,22 @@
 import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadataRowType,
+  IssueCommentPresentationKind,
+  IssueCommentPresentationTone,
+  IssueExecutionMonitorClearReason,
+  IssueExecutionMonitorKind,
+  IssueExecutionMonitorRecoveryPolicy,
+  IssueExecutionMonitorStateStatus,
   IssueExecutionDecisionOutcome,
+  IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueWorkMode,
+  ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
@@ -15,6 +26,8 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+
+export type { IssueWorkMode };
 
 export interface IssueAncestorProject {
   id: string;
@@ -59,6 +72,7 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }
@@ -119,11 +133,12 @@ export interface IssueRelationIssueSummary {
   terminalBlockers?: IssueRelationIssueSummary[];
 }
 
-export type IssueBlockerAttentionState = "none" | "covered" | "needs_attention";
+export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =
   | "active_child"
   | "active_dependency"
+  | "stalled_review"
   | "attention_required"
   | null;
 
@@ -132,8 +147,38 @@ export interface IssueBlockerAttention {
   reason: IssueBlockerAttentionReason;
   unresolvedBlockerCount: number;
   coveredBlockerCount: number;
+  stalledBlockerCount: number;
   attentionBlockerCount: number;
   sampleBlockerIdentifier: string | null;
+  sampleStalledBlockerIdentifier: string | null;
+}
+
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus;
+  priority: IssuePriority;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated";
+
+export interface SuccessfulRunHandoffState {
+  state: SuccessfulRunHandoffStateKind;
+  required: boolean;
+  sourceRunId: string | null;
+  correctiveRunId: string | null;
+  assigneeAgentId: string | null;
+  detectedProgressSummary: string | null;
+  createdAt: Date | string | null;
 }
 
 export interface IssueRelation {
@@ -180,10 +225,40 @@ export interface IssueExecutionStage {
   participants: IssueExecutionStageParticipant[];
 }
 
+export interface IssueExecutionMonitorPolicy {
+  nextCheckAt: string;
+  notes: string | null;
+  scheduledBy: IssueMonitorScheduledBy;
+  kind?: IssueExecutionMonitorKind | null;
+  serviceName?: string | null;
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
+  monitor?: IssueExecutionMonitorPolicy | null;
+}
+
+export interface IssueExecutionMonitorState {
+  status: IssueExecutionMonitorStateStatus;
+  nextCheckAt: string | null;
+  lastTriggeredAt: string | null;
+  attemptCount: number;
+  notes: string | null;
+  scheduledBy: IssueMonitorScheduledBy | null;
+  kind?: IssueExecutionMonitorKind | null;
+  serviceName?: string | null;
+  externalRef?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+  clearedAt: string | null;
+  clearReason: IssueExecutionMonitorClearReason | null;
 }
 
 export interface IssueReviewRequest {
@@ -201,6 +276,7 @@ export interface IssueExecutionState {
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
+  monitor?: IssueExecutionMonitorState | null;
 }
 
 export interface IssueExecutionDecision {
@@ -229,6 +305,7 @@ export interface Issue {
   title: string;
   description: string | null;
   status: IssueStatus;
+  workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -249,6 +326,11 @@ export interface Issue {
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
+  monitorNextCheckAt?: Date | null;
+  monitorLastTriggeredAt?: Date | null;
+  monitorAttemptCount?: number;
+  monitorNotes?: string | null;
+  monitorScheduledBy?: IssueMonitorScheduledBy | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
@@ -261,6 +343,8 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
+  productivityReview?: IssueProductivityReview | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -283,12 +367,82 @@ export interface IssueComment {
   id: string;
   companyId: string;
   issueId: string;
+  authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
   body: string;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface IssueCommentMetadataRowBase {
+  type: IssueCommentMetadataRowType;
+  label?: string | null;
+}
+
+export interface IssueCommentMetadataTextRow extends IssueCommentMetadataRowBase {
+  type: "text";
+  text: string;
+}
+
+export interface IssueCommentMetadataCodeRow extends IssueCommentMetadataRowBase {
+  type: "code";
+  code: string;
+  language?: string | null;
+}
+
+export interface IssueCommentMetadataKeyValueRow extends IssueCommentMetadataRowBase {
+  type: "key_value";
+  label: string;
+  value: string;
+}
+
+export interface IssueCommentMetadataIssueLinkRow extends IssueCommentMetadataRowBase {
+  type: "issue_link";
+  issueId?: string | null;
+  identifier?: string | null;
+  title?: string | null;
+}
+
+export interface IssueCommentMetadataAgentLinkRow extends IssueCommentMetadataRowBase {
+  type: "agent_link";
+  agentId: string;
+  name?: string | null;
+}
+
+export interface IssueCommentMetadataRunLinkRow extends IssueCommentMetadataRowBase {
+  type: "run_link";
+  runId: string;
+  title?: string | null;
+}
+
+export type IssueCommentMetadataRow =
+  | IssueCommentMetadataTextRow
+  | IssueCommentMetadataCodeRow
+  | IssueCommentMetadataKeyValueRow
+  | IssueCommentMetadataIssueLinkRow
+  | IssueCommentMetadataAgentLinkRow
+  | IssueCommentMetadataRunLinkRow;
+
+export interface IssueCommentMetadataSection {
+  title?: string | null;
+  rows: IssueCommentMetadataRow[];
+}
+
+export interface IssueCommentMetadata {
+  version: 1;
+  sourceRunId?: string | null;
+  sections: IssueCommentMetadataSection[];
+}
+
+export interface IssueCommentPresentation {
+  kind: IssueCommentPresentationKind;
+  tone: IssueCommentPresentationTone;
+  title?: string | null;
+  detailsDefaultOpen: boolean;
 }
 
 export interface IssueThreadInteractionActorFields {
@@ -305,6 +459,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   projectId?: string | null;
@@ -366,6 +521,8 @@ export interface AskUserQuestionsAnswer {
 export interface AskUserQuestionsResult {
   version: 1;
   answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
   summaryMarkdown?: string | null;
 }
 

@@ -234,4 +234,191 @@ describe("issue graph liveness classifier", () => {
       incidentKey: `harness_liveness:${companyId}:${blockedId}:invalid_review_participant:missing-agent`,
     });
   });
+
+  it("detects the PAP-2239-style blocked chain at the first stalled in_review leaf without duplicate findings", () => {
+    const phaseIssueId = "phase-issue-1";
+    const reviewLeafId = "review-leaf-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: "pap-2239",
+          identifier: "PAP-2239",
+          title: "External object reference project",
+          status: "blocked",
+        }),
+        issue({
+          id: phaseIssueId,
+          identifier: "PAP-2276",
+          title: "UX acceptance review phase",
+          status: "blocked",
+          assigneeAgentId: coderId,
+        }),
+        issue({
+          id: reviewLeafId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+      ],
+      relations: [
+        { companyId, blockerIssueId: phaseIssueId, blockedIssueId: "pap-2239" },
+        { companyId, blockerIssueId: reviewLeafId, blockedIssueId: phaseIssueId },
+      ],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: "pap-2239",
+      identifier: "PAP-2239",
+      state: "in_review_without_action_path",
+      recoveryIssueId: reviewLeafId,
+      recommendedOwnerAgentId: coderId,
+      dependencyPath: [
+        expect.objectContaining({ issueId: "pap-2239" }),
+        expect.objectContaining({ issueId: phaseIssueId }),
+        expect.objectContaining({ issueId: reviewLeafId }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:pap-2239:in_review_without_action_path:${reviewLeafId}`,
+    });
+  });
+
+  it("skips paused stalled review assignees when choosing recovery owner candidates", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent({ status: "paused" }), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "in_review_without_action_path",
+      recommendedOwnerAgentId: managerId,
+    });
+    expect(findings[0]?.recommendedOwnerCandidates).toEqual([
+      {
+        agentId: managerId,
+        reason: "assignee_reporting_chain",
+        sourceIssueId: reviewIssueId,
+      },
+    ]);
+  });
+
+  it("does not flag healthy in_review issues with an explicit action path", () => {
+    const reviewIssueId = "review-1";
+    const baseReviewIssue = issue({
+      id: reviewIssueId,
+      identifier: "PAP-2279",
+      title: "Screenshot acceptance review",
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionState: null,
+    });
+
+    const cases = [
+      {
+        name: "typed agent participant",
+        issue: {
+          ...baseReviewIssue,
+          executionState: {
+            currentParticipant: { type: "agent", agentId: coderId },
+          },
+        },
+      },
+      {
+        name: "typed user participant",
+        issue: {
+          ...baseReviewIssue,
+          executionState: {
+            currentParticipant: { type: "user", userId: "board-user-1" },
+          },
+        },
+      },
+      {
+        name: "user owner",
+        issue: { ...baseReviewIssue, assigneeAgentId: null, assigneeUserId: "board-user-1" },
+      },
+      {
+        name: "active run",
+        issue: baseReviewIssue,
+        activeRuns: [{ companyId, issueId: reviewIssueId, agentId: coderId, status: "running" }],
+      },
+      {
+        name: "queued wake",
+        issue: baseReviewIssue,
+        queuedWakeRequests: [{ companyId, issueId: reviewIssueId, agentId: coderId, status: "queued" }],
+      },
+      {
+        name: "pending interaction",
+        issue: baseReviewIssue,
+        pendingInteractions: [{ companyId, issueId: reviewIssueId, status: "pending" }],
+      },
+      {
+        name: "pending approval",
+        issue: baseReviewIssue,
+        pendingApprovals: [{ companyId, issueId: reviewIssueId, status: "pending" }],
+      },
+      {
+        name: "open recovery issue",
+        issue: baseReviewIssue,
+        openRecoveryIssues: [{ companyId, issueId: reviewIssueId, status: "todo" }],
+      },
+    ];
+
+    for (const testCase of cases) {
+      const findings = classifyIssueGraphLiveness({
+        issues: [testCase.issue],
+        relations: [],
+        agents: [agent(), manager],
+        activeRuns: testCase.activeRuns,
+        queuedWakeRequests: testCase.queuedWakeRequests,
+        pendingInteractions: testCase.pendingInteractions,
+        pendingApprovals: testCase.pendingApprovals,
+        openRecoveryIssues: testCase.openRecoveryIssues,
+      });
+
+      expect(findings, testCase.name).toEqual([]);
+    }
+  });
+
+  it("ignores cross-company waiting paths for stalled in_review issues", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      pendingInteractions: [{ companyId: "other-company", issueId: reviewIssueId, status: "pending" }],
+      openRecoveryIssues: [{ companyId: "other-company", issueId: reviewIssueId, status: "todo" }],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "in_review_without_action_path",
+      recoveryIssueId: reviewIssueId,
+    });
+  });
 });

@@ -190,8 +190,9 @@ describe("worktree helpers", () => {
     ).toEqual(["worktree", "add", "-b", "my-worktree", "/tmp/my-worktree", "origin/main"]);
   });
 
-  it("rewrites loopback auth URLs to the new port only", () => {
+  it("rewrites auth URLs only when they already include a port", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
+    expect(rewriteLocalUrlPort("http://my-host.ts.net:3100", 3110)).toBe("http://my-host.ts.net:3110/");
     expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
   });
 

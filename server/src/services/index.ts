@@ -1,4 +1,5 @@
 export { companyService } from "./companies.js";
+export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
@@ -32,6 +33,10 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export {
+  productivityReviewService,
+  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+} from "./productivity-review.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
