@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedProjectIds: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
+  list: vi.fn(),
   listBlockerAttention: vi.fn(),
   listProductivityReviews: vi.fn(),
   listAttachments: vi.fn(),
@@ -186,6 +187,7 @@ describe.sequential("issue goal context routes", () => {
       latestCommentAt: null,
     });
     mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.listAttachments.mockResolvedValue([]);
@@ -301,7 +303,7 @@ describe.sequential("issue goal context routes", () => {
     }));
   });
 
-  it("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {
+  it("surfaces child and blocker summaries on GET /issues/:id/heartbeat-context", async () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({
       blockedBy: [
         {
@@ -316,16 +318,37 @@ describe.sequential("issue goal context routes", () => {
       ],
       blocks: [],
     });
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "66666666-6666-4666-8666-666666666666",
+        identifier: "PAP-582",
+        title: "Prove umbrella hydration",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+    ]);
 
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", {
+      parentId: "11111111-1111-4111-8111-111111111111",
+      limit: 100,
+    });
     expect(res.body.issue.blockedBy).toEqual([
       expect.objectContaining({
         id: "55555555-5555-4555-8555-555555555555",
         identifier: "PAP-580",
+      }),
+    ]);
+    expect(res.body.issue.children).toEqual([
+      expect.objectContaining({
+        id: "66666666-6666-4666-8666-666666666666",
+        identifier: "PAP-582",
       }),
     ]);
   });
