@@ -327,3 +327,41 @@ Con 500 créditos Higgsfield (~$31): ~13-14 videos completos.
   - "El piloto que aterrizó sin saber que llevaba cocaína"
   - "Descubrí que mi marido tenía otra familia cuando fui al banco"
 - **Modelo de negocio objetivo**: agencia de contenido en España (€25-35/video), autónomo tarifa plana €80/mes primer año
+
+---
+
+## 12. Frontend Studio — estado actual (2025-05-06)
+
+### 4 pantallas disponibles
+
+| Ruta | Archivo | Estado |
+|---|---|---|
+| `/studio` | `frontend/index.html` | ✅ Funcional — bug JS crítico resuelto |
+| `/agentes` | `frontend/agentes.html` | ✅ 10 agentes reales, sin datos falsos |
+| `/estadisticas` | `frontend/estadisticas.html` | ✅ Datos reales de Supabase via proxy |
+| `/biblioteca` | `frontend/biblioteca.html` | ✅ Galería real de vídeos + modal |
+
+### Bug crítico resuelto
+
+CSS `.gallery-card { ... }` estaba dentro del `<script>` de `index.html`.
+Causaba **SyntaxError → TODO el JS era undefined** → ningún agente era seleccionable, el botón Ejecutar no funcionaba.
+Fix: CSS movido al bloque `<style>`. Commit `1fd98c46`.
+
+### Proxy Supabase seguro
+
+La clave `SUPABASE_KEY` nunca se expone en HTML del cliente.
+El servidor (`app.ts`) la usa internamente:
+```
+GET /api/content/videos?limit=N  → lista paginada de vídeos
+GET /api/content/stats           → {total, withVideo, withImages, costPerVideo: 2.30}
+```
+
+⚠️ `SUPABASE_URL` en Railway ya incluye `/rest/v1`.
+El proxy lo normaliza con: `url.replace(/\/rest\/v1\/?$/, "")` antes de añadir la ruta.
+
+### Diseño visual
+
+- Fuentes: Barlow + Barlow Condensed + DM Mono + Space Grotesk
+- Colores: `--accent: #a855f7` (púrpura) + dark `#0d0d0f`
+- Ambient blobs animados (CSS), sidebar unificado en todas las pantallas
+- Horizontal pipeline stepper en el panel derecho cuando el Director está activo
