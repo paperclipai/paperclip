@@ -12,22 +12,14 @@ function extractZitadelRoles(profile: Record<string, unknown>): string[] {
   return Object.keys(raw as Record<string, unknown>);
 }
 
-if (!process.env['AUTH_ZITADEL_ISSUER']) {
-  throw new OIDCConfigurationError('AUTH_ZITADEL_ISSUER is not set');
-}
-if (!process.env['AUTH_ZITADEL_ID']) {
-  throw new OIDCConfigurationError('AUTH_ZITADEL_ID is not set');
-}
-if (!process.env['AUTH_ZITADEL_SECRET']) {
-  throw new OIDCConfigurationError('AUTH_ZITADEL_SECRET is not set');
-}
-
+// Env vars are validated at request time (not module load) so Next.js static
+// analysis during build doesn't throw when the vars aren't set yet.
 const authConfig: NextAuthConfig = {
   providers: [
     Zitadel({
-      issuer: process.env['AUTH_ZITADEL_ISSUER'],
-      clientId: process.env['AUTH_ZITADEL_ID'],
-      clientSecret: process.env['AUTH_ZITADEL_SECRET'],
+      issuer: process.env['AUTH_ZITADEL_ISSUER'] ?? '',
+      clientId: process.env['AUTH_ZITADEL_ID'] ?? '',
+      clientSecret: process.env['AUTH_ZITADEL_SECRET'] ?? '',
       authorization: {
         params: {
           scope:
@@ -38,19 +30,12 @@ const authConfig: NextAuthConfig = {
   ],
 
   callbacks: {
-    async jwt({
-      token,
-      account,
-      profile,
-    }: {
-      token: JWT;
-      account: unknown;
-      profile?: Record<string, unknown>;
-    }) {
+    async jwt({ token, account, profile }) {
       if (account != null && profile != null) {
-        token['sub'] = (profile['sub'] as string | undefined) ?? token['sub'];
-        token['email'] = (profile['email'] as string | undefined) ?? token['email'];
-        token['roles'] = extractZitadelRoles(profile);
+        const p = profile as Record<string, unknown>;
+        token['sub'] = (p['sub'] as string | undefined) ?? token['sub'];
+        token['email'] = (p['email'] as string | undefined) ?? token['email'];
+        token['roles'] = extractZitadelRoles(p);
       }
       return token;
     },
@@ -58,7 +43,7 @@ const authConfig: NextAuthConfig = {
     async session({ session, token }: { session: Session; token: JWT }) {
       const s = session as Session & { roles: string[] };
       s.roles = (token['roles'] as string[] | undefined) ?? [];
-      if (typeof token['email'] === 'string') {
+      if (typeof token['email'] === 'string' && s.user != null) {
         s.user.email = token['email'];
       }
       return s;
@@ -102,6 +87,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth(authConfig);
 
 // Type-safe session accessor used in server components and route handlers.
 export async function requireSession(): Promise<AppSession> {
+  if (!process.env['AUTH_ZITADEL_ISSUER'] || !process.env['AUTH_ZITADEL_ID'] || !process.env['AUTH_ZITADEL_SECRET']) {
+    throw new OIDCConfigurationError('AUTH_ZITADEL_ISSUER / AUTH_ZITADEL_ID / AUTH_ZITADEL_SECRET are not set');
+  }
   const session = (await auth()) as AppSession | null;
   if (session == null) {
     const { SessionInvalidError } = await import('./errors');
