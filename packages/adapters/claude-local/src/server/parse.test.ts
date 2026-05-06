@@ -202,6 +202,7 @@ describe("extractClaudeHardLimitBlock", () => {
           rateLimitType: "five_hour",
           resetsAt: 1778004000,
         },
+        errorMessage: "Weekly limit reached, using extra usage.",
       }),
     ).toBeNull();
   });
@@ -220,6 +221,9 @@ describe("parseClaudeStreamJson rate_limit_event extraction", () => {
       status: "rejected",
       rateLimitType: "five_hour",
       resetsAt: 1778004000,
+      overageStatus: "rejected",
+      overageDisabledReason: "org_level_disabled",
+      isUsingOverage: false,
     });
   });
 
@@ -230,6 +234,29 @@ describe("parseClaudeStreamJson rate_limit_event extraction", () => {
     ].join("\n");
     const parsed = parseClaudeStreamJson(stream);
     expect(parsed.rateLimitInfo).toBeNull();
+  });
+
+  it("captures allowed overage rate_limit_event status without treating text as a hard block", () => {
+    const stream = [
+      '{"type":"system","subtype":"init","session_id":"sess-1","model":"claude-sonnet-4-6"}',
+      '{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1778004000,"rateLimitType":"seven_day","overageStatus":"allowed","isUsingOverage":true},"session_id":"sess-1"}',
+      '{"type":"result","subtype":"success","is_error":false,"duration_ms":475,"result":"continued via extra usage","session_id":"sess-1","total_cost_usd":0}',
+    ].join("\n");
+    const parsed = parseClaudeStreamJson(stream);
+    expect(parsed.rateLimitInfo).toEqual({
+      status: "allow",
+      rateLimitType: "seven_day",
+      resetsAt: 1778004000,
+      overageStatus: "allowed",
+      overageDisabledReason: null,
+      isUsingOverage: true,
+    });
+    expect(
+      extractClaudeHardLimitBlock({
+        rateLimitInfo: parsed.rateLimitInfo,
+        errorMessage: "You've hit your weekly limit, continuing with extra usage.",
+      }),
+    ).toBeNull();
   });
 });
 
