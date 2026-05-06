@@ -118,6 +118,21 @@ async function createControlledGatewayServer() {
             },
           }),
         );
+        return;
+      }
+
+      // Fork-only: openclaw-gateway/execute.ts calls sessions.usage after
+      // agent.wait. Without a handler the request hangs and the run never
+      // transitions to succeeded, so downstream waitFor() asserts time out.
+      if (frame.method === "sessions.usage") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { totals: {}, aggregates: { byModel: [] } },
+          }),
+        );
       }
     });
   });
