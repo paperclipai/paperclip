@@ -1,4 +1,10 @@
 # syntax=docker/dockerfile:1.20
+
+# ── Caddy build (consumed by the `railway` target only) ──────────────────────
+FROM caddy:2-builder-alpine AS caddy-builder
+RUN xcaddy build --with github.com/ggicci/caddy-jwt
+
+# ── Shared Node base ──────────────────────────────────────────────────────────
 FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -79,3 +85,34 @@ EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+
+# ── Railway target ────────────────────────────────────────────────────────────
+# Combined Caddy + Paperclip image for Railway deployment.
+# Caddy listens on $PORT (HTTP; Railway terminates TLS) and proxies to
+# Paperclip on 127.0.0.1:3000, satisfying local_trusted's loopback requirement.
+# supervisord manages both processes.
+#
+# Build:  docker build --target railway -t paperclip-railway .
+# Railway: set "Docker Build Target" to "railway" in service settings.
+FROM production AS railway
+
+COPY --from=caddy-builder /usr/bin/caddy /usr/bin/caddy
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends supervisor \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY docker/railway/Caddyfile /etc/caddy/Caddyfile
+COPY docker/railway/supervisord.conf /etc/supervisor/conf.d/paperclip.conf
+COPY docker/railway/entrypoint.sh /usr/local/bin/railway-entrypoint.sh
+RUN chmod +x /usr/local/bin/railway-entrypoint.sh
+
+ENV PAPERCLIP_DEPLOYMENT_MODE=local_trusted \
+    PAPERCLIP_BIND=loopback \
+    PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+    HOST=127.0.0.1 \
+    PORT=3000
+
+EXPOSE 8080
+
+ENTRYPOINT ["railway-entrypoint.sh"]
+CMD []

@@ -1,0 +1,41 @@
+{
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+	order jwtauth before reverse_proxy
+}
+
+# Railway terminates TLS; Caddy listens on plain HTTP at the exposed PORT.
+# {$CADDY_PORT} is set by the entrypoint from Railway's $PORT env var.
+:{$CADDY_PORT} {
+	jwtauth {
+		sign_key     {$SESSION_JWT_SECRET}
+		sign_alg     HS256
+		from_cookies jaban_session
+	}
+
+	handle_errors 401 {
+		redir https://ops.binelek.io/login 302
+	}
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	reverse_proxy @websocket 127.0.0.1:{$PAPERCLIP_PORT} {
+		header_up Host              {host}
+		header_up X-Real-IP         {remote_host}
+		header_up X-Forwarded-For   {remote_host}
+		header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+	}
+
+	reverse_proxy 127.0.0.1:{$PAPERCLIP_PORT} {
+		header_up Host                 {host}
+		header_up X-Real-IP            {remote_host}
+		header_up X-Forwarded-For      {remote_host}
+		header_up X-Forwarded-Proto    {http.request.header.X-Forwarded-Proto}
+		header_up X-Authenticated-User {http.auth.user.email}
+	}
+}
