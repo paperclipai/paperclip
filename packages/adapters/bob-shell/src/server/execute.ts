@@ -432,11 +432,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onLog,
   });
 
-  // Status update: session decision (logged to stderr for visibility)
+  // Status update: session decision (logged to stdout for coordination)
   const sessionStatus = sessionId
     ? `Resuming Bob Shell session ${sessionId}`
     : "Starting new Bob Shell session";
-  await onLog("stderr", `[paperclip] ${sessionStatus}\n`);
+  await onLog("stdout", `[paperclip] ${sessionStatus}\n`);
 
   const templateData = {
     agentId: agent.id,
@@ -520,7 +520,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         accumulatedStdout += chunk;
         const parsed = parseBobShellStream(accumulatedStdout);
         
-        // Log summary updates to stderr for visibility (status updates not available in core adapter interface)
+        // Log summary updates to stdout for coordination (status updates not available in core adapter interface)
         if (parsed.summary && 
             parsed.summary.length > 0 && 
             parsed.summary !== lastPublishedSummary) {
@@ -545,7 +545,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             statusParts.push(`cost: $${parsed.costUsd.toFixed(4)}`);
           }
           
-          await onLog("stderr", `[paperclip] ${statusParts.join(" | ")}\n`);
+          await onLog("stdout", `[paperclip] ${statusParts.join(" | ")}\n`);
           lastPublishedSummary = parsed.summary;
         }
       }
@@ -591,7 +591,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdout: currentAttempt.proc.stdout,
         stderr: currentAttempt.proc.stderr,
       });
-      await onLog("stderr", `[paperclip] ${failureDescription}\n`);
+      await onLog("stdout", `[paperclip] ${failureDescription}\n`);
       break;
     }
 
