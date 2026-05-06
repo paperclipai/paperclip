@@ -17,15 +17,19 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
+const implementationGateIssueId = "77777777-7777-4777-8777-777777777771";
+const qaGateIssueId = "88888888-8888-4888-8888-888888888881";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  createChild: vi.fn(),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  list: vi.fn(),
   listAttachments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
@@ -262,11 +266,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.createChild.mockReset();
     mockIssueService.getAttachmentById.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
+    mockIssueService.list.mockReset();
     mockIssueService.listAttachments.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.remove.mockReset();
@@ -298,9 +304,25 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.createChild.mockImplementation(async (_parentId: string, data: Record<string, unknown>) => {
+      const id = String(data.title).includes("implementation") ? implementationGateIssueId : qaGateIssueId;
+      return {
+        issue: makeIssue({
+          id,
+          title: data.title,
+          status: data.status,
+          assigneeAgentId: data.assigneeAgentId ?? null,
+          parentId: issueId,
+          originKind: data.originKind,
+          originId: data.originId,
+        }),
+        parentBlockerAdded: Boolean(data.blockParentUntilDone),
+      };
+    });
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue(),
       ...patch,
@@ -589,6 +611,152 @@ describe("agent issue mutation checkout ownership", () => {
       { gateId: "production-smoke", missingEvidence: ["production_url", "screenshot_or_artifact"] },
     ]);
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("materializes gate manifests into child issue blockers and writes gate issue ids back", async () => {
+    mockDocumentService.getIssueDocumentByKey.mockImplementation(async (_issueId: string, key: string) => {
+      if (key !== GATE_MANIFEST_DOCUMENT_KEY) return null;
+      return {
+        key: GATE_MANIFEST_DOCUMENT_KEY,
+        title: "Gate Manifest",
+        format: "markdown",
+        body: formatGateManifestDocumentBody({
+          version: 1,
+          gates: [
+            {
+              id: "qa",
+              type: "qa",
+              title: "Verify the flow",
+              status: "pending",
+              blockedByGateIds: ["implementation"],
+              requiredEvidence: ["test"],
+            },
+            {
+              id: "implementation",
+              type: "implementation",
+              title: "Implement the fix",
+              status: "pending",
+              requiredEvidence: ["commit"],
+            },
+          ],
+        }),
+        latestRevisionId: "gate-revision-1",
+        latestRevisionNumber: 1,
+        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+      };
+    });
+    mockDocumentService.upsertIssueDocument.mockResolvedValueOnce({
+      created: false,
+      document: {
+        id: "gate-document-1",
+        key: GATE_MANIFEST_DOCUMENT_KEY,
+        title: "Gate Manifest",
+        format: "markdown",
+        latestRevisionNumber: 2,
+      },
+    });
+
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/gate-manifest/materialize`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.createChild).toHaveBeenCalledTimes(2);
+    expect(mockIssueService.createChild.mock.calls[0][1]).toMatchObject({
+      title: "[Gate: implementation] Implement the fix",
+      status: "todo",
+      blockedByIssueIds: [],
+      blockParentUntilDone: true,
+      originKind: "plugin:paperclip.missions:gate",
+      originId: `${issueId}:implementation`,
+    });
+    expect(mockIssueService.createChild.mock.calls[1][1]).toMatchObject({
+      title: "[Gate: qa] Verify the flow",
+      status: "blocked",
+      blockedByIssueIds: [implementationGateIssueId],
+      blockParentUntilDone: true,
+      originKind: "plugin:paperclip.missions:gate",
+      originId: `${issueId}:qa`,
+    });
+
+    const upsertPayload = mockDocumentService.upsertIssueDocument.mock.calls[0][0];
+    const updatedManifest = JSON.parse(upsertPayload.body);
+    expect(upsertPayload.baseRevisionId).toBe("gate-revision-1");
+    expect(updatedManifest.gates).toEqual([
+      expect.objectContaining({
+        id: "qa",
+        issueId: qaGateIssueId,
+        blockedByIssueIds: [implementationGateIssueId],
+      }),
+      expect.objectContaining({
+        id: "implementation",
+        issueId: implementationGateIssueId,
+        blockedByIssueIds: [],
+      }),
+    ]);
+    expect(res.body.createdIssues.map((item: { gateId: string }) => item.gateId)).toEqual(["implementation", "qa"]);
+  });
+
+  it("reuses existing materialized gate children by origin id instead of creating duplicates", async () => {
+    mockDocumentService.getIssueDocumentByKey.mockImplementation(async (_issueId: string, key: string) => {
+      if (key !== GATE_MANIFEST_DOCUMENT_KEY) return null;
+      return {
+        key: GATE_MANIFEST_DOCUMENT_KEY,
+        title: "Gate Manifest",
+        format: "markdown",
+        body: formatGateManifestDocumentBody({
+          version: 1,
+          gates: [
+            {
+              id: "implementation",
+              type: "implementation",
+              title: "Implement the fix",
+              status: "pending",
+            },
+          ],
+        }),
+        latestRevisionId: "gate-revision-1",
+        latestRevisionNumber: 1,
+        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+      };
+    });
+    mockIssueService.list.mockResolvedValueOnce([
+      makeIssue({
+        id: implementationGateIssueId,
+        title: "[Gate: implementation] Implement the fix",
+        parentId: issueId,
+        originKind: "plugin:paperclip.missions:gate",
+        originId: `${issueId}:implementation`,
+      }),
+    ]);
+    mockDocumentService.upsertIssueDocument.mockResolvedValueOnce({
+      created: false,
+      document: {
+        id: "gate-document-1",
+        key: GATE_MANIFEST_DOCUMENT_KEY,
+        title: "Gate Manifest",
+        format: "markdown",
+        latestRevisionNumber: 2,
+      },
+    });
+
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/gate-manifest/materialize`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(res.body.existingIssues).toEqual([
+      expect.objectContaining({
+        gateId: "implementation",
+        issueId: implementationGateIssueId,
+      }),
+    ]);
+    const upsertPayload = mockDocumentService.upsertIssueDocument.mock.calls[0][0];
+    expect(JSON.parse(upsertPayload.body).gates[0]).toEqual(expect.objectContaining({
+      id: "implementation",
+      issueId: implementationGateIssueId,
+    }));
   });
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {

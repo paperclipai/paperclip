@@ -120,6 +120,7 @@ pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
 pnpm paperclipai issue mission:draft --request "..." --scope route:/trips --acceptance "..."
 pnpm paperclipai issue mission:upsert <issue-id> --request "..." --scope route:/trips --acceptance "..."
+pnpm paperclipai issue gates:materialize <issue-id>
 pnpm paperclipai issue evidence:append <issue-id> --id prod-smoke-1 --gate-id production-smoke --gate-type production_smoke --url "Production=https://app.example.com" --screenshot "desktop=.paperclip/artifacts/prod.png"
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-statuses todo,backlog,blocked]
 pnpm paperclipai issue release <issue-id>
@@ -129,6 +130,10 @@ Mission commands create the reserved `mission` issue document. `mission:draft` p
 without writing to the server; `mission:upsert` validates and attaches it to the issue. `--scope`
 and `--acceptance` are repeatable, and `--gates` defaults to
 `implementation,review,qa,release,production_smoke`.
+
+`gates:materialize` turns a reserved `gate_manifest` issue document into child
+gate issues and concrete blockers, then writes the child issue ids back into the
+manifest. Pass `--no-block-parent` for drafts that should not hold the parent.
 
 `evidence:append` appends one structured record to the reserved `evidence_records`
 issue document. Use it for implementation, review, QA, release, and production-smoke

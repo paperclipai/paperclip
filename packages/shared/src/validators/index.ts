@@ -205,6 +205,7 @@ export {
   gateManifestDonePolicySchema,
   gateManifestGateSchema,
   gateManifestSchema,
+  materializeGateManifestSchema,
   evaluateGateManifestCompletion,
   formatGateManifestDocumentBody,
   parseGateManifestDocumentBody,
@@ -212,6 +213,7 @@ export {
   type GateManifestGateStatus,
   type GateManifestGate,
   type GateManifest,
+  type MaterializeGateManifest,
   type GateEvidenceFailure,
   type GateManifestCompletionEvaluation,
 } from "./gate-manifest.js";

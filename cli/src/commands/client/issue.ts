@@ -103,6 +103,10 @@ interface IssueMissionUpsertOptions extends BaseClientOptions, MissionContractCl
 
 interface IssueEvidenceAppendOptions extends BaseClientOptions, EvidenceRecordCliOptions {}
 
+interface IssueGateMaterializeOptions extends BaseClientOptions {
+  blockParent?: boolean;
+}
+
 export function registerIssueCommands(program: Command): void {
   const issue = program.command("issue").description("Issue operations");
 
@@ -313,6 +317,27 @@ export function registerIssueCommands(program: Command): void {
             },
           );
           printOutput(updated, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("gates:materialize")
+      .description("Create or reuse child issues for an issue's gate manifest")
+      .argument("<issueId>", "Issue ID")
+      .option("--no-block-parent", "Do not add materialized gate issues as blockers on the parent issue")
+      .action(async (issueId: string, opts: IssueGateMaterializeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.post<unknown>(
+            `/api/issues/${issueId}/gate-manifest/materialize`,
+            { blockParentUntilDone: opts.blockParent !== false },
+          );
+          printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }

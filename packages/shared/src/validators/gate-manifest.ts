@@ -62,10 +62,18 @@ export const gateManifestSchema = z.object({
   }
 });
 
+export const materializeGateManifestSchema = z.preprocess(
+  (value) => value == null ? {} : value,
+  z.object({
+    blockParentUntilDone: z.boolean().optional().default(true),
+  }).strict(),
+);
+
 export type GateManifestGateType = z.infer<typeof gateManifestGateTypeSchema>;
 export type GateManifestGateStatus = z.infer<typeof gateManifestGateStatusSchema>;
 export type GateManifestGate = z.infer<typeof gateManifestGateSchema>;
 export type GateManifest = z.infer<typeof gateManifestSchema>;
+export type MaterializeGateManifest = z.infer<typeof materializeGateManifestSchema>;
 
 export interface GateEvidenceFailure {
   gateId: string;
