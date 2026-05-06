@@ -80,6 +80,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -316,6 +317,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.cancelRun.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
+    mockIssueService.listDependencyReadiness.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
@@ -328,6 +330,7 @@ describe.sequential("agent permission routes", () => {
     mockInstanceSettingsService.getGeneral.mockReset();
     mockEnvironmentService.getById.mockReset();
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockReset();
+    mockIssueService.listDependencyReadiness.mockResolvedValue(new Map());
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
@@ -1410,6 +1413,76 @@ describe.sequential("agent permission routes", () => {
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
     });
+  });
+
+  it("includes routine execution issues in the authenticated agent inbox-lite view", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-2",
+        identifier: "PAP-911",
+        title: "Daily routine execution",
+        status: "todo",
+        priority: "medium",
+        projectId: "project-1",
+        goalId: "goal-1",
+        parentId: "parent-1",
+        updatedAt: "2026-04-09T09:03:07.119Z",
+        activeRun: {
+          id: "run-1",
+          status: "running",
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          startedAt: "2026-04-09T09:03:04.776Z",
+          finishedAt: null,
+          createdAt: "2026-04-09T09:02:25.540Z",
+        },
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/agents/me/inbox-lite");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+      limit: 500,
+    });
+    expect(res.body).toEqual([
+      {
+        id: "issue-2",
+        identifier: "PAP-911",
+        title: "Daily routine execution",
+        status: "todo",
+        priority: "medium",
+        projectId: "project-1",
+        goalId: "goal-1",
+        parentId: "parent-1",
+        updatedAt: "2026-04-09T09:03:07.119Z",
+        activeRun: {
+          id: "run-1",
+          status: "running",
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          startedAt: "2026-04-09T09:03:04.776Z",
+          finishedAt: null,
+          createdAt: "2026-04-09T09:02:25.540Z",
+        },
+        dependencyReady: true,
+        unresolvedBlockerCount: 0,
+        unresolvedBlockerIssueIds: [],
+      },
+    ]);
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
