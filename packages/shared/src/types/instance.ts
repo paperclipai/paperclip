@@ -19,11 +19,22 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+export interface RecoveryProtectionSettings {
+  continuationDailyCap: number;
+  continuationDailyWindowHours: number;
+}
+
+export const DEFAULT_RECOVERY_PROTECTION_SETTINGS: RecoveryProtectionSettings = {
+  continuationDailyCap: 24,
+  continuationDailyWindowHours: 24,
+};
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  recoveryProtection: RecoveryProtectionSettings;
 }
 
 export interface InstanceExperimentalSettings {
