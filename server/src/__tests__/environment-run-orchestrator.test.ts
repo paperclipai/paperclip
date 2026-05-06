@@ -420,6 +420,85 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     }));
   });
 
+  it("runs project-level provision commands for ssh environments", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "gemini_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @google/gemini-cli",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/remote/workspace",
+        remoteWorkspacePath: "/remote/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "ssh",
+            remote: { path: "/remote/workspace" },
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("ssh"),
+      lease: makeLease({
+        provider: "ssh",
+        metadata: {
+          driver: "ssh",
+          remoteCwd: "/remote/workspace",
+          remoteWorkspacePath: "/remote/workspace",
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+        },
+      }),
+    }));
+
+    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "bash",
+      args: ["-lc", "npm install -g @google/gemini-cli"],
+    }));
+    expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
+  });
+
   it("surfaces remote provision command failures before resolving the adapter target", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,

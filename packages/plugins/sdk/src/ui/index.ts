@@ -43,20 +43,89 @@
  * - `usePluginData(key, params)` — fetch data from the worker's `getData` handler
  * - `usePluginAction(key)` — get a callable that invokes the worker's `performAction` handler
  * - `useHostContext()` — read the current active company, project, entity, and user IDs
+ * - `useHostNavigation()` — navigate Paperclip-internal links through the host router
+ * - `useHostLocation()` — observe the current host pathname/search/hash for URL-driven UI
  * - `usePluginStream(channel)` — subscribe to real-time SSE events from the worker
  */
 export {
   usePluginData,
   usePluginAction,
   useHostContext,
+  useHostNavigation,
+  useHostLocation,
   usePluginStream,
   usePluginToast,
 } from "./hooks.js";
+
+export {
+  MetricCard,
+  StatusBadge,
+  DataTable,
+  TimeseriesChart,
+  MarkdownBlock,
+  MarkdownEditor,
+  KeyValueList,
+  ActionBar,
+  LogView,
+  JsonTree,
+  Spinner,
+  ErrorBoundary,
+  FileTree,
+  IssuesList,
+  AssigneePicker,
+  ProjectPicker,
+  ManagedRoutinesList,
+} from "./components.js";
+
+export type {
+  MetricTrend,
+  MetricCardProps,
+  StatusBadgeVariant,
+  StatusBadgeProps,
+  DataTableColumn,
+  DataTableProps,
+  TimeseriesDataPoint,
+  TimeseriesChartProps,
+  MarkdownBlockProps,
+  MarkdownEditorProps,
+  KeyValuePair,
+  KeyValueListProps,
+  ActionBarItem,
+  ActionBarProps,
+  LogViewEntry,
+  LogViewProps,
+  JsonTreeProps,
+  SpinnerProps,
+  ErrorBoundaryProps,
+  FileTreeNode,
+  FileTreeBadgeVariant,
+  FileTreeBadge,
+  FileTreeTone,
+  FileTreeEmptyState,
+  FileTreeErrorState,
+  FileTreePathCollection,
+  FileTreeProps,
+  IssuesListFilters,
+  IssuesListProps,
+  AssigneePickerSelection,
+  AssigneePickerProps,
+  ProjectPickerProps,
+  ManagedRoutineMissingRef,
+  ManagedRoutinesListAgent,
+  ManagedRoutinesListItem,
+  ManagedRoutinesListProject,
+  ManagedRoutinesListProps,
+} from "./components.js";
 
 // Bridge error and host context types
 export type {
   PluginBridgeError,
   PluginBridgeErrorCode,
+  HostNavigation,
+  HostNavigationOptions,
+  HostNavigationLinkOptions,
+  HostNavigationLinkProps,
+  HostLocation,
   PluginHostContext,
   PluginModalBoundsRequest,
   PluginRenderCloseEvent,
@@ -80,6 +149,7 @@ export type {
   PluginWidgetProps,
   PluginDetailTabProps,
   PluginSidebarProps,
+  PluginRouteSidebarProps,
   PluginProjectSidebarItemProps,
   PluginCommentAnnotationProps,
   PluginCommentContextMenuItemProps,

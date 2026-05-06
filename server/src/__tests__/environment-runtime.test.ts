@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -329,26 +328,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const statePath = path.join(fixtureRoot, "state.json");
     const fixture = await startSshEnvLabFixture({ statePath });
     const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
-    const healthServer = createServer((req, res) => {
-      if (req.url === "/api/health") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ status: "ok" }));
-        return;
-      }
-      res.writeHead(404).end();
-    });
-    await new Promise<void>((resolve, reject) => {
-      healthServer.once("error", reject);
-      healthServer.listen(0, "127.0.0.1", () => resolve());
-    });
-    const address = healthServer.address();
-    if (!address || typeof address === "string") {
-      await new Promise<void>((resolve) => healthServer.close(() => resolve()));
-      throw new Error("Expected the test health server to listen on a TCP port.");
-    }
-    const runtimeApiUrl = `http://127.0.0.1:${address.port}`;
-    const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([runtimeApiUrl]);
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "ssh",
       name: "Fixture SSH",
@@ -372,7 +351,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         username: sshConfig.username,
         remoteWorkspacePath: sshConfig.remoteWorkspacePath,
         remoteCwd: sshConfig.remoteWorkspacePath,
-        paperclipApiUrl: runtimeApiUrl,
       });
 
       const released = await runtime.releaseRunLeases(runId);
@@ -381,12 +359,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(released[0]?.environment.driver).toBe("ssh");
       expect(released[0]?.lease.status).toBe("released");
     } finally {
-      if (previousCandidates === undefined) {
-        delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-      } else {
-        process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousCandidates;
-      }
-      await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     }
   });
 
