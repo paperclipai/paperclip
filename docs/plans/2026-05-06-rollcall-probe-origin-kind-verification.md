@@ -1,11 +1,11 @@
 # Verification Report: Rolecall Probe Origin Kind Implementation
 
-This document verifies the successful implementation and stabilization of the `rolecall_probe` origin kind and the associated recovery infrastructure hardening, as outlined in [2026-05-05-rolecall-probe-origin-kind.md](./2026-05-05-rolecall-probe-origin-kind.md).
+This document verifies the successful implementation and stabilization of the `rollcall_probe` origin kind and the associated recovery infrastructure hardening, as outlined in [2026-05-05-rollcall-probe-origin-kind.md](./2026-05-05-rollcall-probe-origin-kind.md).
 
 ## 1. Implementation Summary
 
 ### Agent-Declarable Origin Guards
-We implemented robust guards in the `recoveryService` to handle the `rolecall_probe` kind and other declarable origins (`skill:*`, `intent:*`).
+We implemented robust guards in the `recoveryService` to handle the `rollcall_probe` kind and other declarable origins (`skill:*`, `intent:*`).
 - **Silent Cancellation**: Issues with these origin kinds are now silently cancelled upon failure in `reconcileStrandedAssignedIssues`, suppressing human escalation.
 - **Liveness Isolation**: The liveness sweep now correctly excludes these transient tasks using robust SQL `NULL` and prefix-aware filtering.
 
@@ -20,7 +20,7 @@ The following integration tests have been successfully verified on the `HenkDz/p
 | Test Suite | Result | Summary |
 | :--- | :--- | :--- |
 | `recovery-origin-kind.test.ts` | **PASS** | Verified silent cancellation of declarable kinds and correct isolation in liveness findings. |
-| `agent-rollcall.test.ts` | **PASS** | Verified that rollcall probes are correctly created with the `rolecall_probe` origin kind and handled correctly. |
+| `agent-rollcall.test.ts` | **PASS** | Verified that rollcall probes are correctly created with the `rollcall_probe` origin kind and handled correctly. |
 | `issue-liveness.test.ts` | **PASS** | Verified recursive chain analysis, `blocked_by_nothing` detection, and deduplication of root findings. |
 | `heartbeat-issue-liveness-escalation.test.ts` | **PASS** | Verified full liveness escalation lifecycle with finalized SQL filters. |
 
