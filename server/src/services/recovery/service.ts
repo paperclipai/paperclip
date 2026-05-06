@@ -1364,6 +1364,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .returning();
     if (!claimed) return null;
 
+    const updated = await issuesSvc.update(input.issue.id, {
+      blockedByIssueIds: blockerIds,
+    });
+
     const retryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot)?.retryReason) ?? "unknown";
     const interventionLine = [
       "",
@@ -1374,11 +1378,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "- Next action: manual intervention is needed on this source issue. Fix the runtime/adapter path, reassign it, cancel it, or record why it is intentionally blocked.",
     ].join("\n");
 
+    // The atomic claim above is the source of truth. Even if the follow-up
+    // blocker sync returns null, still leave the operator-facing guidance.
     await issuesSvc.addComment(input.issue.id, `${input.comment}${interventionLine}`, {});
-
-    const updated = await issuesSvc.update(input.issue.id, {
-      blockedByIssueIds: blockerIds,
-    });
 
     await logActivity(db, {
       companyId: input.issue.companyId,
