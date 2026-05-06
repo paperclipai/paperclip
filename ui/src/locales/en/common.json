@@ -162,7 +162,9 @@
     "no_quick_matches": "No quick issue matches. Press",
     "to_search_all_hint": "to search all or keep typing to refine.",
     "search_all_for": "Search all for \"{{query}}\"",
-    "open_full_search": "open full search"
+    "open_full_search": "open full search",
+    "shortcut_create_issue": "C",
+    "command_dialog_description": "Search for a command to run..."
   },
   "company_switcher": {
     "companies": "Companies",
@@ -755,7 +757,22 @@
   },
   "layout": {
     "skip_to_main_content": "Skip to Main Content",
-    "close_sidebar": "Close sidebar"
+    "close_sidebar": "Close sidebar",
+    "open_sidebar": "Open sidebar",
+    "mobile_navigation": "Mobile navigation",
+    "scroll_to_bottom": "Scroll to bottom",
+    "dismiss_notification": "Dismiss notification"
+  },
+  "app_shell": {
+    "create_another_company": "Create another company",
+    "create_first_company": "Create your first company",
+    "add_agent": "Add Agent",
+    "start_onboarding": "Start Onboarding",
+    "new_company": "New Company"
+  },
+  "keyboard_shortcuts": {
+    "search_or_quick": "Search current page or quick search",
+    "new_issue": "New issue"
   },
   "auth": {
     "loading": "Loading…",

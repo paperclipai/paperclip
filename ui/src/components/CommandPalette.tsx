@@ -174,7 +174,7 @@ export function CommandPalette() {
           >
             <SquarePen className="mr-2 h-4 w-4" />
             {t("command_palette.create_issue")}
-            <span className="ml-auto text-xs text-muted-foreground">C</span>
+            <span className="ml-auto text-xs text-muted-foreground">{t("command_palette.shortcut_create_issue")}</span>
           </CommandItem>
           <CommandItem
             onSelect={() => {

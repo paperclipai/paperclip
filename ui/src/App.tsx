@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -148,6 +149,7 @@ function LegacySettingsRedirect() {
 }
 
 function OnboardingRoutePage() {
+  const { t } = useTranslation("common");
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
@@ -158,8 +160,8 @@ function OnboardingRoutePage() {
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`
     : companies.length > 0
-      ? "Create another company"
-      : "Create your first company";
+      ? t("app_shell.create_another_company")
+      : t("app_shell.create_first_company");
   const description = matchedCompany
     ? "Run onboarding again to add an agent and a starter task for this company."
     : companies.length > 0
@@ -179,7 +181,7 @@ function OnboardingRoutePage() {
                 : openOnboarding()
             }
           >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            {matchedCompany ? t("app_shell.add_agent") : t("app_shell.start_onboarding")}
           </Button>
         </div>
       </div>
@@ -188,11 +190,12 @@ function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
+  const { t } = useTranslation("common");
   const { companies, selectedCompany, loading } = useCompany();
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{t("actions.loading")}</div>;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -212,11 +215,12 @@ function CompanyRootRedirect() {
 }
 
 function UnprefixedBoardRedirect() {
+  const { t } = useTranslation("common");
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{t("actions.loading")}</div>;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -241,17 +245,18 @@ function UnprefixedBoardRedirect() {
 }
 
 function NoCompaniesStartPage() {
+  const { t } = useTranslation("common");
   const { openOnboarding } = useDialogActions();
 
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Create your first company</h1>
+        <h1 className="text-xl font-semibold">{t("app_shell.create_first_company")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Get started by creating a company.
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
+          <Button onClick={() => openOnboarding()}>{t("app_shell.new_company")}</Button>
         </div>
       </div>
     </div>

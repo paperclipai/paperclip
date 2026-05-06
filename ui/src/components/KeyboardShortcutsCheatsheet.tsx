@@ -1,3 +1,6 @@
+import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ShortcutEntry {
@@ -10,42 +13,44 @@ interface ShortcutSection {
   shortcuts: ShortcutEntry[];
 }
 
-const sections: ShortcutSection[] = [
-  {
-    title: "Inbox",
-    shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["←"], label: "Collapse selected group" },
-      { keys: ["→"], label: "Expand selected group" },
-      { keys: ["Enter"], label: "Open selected item" },
-      { keys: ["a"], label: "Archive item" },
-      { keys: ["y"], label: "Archive item" },
-      { keys: ["r"], label: "Mark as read" },
-      { keys: ["U"], label: "Mark as unread" },
-    ],
-  },
-  {
-    title: "Issue detail",
-    shortcuts: [
-      { keys: ["y"], label: "Quick-archive back to inbox" },
-      { keys: ["g", "i"], label: "Go to inbox" },
-      { keys: ["g", "c"], label: "Focus comment composer" },
-    ],
-  },
-  {
-    title: "Global",
-    shortcuts: [
-      { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New issue" },
-      { keys: ["["], label: "Toggle sidebar" },
-      { keys: ["]"], label: "Toggle panel" },
-      { keys: ["?"], label: "Show keyboard shortcuts" },
-    ],
-  },
-];
+function buildSections(t: TFunction): ShortcutSection[] {
+  return [
+    {
+      title: "Inbox",
+      shortcuts: [
+        { keys: ["j"], label: "Move down" },
+        { keys: ["↓"], label: "Move down" },
+        { keys: ["k"], label: "Move up" },
+        { keys: ["↑"], label: "Move up" },
+        { keys: ["←"], label: "Collapse selected group" },
+        { keys: ["→"], label: "Expand selected group" },
+        { keys: ["Enter"], label: "Open selected item" },
+        { keys: ["a"], label: "Archive item" },
+        { keys: ["y"], label: "Archive item" },
+        { keys: ["r"], label: "Mark as read" },
+        { keys: ["U"], label: "Mark as unread" },
+      ],
+    },
+    {
+      title: "Issue detail",
+      shortcuts: [
+        { keys: ["y"], label: "Quick-archive back to inbox" },
+        { keys: ["g", "i"], label: "Go to inbox" },
+        { keys: ["g", "c"], label: "Focus comment composer" },
+      ],
+    },
+    {
+      title: "Global",
+      shortcuts: [
+        { keys: ["/"], label: t("keyboard_shortcuts.search_or_quick") },
+        { keys: ["c"], label: t("keyboard_shortcuts.new_issue") },
+        { keys: ["["], label: "Toggle sidebar" },
+        { keys: ["]"], label: "Toggle panel" },
+        { keys: ["?"], label: "Show keyboard shortcuts" },
+      ],
+    },
+  ];
+}
 
 function KeyCap({ children }: { children: string }) {
   return (
@@ -56,6 +61,8 @@ function KeyCap({ children }: { children: string }) {
 }
 
 export function KeyboardShortcutsCheatsheetContent() {
+  const { t } = useTranslation("common");
+  const sections = useMemo(() => buildSections(t), [t]);
   return (
     <>
       <div className="divide-y divide-border border-t border-border">

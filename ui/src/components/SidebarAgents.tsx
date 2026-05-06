@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, NavLink, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -56,6 +57,7 @@ function SidebarAgentItem({
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
 }) {
+  const { t } = useTranslation("common");
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
   const editHref = `${agentUrl(agent)}/configuration`;
@@ -90,7 +92,7 @@ function SidebarAgentItem({
         {(agent.pauseReason === "budget" || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
             {agent.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Agent paused by budget" />
+              <BudgetSidebarMarker title={t("sidebar.agent_paused_by_budget")} />
             ) : null}
             {runCount > 0 ? (
               <span className="relative flex h-2 w-2">
@@ -154,6 +156,7 @@ function SidebarAgentItem({
 }
 
 export function SidebarAgents() {
+  const { t } = useTranslation("common");
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
@@ -272,7 +275,7 @@ export function SidebarAgents() {
               openNewAgent();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New agent"
+            aria-label={t("sidebar.new_agent_aria")}
           >
             <Plus className="h-3 w-3" />
           </button>

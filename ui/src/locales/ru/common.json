@@ -156,7 +156,20 @@
     "create_issue": "Создать задачу",
     "create_agent": "Создать агента",
     "create_project": "Создать проект",
-    "title": "Палитра команд"
+    "title": "Палитра команд",
+    "shortcut_create_issue": "C",
+    "command_dialog_description": "Найдите команду для выполнения..."
+  },
+  "app_shell": {
+    "create_another_company": "Создать ещё одну компанию",
+    "create_first_company": "Создайте вашу первую компанию",
+    "add_agent": "Добавить агента",
+    "start_onboarding": "Запустить онбординг",
+    "new_company": "Новая компания"
+  },
+  "keyboard_shortcuts": {
+    "search_or_quick": "Поиск по странице или быстрый поиск",
+    "new_issue": "Новая задача"
   },
   "company_switcher": {
     "companies": "Компании",
@@ -749,7 +762,11 @@
   },
   "layout": {
     "skip_to_main_content": "Перейти к основному содержанию",
-    "close_sidebar": "Закрыть боковую панель"
+    "close_sidebar": "Закрыть боковую панель",
+    "open_sidebar": "Открыть боковую панель",
+    "mobile_navigation": "Мобильная навигация",
+    "scroll_to_bottom": "Прокрутить вниз",
+    "dismiss_notification": "Закрыть уведомление"
   },
   "auth": {
     "loading": "Загрузка…",
