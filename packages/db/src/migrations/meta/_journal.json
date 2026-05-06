@@ -551,8 +551,15 @@
     {
       "idx": 78,
       "version": "7",
-      "when": 1776820000000,
+      "when": 1777384535071,
       "tag": "0078_heartbeat_run_cancel_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1777384535072,
+      "tag": "0079_agent_wakeup_request_idempotency",
       "breakpoints": true
     }
   ]

@@ -113,11 +113,12 @@ export function issueTreeControlRoutes(db: Db) {
 
     const runCancellationTasks: Promise<void>[] = [];
     if (result.hold.mode === "pause" || result.hold.mode === "cancel") {
+      const cancelSource = actor.actorType === "user" ? "user_initiated" : "system";
       const interruptedRunIds = [...new Set(result.preview.activeRuns.map((run) => run.id))];
       for (const heartbeatRunId of interruptedRunIds) {
         const cancellationTask = (async () => {
           try {
-            await heartbeat.cancelRun(heartbeatRunId, "user_initiated");
+            await heartbeat.cancelRun(heartbeatRunId, cancelSource);
             await logActivity(db, {
               companyId: root.companyId,
               actorType: actor.actorType,

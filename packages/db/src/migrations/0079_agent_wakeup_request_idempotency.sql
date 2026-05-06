@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "agent_wakeup_requests_agent_idempotency_active_idx" ON "agent_wakeup_requests" USING btree ("agent_id","idempotency_key") WHERE "idempotency_key" IS NOT NULL AND "status" IN ('queued', 'deferred_issue_execution');--> statement-breakpoint

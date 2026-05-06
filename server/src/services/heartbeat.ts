@@ -7912,6 +7912,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
+    const idempotencyConflictTarget = {
+      target: [agentWakeupRequests.agentId, agentWakeupRequests.idempotencyKey],
+      where: sql`${agentWakeupRequests.idempotencyKey} IS NOT NULL AND ${agentWakeupRequests.status} IN ('queued', 'deferred_issue_execution')`,
+    };
 
     const writeSkippedRequest = async (skipReason: string) => {
       await db.insert(agentWakeupRequests).values({
@@ -8371,18 +8375,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "deferred" as const };
           }
 
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_execution_deferred",
-            payload: deferredPayload,
-            status: "deferred_issue_execution",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-          });
+          const deferredWakeupRequest = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_execution_deferred",
+              payload: deferredPayload,
+              status: "deferred_issue_execution",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            })
+            .onConflictDoNothing(idempotencyConflictTarget)
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!deferredWakeupRequest) return { kind: "skipped" as const };
 
           return { kind: "deferred" as const };
         }
@@ -8401,8 +8411,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
+          .onConflictDoNothing(idempotencyConflictTarget)
           .returning()
-          .then((rows) => rows[0]);
+          .then((rows) => rows[0] ?? null);
+        if (!wakeupRequest) return { kind: "skipped" as const };
 
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -8578,8 +8590,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
       })
+      .onConflictDoNothing(idempotencyConflictTarget)
       .returning()
-      .then((rows) => rows[0]);
+      .then((rows) => rows[0] ?? null);
+    if (!wakeupRequest) return null;
 
     const newRun = await db
       .insert(heartbeatRuns)
@@ -8792,6 +8806,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: new Date(),
           error: "Cancelled: user cancelled the active run",
           errorCode: "cancelled",
+          cancelSource: "user_initiated",
         });
         await setWakeupStatus(timerRun.wakeupRequestId, "cancelled", {
           finishedAt: new Date(),
@@ -8896,7 +8911,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
-        sql`${issues.status} not in ('done', 'cancelled')`,
+        notInArray(issues.status, ["done", "cancelled"]),
       ));
 
     if (assignedRows.length === 0) return { totalAssigned: 0, available: 0 };
@@ -9196,15 +9211,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Pure-task agents (zero assigned issues) are unaffected: totalAssigned === 0
         // falls through to the normal enqueue path.
         const agentNameKey = normalizeAgentNameKey(agent.name);
-        if (!agentNameKey) continue;
-        const issueAvailability = await countIssueAvailabilityForTimerAgent(agent.id, agent.companyId, agentNameKey);
-        if (issueAvailability.totalAssigned > 0 && issueAvailability.available === 0) {
-          logger.debug(
-            { agentId: agent.id, totalAssigned: issueAvailability.totalAssigned },
-            "timer tick skipped: agent has assigned issues, all owned by other executions",
-          );
-          skipped += 1;
-          continue;
+        if (agentNameKey) {
+          const issueAvailability = await countIssueAvailabilityForTimerAgent(agent.id, agent.companyId, agentNameKey);
+          if (issueAvailability.totalAssigned > 0 && issueAvailability.available === 0) {
+            logger.debug(
+              { agentId: agent.id, totalAssigned: issueAvailability.totalAssigned },
+              "timer tick skipped: agent has assigned issues, all owned by other executions",
+            );
+            skipped += 1;
+            continue;
+          }
         }
 
         const run = await enqueueWakeup(agent.id, {
