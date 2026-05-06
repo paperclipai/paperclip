@@ -222,10 +222,13 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
-  it("waits for onSpawn before sending stdin to the child", async () => {
-    const spawnDelayMs = 150;
+  it("delivers stdin to the child even when onSpawn never resolves (JAC-1941 regression)", async () => {
+    // Regression test for JAC-1941 / JAC-1942: codex_local runs `codex exec ... -`
+    // and blocks on stdin. If stdin delivery waits on onSpawn metadata persistence
+    // and that persistence stalls, the child stays alive forever in the `Ss` state.
+    // stdin must be written immediately, independent of the onSpawn promise.
     const startedAt = Date.now();
-    let onSpawnCompletedAt = 0;
+    let onSpawnInvoked = false;
 
     const result = await runChildProcess(
       randomUUID(),
@@ -241,18 +244,22 @@ describe("runChildProcess", () => {
         timeoutSec: 5,
         graceSec: 1,
         onLog: async () => {},
-        onSpawn: async () => {
-          await new Promise((resolve) => setTimeout(resolve, spawnDelayMs));
-          onSpawnCompletedAt = Date.now();
+        onSpawn: () => {
+          onSpawnInvoked = true;
+          // Simulates a stalled metadata persistence (e.g. heartbeat process
+          // table write that never settles). The child must still complete.
+          return new Promise<void>(() => {});
         },
       },
     );
-    const finishedAt = Date.now();
+    const elapsedMs = Date.now() - startedAt;
 
+    expect(onSpawnInvoked).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("hello from stdin");
-    expect(onSpawnCompletedAt).toBeGreaterThanOrEqual(startedAt + spawnDelayMs);
-    expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
+    // Child read stdin and exited well within the test timeout, despite onSpawn
+    // never resolving. Generous bound to absorb CI noise.
+    expect(elapsedMs).toBeLessThan(4_000);
   });
 
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
