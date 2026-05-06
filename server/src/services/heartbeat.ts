@@ -7504,7 +7504,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
-    const enqueueCheck = await canEnqueueForAgent(run.agentId);
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
@@ -7796,6 +7795,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      const enqueueCheck = await canEnqueueForAgent(run.agentId);
       const shouldBlockImmediately =
         !enqueueCheck.allowed ||
         issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||

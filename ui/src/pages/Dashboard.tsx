@@ -6,7 +6,7 @@ import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
-import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
@@ -50,11 +50,18 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: liveRuns } = useQuery({
-    queryKey: [...queryKeys.liveRuns(selectedCompanyId ?? "__none__"), "dashboard-queued-count"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, { minCount: 0, limit: 0 }),
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const isInstanceAdmin = !!boardAccess?.isInstanceAdmin;
+
+  const { data: agentQueuedCounts } = useQuery({
+    queryKey: [...queryKeys.instance.agentQueuedCounts, "dashboard"],
+    queryFn: () => instanceSettingsApi.getAgentQueuedCounts(),
     refetchInterval: 15_000,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isInstanceAdmin,
   });
 
   useEffect(() => {
@@ -161,8 +168,8 @@ export function Dashboard() {
   }, [agents]);
 
   const companyQueuedCount = useMemo(() => {
-    return (liveRuns ?? []).filter((run) => run.status === "queued").length;
-  }, [liveRuns]);
+    return (agentQueuedCounts ?? []).reduce((total, entry) => total + entry.queuedCount, 0);
+  }, [agentQueuedCounts]);
 
   const activeAgentCount = (agents ?? []).filter((a) => a.status !== "terminated").length;
 
@@ -265,17 +272,19 @@ export function Dashboard() {
                 </span>
               }
             />
-            <MetricCard
-              icon={Clock}
-              value={companyQueuedCount}
-              label="Queued Runs"
-              to="/instance/settings/system-health"
-              description={
-                <span>
-                  {activeAgentCount} active agent{activeAgentCount !== 1 ? "s" : ""}
-                </span>
-              }
-            />
+            {isInstanceAdmin ? (
+              <MetricCard
+                icon={Clock}
+                value={companyQueuedCount}
+                label="Queued Runs"
+                to="/instance/settings/health"
+                description={
+                  <span>
+                    {activeAgentCount} active agent{activeAgentCount !== 1 ? "s" : ""}
+                  </span>
+                }
+              />
+            ) : null}
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}

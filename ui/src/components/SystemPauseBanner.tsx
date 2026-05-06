@@ -29,6 +29,7 @@ export function SystemPauseBanner() {
     mutationFn: () => instanceSettingsApi.adminUnpause(),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.instance.adminStatus });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.instance.agentQueuedCounts });
     },
   });
 

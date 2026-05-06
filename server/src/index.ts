@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -693,7 +693,7 @@ export async function startServer(): Promise<StartedServer> {
             const [{ value: queuedCount }] = await db
               .select({ value: count() })
               .from(heartbeatRuns)
-              .where(inArray(heartbeatRuns.status, ["queued"]));
+              .where(eq(heartbeatRuns.status, "queued"));
             if (queuedCount > threshold) {
               const { paused } = await settings.getSystemPauseState();
               if (!paused) {

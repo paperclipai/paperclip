@@ -2949,11 +2949,12 @@ export function agentRoutes(
       return;
     }
 
-    const rc = (agent.runtimeConfig as Record<string, unknown> | null) ?? {};
-    const { autoPause: _removed, ...rest } = rc as Record<string, unknown>;
     const [updated] = await db
       .update(agentsTable)
-      .set({ runtimeConfig: rest, updatedAt: new Date() })
+      .set({
+        runtimeConfig: sql`coalesce(${agentsTable.runtimeConfig}, '{}'::jsonb) - 'autoPause'`,
+        updatedAt: new Date(),
+      })
       .where(eq(agentsTable.id, id))
       .returning();
 

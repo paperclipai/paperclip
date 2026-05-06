@@ -55,6 +55,7 @@ export function SystemHealth() {
     mutationFn: () => instanceSettingsApi.adminUnpause(),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.instance.adminStatus });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.instance.agentQueuedCounts });
     },
   });
 
@@ -62,6 +63,7 @@ export function SystemHealth() {
     mutationFn: (agentId: string) => agentsApi.unpauseAuto(agentId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.instance.allAgents });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.instance.agentQueuedCounts });
     },
   });
 
