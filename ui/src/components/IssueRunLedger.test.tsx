@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { Issue, RunLivenessState } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, RunLivenessState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue } from "../api/heartbeats";
@@ -58,6 +58,23 @@ function createRun(overrides: Partial<RunForIssue> = {}): RunForIssue {
     continuationAttempt: 0,
     lastUsefulActionAt: "2026-04-18T19:59:00.000Z",
     nextAction: null,
+    ...overrides,
+  };
+}
+
+function createActivity(overrides: Partial<ActivityEvent> = {}): ActivityEvent {
+  return {
+    id: "activity-1",
+    companyId: "company-1",
+    actorType: "system",
+    actorId: "system",
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: "issue-1",
+    agentId: null,
+    runId: null,
+    details: null,
+    createdAt: new Date("2026-04-18T19:57:00.000Z"),
     ...overrides,
   };
 }
@@ -139,6 +156,8 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       issueStatus={props.issueStatus ?? "in_progress"}
       childIssues={props.childIssues ?? []}
       agentMap={props.agentMap ?? new Map([["agent-1", { name: "CodexCoder" }]])}
+      activityEvents={props.activityEvents}
+      renderActivityEvent={props.renderActivityEvent}
       pendingWatchdogDecision={props.pendingWatchdogDecision}
       canRecordWatchdogDecisions={props.canRecordWatchdogDecisions}
       watchdogDecisionError={props.watchdogDecisionError}
@@ -203,6 +222,42 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Last useful action Unavailable");
   });
 
+  it("interleaves run rows and activity rows by timestamp", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-oldest",
+          startedAt: "2026-04-18T19:55:00.000Z",
+          createdAt: "2026-04-18T19:55:00.000Z",
+        }),
+        createRun({
+          runId: "run-newest",
+          startedAt: "2026-04-18T19:59:00.000Z",
+          createdAt: "2026-04-18T19:59:00.000Z",
+        }),
+      ],
+      activityEvents: [
+        createActivity({
+          id: "activity-middle",
+          action: "activity-middle",
+          createdAt: new Date("2026-04-18T19:57:00.000Z"),
+        }),
+      ],
+      renderActivityEvent: (event) => (
+        <div data-testid={`activity-${event.id}`}>{event.action}</div>
+      ),
+    });
+
+    const text = container.textContent ?? "";
+    const newestIndex = text.indexOf("run-newe");
+    const activityIndex = text.indexOf("activity-middle");
+    const oldestIndex = text.indexOf("run-olde");
+
+    expect(newestIndex).toBeGreaterThanOrEqual(0);
+    expect(activityIndex).toBeGreaterThan(newestIndex);
+    expect(oldestIndex).toBeGreaterThan(activityIndex);
+  });
+
   it("shows live runs as pending final checks without missing-data language", () => {
     renderLedger({
       runs: [
@@ -262,6 +317,44 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Manual intervention required");
   });
 
+  it("labels max-turn stops and continuation retries without confusing them with per-run turns", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-scheduled-continuation",
+          status: "scheduled_retry",
+          finishedAt: null,
+          livenessState: null,
+          livenessReason: null,
+          retryOfRunId: "run-max-turns",
+          scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: "max_turns_continuation",
+        }),
+        createRun({
+          runId: "run-max-turns",
+          resultJson: { stopReason: "max_turns_exhausted" },
+          createdAt: "2026-04-18T19:57:00.000Z",
+        }),
+        createRun({
+          runId: "run-continuation-exhausted",
+          status: "failed",
+          createdAt: "2026-04-18T19:56:00.000Z",
+          retryOfRunId: "run-max-turns",
+          scheduledRetryAttempt: 3,
+          scheduledRetryReason: "max_turns_continuation",
+          retryExhaustedReason: "Bounded retry exhausted after 3 scheduled attempts; no further automatic retry will be queued",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Continuation scheduled");
+    expect(container.textContent).toContain("Max-turn continuation");
+    expect(container.textContent).toContain("Next continuation");
+    expect(container.textContent).toContain("Stop max turns exhausted");
+    expect(container.textContent).toContain("Continuation exhausted");
+  });
+
   it("shows timeout, cancel, and budget stop reasons without raw logs", () => {
     renderLedger({
       runs: [
@@ -279,12 +372,18 @@ describe("IssueRunLedger", () => {
           resultJson: { stopReason: "budget_paused" },
           createdAt: "2026-04-18T19:56:00.000Z",
         }),
+        createRun({
+          runId: "run-paused",
+          resultJson: { stopReason: "paused" },
+          createdAt: "2026-04-18T19:55:00.000Z",
+        }),
       ],
     });
 
     expect(container.textContent).toContain("timeout (30s timeout)");
     expect(container.textContent).toContain("cancelled");
     expect(container.textContent).toContain("budget paused");
+    expect(container.textContent).toContain("paused by board");
   });
 
   it("surfaces active and completed child issue summaries", () => {
@@ -328,7 +427,7 @@ describe("IssueRunLedger", () => {
 
   it("shows when older runs are clipped from the ledger", () => {
     renderLedger({
-      runs: Array.from({ length: 10 }, (_, index) =>
+      runs: Array.from({ length: 22 }, (_, index) =>
         createRun({
           runId: `run-${index.toString().padStart(8, "0")}`,
           createdAt: `2026-04-18T19:${String(index).padStart(2, "0")}:00.000Z`,
@@ -336,7 +435,7 @@ describe("IssueRunLedger", () => {
       ),
     });
 
-    expect(container.textContent).toContain("2 older runs not shown");
+    expect(container.textContent).toContain("2 older items not shown");
   });
 
   it("renders stale-run banner, watchdog actions, and silence badge for live runs", () => {
@@ -368,6 +467,41 @@ describe("IssueRunLedger", () => {
       decision: "continue",
       evaluationIssueId: "issue-eval-1",
     });
+  });
+
+  it("renders requested/applied model profile and surfaces fallback reasons", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-cheap-applied",
+          resultJson: {
+            modelProfile: {
+              requested: "cheap",
+              applied: "cheap",
+              configSource: "agent_runtime",
+              fallbackReason: null,
+            },
+          },
+        }),
+        createRun({
+          runId: "run-cheap-fallback",
+          createdAt: "2026-04-18T19:50:00.000Z",
+          resultJson: {
+            modelProfile: {
+              requested: "cheap",
+              applied: null,
+              configSource: null,
+              fallbackReason: "agent_runtime_profile_disabled",
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Profile: cheap");
+    expect(container.textContent).toContain("Profile: cheap (unavailable)");
+    expect(container.textContent).toContain("Cheap profile fell back to primary");
+    expect(container.textContent).toContain("agent_runtime_profile_disabled");
   });
 
   it("hides watchdog decision actions for known non-owner viewers", () => {

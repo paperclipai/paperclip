@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -73,6 +73,13 @@ describe("sandbox managed runtime", () => {
         await writeFile(remotePath, Buffer.from(bytes));
       },
       readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async (remotePath) => {
+        const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+        return entries
+          .filter((entry) => entry.isFile())
+          .map((entry) => entry.name)
+          .sort((left, right) => left.localeCompare(right));
+      },
       remove: async (remotePath) => {
         await rm(remotePath, { recursive: true, force: true });
       },

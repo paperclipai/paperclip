@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -33,7 +33,11 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
-function renderMarkdown(children: string, seededIssues: Array<{ identifier: string; status: string; title?: string }> = []) {
+function renderMarkdown(
+  children: string,
+  seededIssues: Array<{ identifier: string; status: string; title?: string }> = [],
+  props: Partial<ComponentProps<typeof MarkdownBody>> = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -54,7 +58,7 @@ function renderMarkdown(children: string, seededIssues: Array<{ identifier: stri
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MarkdownBody>{children}</MarkdownBody>
+        <MarkdownBody {...props}>{children}</MarkdownBody>
       </ThemeProvider>
     </QueryClientProvider>,
   );
@@ -279,6 +283,64 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="PAP-1271"');
   });
 
+  it("leaves wiki links as text unless explicitly enabled", () => {
+    const html = renderMarkdown("See [[wiki/entities/paperclip]].");
+
+    expect(html).toContain("[[wiki/entities/paperclip]]");
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/paperclip.md"');
+  });
+
+  it("renders wiki links with a custom resolver when enabled", () => {
+    const html = renderMarkdown(
+      "See [[wiki/entities/paperclip|Paperclip]] and [[wiki/entities/dotta-b]].",
+      [],
+      {
+        enableWikiLinks: true,
+        resolveWikiLinkHref: (target) => `/wiki/page/${target.endsWith(".md") ? target : `${target}.md`}`,
+      },
+    );
+
+    expect(html).toContain('href="/wiki/page/wiki/entities/paperclip.md"');
+    expect(html).toContain('data-paperclip-wiki-link="true"');
+    expect(html).toContain('data-paperclip-wiki-target="wiki/entities/paperclip"');
+    expect(html).toContain(">Paperclip</a>");
+    expect(html).toContain('href="/wiki/page/wiki/entities/dotta-b.md"');
+    expect(html).toContain(">wiki/entities/dotta-b</a>");
+    expect(html).not.toContain("[[wiki/entities/paperclip");
+  });
+
+  it("keeps wiki links as text when the custom resolver rejects them", () => {
+    const html = renderMarkdown(
+      "See [[wiki/entities/paperclip]].",
+      [],
+      {
+        enableWikiLinks: true,
+        wikiLinkRoot: "/wiki/page",
+        resolveWikiLinkHref: () => null,
+      },
+    );
+
+    expect(html).toContain("[[wiki/entities/paperclip]]");
+    expect(html).not.toContain('data-paperclip-wiki-link="true"');
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/paperclip"');
+  });
+
+  it("does not render wiki links inside code spans or code blocks", () => {
+    const html = renderMarkdown(
+      "Inline `[[wiki/entities/paperclip]]`.\n\n```md\n[[wiki/entities/dotta-b]]\n```",
+      [],
+      {
+        enableWikiLinks: true,
+        wikiLinkRoot: "/wiki/page",
+      },
+    );
+
+    expect(html).toContain("[[wiki/entities/paperclip]]");
+    expect(html).toContain("[[wiki/entities/dotta-b]]");
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/paperclip"');
+    expect(html).not.toContain('href="/wiki/page/wiki/entities/dotta-b"');
+  });
+
   it("applies wrap-friendly styles to long inline content", () => {
     const html = renderMarkdown("averyveryveryveryveryveryveryveryveryverylongtoken");
 
@@ -364,6 +426,21 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain("<pre");
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
+  });
+
+  it("renders a copy button alongside fenced code blocks", () => {
+    const html = renderMarkdown("```ts\nconst a = 1;\n```");
+
+    expect(html).toContain("paperclip-markdown-codeblock");
+    expect(html).toContain("paperclip-markdown-codeblock-copy");
+    expect(html).toContain('aria-label="Copy code"');
+    expect(html).toContain("lucide-copy");
+  });
+
+  it("does not render a copy button on inline code", () => {
+    const html = renderMarkdown("Reference `inline-code` here.");
+
+    expect(html).not.toContain("paperclip-markdown-codeblock-copy");
   });
 
   it("renders internal issue links and bare identifiers as inline issue refs", () => {

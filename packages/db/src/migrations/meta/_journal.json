@@ -526,6 +526,27 @@
       "when": 1777384535070,
       "tag": "0074_striped_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1777572332006,
+      "tag": "0075_cultured_sebastian_shaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1777675301279,
+      "tag": "0076_useful_elektra",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1777933347806,
+      "tag": "0077_unusual_karnak",
+      "breakpoints": true
     }
   ]
 }
