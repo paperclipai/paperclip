@@ -1,0 +1,47 @@
+{
+	email {$ACME_EMAIL}
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+	order jwtauth before reverse_proxy
+}
+
+app.ops.binelek.io {
+	# Validate the session JWT minted by ops-portal on Vercel.
+	# Cookie name: jaban_session  Domain: .binelek.io  Algorithm: HS256
+	jwtauth {
+		sign_key    {$SESSION_JWT_SECRET}
+		sign_alg    HS256
+		from_cookies jaban_session
+		issuer_allow ops-portal-vercel
+		audience_allow paperclip-ops-caddy
+		user_claims  email sub
+	}
+
+	# Missing or invalid token → redirect to Vercel login
+	handle_errors 401 {
+		redir https://ops.binelek.io/login 302
+	}
+
+	# WebSocket upgrades pass through without body buffering
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	reverse_proxy @websocket {$PAPERCLIP_UPSTREAM} {
+		header_up Host             {host}
+		header_up X-Real-IP        {remote_host}
+		header_up X-Forwarded-For  {remote_host}
+		header_up X-Forwarded-Proto https
+	}
+
+	reverse_proxy {$PAPERCLIP_UPSTREAM} {
+		header_up Host                  {host}
+		header_up X-Real-IP             {remote_host}
+		header_up X-Forwarded-For       {remote_host}
+		header_up X-Forwarded-Proto     https
+		header_up X-Authenticated-User  {http.auth.user.email}
+	}
+}

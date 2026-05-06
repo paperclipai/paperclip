@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-mono: ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: #07071a;
+  color: #f8f8ff;
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Remove default focus ring, replace with branded one */
+*:focus-visible {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
