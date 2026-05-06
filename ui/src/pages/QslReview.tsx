@@ -29,6 +29,26 @@ function formatConfidence(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function ConfidenceDelta({ current, previous }: { current: number; previous?: number }) {
+  const pct = Math.round(current * 100);
+  if (previous == null || previous === current) {
+    return <span className="font-medium text-foreground">{pct}%</span>;
+  }
+  const prevPct = Math.round(previous * 100);
+  const delta = pct - prevPct;
+  const rising = delta > 0;
+  return (
+    <span className="font-medium text-foreground">
+      {pct}%{" "}
+      <span className={rising ? "text-green-600" : "text-red-500"}>
+        {rising ? "↑" : "↓"} {rising ? "+" : ""}
+        {delta}%
+      </span>{" "}
+      <span className="text-muted-foreground font-normal">(was {prevPct}%)</span>
+    </span>
+  );
+}
+
 function ApprovalLabel({ approved }: { approved: boolean | null }) {
   if (approved === true) {
     return <span className="text-green-600">true</span>;
@@ -111,9 +131,7 @@ function QslIssueCard({ issue, rule, onDecision }: QslIssueCardProps) {
               </span>
               <span>
                 Confidence:{" "}
-                <span className="font-medium text-foreground">
-                  {formatConfidence(rule.confidence)}
-                </span>
+                <ConfidenceDelta current={rule.confidence} previous={rule.previous_confidence} />
               </span>
               <span>
                 Approved: <ApprovalLabel approved={rule.approved} />

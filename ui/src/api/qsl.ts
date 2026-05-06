@@ -32,6 +32,7 @@ export interface QslApprovalResponse {
 export interface QslRule {
   id: string;
   confidence: number;
+  previous_confidence?: number;
   approved: boolean | null;
   severity?: string;
 }

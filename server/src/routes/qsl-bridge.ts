@@ -1,9 +1,28 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const ALLOWED_FILES = new Set(["manifest", "state", "issues", "approvals"]);
+
+type ConfidenceSnapshots = Record<string, number>;
+
+async function readSnapshots(bridgePath: string): Promise<ConfidenceSnapshots> {
+  try {
+    const raw = await readFile(path.join(bridgePath, "confidence-snapshots.json"), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function writeSnapshots(bridgePath: string, snapshots: ConfidenceSnapshots): Promise<void> {
+  await writeFile(
+    path.join(bridgePath, "confidence-snapshots.json"),
+    JSON.stringify(snapshots),
+    "utf-8",
+  );
+}
 
 export function qslBridgeRoutes() {
   const router = Router();
@@ -32,6 +51,15 @@ export function qslBridgeRoutes() {
 
       try {
         const data = JSON.parse(raw);
+        // Merge previous_confidence snapshots into state response
+        if (name === "state" && data.rules && Array.isArray(data.rules)) {
+          const snapshots = await readSnapshots(bridgePath);
+          for (const rule of data.rules) {
+            if (rule.id && rule.id in snapshots) {
+              rule.previous_confidence = snapshots[rule.id];
+            }
+          }
+        }
         res.json(data);
       } catch {
         res.status(500).json({ error: "Failed to parse bridge file" });
@@ -67,6 +95,22 @@ export function qslBridgeRoutes() {
     if (resolved.startsWith(resolvedBridge)) {
       res.status(400).json({ error: "Invalid approvals path" });
       return;
+    }
+
+    // Snapshot the rule's current confidence before writing the approval
+    try {
+      const stateRaw = await readFile(path.join(bridgePath, "state.json"), "utf-8");
+      const state = JSON.parse(stateRaw);
+      if (state.rules && Array.isArray(state.rules)) {
+        const rule = state.rules.find((r: { id: string }) => r.id === body.rule_id);
+        if (rule && typeof rule.confidence === "number") {
+          const snapshots = await readSnapshots(bridgePath);
+          snapshots[body.rule_id] = rule.confidence;
+          await writeSnapshots(bridgePath, snapshots);
+        }
+      }
+    } catch {
+      // Non-fatal: snapshot is best-effort
     }
 
     const approval = {
