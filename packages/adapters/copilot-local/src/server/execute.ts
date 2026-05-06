@@ -28,6 +28,7 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import { buildCopilotArgs } from "./copilot-args.js";
+import { applyCopilotPermissionEnvDefaults, enablesCopilotAllowAll } from "./copilot-env.js";
 import { isCopilotAuthRequiredError, parseCopilotJsonl } from "./parse.js";
 
 function firstNonEmptyLine(text: string): string {
@@ -152,6 +153,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  applyCopilotPermissionEnvDefaults(env, envConfig);
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
 
   const runtimeEnv = Object.fromEntries(
@@ -194,6 +196,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePromptChars: renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: false }).length,
   };
   const builtArgs = buildCopilotArgs(config, prompt);
+  const hasBroadAllowAll = builtArgs.hasBroadAllowAll || enablesCopilotAllowAll(env);
   const commandArgsForLogs = builtArgs.args.map((value, idx) => (idx > 0 && builtArgs.args[idx - 1] === "-p" ? `<prompt ${prompt.length} chars>` : value));
   if (onMeta) {
     await onMeta({
@@ -203,8 +206,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandArgs: commandArgsForLogs,
       commandNotes: [
         "Invoked GitHub Copilot CLI with programmatic -p prompt mode, JSONL output, and --no-ask-user.",
-        builtArgs.hasBroadAllowAll
-          ? "Adapter config extraArgs included a broad allow-all flag; Paperclip never adds this by default."
+        hasBroadAllowAll
+          ? "Adapter config included a broad allow-all flag/env; Paperclip never adds this by default."
           : "Using explicit --allow-tool/--allow-url allowlists; no broad allow-all default.",
       ],
       env: buildInvocationEnvForLogs(env, { runtimeEnv, includeRuntimeKeys: ["HOME"], resolvedCommand }),

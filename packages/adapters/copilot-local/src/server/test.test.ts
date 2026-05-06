@@ -58,22 +58,36 @@ import { testEnvironment } from "./test.js";
 
 describe("copilot environment test", () => {
   it("reports cwd validity, command presence, Node version, auth hints, and auth-required probe", async () => {
-    const result = await testEnvironment({
-      companyId: "company-1",
-      adapterType: "copilot_local",
-      config: {
-        command: "copilot",
-        cwd: process.cwd(),
-      },
-    });
+    const originalAllowAll = process.env.COPILOT_ALLOW_ALL;
+    process.env.COPILOT_ALLOW_ALL = "true";
+    try {
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "copilot_local",
+        config: {
+          command: "copilot",
+          cwd: process.cwd(),
+        },
+      });
 
-    expect(result.status).toBe("warn");
-    expect(result.checks.map((check) => check.code)).toEqual(expect.arrayContaining([
-      "copilot_cwd_valid",
-      "copilot_node_version",
-      "copilot_command_resolvable",
-      "copilot_auth_hint",
-      "copilot_hello_probe_auth_required",
-    ]));
+      expect(result.status).toBe("warn");
+      expect(result.checks.map((check) => check.code)).toEqual(expect.arrayContaining([
+        "copilot_cwd_valid",
+        "copilot_node_version",
+        "copilot_command_resolvable",
+        "copilot_auth_hint",
+        "copilot_hello_probe_auth_required",
+      ]));
+      const copilotCall = runChildProcess.mock.calls.find((call) => call[2] === "copilot") as
+        | [string, unknown, string, string[], { env: Record<string, string> }]
+        | undefined;
+      expect(copilotCall?.[4].env.COPILOT_ALLOW_ALL).toBe("false");
+    } finally {
+      if (originalAllowAll === undefined) {
+        delete process.env.COPILOT_ALLOW_ALL;
+      } else {
+        process.env.COPILOT_ALLOW_ALL = originalAllowAll;
+      }
+    }
   });
 });

@@ -16,6 +16,7 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { buildCopilotArgs } from "./copilot-args.js";
+import { applyCopilotPermissionEnvDefaults } from "./copilot-env.js";
 import { isCopilotAuthRequiredError, parseCopilotJsonl } from "./parse.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -76,6 +77,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  applyCopilotPermissionEnvDefaults(env, envConfig);
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",

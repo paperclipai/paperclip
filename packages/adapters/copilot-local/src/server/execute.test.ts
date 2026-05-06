@@ -191,4 +191,73 @@ describe("copilot execute", () => {
     expect(timeoutResult.timedOut).toBe(true);
     expect(timeoutResult.errorMessage).toBe("Timed out after 7s");
   });
+
+  it("neutralizes inherited COPILOT_ALLOW_ALL unless adapter env explicitly opts in", async () => {
+    const originalAllowAll = process.env.COPILOT_ALLOW_ALL;
+    process.env.COPILOT_ALLOW_ALL = "true";
+    try {
+      await execute({
+        runId: "run-env-default",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "CopilotCoder",
+          adapterType: "copilot_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "copilot",
+        },
+        context: {},
+        onLog: async () => {},
+      });
+
+      let call = runChildProcess.mock.calls[0] as unknown as
+        | [string, string, string[], { env: Record<string, string> }]
+        | undefined;
+      expect(call?.[3].env.COPILOT_ALLOW_ALL).toBe("false");
+
+      await execute({
+        runId: "run-env-explicit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "CopilotCoder",
+          adapterType: "copilot_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "copilot",
+          env: {
+            COPILOT_ALLOW_ALL: "true",
+          },
+        },
+        context: {},
+        onLog: async () => {},
+      });
+
+      call = runChildProcess.mock.calls[1] as unknown as
+        | [string, string, string[], { env: Record<string, string> }]
+        | undefined;
+      expect(call?.[3].env.COPILOT_ALLOW_ALL).toBe("true");
+    } finally {
+      if (originalAllowAll === undefined) {
+        delete process.env.COPILOT_ALLOW_ALL;
+      } else {
+        process.env.COPILOT_ALLOW_ALL = originalAllowAll;
+      }
+    }
+  });
 });
