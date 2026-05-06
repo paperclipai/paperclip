@@ -181,7 +181,12 @@ describe("heartbeat comment wake batching", () => {
       status: "idle",
       adapterType: "process",
       adapterConfig: {},
-      runtimeConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 3600,
+        },
+      },
       permissions: {},
     });
 
@@ -243,7 +248,12 @@ describe("heartbeat comment wake batching", () => {
       status: "idle",
       adapterType: "process",
       adapterConfig: {},
-      runtimeConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 3600,
+        },
+      },
       permissions: {},
     });
 
