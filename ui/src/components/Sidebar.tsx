@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { LanguageSwitcher } from "./LanguageSwitcher/LanguageSwitcher";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
@@ -129,6 +130,7 @@ export function Sidebar() {
           missingBehavior="placeholder"
         />
       </nav>
+      <div className="px-3 py-2 border-t border-border"><LanguageSwitcher /></div>
     </aside>
   );
 }

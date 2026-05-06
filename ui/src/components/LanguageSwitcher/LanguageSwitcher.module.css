@@ -1,0 +1,39 @@
+.languageSwitcher {
+  display: inline-flex;
+  align-items: center;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.trigger:hover {
+  background: hsl(var(--accent) / 0.5);
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--border));
+}
+
+.icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+}
+
+.label {
+  font-weight: 500;
+}
+
+.active {
+  background: hsl(var(--accent) / 0.5);
+  font-weight: 600;
+}
