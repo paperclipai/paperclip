@@ -32,6 +32,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
+  safeSymlink,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -249,7 +250,7 @@ export async function ensureCodexSkillsInjected(
           if (linkSkill) {
             await linkSkill(entry.source, target);
           } else {
-            await fs.symlink(entry.source, target);
+            await safeSymlink(entry.source, target);
           }
           await onLog(
             "stdout",

@@ -41,6 +41,7 @@ import {
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
+  safeSymlink,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -165,7 +166,7 @@ async function buildGeminiSkillsDir(
   const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+    await safeSymlink(entry.source, path.join(target, entry.runtimeName));
   }
   return target;
 }

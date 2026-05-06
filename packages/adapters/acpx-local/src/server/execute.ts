@@ -22,6 +22,7 @@ import {
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipDesiredSkillNames,
+  safeSymlink,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
@@ -178,13 +179,13 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(resolvedSource, target);
+    await safeSymlink(resolvedSource, target);
     return;
   }
 
   if (!existing.isSymbolicLink()) {
     await fs.rm(target, { recursive: true, force: true });
-    await fs.symlink(resolvedSource, target);
+    await safeSymlink(resolvedSource, target);
     return;
   }
 
@@ -195,7 +196,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === resolvedSource) return;
 
   await fs.unlink(target);
-  await fs.symlink(resolvedSource, target);
+  await safeSymlink(resolvedSource, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
