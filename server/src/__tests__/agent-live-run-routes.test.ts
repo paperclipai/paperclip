@@ -215,11 +215,11 @@ describe("agent live run routes", () => {
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
     expect(res.body).toMatchObject({
       id: "run-1",
@@ -268,7 +268,7 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);

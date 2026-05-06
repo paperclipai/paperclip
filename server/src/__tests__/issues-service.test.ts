@@ -7,6 +7,7 @@ import {
   agents,
   companies,
   createDb,
+  environments,
   executionWorkspaces,
   goals,
   heartbeatRuns,
@@ -459,14 +460,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([grandchildId]);
   });
 
-  it("accepts issue identifiers through getById", async () => {
+  it("accepts issue identifiers with alphanumeric prefixes through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: "PAP",
+      issuePrefix: "PC1A2",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -474,19 +475,19 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: issueId,
       companyId,
       issueNumber: 1064,
-      identifier: "PAP-1064",
+      identifier: "PC1A2-1064",
       title: "Feedback votes error",
       status: "todo",
       priority: "medium",
       createdByUserId: "user-1",
     });
 
-    const issue = await svc.getById("PAP-1064");
+    const issue = await svc.getById("pc1a2-1064");
 
     expect(issue).toEqual(
       expect.objectContaining({
         id: issueId,
-        identifier: "PAP-1064",
+        identifier: "PC1A2-1064",
       }),
     );
   });
@@ -654,6 +655,143 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(executionResult.map((issue) => issue.id)).toEqual([executionLinkedIssueId]);
     expect(projectResult.map((issue) => issue.id).sort()).toEqual([executionLinkedIssueId, projectLinkedIssueId].sort());
+  });
+
+  it("hides plugin operation issues from default lists and inbox-style filters while preserving explicit retrieval", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const normalIssueId = randomUUID();
+    const pluginVisibleIssueId = randomUUID();
+    const operationIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plugin Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Plugin operations",
+      status: "in_progress",
+    });
+    await db.insert(issues).values([
+      {
+        id: normalIssueId,
+        companyId,
+        title: "Normal issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: pluginVisibleIssueId,
+        companyId,
+        title: "Plugin-visible issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "plugin:paperclip.missions:feature",
+      },
+      {
+        id: operationIssueId,
+        companyId,
+        projectId,
+        title: "Plugin operation issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "plugin:paperclip.missions:operation",
+        originId: "mission-alpha:operation-1",
+      },
+    ]);
+
+    const defaultIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
+    expect(defaultIssueIds).toContain(normalIssueId);
+    expect(defaultIssueIds).toContain(pluginVisibleIssueId);
+    expect(defaultIssueIds).not.toContain(operationIssueId);
+
+    const inboxIssueIds = (await svc.list(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+    })).map((issue) => issue.id);
+    expect(inboxIssueIds).toContain(normalIssueId);
+    expect(inboxIssueIds).not.toContain(operationIssueId);
+
+    await expect(svc.list(companyId, { originKind: "plugin:paperclip.missions:operation" }))
+      .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
+    await expect(svc.list(companyId, { originId: "mission-alpha:operation-1" }))
+      .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
+
+    const projectIssueIds = (await svc.list(companyId, { projectId })).map((issue) => issue.id);
+    expect(projectIssueIds).toContain(operationIssueId);
+
+    const advancedIssueIds = (await svc.list(companyId, { includePluginOperations: true })).map((issue) => issue.id);
+    expect(advancedIssueIds).toContain(operationIssueId);
+  });
+
+  it("excludes plugin operation issues from unread inbox counts", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const otherUserId = "other-user";
+    const normalIssueId = randomUUID();
+    const operationIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: normalIssueId,
+        companyId,
+        title: "Normal touched issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+      },
+      {
+        id: operationIssueId,
+        companyId,
+        title: "Plugin operation touched issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        originKind: "plugin:paperclip.missions:operation",
+      },
+    ]);
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: normalIssueId,
+        authorUserId: otherUserId,
+        body: "Unread normal update.",
+      },
+      {
+        companyId,
+        issueId: operationIssueId,
+        authorUserId: otherUserId,
+        body: "Unread operation update.",
+      },
+    ]);
+
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
@@ -1181,6 +1319,351 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
+    });
+  });
+
+  it("captures the assignee default environment when neither issue nor project specifies one", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const assigneeEnvironmentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(environments).values([
+      {
+        id: assigneeEnvironmentId,
+        companyId,
+        name: "QA E2B",
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "e2b" },
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "QA E2B Codex",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: assigneeEnvironmentId,
+      permissions: {},
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+        allowIssueOverride: true,
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    const issue = await svc.create(companyId, {
+      projectId,
+      assigneeAgentId,
+      title: "Environment matrix: e2b / codex_local",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(issue.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
+      environmentId: assigneeEnvironmentId,
+    });
+  });
+
+  it("does not promote the assignee default environment when the project policy already specifies one", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const projectEnvironmentId = randomUUID();
+    const assigneeEnvironmentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(environments).values([
+      {
+        id: projectEnvironmentId,
+        companyId,
+        name: "QA SSH",
+        driver: "ssh",
+        status: "active",
+        config: {},
+      },
+      {
+        id: assigneeEnvironmentId,
+        companyId,
+        name: "QA E2B",
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "e2b" },
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "QA E2B Codex",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: assigneeEnvironmentId,
+      permissions: {},
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+        allowIssueOverride: true,
+        defaultProjectWorkspaceId: projectWorkspaceId,
+        environmentId: projectEnvironmentId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    const issue = await svc.create(companyId, {
+      projectId,
+      assigneeAgentId,
+      title: "Environment matrix: e2b / codex_local",
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Project policy's environmentId must win over the assignee's default;
+    // executionWorkspaceSettings should not bake in an environmentId in this case
+    // so resolveExecutionWorkspaceEnvironmentId can fall through to the project
+    // policy's value at run time.
+    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
+  });
+
+  it("captures the new assignee's default environment on reassignment", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const firstEnvironmentId = randomUUID();
+    const secondEnvironmentId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(environments).values([
+      {
+        id: firstEnvironmentId,
+        companyId,
+        name: "QA SSH",
+        driver: "ssh",
+        status: "active",
+        config: {},
+      },
+      {
+        id: secondEnvironmentId,
+        companyId,
+        name: "QA E2B",
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "e2b" },
+      },
+    ]);
+
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "QA SSH Codex",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        defaultEnvironmentId: firstEnvironmentId,
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "QA E2B Codex",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        defaultEnvironmentId: secondEnvironmentId,
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+        allowIssueOverride: true,
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    const created = await svc.create(companyId, {
+      projectId,
+      assigneeAgentId: firstAgentId,
+      title: "Environment matrix: ssh / codex_local",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(created.executionWorkspaceSettings).toMatchObject({
+      environmentId: firstEnvironmentId,
+    });
+
+    const reassigned = await svc.update(created.id, {
+      assigneeAgentId: secondAgentId,
+    });
+
+    expect(reassigned).not.toBeNull();
+    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
+      environmentId: secondEnvironmentId,
+    });
+  });
+
+  it("preserves an operator-set environmentId across reassignment", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const firstEnvironmentId = randomUUID();
+    const secondEnvironmentId = randomUUID();
+    const operatorEnvironmentId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(environments).values([
+      { id: firstEnvironmentId, companyId, name: "Env 1", driver: "ssh", status: "active", config: {} },
+      { id: secondEnvironmentId, companyId, name: "Env 2", driver: "sandbox", status: "active", config: { provider: "e2b" } },
+      { id: operatorEnvironmentId, companyId, name: "Operator pick", driver: "ssh", status: "active", config: {} },
+    ]);
+
+    await db.insert(agents).values([
+      {
+        id: firstAgentId, companyId, name: "First agent", role: "engineer", status: "active",
+        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {},
+        defaultEnvironmentId: firstEnvironmentId, permissions: {},
+      },
+      {
+        id: secondAgentId, companyId, name: "Second agent", role: "engineer", status: "active",
+        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {},
+        defaultEnvironmentId: secondEnvironmentId, permissions: {},
+      },
+    ]);
+
+    await db.insert(projects).values({
+      id: projectId, companyId, name: "Workspace project", status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+        allowIssueOverride: true,
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId, companyId, projectId, name: "Primary workspace", isPrimary: true,
+    });
+
+    const created = await svc.create(companyId, {
+      projectId,
+      assigneeAgentId: firstAgentId,
+      title: "Operator overrides env then reassigns",
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Operator explicitly overrides the environmentId in a separate update.
+    const overridden = await svc.update(created.id, {
+      executionWorkspaceSettings: {
+        mode: "shared_workspace",
+        environmentId: operatorEnvironmentId,
+      },
+    });
+    expect(overridden!.executionWorkspaceSettings).toMatchObject({
+      environmentId: operatorEnvironmentId,
+    });
+
+    // A subsequent reassignment-only update must NOT overwrite the operator's
+    // explicit choice with the new assignee's default.
+    const reassigned = await svc.update(created.id, {
+      assigneeAgentId: secondAgentId,
+    });
+    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
+      environmentId: operatorEnvironmentId,
     });
   });
 
