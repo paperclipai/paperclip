@@ -1,11 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   documents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -57,6 +59,13 @@ type ResolvedInteractionResult = {
   interaction: IssueThreadInteraction;
   createdIssues: IssueWakeTarget[];
   continuationIssue?: IssueWakeTarget | null;
+  resolvedNow?: boolean;
+};
+
+type IssueStatusTransition = {
+  fromStatus: string;
+  toStatus: string;
+  reason: string;
 };
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
@@ -138,6 +147,72 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
     .update(issues)
     .set({ updatedAt: new Date() })
     .where(eq(issues.id, issueId));
+}
+
+async function listUnresolvedBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+) {
+  return dbOrTx
+    .select({ blockerIssueId: issueRelations.issueId })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+    .where(and(
+      eq(issueRelations.companyId, companyId),
+      eq(issueRelations.relatedIssueId, issueId),
+      eq(issueRelations.type, "blocks"),
+      ne(issues.status, "done"),
+    ))
+    .then((rows) => rows.map((row) => row.blockerIssueId));
+}
+
+function actorForActivity(actor: InteractionActor) {
+  if (actor.userId) return { actorType: "user" as const, actorId: actor.userId };
+  if (actor.agentId) return { actorType: "agent" as const, actorId: actor.agentId };
+  return { actorType: "system" as const, actorId: "system" };
+}
+
+async function logRequestConfirmationStatusTransition(args: {
+  dbOrTx: Pick<Db, "insert">;
+  companyId: string;
+  issueId: string;
+  interactionId: string;
+  actor: InteractionActor;
+  transition: IssueStatusTransition;
+  now: Date;
+}) {
+  const actor = actorForActivity(args.actor);
+  await args.dbOrTx.insert(activityLog).values({
+    companyId: args.companyId,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "status_transition",
+    entityType: "issue",
+    entityId: args.issueId,
+    agentId: args.actor.agentId ?? null,
+    runId: null,
+    details: {
+      reason: args.transition.reason,
+      interactionId: args.interactionId,
+      fromStatus: args.transition.fromStatus,
+      toStatus: args.transition.toStatus,
+    },
+    createdAt: args.now,
+  });
+}
+
+function transitionForAcceptedConfirmation(args: {
+  issue: IssueResolutionContext;
+  unresolvedBlockerIssueIds: string[];
+}) {
+  if (args.issue.status !== "blocked") return null;
+  if (args.unresolvedBlockerIssueIds.length > 0) return null;
+  return {
+    fromStatus: "blocked",
+    toStatus: "in_progress",
+    reason: "request_confirmation_accepted",
+  } satisfies IssueStatusTransition;
 }
 
 function isTerminalIssueStatus(status: string) {
@@ -443,7 +518,7 @@ export function issueThreadInteractionService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function getPendingInteractionForResolution(args: {
+  async function getInteractionForResolution(args: {
     issue: { id: string; companyId: string };
     interactionId: string;
   }) {
@@ -457,6 +532,14 @@ export function issueThreadInteractionService(db: Db) {
     if (current.companyId !== args.issue.companyId || current.issueId !== args.issue.id) {
       throw notFound("Interaction not found");
     }
+    return current;
+  }
+
+  async function getPendingInteractionForResolution(args: {
+    issue: { id: string; companyId: string };
+    interactionId: string;
+  }) {
+    const current = await getInteractionForResolution(args);
     if (current.status !== "pending") {
       throw conflict("Interaction has already been resolved");
     }
@@ -470,13 +553,25 @@ export function issueThreadInteractionService(db: Db) {
   }): Promise<{
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
+    resolvedNow: boolean;
   }> {
+    if (args.current.status === "accepted") {
+      return {
+        interaction: hydrateInteraction(args.current),
+        continuationIssue: null,
+        resolvedNow: false,
+      };
+    }
+    if (args.current.status !== "pending") {
+      throw conflict("Interaction has already been resolved");
+    }
+
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
       actor: args.actor,
     });
     if (expired) {
-      return { interaction: expired, continuationIssue: null };
+      return { interaction: expired, continuationIssue: null, resolvedNow: true };
     }
 
     const now = new Date();
@@ -520,13 +615,18 @@ export function issueThreadInteractionService(db: Db) {
         throw notFound("Issue not found");
       }
 
+      const unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIds(tx, issueContext.companyId, issueContext.id);
+      const statusTransition = transitionForAcceptedConfirmation({
+        issue: issueContext,
+        unresolvedBlockerIssueIds,
+      });
       let continuationIssue: IssueWakeTarget | null = null;
       if (shouldReturnAcceptedConfirmationToCreatorAgent({
         issue: issueContext,
         current: args.current,
         actor: args.actor,
       })) {
-        const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+        const returnStatus = statusTransition?.toStatus ?? (issueContext.status === "blocked" ? "blocked" : "todo");
         const returnedIssue = await issueService(db).update(args.issue.id, {
           status: returnStatus,
           assigneeAgentId: args.current.createdByAgentId,
@@ -543,6 +643,47 @@ export function issueThreadInteractionService(db: Db) {
             status: returnedIssue.status,
           };
         }
+        if (returnedIssue && statusTransition && returnedIssue.status === statusTransition.toStatus) {
+          await logRequestConfirmationStatusTransition({
+            dbOrTx: tx,
+            companyId: issueContext.companyId,
+            issueId: issueContext.id,
+            interactionId: args.current.id,
+            actor: args.actor,
+            transition: {
+              ...statusTransition,
+              reason: `${statusTransition.reason}: ${args.current.id}`,
+            },
+            now,
+          });
+        }
+      } else if (statusTransition && issueContext.assigneeAgentId) {
+        const updatedIssue = await issueService(db).update(args.issue.id, {
+          status: statusTransition.toStatus,
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx);
+
+        if (updatedIssue && updatedIssue.status === statusTransition.toStatus) {
+          continuationIssue = {
+            id: updatedIssue.id,
+            assigneeAgentId: updatedIssue.assigneeAgentId ?? null,
+            assigneeUserId: updatedIssue.assigneeUserId ?? null,
+            status: updatedIssue.status,
+          };
+          await logRequestConfirmationStatusTransition({
+            dbOrTx: tx,
+            companyId: issueContext.companyId,
+            issueId: issueContext.id,
+            interactionId: args.current.id,
+            actor: args.actor,
+            transition: {
+              ...statusTransition,
+              reason: `${statusTransition.reason}: ${args.current.id}`,
+            },
+            now,
+          });
+        }
       } else {
         await touchIssue(tx, args.issue.id);
       }
@@ -550,6 +691,7 @@ export function issueThreadInteractionService(db: Db) {
       return {
         interaction: hydrateInteraction(updated),
         continuationIssue,
+        resolvedNow: true,
       };
     });
   }
@@ -730,10 +872,13 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ): Promise<ResolvedInteractionResult> => {
       const data = acceptIssueThreadInteractionSchema.parse(input);
-      const current = await getPendingInteractionForResolution({ issue, interactionId });
+      const current = await getInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
-          return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
+          return {
+            ...(await issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor)),
+            resolvedNow: true,
+          };
         case "request_confirmation": {
           const accepted = await acceptRequestConfirmation({
             issue,
@@ -744,6 +889,7 @@ export function issueThreadInteractionService(db: Db) {
             interaction: accepted.interaction,
             continuationIssue: accepted.continuationIssue,
             createdIssues: [],
+            resolvedNow: accepted.resolvedNow,
           };
         }
         default:

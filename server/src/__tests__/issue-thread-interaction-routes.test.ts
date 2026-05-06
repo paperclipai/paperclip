@@ -551,6 +551,46 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("does not log or wake when a request confirmation accept is an idempotent replay", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-4",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-4",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+      continuationIssue: null,
+      resolvedNow: false,
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-4/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("accepted");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("does not emit a continuation wake when request confirmations are rejected", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
       id: "interaction-3",

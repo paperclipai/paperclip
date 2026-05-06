@@ -3175,83 +3175,85 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
+      const { interaction, createdIssues, continuationIssue, resolvedNow } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
       const continuationWakeIssue = continuationIssue ?? issue;
 
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: interaction.status === "expired"
-          ? "issue.thread_interaction_expired"
-          : "issue.thread_interaction_accepted",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          createdTaskCount:
-            interaction.kind === "suggest_tasks"
-              ? (interaction.result?.createdTasks?.length ?? 0)
-              : 0,
-          skippedTaskCount:
-            interaction.kind === "suggest_tasks"
-              ? (interaction.result?.skippedClientKeys?.length ?? 0)
-              : 0,
-        },
-      });
-
-      if (continuationIssue) {
+      if (resolvedNow !== false) {
         await logActivity(db, {
           companyId: issue.companyId,
           actorType: actor.actorType,
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
-          action: "issue.updated",
+          action: interaction.status === "expired"
+            ? "issue.thread_interaction_expired"
+            : "issue.thread_interaction_accepted",
           entityType: "issue",
           entityId: issue.id,
           details: {
-            identifier: issue.identifier,
-            status: continuationIssue.status,
-            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
-            assigneeUserId: continuationIssue.assigneeUserId ?? null,
-            source: "request_confirmation_accept",
             interactionId: interaction.id,
-            _previous: {
-              status: issue.status,
-              assigneeAgentId: issue.assigneeAgentId ?? null,
-              assigneeUserId: issue.assigneeUserId ?? null,
-            },
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            createdTaskCount:
+              interaction.kind === "suggest_tasks"
+                ? (interaction.result?.createdTasks?.length ?? 0)
+                : 0,
+            skippedTaskCount:
+              interaction.kind === "suggest_tasks"
+                ? (interaction.result?.skippedClientKeys?.length ?? 0)
+                : 0,
           },
         });
-      }
 
-      for (const createdIssue of createdIssues) {
-        void queueIssueAssignmentWakeup({
+        if (continuationIssue) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              status: continuationIssue.status,
+              assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
+              assigneeUserId: continuationIssue.assigneeUserId ?? null,
+              source: "request_confirmation_accept",
+              interactionId: interaction.id,
+              _previous: {
+                status: issue.status,
+                assigneeAgentId: issue.assigneeAgentId ?? null,
+                assigneeUserId: issue.assigneeUserId ?? null,
+              },
+            },
+          });
+        }
+
+        for (const createdIssue of createdIssues) {
+          void queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: createdIssue,
+            reason: "issue_assigned",
+            mutation: "interaction_accept",
+            contextSource: "issue.interaction.accept",
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+        }
+
+        queueResolvedInteractionContinuationWakeup({
           heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "interaction_accept",
-          contextSource: "issue.interaction.accept",
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
+          issue: continuationWakeIssue,
+          interaction,
+          actor,
+          source: "issue.interaction.accept",
         });
       }
-
-      queueResolvedInteractionContinuationWakeup({
-        heartbeat,
-        issue: continuationWakeIssue,
-        interaction,
-        actor,
-        source: "issue.interaction.accept",
-      });
 
       res.json(interaction);
     },
