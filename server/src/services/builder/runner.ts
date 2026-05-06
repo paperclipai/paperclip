@@ -129,10 +129,17 @@ export async function runBuilderTurn(opts: {
   const usage = { inputTokens: 0, outputTokens: 0, costCents: 0 };
   let truncated = false;
 
+  // Fetch base transcript once; we'll append turn messages incrementally to avoid
+  // O(n) re-reads from DB on every inner loop iteration.
+  const baseTranscript = await store.listMessages(sessionId);
+  const turnMessages: PersistedBuilderMessage[] = [];
+
   for (let turn = 0; turn < BUILDER_MAX_TURNS; turn += 1) {
     if (signal?.aborted) break;
 
-    const transcript = trimTranscriptForProvider(await store.listMessages(sessionId));
+    // Build transcript from base + turns so far. trimTranscriptForProvider caps
+    // the slice sent to the provider, but we avoid the full DB re-query each turn.
+    const transcript = trimTranscriptForProvider([...baseTranscript, ...turnMessages]);
     const providerMessages = toProviderMessages(transcript);
 
     const response = await executeBuilderTurn({
@@ -184,6 +191,7 @@ export async function runBuilderTurn(opts: {
       costCents: response.usage.costCents ?? 0,
     });
     newMessages.push(assistantMessage);
+    turnMessages.push(assistantMessage);
 
     if (response.finishReason === "stop" || calls.length === 0) {
       break;
@@ -207,6 +215,7 @@ export async function runBuilderTurn(opts: {
           costCents: 0,
         });
         newMessages.push(toolMessage);
+        turnMessages.push(toolMessage);
         continue;
       }
 
@@ -236,6 +245,7 @@ export async function runBuilderTurn(opts: {
         costCents: 0,
       });
       newMessages.push(toolMessage);
+      turnMessages.push(toolMessage);
     }
 
     if (truncated) break;
