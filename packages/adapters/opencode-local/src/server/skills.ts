@@ -8,7 +8,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   buildPersistentSkillSnapshot,
-  ensurePaperclipSkillSymlink,
+  materializePaperclipSkill,
   readPaperclipRuntimeSkillEntries,
   readInstalledSkillTargets,
   resolvePaperclipDesiredSkillNames,
@@ -73,7 +73,7 @@ export async function syncOpenCodeSkills(
   for (const available of availableEntries) {
     if (!desiredSet.has(available.key)) continue;
     const target = path.join(skillsHome, available.runtimeName);
-    await ensurePaperclipSkillSymlink(available.source, target);
+    await materializePaperclipSkill(available.source, target);
   }
 
   for (const [name, installedEntry] of installed.entries()) {

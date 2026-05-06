@@ -25,7 +25,7 @@ import {
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensurePaperclipSkillSymlink,
+  materializePaperclipSkill,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
@@ -246,11 +246,7 @@ export async function ensureCodexSkillsInjected(
           (await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.runtimeName))
         ) {
           await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
+          await materializePaperclipSkill(entry.source, target, undefined, linkSkill);
           await onLog(
             "stdout",
             `[paperclip] Repaired Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
@@ -259,7 +255,7 @@ export async function ensureCodexSkillsInjected(
         }
       }
 
-      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
+      const result = await materializePaperclipSkill(entry.source, target, undefined, linkSkill);
       if (result === "skipped") continue;
 
       await onLog(

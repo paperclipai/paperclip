@@ -564,13 +564,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const issue = normalizePaperclipWakeIssue(payload.issue);
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !issue) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
-    issue: normalizePaperclipWakeIssue(payload.issue),
+    issue,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -1529,6 +1530,143 @@ export async function ensurePaperclipSkillSymlink(
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+export interface PaperclipAttributionPreference {
+  commit: boolean;
+  pr: boolean;
+}
+
+const PAPERCLIP_COMMIT_TRAILER_PATTERN = /Co-Authored-By:\s*Paperclip\s*<noreply@paperclip\.ing>/i;
+
+export function parseAttributionEnvFlag(raw: string | undefined): boolean {
+  if (typeof raw !== "string") return true;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return true;
+  return !["false", "0", "off", "no", "disabled"].includes(normalized);
+}
+
+export function readPaperclipAttributionPreferenceFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): PaperclipAttributionPreference {
+  return {
+    commit: parseAttributionEnvFlag(env.PAPERCLIP_ATTRIBUTION_COMMIT),
+    pr: parseAttributionEnvFlag(env.PAPERCLIP_ATTRIBUTION_PR),
+  };
+}
+
+export function applyAttributionPreferenceToSkillMarkdown(
+  source: string,
+  preference: PaperclipAttributionPreference,
+): string {
+  if (preference.commit) return source;
+  const lineEnding = source.includes("\r\n") ? "\r\n" : "\n";
+  const filtered = source
+    .split(/\r?\n/)
+    .filter((line) => !PAPERCLIP_COMMIT_TRAILER_PATTERN.test(line));
+  return filtered.join(lineEnding);
+}
+
+async function readMaterializedSkillState(
+  target: string,
+): Promise<"missing" | "symlink" | "directory" | "other"> {
+  const stat = await fs.lstat(target).catch(() => null);
+  if (!stat) return "missing";
+  if (stat.isSymbolicLink()) return "symlink";
+  if (stat.isDirectory()) return "directory";
+  return "other";
+}
+
+async function isPaperclipSkillMaterializationCurrent(
+  source: string,
+  target: string,
+  expectedSkillMarkdown: string,
+): Promise<boolean> {
+  const sourceEntries = await fs.readdir(source, { withFileTypes: true }).catch(() => null);
+  if (!sourceEntries) return false;
+  const targetEntries = await fs.readdir(target, { withFileTypes: true }).catch(() => null);
+  if (!targetEntries) return false;
+
+  const sourceNames = new Set(sourceEntries.map((entry) => entry.name));
+  for (const targetEntry of targetEntries) {
+    if (!sourceNames.has(targetEntry.name)) return false;
+  }
+
+  for (const entry of sourceEntries) {
+    const targetEntryPath = path.join(target, entry.name);
+    const sourceEntryPath = path.join(source, entry.name);
+    if (entry.name === "SKILL.md") {
+      const existing = await fs.readFile(targetEntryPath, "utf8").catch(() => null);
+      if (existing !== expectedSkillMarkdown) return false;
+      continue;
+    }
+    const linkStat = await fs.lstat(targetEntryPath).catch(() => null);
+    if (!linkStat?.isSymbolicLink()) return false;
+    const linkedPath = await fs.readlink(targetEntryPath).catch(() => null);
+    if (!linkedPath) return false;
+    const resolved = path.resolve(path.dirname(targetEntryPath), linkedPath);
+    if (resolved !== sourceEntryPath) return false;
+  }
+
+  return true;
+}
+
+async function writeMaterializedPaperclipSkillDirectory(
+  source: string,
+  target: string,
+  rewrittenSkillMarkdown: string,
+): Promise<void> {
+  await fs.rm(target, { recursive: true, force: true });
+  await fs.mkdir(target, { recursive: true });
+  const entries = await fs.readdir(source, { withFileTypes: true });
+  for (const entry of entries) {
+    const targetEntryPath = path.join(target, entry.name);
+    const sourceEntryPath = path.join(source, entry.name);
+    if (entry.name === "SKILL.md") {
+      await fs.writeFile(targetEntryPath, rewrittenSkillMarkdown, "utf8");
+      continue;
+    }
+    await fs.symlink(sourceEntryPath, targetEntryPath);
+  }
+}
+
+export async function materializePaperclipSkill(
+  source: string,
+  target: string,
+  preference: PaperclipAttributionPreference = readPaperclipAttributionPreferenceFromEnv(),
+  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
+    fs.symlink(linkSource, linkTarget),
+): Promise<"created" | "repaired" | "skipped"> {
+  if (preference.commit) {
+    return ensurePaperclipSkillSymlink(source, target, linkSkill);
+  }
+
+  const sourceSkillMarkdown = await fs.readFile(path.join(source, "SKILL.md"), "utf8").catch(() => null);
+  if (sourceSkillMarkdown === null) {
+    return ensurePaperclipSkillSymlink(source, target, linkSkill);
+  }
+  const rewritten = applyAttributionPreferenceToSkillMarkdown(sourceSkillMarkdown, preference);
+
+  const state = await readMaterializedSkillState(target);
+  if (state === "missing") {
+    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten);
+    return "created";
+  }
+  if (state === "directory") {
+    if (await isPaperclipSkillMaterializationCurrent(source, target, rewritten)) {
+      return "skipped";
+    }
+    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten);
+    return "repaired";
+  }
+  if (state === "symlink") {
+    await fs.unlink(target);
+    await writeMaterializedPaperclipSkillDirectory(source, target, rewritten);
+    return "repaired";
+  }
+  throw new Error(
+    `Cannot materialize Paperclip skill at ${target}: target exists as a regular file, refusing to overwrite. Move or delete it and retry.`,
+  );
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {

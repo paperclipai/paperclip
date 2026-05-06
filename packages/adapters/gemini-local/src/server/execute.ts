@@ -31,7 +31,7 @@ import {
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensurePaperclipSkillSymlink,
+  materializePaperclipSkill,
   joinPromptSections,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
@@ -140,7 +140,7 @@ async function ensureGeminiSkillsInjected(
     const target = path.join(skillsHome, entry.runtimeName);
 
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await materializePaperclipSkill(entry.source, target);
       if (result === "skipped") continue;
       await onLog(
         "stderr",
