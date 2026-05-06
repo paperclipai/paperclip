@@ -18,9 +18,10 @@ These are absolute prohibitions, not guidelines:
 
 1. **A file on disk is not a rollcall result.** Writing markdown files to the workspace and treating them as probe results is fabrication. Stop and report blocked instead.
 2. **A comment saying "I believe X is responsive" is not a rollcall result.** Only a real `done` status from the API counts.
-3. **If you cannot create a probe issue via the API, stop.** Set your issue to `blocked`, post the API error, and exit. Do not simulate.
-4. **If `agent-list-reports.sh` returns an empty array, your subtree has no reports.** Post a no-op comment on your issue and set status to `done`. Do not invent reports.
-5. **Never retry a failed API call as if it succeeded.** Non-zero curl exit = hard stop.
+3. **Every rollcall is a fresh-start diagnostic.** Do not search for or use data from previous rollcalls, old probe issues, or historical activity logs as evidence. You must create NEW probe issues for every report, every time.
+4. **If you cannot create a probe issue via the API, stop.** Set your issue to `blocked`, post the API error, and exit. Do not simulate.
+5. **If `agent-list-reports.sh` returns an empty array, your subtree has no reports.** Post a no-op comment on your issue and set status to `done`. Do not invent reports.
+6. **Never retry a failed API call as if it succeeded.** Non-zero curl exit = hard stop.
 
 ## Protocol Steps
 
@@ -75,7 +76,7 @@ The probe issue description must say exactly this (fill in agent name):
 
 > Perform a recursive rollcall of your **direct reports** using the **`agent-rollcall`** skill. 
 >
-> If you have direct reports, you must follow the protocol in your skill's `SKILL.md` strictly. If you have no direct reports, set this issue to `done` immediately to confirm you are operational.
+> This is a fresh-start diagnostic: **disregard all previous rollcall history, past comments, and old probe results.** Follow the protocol in your skill's `SKILL.md` strictly. If you have no direct reports, set this issue to `done` immediately to confirm you are operational.
 
 ## Environment
 
