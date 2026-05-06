@@ -161,6 +161,9 @@ That means:
 
 Start with least privilege where possible, and avoid exposing secrets in broad reusable prompts unless intentionally required.
 
+For GitHub Copilot CLI local runtime rollout, follow the dedicated security gate
+and operator checklist in [Copilot Local Adapter Security Runbook](../adapters/copilot-local-runbook.md).
+
 ## 10. Minimal setup checklist
 
 1. Choose adapter (`claude_local` or `codex_local`).

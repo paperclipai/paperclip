@@ -42,6 +42,9 @@ diagnostics/
 *.tmp
 .vscode/
 .claude/settings.local.json
+.copilot/
+.copilot-home/
+copilot-session-*.md
 .paperclip-local/
 /.idea/
 /.agents/
