@@ -2783,6 +2783,7 @@ export function issueRoutes(
 
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          if (isClosed && !reopened && mentionedId !== assigneeId) continue;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -3814,6 +3815,7 @@ export function issueRoutes(
       for (const mentionedId of mentionedIds) {
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
+        if (isClosed && !reopened && mentionedId !== assigneeId) continue;
         wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",

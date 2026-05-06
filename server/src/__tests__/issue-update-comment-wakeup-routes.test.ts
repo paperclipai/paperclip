@@ -290,4 +290,94 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("still wakes mentioned agents when a board PATCH implicitly reopens a closed issue", async () => {
+    const MENTIONED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    const reopened = { ...existing, status: "todo" as const };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(reopened);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `cc [@Other](agent://${MENTIONED_AGENT_ID})`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: `cc [@Other](agent://${MENTIONED_AGENT_ID})` });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        MENTIONED_AGENT_ID,
+        expect.objectContaining({ reason: "issue_comment_mentioned" }),
+      ),
+    );
+  });
+
+  it("suppresses mention wakes on closed issues with no agent assignee (PATCH)", async () => {
+    const MENTIONED_AGENT_ID = "44444444-4444-4444-8444-444444444444";
+    // No assignee → shouldImplicitlyMoveCommentedIssueToTodo returns false → reopened stays false.
+    const existing = makeIssue({
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      status: "done",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-4",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `cc [@Other](agent://${MENTIONED_AGENT_ID})`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: `cc [@Other](agent://${MENTIONED_AGENT_ID})` });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      MENTIONED_AGENT_ID,
+      expect.objectContaining({ reason: "issue_comment_mentioned" }),
+    );
+  });
+
+  it("still wakes mentioned agents on open issues (PATCH regression)", async () => {
+    const MENTIONED_AGENT_ID = "55555555-5555-4555-8555-555555555555";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-5",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `cc [@Other](agent://${MENTIONED_AGENT_ID})`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: `cc [@Other](agent://${MENTIONED_AGENT_ID})` });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        MENTIONED_AGENT_ID,
+        expect.objectContaining({ reason: "issue_comment_mentioned" }),
+      ),
+    );
+  });
 });

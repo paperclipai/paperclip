@@ -49,6 +49,7 @@ Overrides and special cases:
 - `PAPERCLIP_TASK_ID` set and assigned to you → prioritize that task first.
 - `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
 - `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
+- **Closed-issue mention dedup:** if the wake is `issue_comment_mentioned` on an issue whose status is `done` or `cancelled` AND you are not the assignee, exit the heartbeat without commenting. The dispatcher already suppresses these wakes server-side; this rule is the second-line guard for any wake that slips through. Re-engage only if the comment explicitly asks for your input or someone reassigns the issue.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
@@ -227,6 +228,7 @@ For commands, response fields, and MCP tools, read:
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
+- **On a `done` / `cancelled` mention wake where you are not the assignee, don't comment** — see the closed-issue mention dedup rule in Step 4. The dispatcher should already suppress these wakes; this rule is the second-line guard.
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.

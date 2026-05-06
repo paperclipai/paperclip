@@ -1237,4 +1237,55 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     ));
   });
+
+  it("suppresses non-assignee mention wakes when an assignee agent POSTs on its own done issue", async () => {
+    const MENTIONED_AGENT_ID = "55555555-5555-4555-8555-555555555555";
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(
+      await installActor(createApp(), agentActor()),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: `done — cc [@Other](agent://${MENTIONED_AGENT_ID})` });
+
+    expect(res.status).toBe(201);
+    // Agent self-comments do not implicitly reopen, and the issue stays done, so the
+    // mentioned non-assignee must NOT be woken.
+    await new Promise((r) => setTimeout(r, 25));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      MENTIONED_AGENT_ID,
+      expect.objectContaining({ reason: "issue_comment_mentioned" }),
+    );
+  });
+
+  it("still wakes mentioned agents when an assignee agent POSTs on its own in_progress issue", async () => {
+    const MENTIONED_AGENT_ID = "66666666-6666-4666-8666-666666666666";
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(
+      await installActor(createApp(), agentActor()),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: `cc [@Other](agent://${MENTIONED_AGENT_ID})` });
+
+    expect(res.status).toBe(201);
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        MENTIONED_AGENT_ID,
+        expect.objectContaining({ reason: "issue_comment_mentioned" }),
+      ),
+    );
+  });
 });
