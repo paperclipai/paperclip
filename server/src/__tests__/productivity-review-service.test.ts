@@ -610,6 +610,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     });
 
     expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
