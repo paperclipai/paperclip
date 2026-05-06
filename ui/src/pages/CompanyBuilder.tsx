@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles, Send, RefreshCw, Settings as SettingsIcon, Wrench } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -44,24 +45,30 @@ async function getAdapterModels(adapterType: string): Promise<Array<{ id: string
   try {
     // Dynamically import the adapter module to get its models
     switch (adapterType) {
-      case "claude_local":
+      case "claude_local": {
         const claude = await import("@paperclipai/adapter-claude-local");
         return claude.models || [];
-      case "codex_local":
+      }
+      case "codex_local": {
         const codex = await import("@paperclipai/adapter-codex-local");
         return codex.models || [];
-      case "opencode_local":
+      }
+      case "opencode_local": {
         const opencode = await import("@paperclipai/adapter-opencode-local");
         return opencode.models || [];
-      case "cursor_local":
+      }
+      case "cursor_local": {
         const cursor = await import("@paperclipai/adapter-cursor-local");
         return cursor.models || [];
-      case "gemini_local":
+      }
+      case "gemini_local": {
         const gemini = await import("@paperclipai/adapter-gemini-local");
         return gemini.models || [];
-      case "pi_local":
+      }
+      case "pi_local": {
         const pi = await import("@paperclipai/adapter-pi-local");
         return pi.models || [];
+      }
       default:
         return [];
     }
@@ -101,6 +108,21 @@ function formatRoleLabel(role: BuilderMessage["role"]): string {
   }
 }
 
+function getApprovalBackedToolResult(toolResult: BuilderMessage["content"]["toolResult"] | undefined): {
+  approvalId: string | null;
+  requiresApproval: boolean;
+} {
+  const result = toolResult?.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { approvalId: null, requiresApproval: false };
+  }
+  const record = result as Record<string, unknown>;
+  return {
+    approvalId: typeof record.approvalId === "string" ? record.approvalId : null,
+    requiresApproval: record.requiresApproval === true,
+  };
+}
+
 function MessageBubble({
   message,
   onApplyProposal,
@@ -117,6 +139,8 @@ function MessageBubble({
   const toolResult = message.content.toolResult;
   const isUser = message.role === "user";
   const proposalId = toolResult?.proposalId;
+  const { approvalId, requiresApproval } = getApprovalBackedToolResult(toolResult);
+  const approvalBackedProposal = Boolean(proposalId && approvalId && requiresApproval);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -149,7 +173,22 @@ function MessageBubble({
             <pre className="whitespace-pre-wrap text-[11px] leading-snug">
               {JSON.stringify(toolResult.result, null, 2).slice(0, 800)}
             </pre>
-            {proposalId && toolResult.proposalStatus === "pending" && onApplyProposal && onRejectProposal && (
+            {approvalBackedProposal && toolResult.proposalStatus === "pending" && approvalId && (
+              <div className="mt-2 rounded border border-amber-400/40 bg-amber-500/10 px-2 py-2 text-[11px] text-amber-900 dark:text-amber-100">
+                <div className="font-medium uppercase tracking-wide text-[10px] opacity-80">
+                  Pending in Approvals
+                </div>
+                <div className="mt-1">
+                  This change was sent to Approvals. Approve or reject it there to execute it.
+                </div>
+                <div className="mt-2">
+                  <Button asChild size="xs" variant="outline">
+                    <Link to={`/approvals/${approvalId}`}>Open approval</Link>
+                  </Button>
+                </div>
+              </div>
+            )}
+            {proposalId && !approvalBackedProposal && toolResult.proposalStatus === "pending" && onApplyProposal && onRejectProposal && (
               <div className="mt-2 flex items-center gap-2 border-t border-border/40 pt-2">
                 <span className="text-[11px] uppercase opacity-60">Proposal</span>
                 <button
