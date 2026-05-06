@@ -51,6 +51,7 @@
 #   4 = drain timed out, gave up (agents restored, needs investigation)
 #   5 = rollback complete but server not healthy; agents left drained for safety
 #   6 = --restore refused; an active upgrade is running (use --force-restore to override)
+#   7 = integration target still misses live fork patches after carry-forward
 #
 # Environment variables:
 #   PAPERCLIP_REPO_DIR       Paperclip repo directory (default: script's grandparent)
@@ -62,7 +63,7 @@
 #   PAPERCLIP_UPGRADE_ENV_FILE  Optional env file (default: <repo>/.env.upgrade-sh)
 #   PAPERCLIP_UPGRADE_MODE   standard|integration (default: standard)
 #   PAPERCLIP_INTEGRATION_FORK_REMOTE  Fork remote to push composed branch to (default: github-fork)
-#   PAPERCLIP_INTEGRATION_BRANCH  Fork branch for composed upstream+PRs (default: paperclip-integration)
+#   PAPERCLIP_INTEGRATION_BRANCH  Fork branch for composed upstream+PRs (default: master)
 #   PAPERCLIP_INTEGRATION_REPO  GitHub repo for PR discovery (default: paperclipai/paperclip)
 #   PAPERCLIP_INTEGRATION_PR_OWNER  GitHub user whose PRs are included (default: fork owner if set)
 #   PAPERCLIP_INTEGRATION_FORK_OWNER  Fork owner; controls closed-PR removal policy
@@ -70,6 +71,17 @@
 #   PAPERCLIP_INTEGRATION_EXCLUDE_PRS  Optional comma/space-separated PR numbers to skip
 #   PAPERCLIP_GITHUB_TOKEN_UPSTREAM  GitHub API token for upstream PR discovery
 #   PAPERCLIP_GITHUB_TOKEN_FORK  Optional GitHub token for HTTPS push to fork remote
+#   PAPERCLIP_CODEX_RECONCILE  1/true to let Codex resolve integration conflicts after git/rerere fail
+#   PAPERCLIP_CODEX_BIN        Codex executable (default: codex)
+#   PAPERCLIP_CODEX_MODEL      Codex model for reconciliation (default: gpt-5.5)
+#   PAPERCLIP_CODEX_REASONING_SEQUENCE  Comma/space list of reasoning efforts to try (default: medium,high,xhigh)
+#   PAPERCLIP_CODEX_AUTH       subscription|api_key (default: subscription; subscription unsets OPENAI_API_KEY)
+#   PAPERCLIP_CODEX_OPENAI_API_KEY  API key used only when PAPERCLIP_CODEX_AUTH=api_key
+#   PAPERCLIP_CODEX_TIMEOUT_SEC  Per-attempt Codex timeout (default: 1800)
+#   PAPERCLIP_CODEX_SANDBOX    Codex sandbox mode for the isolated build worktree (default: workspace-write)
+#   PAPERCLIP_CODEX_SKILL_FILES  Optional whitespace-separated local SKILL.md files appended to reconciliation prompts
+#   PAPERCLIP_CODEX_PROMPT_FILES Optional whitespace-separated local prompt component files appended to reconciliation prompts
+#   PAPERCLIP_CODEX_PROMPT_APPEND Optional inline prompt text appended to reconciliation prompts
 #   PAPERCLIP_SERVICE        Systemd user service name (default: paperclip)
 #   PAPERCLIP_API_TOKEN       Bearer token for API calls (required for authenticated deployments)
 #   PAPERCLIP_HOME           Paperclip data directory (default: ~/.paperclip)
@@ -82,6 +94,7 @@
 #   ./upgrade.sh --restore     # restore agents from failed run (refused if upgrade is active)
 #   ./upgrade.sh --force-restore  # restore agents, bypassing active-upgrade lock check
 #   ./upgrade.sh --status      # show current state
+#   ./upgrade.sh --preflight   # compose and build target only; no push/quiesce/swap
 #   ./upgrade.sh --force-drain # treat unverifiable drain state as drained (use when API is known-unreachable)
 #
 # Local cron configuration can live in .env.upgrade-sh; .env* files are
@@ -90,6 +103,31 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_CODEX_RECONCILE_WAS_SET=0
+_CODEX_BIN_WAS_SET=0
+_CODEX_MODEL_WAS_SET=0
+_CODEX_REASONING_SEQUENCE_WAS_SET=0
+_CODEX_AUTH_WAS_SET=0
+_CODEX_OPENAI_API_KEY_WAS_SET=0
+_CODEX_TIMEOUT_SEC_WAS_SET=0
+_CODEX_SANDBOX_WAS_SET=0
+_CODEX_EXTRA_ARGS_WAS_SET=0
+_CODEX_SKILL_FILES_WAS_SET=0
+_CODEX_PROMPT_FILES_WAS_SET=0
+_CODEX_PROMPT_APPEND_WAS_SET=0
+[ "${PAPERCLIP_CODEX_RECONCILE+x}" ] && { _CODEX_RECONCILE_WAS_SET=1; _CODEX_RECONCILE_OVERRIDE="$PAPERCLIP_CODEX_RECONCILE"; }
+[ "${PAPERCLIP_CODEX_BIN+x}" ] && { _CODEX_BIN_WAS_SET=1; _CODEX_BIN_OVERRIDE="$PAPERCLIP_CODEX_BIN"; }
+[ "${PAPERCLIP_CODEX_MODEL+x}" ] && { _CODEX_MODEL_WAS_SET=1; _CODEX_MODEL_OVERRIDE="$PAPERCLIP_CODEX_MODEL"; }
+[ "${PAPERCLIP_CODEX_REASONING_SEQUENCE+x}" ] && { _CODEX_REASONING_SEQUENCE_WAS_SET=1; _CODEX_REASONING_SEQUENCE_OVERRIDE="$PAPERCLIP_CODEX_REASONING_SEQUENCE"; }
+[ "${PAPERCLIP_CODEX_AUTH+x}" ] && { _CODEX_AUTH_WAS_SET=1; _CODEX_AUTH_OVERRIDE="$PAPERCLIP_CODEX_AUTH"; }
+[ "${PAPERCLIP_CODEX_OPENAI_API_KEY+x}" ] && { _CODEX_OPENAI_API_KEY_WAS_SET=1; _CODEX_OPENAI_API_KEY_OVERRIDE="$PAPERCLIP_CODEX_OPENAI_API_KEY"; }
+[ "${PAPERCLIP_CODEX_TIMEOUT_SEC+x}" ] && { _CODEX_TIMEOUT_SEC_WAS_SET=1; _CODEX_TIMEOUT_SEC_OVERRIDE="$PAPERCLIP_CODEX_TIMEOUT_SEC"; }
+[ "${PAPERCLIP_CODEX_SANDBOX+x}" ] && { _CODEX_SANDBOX_WAS_SET=1; _CODEX_SANDBOX_OVERRIDE="$PAPERCLIP_CODEX_SANDBOX"; }
+[ "${PAPERCLIP_CODEX_EXTRA_ARGS+x}" ] && { _CODEX_EXTRA_ARGS_WAS_SET=1; _CODEX_EXTRA_ARGS_OVERRIDE="$PAPERCLIP_CODEX_EXTRA_ARGS"; }
+[ "${PAPERCLIP_CODEX_SKILL_FILES+x}" ] && { _CODEX_SKILL_FILES_WAS_SET=1; _CODEX_SKILL_FILES_OVERRIDE="$PAPERCLIP_CODEX_SKILL_FILES"; }
+[ "${PAPERCLIP_CODEX_PROMPT_FILES+x}" ] && { _CODEX_PROMPT_FILES_WAS_SET=1; _CODEX_PROMPT_FILES_OVERRIDE="$PAPERCLIP_CODEX_PROMPT_FILES"; }
+[ "${PAPERCLIP_CODEX_PROMPT_APPEND+x}" ] && { _CODEX_PROMPT_APPEND_WAS_SET=1; _CODEX_PROMPT_APPEND_OVERRIDE="$PAPERCLIP_CODEX_PROMPT_APPEND"; }
 
 # Load local cron/operator configuration before reading overridable variables.
 # The file is intentionally outside git and must never be logged.
@@ -100,6 +138,19 @@ if [ -f "$UPGRADE_ENV_FILE" ]; then
   . "$UPGRADE_ENV_FILE"
   set +a
 fi
+
+[ "$_CODEX_RECONCILE_WAS_SET" = "1" ] && PAPERCLIP_CODEX_RECONCILE="$_CODEX_RECONCILE_OVERRIDE"
+[ "$_CODEX_BIN_WAS_SET" = "1" ] && PAPERCLIP_CODEX_BIN="$_CODEX_BIN_OVERRIDE"
+[ "$_CODEX_MODEL_WAS_SET" = "1" ] && PAPERCLIP_CODEX_MODEL="$_CODEX_MODEL_OVERRIDE"
+[ "$_CODEX_REASONING_SEQUENCE_WAS_SET" = "1" ] && PAPERCLIP_CODEX_REASONING_SEQUENCE="$_CODEX_REASONING_SEQUENCE_OVERRIDE"
+[ "$_CODEX_AUTH_WAS_SET" = "1" ] && PAPERCLIP_CODEX_AUTH="$_CODEX_AUTH_OVERRIDE"
+[ "$_CODEX_OPENAI_API_KEY_WAS_SET" = "1" ] && PAPERCLIP_CODEX_OPENAI_API_KEY="$_CODEX_OPENAI_API_KEY_OVERRIDE"
+[ "$_CODEX_TIMEOUT_SEC_WAS_SET" = "1" ] && PAPERCLIP_CODEX_TIMEOUT_SEC="$_CODEX_TIMEOUT_SEC_OVERRIDE"
+[ "$_CODEX_SANDBOX_WAS_SET" = "1" ] && PAPERCLIP_CODEX_SANDBOX="$_CODEX_SANDBOX_OVERRIDE"
+[ "$_CODEX_EXTRA_ARGS_WAS_SET" = "1" ] && PAPERCLIP_CODEX_EXTRA_ARGS="$_CODEX_EXTRA_ARGS_OVERRIDE"
+[ "$_CODEX_SKILL_FILES_WAS_SET" = "1" ] && PAPERCLIP_CODEX_SKILL_FILES="$_CODEX_SKILL_FILES_OVERRIDE"
+[ "$_CODEX_PROMPT_FILES_WAS_SET" = "1" ] && PAPERCLIP_CODEX_PROMPT_FILES="$_CODEX_PROMPT_FILES_OVERRIDE"
+[ "$_CODEX_PROMPT_APPEND_WAS_SET" = "1" ] && PAPERCLIP_CODEX_PROMPT_APPEND="$_CODEX_PROMPT_APPEND_OVERRIDE"
 
 # Ensure systemctl --user works from non-interactive contexts (cron, agents, timers).
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -121,7 +172,7 @@ PHASE_TIMEOUT_SEC=${PHASE_TIMEOUT_SEC:-1800}
 UPGRADE_MODE="${PAPERCLIP_UPGRADE_MODE:-standard}"
 
 INTEGRATION_FORK_REMOTE="${PAPERCLIP_INTEGRATION_FORK_REMOTE:-github-fork}"
-INTEGRATION_BRANCH="${PAPERCLIP_INTEGRATION_BRANCH:-paperclip-integration}"
+INTEGRATION_BRANCH="${PAPERCLIP_INTEGRATION_BRANCH:-master}"
 INTEGRATION_REPO="${PAPERCLIP_INTEGRATION_REPO:-paperclipai/paperclip}"
 INTEGRATION_FORK_OWNER="${PAPERCLIP_INTEGRATION_FORK_OWNER:-}"
 INTEGRATION_PR_OWNER="${PAPERCLIP_INTEGRATION_PR_OWNER:-$INTEGRATION_FORK_OWNER}"
@@ -131,6 +182,20 @@ INTEGRATION_MAX_PR_PAGES="${PAPERCLIP_INTEGRATION_MAX_PR_PAGES:-20}"
 INTEGRATION_GITHUB_API_URL="${PAPERCLIP_GITHUB_API_URL:-https://api.github.com}"
 GITHUB_TOKEN_UPSTREAM="${PAPERCLIP_GITHUB_TOKEN_UPSTREAM:-${GITHUB_TOKEN:-}}"
 GITHUB_TOKEN_FORK="${PAPERCLIP_GITHUB_TOKEN_FORK:-}"
+
+CODEX_RECONCILE="${PAPERCLIP_CODEX_RECONCILE:-0}"
+CODEX_BIN="${PAPERCLIP_CODEX_BIN:-codex}"
+CODEX_MODEL="${PAPERCLIP_CODEX_MODEL:-gpt-5.5}"
+CODEX_REASONING_SEQUENCE="${PAPERCLIP_CODEX_REASONING_SEQUENCE:-medium,high,xhigh}"
+CODEX_AUTH="${PAPERCLIP_CODEX_AUTH:-subscription}"
+CODEX_OPENAI_API_KEY="${PAPERCLIP_CODEX_OPENAI_API_KEY:-}"
+CODEX_TIMEOUT_SEC="${PAPERCLIP_CODEX_TIMEOUT_SEC:-1800}"
+CODEX_SANDBOX="${PAPERCLIP_CODEX_SANDBOX:-workspace-write}"
+CODEX_EXTRA_ARGS="${PAPERCLIP_CODEX_EXTRA_ARGS:-}"
+CODEX_SKILL_FILES="${PAPERCLIP_CODEX_SKILL_FILES:-}"
+CODEX_PROMPT_FILES="${PAPERCLIP_CODEX_PROMPT_FILES:-}"
+CODEX_PROMPT_APPEND="${PAPERCLIP_CODEX_PROMPT_APPEND:-}"
+CODEX_RECONCILE_ACTIVE=1
 
 BUILD_DIR="$PAPERCLIP_HOME/upgrade-build"
 LOG_FILE="$PAPERCLIP_HOME/upgrade.log"
@@ -172,16 +237,41 @@ github_api() {
   local url="$1"
   if [ -n "$GITHUB_TOKEN_UPSTREAM" ]; then
     curl -sf \
+      --retry 3 \
+      --retry-delay 2 \
+      --retry-all-errors \
       -H "Authorization: Bearer $GITHUB_TOKEN_UPSTREAM" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       "$url"
   else
     curl -sf \
+      --retry 3 \
+      --retry-delay 2 \
+      --retry-all-errors \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       "$url"
   fi
+}
+
+fetch_github_json() {
+  local url="$1"
+  local output="$2"
+  local tmp_output
+  local attempt
+  tmp_output="$output.tmp"
+  for attempt in 1 2 3; do
+    rm -f "$tmp_output"
+    if github_api "$url" > "$tmp_output" && jq empty "$tmp_output" >/dev/null 2>&1; then
+      mv "$tmp_output" "$output"
+      return 0
+    fi
+    log "WARN: GitHub JSON fetch failed or was truncated (attempt $attempt/3): $url"
+    sleep $(( attempt * 2 ))
+  done
+  rm -f "$tmp_output"
+  return 1
 }
 
 normalize_number_list() {
@@ -208,7 +298,7 @@ fetch_all_open_prs_json() {
   : > "$output"
   for page in $(seq 1 "$INTEGRATION_MAX_PR_PAGES"); do
     page_file="$STATE_DIR/open-prs-page-$page.json"
-    if ! github_api "$INTEGRATION_GITHUB_API_URL/repos/$INTEGRATION_REPO/pulls?state=open&per_page=100&page=$page&sort=updated&direction=desc" > "$page_file"; then
+    if ! fetch_github_json "$INTEGRATION_GITHUB_API_URL/repos/$INTEGRATION_REPO/pulls?state=open&per_page=100&page=$page&sort=updated&direction=desc" "$page_file"; then
       log "ERROR: Failed to fetch open PR page $page for $INTEGRATION_REPO"
       exit 1
     fi
@@ -226,13 +316,13 @@ fetch_all_open_prs_json() {
 fetch_pull_json() {
   local number="$1"
   local output="$2"
-  github_api "$INTEGRATION_GITHUB_API_URL/repos/$INTEGRATION_REPO/pulls/$number" > "$output"
+  fetch_github_json "$INTEGRATION_GITHUB_API_URL/repos/$INTEGRATION_REPO/pulls/$number" "$output"
 }
 
 fetch_issue_json() {
   local number="$1"
   local output="$2"
-  github_api "$INTEGRATION_GITHUB_API_URL/repos/$INTEGRATION_REPO/issues/$number" > "$output"
+  fetch_github_json "$INTEGRATION_GITHUB_API_URL/repos/$INTEGRATION_REPO/issues/$number" "$output"
 }
 
 build_integration_pr_manifest() {
@@ -371,6 +461,200 @@ finalize_integration_compose_conflicts() {
   rm -f "$STATE_DIR/integration-compose-conflicts.jsonl"
 }
 
+codex_reconcile_enabled() {
+  case "$CODEX_RECONCILE" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_codex_config() {
+  if ! codex_reconcile_enabled; then
+    return 1
+  fi
+  if [ "${CODEX_RECONCILE_ACTIVE:-1}" != "1" ]; then
+    return 1
+  fi
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    log "WARN: PAPERCLIP_CODEX_RECONCILE is enabled but Codex executable '$CODEX_BIN' was not found"
+    return 1
+  fi
+  case "$CODEX_AUTH" in
+    subscription|oauth|api_key)
+      ;;
+    *)
+      log "WARN: unsupported PAPERCLIP_CODEX_AUTH=$CODEX_AUTH; expected subscription or api_key"
+      return 1
+      ;;
+  esac
+  if [ "$CODEX_AUTH" = "api_key" ] && [ -z "$CODEX_OPENAI_API_KEY" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    log "WARN: PAPERCLIP_CODEX_AUTH=api_key but neither PAPERCLIP_CODEX_OPENAI_API_KEY nor OPENAI_API_KEY is set"
+    return 1
+  fi
+  return 0
+}
+
+append_codex_prompt_file() {
+  local prompt_file="$1"
+  local source_file="$2"
+  local label="$3"
+
+  if [ ! -f "$source_file" ]; then
+    log "WARN: Codex prompt component not found: $source_file"
+    return 0
+  fi
+
+  {
+    printf '\n\n## %s\n\n' "$label"
+    printf 'Source: %s\n\n' "$source_file"
+    cat "$source_file"
+  } >> "$prompt_file"
+}
+
+append_codex_prompt_extensions() {
+  local prompt_file="$1"
+  local source_file
+
+  if [ -n "$CODEX_SKILL_FILES" ]; then
+    for source_file in $CODEX_SKILL_FILES; do
+      append_codex_prompt_file "$prompt_file" "$source_file" "Local Skill"
+    done
+  fi
+
+  if [ -n "$CODEX_PROMPT_FILES" ]; then
+    for source_file in $CODEX_PROMPT_FILES; do
+      append_codex_prompt_file "$prompt_file" "$source_file" "Local Prompt Component"
+    done
+  fi
+
+  if [ -n "$CODEX_PROMPT_APPEND" ]; then
+    {
+      printf '\n\n## Local Prompt Addition\n\n'
+      printf '%s\n' "$CODEX_PROMPT_APPEND"
+    } >> "$prompt_file"
+  fi
+}
+
+write_codex_reconcile_prompt() {
+  local operation="$1"
+  local subject="$2"
+  local prompt_file="$3"
+  local conflict_files status upstream_short head_short
+
+  conflict_files=$(git -C "$BUILD_DIR" diff --name-only --diff-filter=U | sed 's/^/- /' || true)
+  status=$(git -C "$BUILD_DIR" status --short)
+  upstream_short=$(git -C "$REPO_DIR" rev-parse --short "$UPSTREAM/$UPSTREAM_BRANCH" 2>/dev/null || echo unknown)
+  head_short=$(git -C "$BUILD_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+  cat > "$prompt_file" <<EOF
+You are reconciling a Paperclip integration upgrade in an isolated build worktree.
+
+Worktree: $BUILD_DIR
+Live repo: $REPO_DIR
+Operation: $operation
+Subject: $subject
+Current build HEAD: $head_short
+Upstream target: $UPSTREAM/$UPSTREAM_BRANCH at $upstream_short
+
+Conflicted files:
+${conflict_files:-none reported}
+
+Current git status:
+$status
+
+Resolve the merge/cherry-pick conflict in this isolated worktree only.
+
+Requirements:
+- Preserve upstream intent and the fork/PR intent. Do not drop behavior from either side just to make the conflict disappear.
+- Keep Paperclip company scoping, plugin SDK behavior, adapter behavior, auth/session behavior, and migrations coherent across db/shared/server/ui.
+- Edit only files inside $BUILD_DIR.
+- Do not push, stop services, quiesce agents, restart Paperclip, or touch the live checkout at $REPO_DIR.
+- Stage resolved files with git add when complete, but do not commit, continue, reset, abort, or push.
+- Run the smallest relevant verification you can afford for touched files; if you cannot run it, leave a concise note in your final response.
+- Leave the worktree with no unmerged files and no conflict markers.
+EOF
+
+  append_codex_prompt_extensions "$prompt_file"
+}
+
+run_codex_reconcile_attempt() {
+  local effort="$1"
+  local prompt_file="$2"
+  local output_file="$3"
+  local api_key
+  local extra_args=()
+  local codex_args=()
+
+  if [ -n "$CODEX_EXTRA_ARGS" ]; then
+    # Optional advanced override; supports simple whitespace-separated flags.
+    read -r -a extra_args <<< "$CODEX_EXTRA_ARGS"
+  fi
+
+  codex_args=(
+    "$CODEX_BIN" exec
+    -C "$BUILD_DIR"
+    --skip-git-repo-check
+    --sandbox "$CODEX_SANDBOX"
+    --model "$CODEX_MODEL"
+    -c "model_reasoning_effort=\"$effort\""
+    -o "$output_file"
+    "${extra_args[@]}"
+  )
+
+  if [ "$CODEX_AUTH" = "api_key" ]; then
+    api_key="${CODEX_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}"
+    timeout "$CODEX_TIMEOUT_SEC" env OPENAI_API_KEY="$api_key" "${codex_args[@]}" < "$prompt_file" >> "$LOG_FILE" 2>&1
+  else
+    timeout "$CODEX_TIMEOUT_SEC" env -u OPENAI_API_KEY "${codex_args[@]}" < "$prompt_file" >> "$LOG_FILE" 2>&1
+  fi
+}
+
+try_codex_reconcile() {
+  local operation="$1"
+  local subject="$2"
+  local effort prompt_file output_file attempt_status
+
+  if ! ensure_codex_config; then
+    return 1
+  fi
+
+  prompt_file="$STATE_DIR/codex-reconcile-prompt.md"
+  output_file="$STATE_DIR/codex-reconcile-last-message.md"
+  write_codex_reconcile_prompt "$operation" "$subject" "$prompt_file"
+
+  while IFS= read -r effort; do
+    [ -z "$effort" ] && continue
+    log "Integration: invoking Codex reconciliation ($CODEX_MODEL/$effort) for $operation: $subject"
+    set +e
+    run_codex_reconcile_attempt "$effort" "$prompt_file" "$output_file"
+    attempt_status=$?
+    set -e
+    if [ "$attempt_status" != "0" ]; then
+      log "WARN: Codex reconciliation attempt $CODEX_MODEL/$effort exited with status $attempt_status"
+    fi
+    if git -C "$BUILD_DIR" diff --name-only --diff-filter=U | grep -q .; then
+      log "WARN: Codex reconciliation $CODEX_MODEL/$effort left unresolved files"
+      continue
+    fi
+    if ! git -C "$BUILD_DIR" diff --check >> "$LOG_FILE" 2>&1; then
+      log "WARN: Codex reconciliation $CODEX_MODEL/$effort left working-tree whitespace/conflict-marker issues"
+      continue
+    fi
+    if ! git -C "$BUILD_DIR" diff --cached --check >> "$LOG_FILE" 2>&1; then
+      log "WARN: Codex reconciliation $CODEX_MODEL/$effort left staged whitespace/conflict-marker issues"
+      continue
+    fi
+    log "Integration: Codex reconciliation resolved $operation with $CODEX_MODEL/$effort"
+    return 0
+  done < <(normalize_number_list "$CODEX_REASONING_SEQUENCE")
+
+  return 1
+}
+
 report_pr_main_conflicts() {
   local upstream_commit="$1"
   local conflicts_jsonl="$STATE_DIR/integration-main-conflicts.jsonl"
@@ -439,6 +723,14 @@ compose_integration_candidate() {
       fi
     fi
 
+    if try_codex_reconcile "merge" "PR #$number - $title"; then
+      git -C "$BUILD_DIR" add -A
+      if git -C "$BUILD_DIR" commit --no-edit 2>>"$LOG_FILE"; then
+        continue
+      fi
+      log "WARN: Codex resolved PR #$number files, but git commit --no-edit failed"
+    fi
+
     log "ERROR: Integration merge conflict while applying PR #$number"
     if git -C "$BUILD_DIR" diff --name-only --diff-filter=U | grep -q .; then
       echo "$pr_base" > "$INTEGRATION_CONFLICT_BASE_FILE"
@@ -449,6 +741,92 @@ compose_integration_candidate() {
   done < <(jq -r '.[] | [.number, (.title | gsub("\t"; " "))] | @tsv' "$STATE_DIR/integration-prs.json")
 
   return 0
+}
+
+normalize_integration_migrations() {
+  local normalize_output
+
+  [ -d "$BUILD_DIR/packages/db/src/migrations" ] || return 0
+
+  normalize_output=$(BUILD_DIR="$BUILD_DIR" node <<'EOF'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const buildDir = process.env.BUILD_DIR;
+const migrationsDir = path.join(buildDir, "packages/db/src/migrations");
+const journalPath = path.join(migrationsDir, "meta/_journal.json");
+
+const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+const entries = Array.isArray(journal.entries) ? journal.entries : [];
+const journalTags = new Set(entries.map((entry) => entry.tag).filter((tag) => typeof tag === "string"));
+
+function readSqlFiles() {
+  return fs.readdirSync(migrationsDir)
+    .filter((entry) => entry.endsWith(".sql"))
+    .sort();
+}
+
+function suffix(tag) {
+  const match = tag.match(/^\d{4}_(.+)$/);
+  return match ? match[1] : null;
+}
+
+let changed = false;
+
+for (const file of readSqlFiles()) {
+  const tag = file.slice(0, -".sql".length);
+  if (journalTags.has(tag)) {
+    continue;
+  }
+
+  const fileSuffix = suffix(tag);
+  if (!fileSuffix) {
+    continue;
+  }
+
+  const targetTags = entries
+    .map((entry) => entry.tag)
+    .filter((entryTag) => typeof entryTag === "string" && suffix(entryTag) === fileSuffix);
+  const missingTargetTags = targetTags.filter((entryTag) => !fs.existsSync(path.join(migrationsDir, `${entryTag}.sql`)));
+
+  if (targetTags.length === 1 && missingTargetTags.length === 0) {
+    const sourcePath = path.join(migrationsDir, file);
+    const targetPath = path.join(migrationsDir, `${targetTags[0]}.sql`);
+    if (fs.existsSync(targetPath) && fs.readFileSync(sourcePath, "utf8") === fs.readFileSync(targetPath, "utf8")) {
+      fs.unlinkSync(sourcePath);
+      console.log(`removed duplicate ${file}; ${targetTags[0]}.sql already exists`);
+      changed = true;
+    }
+    continue;
+  }
+
+  if (missingTargetTags.length !== 1) {
+    continue;
+  }
+
+  const sourcePath = path.join(migrationsDir, file);
+  const targetPath = path.join(migrationsDir, `${missingTargetTags[0]}.sql`);
+  fs.renameSync(sourcePath, targetPath);
+  console.log(`renamed ${file} -> ${missingTargetTags[0]}.sql`);
+  changed = true;
+}
+
+if (changed) {
+  fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+}
+EOF
+)
+
+  if [ -n "$normalize_output" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && log "Integration: migration numbering $line"
+    done <<< "$normalize_output"
+  fi
+
+  if ! git -C "$BUILD_DIR" diff --quiet -- packages/db/src/migrations; then
+    git -C "$BUILD_DIR" add packages/db/src/migrations
+    git -C "$BUILD_DIR" commit -m "Normalize integration migration numbering" 2>>"$LOG_FILE"
+  fi
 }
 
 find_last_integrated_upstream_sha() {
@@ -506,6 +884,116 @@ write_integration_manifest() {
     }' > "$output"
 }
 
+verify_target_preserves_live_head() {
+  local target_ref="$1"
+  if git -C "$REPO_DIR" merge-base --is-ancestor HEAD "$target_ref"; then
+    return 0
+  fi
+
+  local missing_file missing_count sha subject
+  missing_file="$STATE_DIR/integration-missing-live-commits.txt"
+  : > "$missing_file"
+  while IFS= read -r sha; do
+    [ -z "$sha" ] && continue
+    # Integration mode rewrites merge topology on each compose. Merge commits
+    # are expected not to be preserved by ancestry, so only guard non-merge
+    # patches that would actually disappear from the recomposed fork.
+    if [ "$(git -C "$REPO_DIR" rev-list --parents -n 1 "$sha" | wc -w)" -gt 2 ]; then
+      continue
+    fi
+    subject=$(git -C "$REPO_DIR" log -1 --format=%s "$sha")
+    case "$subject" in
+      "Normalize integration migration numbering")
+        continue
+        ;;
+    esac
+    printf '%s %s\n' "$sha" "$subject" >> "$missing_file"
+  done < <(git -C "$REPO_DIR" cherry "$target_ref" HEAD | awk '$1 == "+" { print $2 }')
+
+  missing_count=$(awk 'END { print NR + 0 }' "$missing_file")
+  if [ "$missing_count" = "0" ]; then
+    rm -f "$missing_file"
+    return 0
+  fi
+
+  log "ERROR: composed target $(git -C "$BUILD_DIR" rev-parse --short "$target_ref") would drop $missing_count live fork commit(s)"
+  log "ERROR: refusing to continue because these patches are not represented in the composed PR set"
+  while IFS= read -r line; do
+    log "  missing from target: $line"
+  done < "$missing_file"
+  if [ "$missing_count" -gt 20 ]; then
+    log "  ... see $missing_file for the full list"
+  fi
+  return 1
+}
+
+carry_live_head_patches() {
+  local missing_file missing_count target_ref sha subject
+  missing_file="$STATE_DIR/integration-missing-live-commits.txt"
+  : > "$missing_file"
+  target_ref=$(git -C "$BUILD_DIR" rev-parse HEAD)
+
+  while IFS= read -r sha; do
+    [ -z "$sha" ] && continue
+    # Integration mode rewrites merge topology on each compose. Merge commits
+    # are expected not to be preserved by ancestry, so only carry non-merge
+    # patches that would actually disappear from the recomposed fork.
+    if [ "$(git -C "$REPO_DIR" rev-list --parents -n 1 "$sha" | wc -w)" -gt 2 ]; then
+      continue
+    fi
+    subject=$(git -C "$REPO_DIR" log -1 --format=%s "$sha")
+    case "$subject" in
+      "Normalize integration migration numbering")
+        continue
+        ;;
+    esac
+    printf '%s %s\n' "$sha" "$subject" >> "$missing_file"
+  done < <(git -C "$REPO_DIR" cherry "$target_ref" HEAD | awk '$1 == "+" { print $2 }')
+
+  missing_count=$(awk 'END { print NR + 0 }' "$missing_file")
+  if [ "$missing_count" = "0" ]; then
+    rm -f "$missing_file"
+    return 0
+  fi
+
+  log "Integration: carrying forward $missing_count live fork patch(es) not represented by tracked PRs"
+  while IFS= read -r line; do
+    sha="${line%% *}"
+    subject="${line#* }"
+    log "Integration: cherry-picking live fork patch $(git -C "$REPO_DIR" rev-parse --short "$sha") - $subject"
+    if git -C "$BUILD_DIR" \
+      -c rerere.enabled=true \
+      -c rerere.autoupdate=true \
+      cherry-pick -x "$sha" 2>>"$LOG_FILE"; then
+      continue
+    fi
+
+    if ! git -C "$BUILD_DIR" diff --name-only --diff-filter=U | grep -q .; then
+      log "Integration: rerere resolved live fork patch $(git -C "$REPO_DIR" rev-parse --short "$sha"); committing recorded resolution"
+      if git -C "$BUILD_DIR" cherry-pick --continue 2>>"$LOG_FILE" || git -C "$BUILD_DIR" commit --no-edit 2>>"$LOG_FILE"; then
+        continue
+      fi
+    fi
+
+    if try_codex_reconcile "cherry-pick" "live fork patch $(git -C "$REPO_DIR" rev-parse --short "$sha") - $subject"; then
+      git -C "$BUILD_DIR" add -A
+      if git -C "$BUILD_DIR" cherry-pick --continue 2>>"$LOG_FILE" || git -C "$BUILD_DIR" commit --no-edit 2>>"$LOG_FILE"; then
+        continue
+      fi
+      log "WARN: Codex resolved live fork patch $(git -C "$REPO_DIR" rev-parse --short "$sha") files, but cherry-pick continuation failed"
+    fi
+
+    log "ERROR: live fork patch $(git -C "$REPO_DIR" rev-parse --short "$sha") conflicts with composed integration target"
+    git -C "$BUILD_DIR" diff --name-only --diff-filter=U | while IFS= read -r conflict_file; do
+      [ -n "$conflict_file" ] && log "  conflict: $conflict_file"
+    done
+    git -C "$BUILD_DIR" cherry-pick --abort 2>>"$LOG_FILE" || true
+    return 1
+  done < "$missing_file"
+
+  rm -f "$missing_file"
+}
+
 push_integration_branch() {
   local old_ref lease_arg
   old_ref=$(git -C "$REPO_DIR" rev-parse --verify "$INTEGRATION_FORK_REMOTE/$INTEGRATION_BRANCH" 2>/dev/null || echo "")
@@ -542,7 +1030,7 @@ EOF
 }
 
 prepare_integration_target() {
-  local latest_upstream previous_upstream best_upstream candidate final_manifest next_base
+  local latest_upstream previous_upstream best_upstream candidate final_manifest next_base saved_codex_reconcile_active
 
   ensure_integration_config
   log "Integration: fetching $UPSTREAM/$UPSTREAM_BRANCH and $INTEGRATION_FORK_REMOTE/$INTEGRATION_BRANCH"
@@ -563,6 +1051,9 @@ prepare_integration_target() {
   if compose_integration_candidate "$latest_upstream"; then
     best_upstream="$latest_upstream"
   else
+    saved_codex_reconcile_active="$CODEX_RECONCILE_ACTIVE"
+    CODEX_RECONCILE_ACTIVE=0
+    log "Integration: latest upstream did not compose after configured Codex attempts; fallback probing will use git/rerere only"
     if [ -z "$previous_upstream" ]; then
       previous_upstream=$(cat "$INTEGRATION_CONFLICT_BASE_FILE" 2>/dev/null || true)
       if [ -z "$previous_upstream" ]; then
@@ -604,10 +1095,11 @@ prepare_integration_target() {
       if compose_integration_candidate "$candidate"; then
         best_upstream="$candidate"
       else
-        log "WARN: stopping integration before conflicting upstream commit $(git -C "$REPO_DIR" rev-parse --short "$candidate")"
-        break
+      log "WARN: stopping integration before conflicting upstream commit $(git -C "$REPO_DIR" rev-parse --short "$candidate")"
+      break
       fi
     done < <(git -C "$REPO_DIR" rev-list --reverse --first-parent "$previous_upstream..$latest_upstream")
+    CODEX_RECONCILE_ACTIVE="$saved_codex_reconcile_active"
 
     if [ -z "$best_upstream" ]; then
       log "ERROR: Could not compose any new upstream commit with tracked PRs"
@@ -618,12 +1110,54 @@ prepare_integration_target() {
   fi
 
   finalize_integration_compose_conflicts
+  normalize_integration_migrations
+  if ! carry_live_head_patches; then
+    full_cleanup
+    exit 7
+  fi
 
   TARGET_REF=$(git -C "$BUILD_DIR" rev-parse HEAD)
+  if ! verify_target_preserves_live_head "$TARGET_REF"; then
+    finalize_integration_compose_conflicts
+    full_cleanup
+    exit 7
+  fi
   echo "$TARGET_REF" > "$TARGET_REF_FILE"
   final_manifest="$STATE_DIR/integration-manifest.next.json"
   write_integration_manifest "$best_upstream" "$TARGET_REF" "$final_manifest"
   log "Integration: composed target $(git -C "$BUILD_DIR" rev-parse --short HEAD) at upstream $(git -C "$REPO_DIR" rev-parse --short "$best_upstream")"
+}
+
+preflight_upgrade() {
+  cd "$REPO_DIR"
+  if [ "$UPGRADE_MODE" != "integration" ]; then
+    log "ERROR: --preflight is only supported for PAPERCLIP_UPGRADE_MODE=integration"
+    exit 1
+  fi
+
+  prepare_integration_target
+
+  log "Preflight: installing dependencies in composed worktree..."
+  cd "$BUILD_DIR"
+  if ! pnpm install --frozen-lockfile 2>>"$LOG_FILE"; then
+    log "WARN: frozen-lockfile failed during preflight, trying regular install"
+    if ! pnpm install 2>>"$LOG_FILE"; then
+      log "ERROR: preflight pnpm install failed"
+      full_cleanup
+      exit 1
+    fi
+  fi
+
+  log "Preflight: building composed worktree..."
+  if ! pnpm build 2>>"$LOG_FILE"; then
+    log "ERROR: preflight build failed"
+    full_cleanup
+    exit 1
+  fi
+
+  rm -f "$STATE_DIR/integration-manifest.next.json" "$TARGET_REF_FILE"
+  full_cleanup
+  log "Preflight complete: composed target builds and preserves live HEAD; no push, quiesce, or swap was performed"
 }
 
 get_phase() { cat "$UPGRADE_PHASE_FILE" 2>/dev/null || echo "idle"; }
@@ -971,6 +1505,11 @@ case "${1:-}" in
     [ -d "$BUILD_DIR" ] && echo "Build dir: exists ($(git -C "$BUILD_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown'))"
     exit 0
     ;;
+  --preflight)
+    acquire_lock
+    preflight_upgrade
+    exit 0
+    ;;
 esac
 
 MODE="resume"
@@ -1145,8 +1684,8 @@ fi
 #
 # Strategy:
 # 1. Stop the server
-# 2. Stash any local changes (e.g. local skill patches)
-# 3. Fast-forward the live repo to upstream
+# 2. Stash any local changes, including untracked files (e.g. local migration drafts)
+# 3. Advance the live repo to the target
 # 4. Re-apply stashed changes
 # 5. pnpm install on live repo (fast — packages cached from worktree build)
 # 6. Start the server and health-check
@@ -1163,7 +1702,7 @@ if [ "$phase" = "swapping" ]; then
   local_changes=$(git status --porcelain 2>/dev/null | head -1)
   if [ -n "$local_changes" ]; then
     log "Stashing local changes in live repo..."
-    git stash push -m "paperclip-upgrade-$(date +%s)" 2>>"$LOG_FILE"
+    git stash push -u -m "paperclip-upgrade-$(date +%s)" 2>>"$LOG_FILE"
     echo "stashed" > "$STATE_DIR/stash-flag"
   fi
 
@@ -1175,6 +1714,18 @@ if [ "$phase" = "swapping" ]; then
   if git merge-base --is-ancestor HEAD "$TARGET_REF"; then
     if ! git merge "$TARGET_REF" --ff-only 2>>"$LOG_FILE"; then
       log "ERROR: Fast-forward failed on live repo"
+      systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
+      [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
+      restore_heartbeats
+      full_cleanup
+      exit 1
+    fi
+  elif [ "$UPGRADE_MODE" = "integration" ]; then
+    backup_ref="refs/paperclip-upgrade/live-backups/$(date +%Y%m%d%H%M%S)"
+    git update-ref "$backup_ref" HEAD
+    log "Live repo diverged from composed integration target; saved old HEAD at $backup_ref and resetting to target"
+    if ! git reset --hard "$TARGET_REF" 2>>"$LOG_FILE"; then
+      log "ERROR: Reset to integration target failed"
       systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
       [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
       restore_heartbeats
