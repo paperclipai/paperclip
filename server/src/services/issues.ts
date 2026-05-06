@@ -1857,9 +1857,16 @@ export function issueService(db: Db) {
       }
 
       applyStatusSideEffects(issueData.status, patch);
-      if (issueData.status === "blocked" && !issueData.blockReason) {
-        patch.blockReason =
-          blockedByIssueIds !== undefined && blockedByIssueIds.length > 0 ? "upstream" : "manual";
+      const finalStatus = issueData.status ?? existing.status;
+      if (finalStatus === "blocked" && !issueData.blockReason) {
+        if (blockedByIssueIds !== undefined) {
+          // blockedByIssueIds is being synced — re-derive reason from the incoming list
+          patch.blockReason = blockedByIssueIds.length > 0 ? "upstream" : "manual";
+        } else if (issueData.status === "blocked") {
+          // Transitioning to blocked with no blockers provided
+          patch.blockReason = "manual";
+        }
+        // Already blocked with no relevant changes → leave blockReason unchanged
       }
       if (issueData.status && issueData.status !== "blocked") {
         patch.blockReason = null;
