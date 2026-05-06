@@ -168,8 +168,8 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
   return line ?? null;
 }
 
-function runFailureMessage(run: HeartbeatRun, fallback = "Run exited with an error."): string {
-  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? fallback;
+function runFailureMessage(run: HeartbeatRun): string {
+  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
 }
 
 function approvalStatusLabel(status: Approval["status"]): string {
@@ -257,7 +257,7 @@ export function FailedRunInboxRow({
   const { t } = useTranslation("inbox");
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
-  const displayError = runFailureMessage(run, t("misc.run_error"));
+  const displayError = firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? t("misc.run_error");
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -551,18 +551,7 @@ function JoinRequestInboxRow({
   className?: string;
 }) {
   const { t } = useTranslation("inbox");
-  const rawLabel = formatJoinRequestInboxLabel(joinRequest);
-  const label = (() => {
-    if (joinRequest.requestType === "human" && rawLabel === "Human join request") {
-      return t("misc.human_join_request");
-    }
-    if (joinRequest.requestType !== "human") {
-      return joinRequest.agentName
-        ? t("misc.agent_join_request_named", { name: joinRequest.agentName })
-        : t("misc.agent_join_request");
-    }
-    return rawLabel;
-  })();
+  const label = joinRequest.requestType !== "human" ? (joinRequest.agentName ? t("misc.agent_join_request_named", { name: joinRequest.agentName }) : t("misc.agent_join_request")) : (formatJoinRequestInboxLabel(joinRequest) === "Human join request" ? t("misc.human_join_request") : formatJoinRequestInboxLabel(joinRequest));
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -2021,7 +2010,7 @@ export function Inbox() {
                   ["assignee", t("group.assignee")],
                   ["project", t("group.project")],
                   ...(isolatedWorkspacesEnabled ? ([["workspace", t("group.workspace")]] as const) : []),
-                ] as [InboxWorkItemGroupBy, string][]).map(([value, label]) => (
+                ] as const).map(([value, label]) => (
                   <button
                     key={value}
                     type="button"
