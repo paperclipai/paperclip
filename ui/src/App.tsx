@@ -129,7 +129,7 @@ function boardRoutes() {
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="instance/settings/adapters" element={<AdapterManager />} />
-      <Route path=":pluginRoutePath" element={<PluginPage />} />
+      <Route path=":pluginRoutePath/*" element={<PluginPage />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
     </>
   );

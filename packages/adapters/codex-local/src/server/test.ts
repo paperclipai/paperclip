@@ -11,12 +11,15 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import path from "node:path";
+import os from "node:os";
 import { parseCodexJsonl } from "./parse.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -103,6 +106,15 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "codex",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
@@ -174,14 +186,45 @@ export async function testEnvironment(
         });
       }
 
+      // Codex CLI (>= 0.122) ignores the OPENAI_API_KEY env var and only reads
+      // credentials from $CODEX_HOME/auth.json. When we have a key available,
+      // wrap the probe with a shell that materializes a per-run auth.json so
+      // the CLI can authenticate. The key content is passed via env (not on
+      // the command line) to avoid leaking it into process listings.
+      const probeApiKey = isNonEmpty(configOpenAiKey)
+        ? configOpenAiKey
+        : isNonEmpty(hostOpenAiKey)
+          ? hostOpenAiKey
+          : null;
+      let probeCommand = command;
+      let probeArgs = args;
+      const probeEnv: Record<string, string> = { ...env };
+      if (probeApiKey) {
+        const probeHome = targetIsRemote
+          ? `/tmp/paperclip-codex-probe-${runId}`
+          : path.join(os.tmpdir(), `paperclip-codex-probe-${runId}`);
+        probeEnv.CODEX_HOME = probeHome;
+        probeEnv._PAPERCLIP_CODEX_AUTH_JSON = JSON.stringify({ OPENAI_API_KEY: probeApiKey });
+        probeCommand = "sh";
+        // Trap on EXIT removes the probe home (with the API-key auth.json) on
+        // any exit path; we drop `exec` so the wrapper shell stays alive long
+        // enough for the trap to fire after the child returns.
+        probeArgs = [
+          "-c",
+          'set -e; mkdir -p "$CODEX_HOME"; umask 077; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; trap \'rm -rf "$CODEX_HOME"\' EXIT INT TERM; "$0" "$@"',
+          command,
+          ...args,
+        ];
+      }
+
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
-        command,
-        args,
+        probeCommand,
+        probeArgs,
         {
           cwd,
-          env,
+          env: probeEnv,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",
@@ -221,7 +264,9 @@ export async function testEnvironment(
           level: "warn",
           message: "Codex CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+          hint: probeApiKey
+            ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
+            : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
         });
       } else {
         checks.push({

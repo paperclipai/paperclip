@@ -57,7 +57,10 @@ export const statusBadge: Record<string, string> = {
   failed: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   timed_out: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
   succeeded: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  ok: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  warning: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   error: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  info: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 
