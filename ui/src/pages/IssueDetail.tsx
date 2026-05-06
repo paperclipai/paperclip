@@ -70,6 +70,7 @@ import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
+import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -881,6 +882,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
 });
 
 type IssueDetailActivityTabProps = {
+  issue: Issue;
   issueId: string;
   companyId: string;
   issueStatus: Issue["status"];
@@ -891,10 +893,13 @@ type IssueDetailActivityTabProps = {
   userProfileMap: Map<string, import("../lib/company-members").CompanyUserProfile>;
   pendingApprovalAction: { approvalId: string; action: "approve" | "reject" } | null;
   onApprovalAction: (approvalId: string, action: "approve" | "reject") => void;
+  onCheckMonitorNow: () => void;
+  checkingMonitorNow: boolean;
   handoffFocusSignal?: number;
 };
 
 function IssueDetailActivityTab({
+  issue,
   issueId,
   companyId,
   issueStatus,
@@ -905,6 +910,8 @@ function IssueDetailActivityTab({
   userProfileMap,
   pendingApprovalAction,
   onApprovalAction,
+  onCheckMonitorNow,
+  checkingMonitorNow,
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
   const { data: activity, isLoading: activityLoading } = useQuery({
@@ -1091,6 +1098,11 @@ function IssueDetailActivityTab({
         </div>
       )}
       <IssueContinuationHandoff document={continuationHandoff} focusSignal={handoffFocusSignal} />
+      <IssueMonitorActivityCard
+        issue={issue}
+        onCheckNow={onCheckMonitorNow}
+        checkingNow={checkingMonitorNow}
+      />
     </>
   );
 }
@@ -1753,6 +1765,26 @@ export function IssueDetail() {
   const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
     updateChildIssue.mutate({ id, data });
   }, [updateChildIssue]);
+
+  const checkIssueMonitorNow = useMutation({
+    mutationFn: () => issuesApi.checkMonitorNow(issueId!),
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueRunState();
+      invalidateIssueCollections();
+      pushToast({
+        title: "Monitor check queued",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Monitor check failed",
+        body: err instanceof Error ? err.message : "Unable to trigger the monitor right now",
+        tone: "error",
+      });
+    },
+  });
 
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
@@ -3676,6 +3708,7 @@ export function IssueDetail() {
         <TabsContent value="activity">
           {detailTab === "activity" ? (
             <IssueDetailActivityTab
+              issue={issue}
               issueId={issue.id}
               companyId={issue.companyId}
               issueStatus={issue.status}
@@ -3689,6 +3722,8 @@ export function IssueDetail() {
               onApprovalAction={(approvalId, action) => {
                 approvalDecision.mutate({ approvalId, action });
               }}
+              onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
+              checkingMonitorNow={checkIssueMonitorNow.isPending}
             />
           ) : null}
         </TabsContent>

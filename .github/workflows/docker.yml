@@ -14,7 +14,7 @@ permissions:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     concurrency:
       group: docker-${{ github.ref }}
       cancel-in-progress: true
