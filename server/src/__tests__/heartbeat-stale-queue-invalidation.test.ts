@@ -23,7 +23,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  MAX_TURN_CONTINUATION_RETRY_REASON,
+  MAX_TURN_CONTINUATION_WAKE_REASON,
+  heartbeatService,
+} from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -189,6 +193,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     wakeReason: string;
     contextExtras?: Record<string, unknown>;
     invocationSource?: "assignment" | "automation";
+    scheduledRetryReason?: string | null;
   }) {
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
@@ -210,6 +215,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       triggerDetail: "system",
       status: "queued",
       wakeupRequestId,
+      scheduledRetryReason: input.scheduledRetryReason ?? null,
       contextSnapshot: {
         issueId: input.issueId,
         wakeReason: input.wakeReason,
@@ -342,6 +348,154 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.status).toBe("cancelled");
     expect(run?.errorCode).toBe("issue_terminal_status");
     expect(wakeup?.status).toBe("skipped");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Parked max-turn continuation",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      invocationSource: "automation",
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      contextExtras: {
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_not_in_progress");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_not_in_progress" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("no longer in_progress");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("cancels queued max-turn continuations when another continuation owns the issue lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const lockOwnerRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: lockOwnerRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      scheduledRetryAttempt: 1,
+      scheduledRetryAt: new Date("2026-04-20T12:00:00.000Z"),
+      contextSnapshot: {
+        issueId,
+        wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Duplicate max-turn continuation",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: lockOwnerRunId,
+      executionAgentNameKey: "claudecoder",
+      executionLockedAt: new Date("2026-04-20T11:59:00.000Z"),
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      invocationSource: "automation",
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      contextExtras: {
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_execution_lock_changed");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_execution_lock_changed" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("execution lock");
+    expect(issue?.executionRunId).toBe(lockOwnerRunId);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
