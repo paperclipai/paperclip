@@ -58,6 +58,12 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+# System-wide git credential helper that reads GITHUB_TOKEN/GH_TOKEN from the process env at clone time.
+# Token is never written to disk — the helper runs as a subprocess and emits credentials only when
+# GitHub asks for them. Required so server-side workspace clones (heartbeat.ts) can reach private repos.
+RUN git config --system credential.helper '!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "${GH_TOKEN:-${GITHUB_TOKEN:-}}"; }; f' \
+  && git config --system url."https://github.com/".insteadOf "git@github.com:"
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
