@@ -5,7 +5,6 @@ import {
   pluginConfig,
   pluginCompanySettings,
   pluginEntities,
-  pluginCompanySettings,
   pluginJobs,
   pluginJobRuns,
   pluginWebhookDeliveries,
