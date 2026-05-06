@@ -8,10 +8,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import {
   authorizeSandboxCallbackBridgeRequestWithRoutes,
+  createCommandManagedSandboxCallbackBridgeQueueClient,
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   sandboxCallbackBridgeDirectories,
+  syncSandboxCallbackBridgeEntrypoint,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
@@ -420,6 +422,98 @@ describe("sandbox callback bridge", () => {
     );
   });
 
+  it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge response lock test\n", "utf8");
+
+    const runner = createExecRunner();
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
+    });
+
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const seenRequestIds: string[] = [];
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner,
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      }),
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async (request) => {
+        seenRequestIds.push(request.id);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ok: true, id: request.id }),
+        };
+      },
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: prepared.assetDirs.bridge,
+      queueDir,
+      bridgeToken,
+      timeoutMs: 30_000,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    const responsePromise = fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: {
+        authorization: `Bearer ${bridgeToken}`,
+      },
+    });
+
+    for (let attempt = 0; attempt < 50 && seenRequestIds.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(seenRequestIds).toHaveLength(1);
+    await worker.stop({ drainTimeoutMs: 10 });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Bridge worker stopped before request could be handled.",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    await expect(readdir(directories.responsesDir)).resolves.toEqual([]);
+    await expect(
+      readdir(directories.responsesDir).then((entries) =>
+        entries.filter((entry) => entry.endsWith(".tmp") || entry.includes(".paperclip-write.lock")),
+      ),
+    ).resolves.toEqual([]);
+  });
+
   it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));
     cleanupDirs.push(rootDir);
@@ -613,6 +707,112 @@ describe("sandbox callback bridge", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringMatching(/JSON|Unexpected|Unterminated/i),
     });
+  });
+
+  it("reuses an already-uploaded bridge entrypoint when the remote file hash matches", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const remoteAssetDir = path.posix.join(
+      remoteWorkspaceDir,
+      ".paperclip-runtime",
+      "codex",
+      "paperclip-bridge",
+      "server",
+    );
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const originalSource = await readFile(bridgeAsset.entrypoint, "utf8");
+    const expandedSource = `${originalSource}\n// bridge payload padding\n`;
+    await writeFile(bridgeAsset.entrypoint, expandedSource, "utf8");
+
+    const runner = createExecRunner();
+
+    const first = await syncSandboxCallbackBridgeEntrypoint({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: remoteAssetDir,
+      bridgeAsset,
+      timeoutMs: 30_000,
+    });
+    const second = await syncSandboxCallbackBridgeEntrypoint({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: remoteAssetDir,
+      bridgeAsset,
+      timeoutMs: 30_000,
+    });
+
+    expect(first.uploaded).toBe(true);
+    expect(second.uploaded).toBe(false);
+    await expect(readFile(path.posix.join(remoteAssetDir, "paperclip-bridge-server.mjs"), "utf8")).resolves.toBe(expandedSource);
+    await expect(
+      readdir(remoteAssetDir).then((entries) =>
+        entries.filter(
+          (entry) =>
+            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".partial") ||
+            entry === ".paperclip-bridge-upload.lock",
+        ),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects a corrupted bridge entrypoint upload without committing a torn remote file", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-corrupt-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const remoteAssetDir = path.posix.join(
+      remoteWorkspaceDir,
+      ".paperclip-runtime",
+      "codex",
+      "paperclip-bridge",
+      "server",
+    );
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+      }) =>
+        await createExecRunner().execute({
+          ...input,
+          stdin: input.stdin != null ? "" : input.stdin,
+        }),
+    };
+
+    await expect(
+      syncSandboxCallbackBridgeEntrypoint({
+        runner,
+        remoteCwd: remoteWorkspaceDir,
+        assetRemoteDir: remoteAssetDir,
+        bridgeAsset,
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/sha mismatch/i);
+
+    await expect(readFile(path.posix.join(remoteAssetDir, "paperclip-bridge-server.mjs"), "utf8")).rejects.toThrow();
+    await expect(
+      readdir(remoteAssetDir).then((entries) =>
+        entries.filter(
+          (entry) =>
+            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".partial") ||
+            entry === ".paperclip-bridge-upload.lock",
+        ),
+      ),
+    ).resolves.toEqual([]);
   });
 
   it("permits the documented heartbeat surface and denies unrelated routes", () => {
