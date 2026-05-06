@@ -150,6 +150,37 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
 }
 
 /**
+ * Classify a worker exit as either a graceful stop or an unexpected crash.
+ *
+ * A graceful exit means: log at INFO, do not bump crash counters, do not
+ * trigger restart-with-backoff. Used for:
+ *   - This worker's own `stop()` was called (`intentionalStop=true`).
+ *   - The host process is shutting down (`isShuttingDown=true`) and the
+ *     worker either:
+ *       * was killed by SIGTERM/SIGINT (host forwarded the signal), or
+ *       * caught the signal itself and exited cleanly via `process.exit(0)`,
+ *         which Node reports as `signal=null, code=0`.
+ *
+ * During shutdown, SIGKILL and any non-zero exit code still count as a
+ * crash — those represent OOM-killer, supervisor-initiated `kill -9`, or
+ * a worker that errored on its own, none of which the host's shutdown
+ * caused.
+ */
+export function classifyWorkerExit(input: {
+  intentionalStop: boolean;
+  isShuttingDown: boolean;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}): "graceful" | "crash" {
+  if (input.intentionalStop) return "graceful";
+  if (input.isShuttingDown) {
+    if (input.signal === "SIGTERM" || input.signal === "SIGINT") return "graceful";
+    if (input.signal === null && input.code === 0) return "graceful";
+  }
+  return "crash";
+}
+
+/**
  * Options for starting a worker process.
  */
 export interface WorkerStartOptions {
@@ -273,6 +304,16 @@ export interface PluginWorkerHandle {
 
   /** Get diagnostic info about the worker. */
   diagnostics(): WorkerDiagnostics;
+
+  /**
+   * Mark this worker as participating in a host-initiated shutdown.
+   *
+   * After this is called, a worker exit triggered by SIGTERM or SIGINT is
+   * classified as graceful instead of a crash — no ERROR log, no crash
+   * counter bump, no auto-restart. Called by the manager when the parent
+   * process traps SIGTERM/SIGINT.
+   */
+  markShuttingDown(): void;
 }
 
 /**
@@ -328,6 +369,14 @@ export interface PluginWorkerManager {
    * Stop all managed workers. Called during server shutdown.
    */
   stopAll(): Promise<void>;
+
+  /**
+   * Notify all current and future workers that the host process is shutting
+   * down. While in this state, worker exits caused by SIGTERM/SIGINT are
+   * logged at INFO and do not increment crash counters. Should be called
+   * synchronously from the host's SIGTERM/SIGINT handler.
+   */
+  markShuttingDown(): void;
 
   /**
    * Get diagnostic info for all workers.
@@ -396,6 +445,11 @@ export function createPluginWorkerHandle(
 
   // Shutdown coordination
   let intentionalStop = false;
+  /**
+   * Set by the manager when the host process is shutting down. Causes the
+   * exit handler to classify SIGTERM/SIGINT as graceful instead of a crash.
+   */
+  let isShuttingDown = false;
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
@@ -670,7 +724,7 @@ export function createPluginWorkerHandle(
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void {
-    const wasIntentional = intentionalStop;
+    const exitClass = classifyWorkerExit({ intentionalStop, isShuttingDown, code, signal });
 
     // Clean up readline interfaces
     if (readline) {
@@ -707,10 +761,12 @@ export function createPluginWorkerHandle(
 
     emitter.emit("exit", { pluginId, code, signal });
 
-    if (wasIntentional) {
-      // Graceful stop — status is already "stopping" or will be set to "stopped"
+    if (exitClass === "graceful") {
+      // Either this worker was stopped explicitly, or the host process is
+      // shutting down and forwarded SIGTERM/SIGINT to it. Either way, this
+      // is not a crash.
       setStatus("stopped");
-      log.info({ code, signal }, "worker process stopped");
+      log.info({ code, signal, hostShutdown: isShuttingDown && !intentionalStop }, "worker process stopped");
       return;
     }
 
@@ -1166,6 +1222,10 @@ export function createPluginWorkerHandle(
         nextRestartAt,
       };
     },
+
+    markShuttingDown(): void {
+      isShuttingDown = true;
+    },
   };
 
   return handle;
@@ -1225,6 +1285,12 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  /**
+   * Set true when the host process traps SIGTERM/SIGINT. Workers spawned
+   * after this point are immediately marked as shutting down so a late
+   * startup race during shutdown still classifies its exit correctly.
+   */
+  let hostShuttingDown = false;
 
   return {
     async startWorker(
@@ -1246,6 +1312,9 @@ export function createPluginWorkerManager(
       }
 
       const handle = createPluginWorkerHandle(pluginId, options);
+      if (hostShuttingDown) {
+        handle.markShuttingDown();
+      }
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding
@@ -1321,6 +1390,14 @@ export function createPluginWorkerManager(
       });
       await Promise.all(promises);
       workers.clear();
+    },
+
+    markShuttingDown(): void {
+      if (hostShuttingDown) return;
+      hostShuttingDown = true;
+      for (const handle of workers.values()) {
+        handle.markShuttingDown();
+      }
     },
 
     diagnostics(): WorkerDiagnostics[] {

@@ -872,6 +872,11 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Mark plugin workers as shutting down before any await, so a worker
+      // exit triggered by the same signal hitting the process group is
+      // classified as graceful instead of a crash.
+      pluginWorkerManager.markShuttingDown();
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
