@@ -573,7 +573,8 @@ Requirements:
 - Keep Paperclip company scoping, plugin SDK behavior, adapter behavior, auth/session behavior, and migrations coherent across db/shared/server/ui.
 - Edit only files inside $BUILD_DIR.
 - Do not push, stop services, quiesce agents, restart Paperclip, or touch the live checkout at $REPO_DIR.
-- Stage resolved files with git add when complete, but do not commit, continue, reset, abort, or push.
+- Stage resolved files with git add when complete if your sandbox permits it, but do not commit, continue, reset, abort, or push.
+- If git add cannot write the worktree index, leave the file contents resolved; the parent upgrade script will stage resolved paths after checking for conflict markers.
 - Run the smallest relevant verification you can afford for touched files; if you cannot run it, leave a concise note in your final response.
 - Leave the worktree with no unmerged files and no conflict markers.
 EOF
@@ -613,6 +614,24 @@ run_codex_reconcile_attempt() {
   fi
 }
 
+stage_codex_resolved_unmerged_files() {
+  local unmerged_file unmerged_paths
+  unmerged_paths="$STATE_DIR/codex-unmerged-paths.nul"
+  git -C "$BUILD_DIR" diff --name-only -z --diff-filter=U > "$unmerged_paths"
+  if [ ! -s "$unmerged_paths" ]; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' unmerged_file; do
+    if [ -f "$BUILD_DIR/$unmerged_file" ] \
+      && grep -Eq '^(<<<<<<<|=======|>>>>>>>)' "$BUILD_DIR/$unmerged_file"; then
+      return 1
+    fi
+  done < "$unmerged_paths"
+
+  git -C "$BUILD_DIR" add -A --pathspec-from-file="$unmerged_paths" --pathspec-file-nul
+}
+
 try_codex_reconcile() {
   local operation="$1"
   local subject="$2"
@@ -635,6 +654,11 @@ try_codex_reconcile() {
     set -e
     if [ "$attempt_status" != "0" ]; then
       log "WARN: Codex reconciliation attempt $CODEX_MODEL/$effort exited with status $attempt_status"
+    fi
+    if git -C "$BUILD_DIR" diff --name-only --diff-filter=U | grep -q .; then
+      if stage_codex_resolved_unmerged_files; then
+        log "Integration: parent script staged resolved unmerged files after Codex $CODEX_MODEL/$effort attempt"
+      fi
     fi
     if git -C "$BUILD_DIR" diff --name-only --diff-filter=U | grep -q .; then
       log "WARN: Codex reconciliation $CODEX_MODEL/$effort left unresolved files"
@@ -809,6 +833,59 @@ for (const file of readSqlFiles()) {
   fs.renameSync(sourcePath, targetPath);
   console.log(`renamed ${file} -> ${missingTargetTags[0]}.sql`);
   changed = true;
+}
+
+const renamePlans = [];
+let lastNumber = -1;
+
+for (const entry of entries) {
+  if (typeof entry.tag !== "string") {
+    continue;
+  }
+
+  const entrySuffix = suffix(entry.tag);
+  const parsedNumber = Number.parseInt(entry.tag.slice(0, 4), 10);
+  if (!entrySuffix || !Number.isInteger(parsedNumber)) {
+    continue;
+  }
+
+  const nextNumber = parsedNumber <= lastNumber ? lastNumber + 1 : parsedNumber;
+  lastNumber = nextNumber;
+
+  const nextTag = `${String(nextNumber).padStart(4, "0")}_${entrySuffix}`;
+  if (nextTag === entry.tag) {
+    if (entry.idx !== nextNumber) {
+      entry.idx = nextNumber;
+      changed = true;
+    }
+    continue;
+  }
+
+  renamePlans.push({ from: entry.tag, to: nextTag });
+  entry.idx = nextNumber;
+  entry.tag = nextTag;
+  changed = true;
+}
+
+if (renamePlans.length > 0) {
+  const tempPlans = [];
+  for (const [index, plan] of renamePlans.entries()) {
+    const sourcePath = path.join(migrationsDir, `${plan.from}.sql`);
+    if (!fs.existsSync(sourcePath)) {
+      continue;
+    }
+    const tempPath = path.join(migrationsDir, `.${process.pid}.${index}.${plan.from}.renaming`);
+    fs.renameSync(sourcePath, tempPath);
+    tempPlans.push({ ...plan, tempPath });
+  }
+  for (const plan of tempPlans) {
+    const targetPath = path.join(migrationsDir, `${plan.to}.sql`);
+    if (fs.existsSync(targetPath)) {
+      throw new Error(`Cannot renumber migration ${plan.from} to ${plan.to}; target already exists`);
+    }
+    fs.renameSync(plan.tempPath, targetPath);
+    console.log(`renumbered ${plan.from}.sql -> ${plan.to}.sql`);
+  }
 }
 
 if (changed) {
@@ -1115,6 +1192,7 @@ prepare_integration_target() {
     full_cleanup
     exit 7
   fi
+  normalize_integration_migrations
 
   TARGET_REF=$(git -C "$BUILD_DIR" rev-parse HEAD)
   if ! verify_target_preserves_live_head "$TARGET_REF"; then
