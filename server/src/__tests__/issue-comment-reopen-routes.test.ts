@@ -81,6 +81,7 @@ vi.mock("../services/access.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+  publishPluginDomainEvent: vi.fn(),
 }));
 
 vi.mock("../services/agents.js", () => ({
