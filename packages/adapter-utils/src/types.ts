@@ -61,6 +61,17 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export interface AdapterExecutionArtifact {
+  title: string;
+  originalFilename: string | null;
+  sourcePath: string;
+  contentType: string;
+  body: Uint8Array;
+  byteSize: number;
+  isPrimary?: boolean;
+  summary?: string | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -81,6 +92,7 @@ export interface AdapterExecutionResult {
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
+  artifacts?: AdapterExecutionArtifact[];
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
@@ -421,6 +433,7 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  artifactOutputsJson?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

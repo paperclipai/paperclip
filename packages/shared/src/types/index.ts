@@ -107,7 +107,9 @@ export type {
   IssueWorkProductProvider,
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
+  IssueArtifactWorkProductMetadata,
 } from "./work-product.js";
+export { parseIssueArtifactWorkProductMetadata } from "./work-product.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

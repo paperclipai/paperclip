@@ -12,6 +12,7 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import path from "node:path";
 import { WebSocket } from "ws";
 import {
   asRecord,
@@ -96,6 +97,21 @@ type GatewayClientOptions = {
 type GatewayClientRequestOptions = {
   timeoutMs: number;
   expectFinal?: boolean;
+};
+
+type ArtifactOutputConfig = {
+  pattern: string;
+  title?: string;
+  primary?: boolean;
+};
+
+type GatewayArtifactSummary = {
+  id: string | null;
+  title: string | null;
+  originalFilename: string | null;
+  sourcePath: string;
+  contentType: string | null;
+  summary: string | null;
 };
 
 const PROTOCOL_VERSION = 3;
@@ -393,62 +409,6 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
     "```",
   ].filter((entry) => entry.trim().length > 0);
   return sections.join("\n");
-}
-
-function buildStandardPaperclipPayload(
-  ctx: AdapterExecutionContext,
-  wakePayload: WakePayload,
-  paperclipEnv: Record<string, string>,
-  payloadTemplate: Record<string, unknown>,
-): Record<string, unknown> {
-  const templatePaperclip = parseObject(payloadTemplate.paperclip);
-  const workspace = asRecord(ctx.context.paperclipWorkspace);
-  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
-    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
-    : [];
-  const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
-  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
-    ? ctx.context.paperclipRuntimeServiceIntents.filter(
-        (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
-      )
-    : [];
-
-  const standardPaperclip: Record<string, unknown> = {
-    runId: ctx.runId,
-    companyId: ctx.agent.companyId,
-    agentId: ctx.agent.id,
-    agentName: ctx.agent.name,
-    taskId: wakePayload.taskId,
-    issueId: wakePayload.issueId,
-    issueIds: wakePayload.issueIds,
-    wakeReason: wakePayload.wakeReason,
-    wakeCommentId: wakePayload.wakeCommentId,
-    approvalId: wakePayload.approvalId,
-    approvalStatus: wakePayload.approvalStatus,
-    apiUrl: paperclipEnv.BIZBOX_API_URL ?? null,
-  };
-  const structuredWake = parseObject(ctx.context.paperclipWake);
-  if (Object.keys(structuredWake).length > 0) {
-    standardPaperclip.wake = structuredWake;
-  }
-
-  if (workspace) {
-    standardPaperclip.workspace = workspace;
-  }
-  if (workspaces.length > 0) {
-    standardPaperclip.workspaces = workspaces;
-  }
-  if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
-    standardPaperclip.workspaceRuntime = {
-      ...configuredWorkspaceRuntime,
-      ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
-    };
-  }
-
-  return {
-    ...templatePaperclip,
-    ...standardPaperclip,
-  };
 }
 
 function normalizeUrl(input: string): URL | null {
@@ -977,6 +937,251 @@ function extractResultText(value: unknown): string | null {
   return nonEmpty(record.text) ?? nonEmpty(record.summary) ?? null;
 }
 
+function normalizeArtifactSourcePath(value: string): string | null {
+  const normalized = path.posix.normalize(value.replaceAll("\\", "/").trim());
+  if (!normalized || normalized === "." || normalized.startsWith("/")) return null;
+  if (normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) return null;
+  return normalized;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+}
+
+/**
+ * Compile a pre-normalized glob pattern (from `parseArtifactOutputsConfig`) into a RegExp.
+ * Accepts only patterns that have already been validated and normalized — callers must not
+ * pass raw user input directly.
+ */
+function compileArtifactPattern(pattern: string): RegExp {
+  let regex = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!;
+    const next = pattern[index + 1];
+    if (char === "*") {
+      if (next === "*") {
+        const nextNext = pattern[index + 2];
+        if (nextNext === "/") {
+          regex += "(?:.*/)?";
+          index += 2;
+          continue;
+        }
+        regex += ".*";
+        index += 1;
+        continue;
+      }
+      regex += "[^/]*";
+      continue;
+    }
+    regex += escapeRegex(char);
+  }
+  regex += "$";
+  return new RegExp(regex);
+}
+
+function parseArtifactOutputsConfig(value: unknown): ArtifactOutputConfig[] {
+  if (!Array.isArray(value)) return [];
+  const outputs: ArtifactOutputConfig[] = [];
+  for (const entry of value) {
+    const record = asRecord(entry);
+    const pattern = nonEmpty(record?.pattern);
+    if (!pattern) continue;
+    const normalizedPattern = normalizeArtifactSourcePath(pattern);
+    if (!normalizedPattern) continue;
+    outputs.push({
+      pattern: normalizedPattern,
+      title: nonEmpty(record?.title) ?? undefined,
+      primary: record?.primary === true,
+    });
+  }
+  return outputs;
+}
+
+function extractArtifactSummaries(payload: unknown): GatewayArtifactSummary[] {
+  const list =
+    Array.isArray(payload)
+      ? payload
+      : Array.isArray(asRecord(payload)?.artifacts)
+        ? (asRecord(payload)?.artifacts as unknown[])
+        : Array.isArray(asRecord(payload)?.items)
+          ? (asRecord(payload)?.items as unknown[])
+          : [];
+
+  const artifacts: GatewayArtifactSummary[] = [];
+  for (const entry of list) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const rawSourcePath =
+      nonEmpty(record.sourcePath) ??
+      nonEmpty(record.path) ??
+      nonEmpty(record.workspacePath) ??
+      nonEmpty(record.filename) ??
+      nonEmpty(record.name);
+    if (!rawSourcePath) continue;
+    const sourcePath = normalizeArtifactSourcePath(rawSourcePath);
+    if (!sourcePath) continue;
+    artifacts.push({
+      id: nonEmpty(record.id) ?? nonEmpty(record.artifactId),
+      title: nonEmpty(record.title),
+      originalFilename:
+        nonEmpty(record.originalFilename) ??
+        nonEmpty(record.filename) ??
+        nonEmpty(record.name) ??
+        path.posix.basename(sourcePath),
+      sourcePath,
+      contentType:
+        nonEmpty(record.contentType) ??
+        nonEmpty(record.mimeType) ??
+        nonEmpty(record.mime),
+      summary: nonEmpty(record.summary),
+    });
+  }
+
+  return artifacts;
+}
+
+function decodeArtifactBody(payload: unknown): { body: Buffer; contentType: string | null; byteSize: number | null } | null {
+  const record = asRecord(payload);
+  if (!record) return null;
+
+  const contentType =
+    nonEmpty(record.contentType) ??
+    nonEmpty(record.mimeType) ??
+    nonEmpty(record.mime);
+  const byteSize = parseOptionalPositiveInteger(record.byteSize ?? record.size ?? record.contentLength);
+
+  const bodyBase64 =
+    nonEmpty(record.base64) ??
+    nonEmpty(record.bodyBase64) ??
+    nonEmpty(record.dataBase64) ??
+    (nonEmpty(record.encoding)?.toLowerCase() === "base64" ? nonEmpty(record.body) ?? nonEmpty(record.data) : null);
+  if (bodyBase64) {
+    return {
+      body: Buffer.from(bodyBase64, "base64"),
+      contentType,
+      byteSize,
+    };
+  }
+
+  const bodyText =
+    typeof record.body === "string"
+      ? record.body
+      : typeof record.data === "string"
+        ? record.data
+        : typeof record.text === "string"
+          ? record.text
+          : null;
+  if (bodyText != null) {
+    return {
+      body: Buffer.from(bodyText, "utf8"),
+      contentType,
+      byteSize,
+    };
+  }
+
+  return null;
+}
+
+async function collectArtifactsFromGateway(params: {
+  client: GatewayWsClient;
+  ctx: AdapterExecutionContext;
+  acceptedRunId: string;
+  sessionKey: string;
+  connectTimeoutMs: number;
+  outputs: ArtifactOutputConfig[];
+}): Promise<NonNullable<AdapterExecutionResult["artifacts"]>> {
+  if (params.outputs.length === 0) return [];
+
+  let listPayload: Record<string, unknown> | unknown[] | null = null;
+  try {
+    listPayload = await params.client.request<Record<string, unknown> | unknown[]>(
+      "artifacts.list",
+      {
+        runId: params.acceptedRunId,
+        taskId: nonEmpty(params.ctx.context.taskId),
+        issueId: nonEmpty(params.ctx.context.issueId),
+        sessionKey: params.sessionKey,
+      },
+      { timeoutMs: params.connectTimeoutMs },
+    );
+  } catch (err) {
+    await params.ctx.onLog(
+      "stderr",
+      `[openclaw-gateway] artifact listing unavailable: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return [];
+  }
+
+  const available = extractArtifactSummaries(listPayload);
+  if (available.length === 0) return [];
+
+  const selected = new Map<string, GatewayArtifactSummary & { config: ArtifactOutputConfig; index: number }>();
+  params.outputs.forEach((config, index) => {
+    const matcher = compileArtifactPattern(config.pattern);
+
+    let matched = false;
+    for (const artifact of available) {
+      if (!matcher.test(artifact.sourcePath)) continue;
+      matched = true;
+      if (!selected.has(artifact.sourcePath)) {
+        selected.set(artifact.sourcePath, { ...artifact, config, index });
+      }
+    }
+    if (!matched) {
+      void params.ctx.onLog("stdout", `[openclaw-gateway] no artifact matched ${config.pattern}\n`);
+    }
+  });
+
+  const sorted = [...selected.values()].sort((a, b) => {
+    if (a.index !== b.index) return a.index - b.index;
+    return a.sourcePath.localeCompare(b.sourcePath);
+  });
+
+  const artifacts: NonNullable<AdapterExecutionResult["artifacts"]> = [];
+  for (const entry of sorted) {
+    try {
+      const downloadPayload = await params.client.request<Record<string, unknown>>(
+        "artifacts.download",
+        {
+          ...(entry.id ? { artifactId: entry.id, id: entry.id } : {}),
+          path: entry.sourcePath,
+          sourcePath: entry.sourcePath,
+          runId: params.acceptedRunId,
+          taskId: nonEmpty(params.ctx.context.taskId),
+          issueId: nonEmpty(params.ctx.context.issueId),
+          sessionKey: params.sessionKey,
+        },
+        { timeoutMs: params.connectTimeoutMs },
+      );
+      const decoded = decodeArtifactBody(downloadPayload);
+      if (!decoded || decoded.body.length === 0) {
+        await params.ctx.onLog(
+          "stderr",
+          `[openclaw-gateway] artifact download returned no bytes for ${entry.sourcePath}\n`,
+        );
+        continue;
+      }
+      artifacts.push({
+        title: entry.config.title ?? entry.title ?? path.posix.basename(entry.sourcePath),
+        originalFilename: entry.originalFilename ?? path.posix.basename(entry.sourcePath),
+        sourcePath: entry.sourcePath,
+        contentType: decoded.contentType ?? entry.contentType ?? "application/octet-stream",
+        body: decoded.body,
+        byteSize: decoded.byteSize ?? decoded.body.length,
+        isPrimary: entry.config.primary === true,
+        summary: entry.summary ?? null,
+      });
+    } catch (err) {
+      await params.ctx.onLog(
+        "stderr",
+        `[openclaw-gateway] artifact download failed for ${entry.sourcePath}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  return artifacts;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
@@ -1017,6 +1222,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const waitTimeoutMs = parseOptionalPositiveInteger(parsedConfig.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
 
   const payloadTemplate = parseObject(parsedConfig.payloadTemplate);
+  const artifactOutputs = parseArtifactOutputsConfig(parsedConfig.artifactOutputs);
   const transportHint = nonEmpty(parsedConfig.streamTransport) ?? nonEmpty(parsedConfig.transport);
 
   const headers = toStringRecord(parsedConfig.headers);
@@ -1068,8 +1274,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
-  agentParams.paperclip = paperclipPayload;
+  delete agentParams.paperclip;
 
   const configuredAgentId = nonEmpty(parsedConfig.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
@@ -1348,6 +1553,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         asRecord(latestMeta?.agentMeta);
       const usage = parseUsage(agentMeta?.usage ?? mergedMeta.usage);
       const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
+      const artifacts = await collectArtifactsFromGateway({
+        client,
+        ctx,
+        acceptedRunId,
+        sessionKey,
+        connectTimeoutMs,
+        outputs: artifactOutputs,
+      });
       const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(mergedMeta.provider) ?? "openclaw";
       const model = nonEmpty(agentMeta?.model) ?? nonEmpty(mergedMeta.model) ?? null;
       const costUsd = asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0);
@@ -1366,6 +1579,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(usage ? { usage } : {}),
         ...(costUsd > 0 ? { costUsd } : {}),
         resultJson: asRecord(latestResultPayload),
+        ...(artifacts.length > 0 ? { artifacts } : {}),
         ...(runtimeServices.length > 0 ? { runtimeServices } : {}),
         ...(summary ? { summary } : {}),
       };

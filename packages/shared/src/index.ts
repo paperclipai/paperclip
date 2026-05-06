@@ -319,6 +319,7 @@ export type {
   IssueWorkProductProvider,
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
+  IssueArtifactWorkProductMetadata,
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueReferenceSource,
@@ -492,6 +493,7 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
+export { parseIssueArtifactWorkProductMetadata } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

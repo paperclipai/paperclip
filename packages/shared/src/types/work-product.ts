@@ -31,6 +31,15 @@ export type IssueWorkProductReviewState =
   | "approved"
   | "changes_requested";
 
+export interface IssueArtifactWorkProductMetadata {
+  attachmentId: string;
+  contentPath: string;
+  sourcePath: string;
+  contentType: string;
+  byteSize: number;
+  originalFilename: string | null;
+}
+
 export interface IssueWorkProduct {
   id: string;
   companyId: string;
@@ -52,4 +61,46 @@ export interface IssueWorkProduct {
   createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function parseIssueArtifactWorkProductMetadata(
+  product: Pick<IssueWorkProduct, "type" | "metadata">,
+): IssueArtifactWorkProductMetadata | null {
+  if (product.type !== "artifact") return null;
+  const metadata = asRecord(product.metadata);
+  if (!metadata) return null;
+
+  const attachmentId = readString(metadata.attachmentId);
+  const contentPath = readString(metadata.contentPath);
+  const sourcePath = readString(metadata.sourcePath);
+  const contentType = readString(metadata.contentType);
+  const byteSize = readNumber(metadata.byteSize);
+  const originalFilename =
+    typeof metadata.originalFilename === "string" ? metadata.originalFilename : null;
+
+  if (!attachmentId || !contentPath || !sourcePath || !contentType || byteSize === null) {
+    return null;
+  }
+
+  return {
+    attachmentId,
+    contentPath,
+    sourcePath,
+    contentType,
+    byteSize,
+    originalFilename,
+  };
 }

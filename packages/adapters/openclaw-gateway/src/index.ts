@@ -42,6 +42,7 @@ Request behavior fields:
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true when device auth is enabled)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
 - claimedApiKeyPath (string, optional): path to the claimed API key JSON file read by the agent at wake time (default ~/.openclaw/workspace/paperclip-claimed-api-key.json)
+- artifactOutputs (array, optional): declared workspace-relative output file/glob patterns to collect as downloadable deliverables after successful issue-backed runs
 
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
@@ -57,4 +58,5 @@ Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports
 - meta.previewUrl (string, optional): shorthand single preview URL
 - meta.previewUrls (string[], optional): shorthand multiple preview URLs
+- gateway artifacts.list + artifacts.download (optional): adapter will ingest declared output files when the gateway exposes artifact RPCs for the run/session scope
 `;

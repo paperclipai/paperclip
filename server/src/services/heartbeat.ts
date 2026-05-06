@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  parseIssueArtifactWorkProductMetadata,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -83,6 +84,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { agentThreadService } from "./agent-threads.js";
+import { workProductService } from "./work-products.js";
 import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
@@ -118,6 +120,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@paperclipai/shared";
+import { getStorageService } from "../storage/index.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -1950,9 +1953,11 @@ export function heartbeatService(db: Db) {
   });
 
   const runLogStore = getRunLogStore();
+  const storage = getStorageService();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const workProductsSvc = workProductService(db);
   const agentThreadsSvc = agentThreadService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -3769,6 +3774,154 @@ export function heartbeatService(db: Db) {
       if (!latest || parsed.getTime() > latest.getTime()) latest = parsed;
     }
     return latest;
+  }
+
+  function buildRunArtifactExternalId(adapterType: string | null, sourcePath: string) {
+    return `${adapterType ?? "unknown"}:${sourcePath}`;
+  }
+
+  async function persistIssueBackedArtifactsForRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    artifacts: NonNullable<AdapterExecutionResult["artifacts"]>;
+  }) {
+    const issueId = readNonEmptyString(parseObject(input.run.contextSnapshot)?.issueId);
+    if (!issueId || input.artifacts.length === 0) return;
+    const issue = await issuesSvc.getById(issueId);
+    if (!issue) return;
+
+    const primaryIndexRaw = input.artifacts.findIndex((artifact) => artifact.isPrimary === true);
+    const primaryIndex = primaryIndexRaw === -1 ? 0 : primaryIndexRaw;
+
+    for (const [index, artifact] of input.artifacts.entries()) {
+      if (!artifact.sourcePath.trim()) continue;
+      try {
+
+      const stored = await storage.putFile({
+        companyId: input.run.companyId,
+        namespace: `issues/${issueId}/deliverables`,
+        originalFilename: artifact.originalFilename,
+        contentType: artifact.contentType,
+        body: Buffer.from(artifact.body),
+      });
+
+      const attachment = await issuesSvc.createAttachment({
+        issueId,
+        provider: stored.provider,
+        objectKey: stored.objectKey,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        sha256: stored.sha256,
+        originalFilename: stored.originalFilename,
+        createdByAgentId: input.agent.id,
+      });
+
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "agent",
+        actorId: input.agent.id,
+        agentId: input.agent.id,
+        runId: input.run.id,
+        action: "issue.attachment_added",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          attachmentId: attachment.id,
+          originalFilename: attachment.originalFilename,
+          contentType: attachment.contentType,
+          byteSize: attachment.byteSize,
+        },
+      });
+
+      const metadata = {
+        attachmentId: attachment.id,
+        contentPath: `/api/attachments/${attachment.id}/content`,
+        sourcePath: artifact.sourcePath,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        originalFilename: stored.originalFilename,
+      };
+
+      const externalId = buildRunArtifactExternalId(input.agent.adapterType, artifact.sourcePath);
+
+      // Pre-fetch for old-attachment cleanup (best-effort; the upsert below is atomic)
+      const existing = await workProductsSvc.findByExternalIdForIssue(issueId, input.run.companyId, externalId);
+      const previousMetadata = existing ? parseIssueArtifactWorkProductMetadata(existing) : null;
+      const isUpdate = existing !== null;
+
+      const upserted = await workProductsSvc.upsertByExternalId(issueId, input.run.companyId, {
+        projectId: issue.projectId ?? null,
+        executionWorkspaceId: issue.executionWorkspaceId ?? null,
+        runtimeServiceId: null,
+        type: "artifact",
+        provider: "paperclip",
+        externalId,
+        title: artifact.title,
+        url: metadata.contentPath,
+        status: "ready_for_review",
+        reviewState: "none",
+        isPrimary: index === primaryIndex,
+        healthStatus: "healthy",
+        summary: artifact.summary ?? null,
+        metadata,
+        createdByRunId: input.run.id,
+      });
+
+      // Re-read the authoritative state to detect a concurrent-run race where
+      // another upsert overwrote our metadata after we wrote it.  If the stored
+      // attachmentId no longer matches what we just uploaded, our attachment and
+      // storage object are orphaned — clean them up now.
+      const authoritative = upserted
+        ? parseIssueArtifactWorkProductMetadata(upserted)
+        : null;
+      if (authoritative && authoritative.attachmentId !== attachment.id) {
+        logger.warn(
+          { attachmentId: attachment.id, winnerAttachmentId: authoritative.attachmentId, runId: input.run.id },
+          "concurrent run overwrote artifact metadata — removing orphaned attachment",
+        );
+        const orphaned = await issuesSvc.removeAttachment(attachment.id);
+        if (orphaned) {
+          await storage.deleteObject(orphaned.companyId, orphaned.objectKey).catch((err) => {
+            logger.warn({ err, attachmentId: orphaned.id }, "failed to delete orphaned artifact attachment object");
+          });
+        }
+      } else {
+        // Normal path: clean up the previous attachment if it was replaced.
+        if (isUpdate && previousMetadata?.attachmentId && previousMetadata.attachmentId !== attachment.id) {
+          const removed = await issuesSvc.removeAttachment(previousMetadata.attachmentId);
+          if (removed) {
+            await storage.deleteObject(removed.companyId, removed.objectKey).catch((err) => {
+              logger.warn(
+                { err, attachmentId: removed.id, objectKey: removed.objectKey },
+                "failed to delete superseded artifact attachment object",
+              );
+            });
+          }
+        }
+      }
+
+      if (upserted) {
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "agent",
+          actorId: input.agent.id,
+          agentId: input.agent.id,
+          runId: input.run.id,
+          action: isUpdate ? "issue.work_product_updated" : "issue.work_product_created",
+          entityType: "issue",
+          entityId: issueId,
+          details: isUpdate
+            ? { workProductId: upserted.id, changedKeys: ["createdByRunId", "metadata", "status", "summary", "title", "url"] }
+            : { workProductId: upserted.id, type: upserted.type, provider: upserted.provider },
+        });
+      }
+      } catch (err) {
+        logger.warn(
+          { err, sourcePath: artifact.sourcePath, runId: input.run.id },
+          "failed to persist artifact — skipping and continuing with remaining artifacts",
+        );
+      }
+    }
   }
 
   async function buildRunLivenessInput(
@@ -5867,6 +6020,20 @@ export function heartbeatService(db: Db) {
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
+        if (outcome === "succeeded" && adapterResult.artifacts && adapterResult.artifacts.length > 0) {
+          try {
+            await persistIssueBackedArtifactsForRun({
+              run: finalizedRun,
+              agent,
+              artifacts: adapterResult.artifacts,
+            });
+          } catch (err) {
+            await onLog(
+              "stderr",
+              `[paperclip] Failed to persist run artifacts: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
           stream: "system",

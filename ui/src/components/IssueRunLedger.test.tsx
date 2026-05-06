@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { Issue, RunLivenessState } from "@paperclipai/shared";
+import type { Issue, IssueWorkProduct, RunLivenessState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
 import { IssueRunLedgerContent } from "./IssueRunLedger";
@@ -108,6 +108,7 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       issueStatus={props.issueStatus ?? "in_progress"}
       childIssues={props.childIssues ?? []}
       agentMap={props.agentMap ?? new Map([["agent-1", { name: "CodexCoder" }]])}
+      workProducts={props.workProducts ?? []}
     />,
   );
 }
@@ -301,5 +302,48 @@ describe("IssueRunLedger", () => {
     });
 
     expect(container.textContent).toContain("2 older runs not shown");
+  });
+
+  it("shows deliverables linked to the run that produced them", () => {
+    const run = createRun({ runId: "run-artifacts" });
+    const workProduct: IssueWorkProduct = {
+      id: "product-1",
+      companyId: "company-1",
+      projectId: null,
+      issueId: "issue-1",
+      executionWorkspaceId: null,
+      runtimeServiceId: null,
+      type: "artifact",
+      provider: "paperclip",
+      externalId: "openclaw_gateway:deliverables/final-packet.md",
+      title: "Final packet",
+      url: "/api/attachments/attachment-1/content",
+      status: "ready_for_review",
+      reviewState: "none",
+      isPrimary: true,
+      healthStatus: "healthy",
+      summary: "Merged packet",
+      metadata: {
+        attachmentId: "attachment-1",
+        contentPath: "/api/attachments/attachment-1/content",
+        sourcePath: "deliverables/final-packet.md",
+        contentType: "text/markdown",
+        byteSize: 128,
+        originalFilename: "final-packet.md",
+      },
+      createdByRunId: "run-artifacts",
+      createdAt: new Date("2026-04-18T19:58:00.000Z"),
+      updatedAt: new Date("2026-04-18T19:59:00.000Z"),
+    };
+
+    renderLedger({
+      runs: [run],
+      workProducts: [workProduct],
+    });
+
+    expect(container.textContent).toContain("Deliverables");
+    expect(container.textContent).toContain("Final packet");
+    const link = container.querySelector('a[href="/api/attachments/attachment-1/content"]');
+    expect(link).toBeTruthy();
   });
 });

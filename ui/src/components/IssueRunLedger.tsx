@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import type { Issue, Agent } from "@paperclipai/shared";
+import type { Issue, Agent, IssueWorkProduct } from "@paperclipai/shared";
+import { parseIssueArtifactWorkProductMetadata } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { activityApi, type RunForIssue, type RunLivenessState } from "../api/activity";
@@ -14,6 +15,7 @@ type IssueRunLedgerProps = {
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Agent>;
+  workProducts: IssueWorkProduct[];
   hasLiveRuns: boolean;
 };
 
@@ -24,6 +26,7 @@ type IssueRunLedgerContentProps = {
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
+  workProducts: IssueWorkProduct[];
 };
 
 type LedgerRun = RunForIssue & {
@@ -35,6 +38,12 @@ type LivenessCopy = {
   label: string;
   tone: string;
   description: string;
+};
+
+type RunArtifactSummary = {
+  id: string;
+  title: string;
+  contentPath: string;
 };
 
 const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
@@ -257,6 +266,7 @@ export function IssueRunLedger({
   issueStatus,
   childIssues,
   agentMap,
+  workProducts,
   hasLiveRuns,
 }: IssueRunLedgerProps) {
   const { data: runs } = useQuery({
@@ -288,6 +298,7 @@ export function IssueRunLedger({
       issueStatus={issueStatus}
       childIssues={childIssues}
       agentMap={agentMap}
+      workProducts={workProducts}
     />
   );
 }
@@ -299,8 +310,22 @@ export function IssueRunLedgerContent({
   issueStatus,
   childIssues,
   agentMap,
+  workProducts,
 }: IssueRunLedgerContentProps) {
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
+  const artifactsByRunId = useMemo(() => {
+    const map = new Map<string, RunArtifactSummary[]>();
+    for (const product of workProducts) {
+      if (!product.createdByRunId) continue;
+      const metadata = parseIssueArtifactWorkProductMetadata(product);
+      if (!metadata) continue;
+      const entry: RunArtifactSummary = { id: product.id, title: product.title, contentPath: metadata.contentPath };
+      const existing = map.get(product.createdByRunId);
+      if (existing) existing.push(entry);
+      else map.set(product.createdByRunId, [entry]);
+    }
+    return map;
+  }, [workProducts]);
   const latestRun = ledgerRuns[0] ?? null;
   const children = childIssueSummary(childIssues);
 
@@ -373,6 +398,7 @@ export function IssueRunLedgerContent({
             const exhausted = hasExhaustedContinuation(run);
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
+            const artifacts = artifactsByRunId.get(run.runId) ?? [];
             return (
               <article key={run.runId} className="space-y-2 px-3 py-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -463,6 +489,24 @@ export function IssueRunLedgerContent({
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
                     <span className="font-medium text-foreground">Next action: </span>
                     <span className="break-words text-muted-foreground">{run.nextAction}</span>
+                  </div>
+                ) : null}
+
+                {artifacts.length > 0 ? (
+                  <div className="rounded-md border border-border/70 bg-accent/10 px-2 py-2 text-xs">
+                    <div className="font-medium text-foreground">Deliverables</div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {artifacts.map((artifact) => (
+                        <a
+                          key={artifact.id}
+                          href={artifact.contentPath}
+                          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                          download
+                        >
+                          <span className="truncate">{artifact.title}</span>
+                        </a>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
               </article>

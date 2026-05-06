@@ -4,12 +4,18 @@ import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
   DraftInput,
+  DraftTextarea,
   help,
 } from "../../components/agent-config-primitives";
 import { cn } from "../../lib/utils";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+
+const artifactOutputsPlaceholder = `[
+  { "pattern": "deliverables/final-packet.md", "title": "Final packet", "primary": true },
+  { "pattern": "deliverables/articles/*.md", "title": "Article draft" }
+]`;
 
 type OpenClawSetupMode = "token_only" | "token_and_device_pairing";
 
@@ -185,6 +191,38 @@ export function OpenClawGatewayConfigFields({
           </div>
         </div>
       )}
+
+      <Field
+        label="Artifact outputs JSON"
+        hint="Optional declared workspace-relative files or globs to collect as deliverables after successful issue-backed runs."
+      >
+        <DraftTextarea
+          value={
+            isCreate
+              ? values?.artifactOutputsJson ?? ""
+              : JSON.stringify(eff("adapterConfig", "artifactOutputs", config.artifactOutputs ?? []), null, 2)
+          }
+          onCommit={(v) => {
+            if (isCreate) {
+              set!({ artifactOutputsJson: v });
+              return;
+            }
+            const trimmed = v.trim();
+            if (!trimmed) {
+              mark("adapterConfig", "artifactOutputs", undefined);
+              return;
+            }
+            try {
+              const parsed = JSON.parse(trimmed);
+              mark("adapterConfig", "artifactOutputs", Array.isArray(parsed) ? parsed : undefined);
+            } catch {
+              // Keep invalid drafts local until the user finishes editing.
+            }
+          }}
+          minRows={5}
+          placeholder={artifactOutputsPlaceholder}
+        />
+      </Field>
     </>
   );
 }

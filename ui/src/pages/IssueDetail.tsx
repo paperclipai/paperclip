@@ -96,6 +96,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Download,
   EyeOff,
   Hexagon,
   ListTree,
@@ -120,8 +121,10 @@ import {
   type IssueAttachment,
   type IssueComment,
   type IssueThreadInteraction,
+  type IssueWorkProduct,
   type RequestConfirmationInteraction,
   type SuggestTasksInteraction,
+  parseIssueArtifactWorkProductMetadata,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
@@ -136,6 +139,17 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
+
+type IssueDeliverable = {
+  product: IssueWorkProduct;
+  metadata: NonNullable<ReturnType<typeof parseIssueArtifactWorkProductMetadata>>;
+};
+
+function formatFileSize(byteSize: number) {
+  if (byteSize < 1024) return `${byteSize} B`;
+  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} KB`;
+  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function resolveRunningIssueRun(
   activeRun: ActiveRunForIssue | null | undefined,
@@ -776,6 +790,7 @@ type IssueDetailActivityTabProps = {
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: Map<string, Agent>;
+  workProducts: IssueWorkProduct[];
   hasLiveRuns: boolean;
   currentUserId: string | null;
   userProfileMap: Map<string, import("../lib/company-members").CompanyUserProfile>;
@@ -789,6 +804,7 @@ function IssueDetailActivityTab({
   issueStatus,
   childIssues,
   agentMap,
+  workProducts,
   hasLiveRuns,
   currentUserId,
   userProfileMap,
@@ -880,6 +896,7 @@ function IssueDetailActivityTab({
           issueStatus={issueStatus}
           childIssues={childIssues}
           agentMap={agentMap}
+          workProducts={workProducts}
           hasLiveRuns={hasLiveRuns}
         />
       </div>
@@ -2224,9 +2241,32 @@ export function IssueDetail() {
   }, [detailTab, pendingCommentComposerFocusKey]);
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const deliverables = useMemo(
+    () =>
+      (issue?.workProducts ?? [])
+        .map((product) => {
+          const metadata = parseIssueArtifactWorkProductMetadata(product);
+          return metadata ? { product, metadata } satisfies IssueDeliverable : null;
+        })
+        .filter((entry): entry is IssueDeliverable => entry !== null)
+        .sort((a, b) => {
+          if (a.product.isPrimary !== b.product.isPrimary) return a.product.isPrimary ? -1 : 1;
+          return new Date(b.product.updatedAt).getTime() - new Date(a.product.updatedAt).getTime();
+        }),
+    [issue?.workProducts],
+  );
+  const deliverableAttachmentIds = useMemo(
+    () => new Set(deliverables.map((entry) => entry.metadata.attachmentId)),
+    [deliverables],
+  );
   const attachmentList = attachments ?? [];
-  const imageAttachments = attachmentList.filter(isImageAttachment);
-  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+  const visibleAttachments = useMemo(
+    () => attachmentList.filter((attachment) => !deliverableAttachmentIds.has(attachment.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [attachments, deliverableAttachmentIds],
+  );
+  const imageAttachments = useMemo(() => visibleAttachments.filter(isImageAttachment), [visibleAttachments]);
+  const nonImageAttachments = useMemo(() => visibleAttachments.filter((a) => !isImageAttachment(a)), [visibleAttachments]);
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -2407,7 +2447,8 @@ export function IssueDetail() {
     }
   };
 
-  const hasAttachments = attachmentList.length > 0;
+  const hasDeliverables = deliverables.length > 0;
+  const hasAttachments = visibleAttachments.length > 0;
   const attachmentUploadButton = (
     <>
       <input
@@ -2729,6 +2770,57 @@ export function IssueDetail() {
         </div>
       )}
 
+      {hasDeliverables ? (
+        <div className="space-y-3 rounded-lg border border-border/70 px-3 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-medium text-muted-foreground">Deliverables</h3>
+              <p className="text-xs text-muted-foreground">
+                Download the latest issue-backed files collected from the OpenClaw workspace.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {deliverables.map(({ product, metadata }) => (
+              <div key={product.id} className="rounded-md border border-border bg-background px-3 py-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium text-foreground">
+                        {product.title}
+                      </span>
+                      {product.isPrimary ? (
+                        <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                          Primary
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="break-all font-mono text-[11px] text-muted-foreground">
+                      {metadata.sourcePath}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {metadata.contentType} · {formatFileSize(metadata.byteSize)} · Updated {relativeTime(product.updatedAt)}
+                    </p>
+                    {product.summary ? (
+                      <p className="text-xs text-muted-foreground">{product.summary}</p>
+                    ) : null}
+                  </div>
+                  <a
+                    href={metadata.contentPath}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    download={metadata.originalFilename ?? undefined}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Download
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -2972,6 +3064,7 @@ export function IssueDetail() {
               issueStatus={issue.status}
               childIssues={childIssues}
               agentMap={agentMap}
+              workProducts={issue.workProducts ?? []}
               hasLiveRuns={hasLiveRuns}
               currentUserId={currentUserId}
               userProfileMap={userProfileMap}
