@@ -221,10 +221,13 @@
     "unsaved_changes": "Unsaved changes",
     "section_identity": "Identity",
     "section_adapter": "Adapter",
+    "section_execution": "Execution",
     "section_permissions": "Permissions & Configuration",
     "section_run_policy": "Run Policy",
     "heartbeat_prefix": "Run heartbeat every",
     "hint_prefix": "Hint",
+    "experimental_badge": "Experimental",
+    "primary_model": "Primary model",
     "model_default": "Default",
     "model_required": "Select model (required)",
     "model_select": "Select model",
@@ -241,6 +244,9 @@
       "prompt_template": "Prompt Template",
       "prompt_template_placeholder": "You are agent {{ agent.name }}. Your role is {{ agent.role }}...",
       "adapter_type": "Adapter type",
+      "default_environment": "Default environment",
+      "default_environment_hint": "Agent-level default execution target. Project and issue settings can still override this.",
+      "default_environment_company_local": "Company default (Local)",
       "working_dir": "Working directory (deprecated)",
       "working_dir_placeholder": "/path/to/project",
       "command": "Command",
@@ -253,23 +259,48 @@
       "grace_sec": "Interrupt grace period (sec)",
       "cooldown_sec": "Cooldown (sec)",
       "max_concurrent_runs": "Max concurrent runs",
+      "continue_after_max_turn": "Continue after max-turn stop",
+      "continuation_attempts": "Continuation attempts",
+      "continuation_delay_sec": "Continuation delay (sec)",
       "model": "Model",
       "model_search_placeholder": "Search models...",
       "model_search_creatable_placeholder": "Search models... (type to create)",
       "thinking_effort": "Thinking effort",
       "heartbeat_on_interval": "Heartbeat on interval",
       "wake_on_demand": "Wake on demand",
-      "advanced_run_policy": "Advanced Run Policy"
+      "advanced_run_policy": "Advanced Run Policy",
+      "unit_sec": "sec"
+    },
+    "options": {
+      "auto": "Auto",
+      "minimal": "Minimal",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "X-High",
+      "plan": "Plan",
+      "ask": "Ask",
+      "max": "Max"
     },
     "actions": {
       "save": "Save",
       "saving": "Saving...",
+      "test": "Test",
       "test_environment": "Test environment",
       "testing": "Testing...",
       "detect_model": "Detect model",
       "detecting": "Detecting...",
       "re_detect_from_config": "Re-detect from config",
-      "detect_from_config": "Detect from config"
+      "detect_from_config": "Detect from config",
+      "refresh_models": "Refresh models",
+      "refreshing": "Refreshing..."
+    },
+    "errors": {
+      "select_company_secrets": "Select a company to create secrets",
+      "select_company_images": "Select a company to upload images",
+      "select_company_detect_model": "Select a company to detect the model",
+      "select_company_test_environment": "Select a company to test adapter environment",
+      "failed_refresh_models": "Failed to refresh adapter models."
     },
     "status": {
       "passed": "Passed",
@@ -280,9 +311,18 @@
       "no_model_detected_hint": "No model detected yet. Enter a provider/model manually.",
       "no_models_found": "No models found.",
       "failed_load_models": "Failed to load adapter models.",
+      "live_opencode_local_only": "Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {{name}}.",
       "model_badge_current": "current",
       "model_badge_detected": "detected",
       "model_badge_config": "config"
+    },
+    "cheap_model": {
+      "label": "Cheap model",
+      "description": "Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.",
+      "adapter_default_placeholder": "Adapter default · {{model}}",
+      "no_default_placeholder": "No adapter default — choose a cheaper model",
+      "fallback_note": "No explicit cheap model selected — runtime falls back to <code>{{model}}</code>.",
+      "no_default_warning": "No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note."
     },
     "permissions": {
       "enabled_ceo": "Enabled automatically for CEO agents.",

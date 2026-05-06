@@ -221,10 +221,13 @@
     "unsaved_changes": "Несохранённые изменения",
     "section_identity": "Личность",
     "section_adapter": "Адаптер",
+    "section_execution": "Выполнение",
     "section_permissions": "Разрешения и конфигурация",
     "section_run_policy": "Политика запуска",
     "heartbeat_prefix": "Запускать каждые",
     "hint_prefix": "Подсказка",
+    "experimental_badge": "Экспериментальный",
+    "primary_model": "Основная модель",
     "model_default": "По умолчанию",
     "model_required": "Выберите модель (обязательно)",
     "model_select": "Выберите модель",
@@ -241,6 +244,9 @@
       "prompt_template": "Шаблон промпта",
       "prompt_template_placeholder": "You are agent {{ agent.name }}. Your role is {{ agent.role }}...",
       "adapter_type": "Тип адаптера",
+      "default_environment": "Среда по умолчанию",
+      "default_environment_hint": "Цель выполнения по умолчанию на уровне агента. Настройки проекта и задачи могут переопределить её.",
+      "default_environment_company_local": "По умолчанию для компании (локально)",
       "working_dir": "Рабочая директория (устарело)",
       "working_dir_placeholder": "/path/to/project",
       "command": "Команда",
@@ -253,23 +259,48 @@
       "grace_sec": "Период ожидания прерывания (сек)",
       "cooldown_sec": "Задержка (сек)",
       "max_concurrent_runs": "Максимум параллельных запусков",
+      "continue_after_max_turn": "Продолжить после остановки по лимиту шагов",
+      "continuation_attempts": "Попытки продолжения",
+      "continuation_delay_sec": "Задержка продолжения (сек)",
       "model": "Модель",
       "model_search_placeholder": "Поиск моделей...",
       "model_search_creatable_placeholder": "Поиск моделей... (введите для создания)",
       "thinking_effort": "Уровень мышления",
       "heartbeat_on_interval": "Регулярный запуск",
       "wake_on_demand": "Запуск по требованию",
-      "advanced_run_policy": "Расширенная политика запуска"
+      "advanced_run_policy": "Расширенная политика запуска",
+      "unit_sec": "сек"
+    },
+    "options": {
+      "auto": "Авто",
+      "minimal": "Минимальный",
+      "low": "Низкий",
+      "medium": "Средний",
+      "high": "Высокий",
+      "xhigh": "Очень высокий",
+      "plan": "План",
+      "ask": "Спросить",
+      "max": "Максимум"
     },
     "actions": {
       "save": "Сохранить",
       "saving": "Сохранение...",
+      "test": "Тест",
       "test_environment": "Тестировать окружение",
       "testing": "Тестирование...",
       "detect_model": "Определить модель",
       "detecting": "Определение...",
       "re_detect_from_config": "Повторно определить из конфигурации",
-      "detect_from_config": "Определить из конфигурации"
+      "detect_from_config": "Определить из конфигурации",
+      "refresh_models": "Обновить модели",
+      "refreshing": "Обновление..."
+    },
+    "errors": {
+      "select_company_secrets": "Выберите компанию для создания секретов",
+      "select_company_images": "Выберите компанию для загрузки изображений",
+      "select_company_detect_model": "Выберите компанию, чтобы определить модель",
+      "select_company_test_environment": "Выберите компанию, чтобы протестировать окружение адаптера",
+      "failed_refresh_models": "Не удалось обновить модели адаптера."
     },
     "status": {
       "passed": "Пройдено",
@@ -280,9 +311,18 @@
       "no_model_detected_hint": "Модель ещё не обнаружена. Введите провайдера/модель вручную.",
       "no_models_found": "Модели не найдены.",
       "failed_load_models": "Не удалось загрузить модели адаптера.",
+      "live_opencode_local_only": "Живое определение моделей OpenCode работает только для локальных окружений. Используется курируемый список и ручной ввод для {{name}}.",
       "model_badge_current": "текущая",
       "model_badge_detected": "обнаружена",
       "model_badge_config": "конфиг"
+    },
+    "cheap_model": {
+      "label": "Бюджетная модель",
+      "description": "Используется, когда запуск запрашивает бюджетный профиль (напр. сводки рутин). Основная модель не меняется.",
+      "adapter_default_placeholder": "По умолчанию для адаптера · {{model}}",
+      "no_default_placeholder": "Нет значения адаптера по умолчанию — выберите более дешёвую модель",
+      "fallback_note": "Бюджетная модель явно не выбрана — runtime использует <code>{{model}}</code>.",
+      "no_default_warning": "Бюджетная модель не выбрана, и у адаптера нет значения по умолчанию. Запуски бюджетного канала продолжатся на основной модели с пометкой о fallback."
     },
     "permissions": {
       "enabled_ceo": "Включено автоматически для агентов-CEO.",
