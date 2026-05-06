@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle } from "lucide-react";
+import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
+import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
-import { pluginsApi } from "@/api/plugins";
+import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ChoosePathButton } from "@/components/PathInstructionsModal";
 import {
   Card,
   CardContent,
@@ -143,6 +145,8 @@ export function PluginSettings() {
   const pluginDescription = plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
+  const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
+  const hasLocalFolders = localFolderDeclarations.length > 0;
   const environmentDriverNames = environmentDrivers
     .map((driver) => driver.displayName?.trim() || driver.driverKey)
     .filter((name, index, values) => values.indexOf(name) === index);
@@ -217,6 +221,13 @@ export function PluginSettings() {
               <div className="space-y-1">
                 <h2 className="text-base font-semibold">Settings</h2>
               </div>
+              {hasLocalFolders ? (
+                <PluginLocalFoldersSettings
+                  pluginId={pluginId!}
+                  companyId={selectedCompanyId}
+                  declarations={localFolderDeclarations}
+                />
+              ) : null}
               {hasCustomSettingsPage ? (
                 <div className="space-y-3">
                   {pluginSlots.map((slot) => (
@@ -253,11 +264,11 @@ export function PluginSettings() {
                     </Link>
                   </div>
                 </div>
-              ) : (
+              ) : !hasLocalFolders ? (
                 <p className="text-sm text-muted-foreground">
                   This plugin does not require any settings.
                 </p>
-              )}
+              ) : null}
             </section>
           </div>
         </TabsContent>
@@ -555,6 +566,350 @@ export function PluginSettings() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PluginLocalFoldersSettings — host-managed company-scoped folders
+// ---------------------------------------------------------------------------
+
+interface PluginLocalFoldersSettingsProps {
+  pluginId: string;
+  companyId: string | null;
+  declarations: PluginLocalFolderDeclaration[];
+}
+
+function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: PluginLocalFoldersSettingsProps) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: companyId
+      ? queryKeys.plugins.localFolders(pluginId, companyId)
+      : ["plugins", pluginId, "companies", "none", "local-folders"],
+    queryFn: () => pluginsApi.listLocalFolders(pluginId, companyId!),
+    enabled: !!companyId,
+  });
+
+  const statusByKey = new Map((data?.folders ?? []).map((folder) => [folder.folderKey, folder]));
+
+  if (!companyId) {
+    return (
+      <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+        Select a company to configure this plugin's local folders.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <FolderOpen className="h-4 w-4 text-muted-foreground" />
+        <h3 className="text-sm font-medium">Local folders</h3>
+      </div>
+      {error ? (
+        <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {(error as Error).message || "Failed to load local folder settings."}
+        </div>
+      ) : null}
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading local folders...
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {declarations.map((declaration) => (
+            <PluginLocalFolderRow
+              key={declaration.folderKey}
+              pluginId={pluginId}
+              companyId={companyId}
+              declaration={declaration}
+              status={statusByKey.get(declaration.folderKey)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PluginLocalFolderRowProps {
+  pluginId: string;
+  companyId: string;
+  declaration: PluginLocalFolderDeclaration;
+  status?: PluginLocalFolderStatus;
+}
+
+function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: PluginLocalFolderRowProps) {
+  const queryClient = useQueryClient();
+  const serverPath = status?.path ?? "";
+  const [pathValue, setPathValue] = useState(serverPath);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    setPathValue(serverPath);
+    setMessage(null);
+  }, [serverPath, declaration.folderKey]);
+
+  const saveMutation = useMutation({
+    mutationFn: (path: string) =>
+      pluginsApi.configureLocalFolder(pluginId, companyId, declaration.folderKey, {
+        path,
+        access: declaration.access,
+        requiredDirectories: declaration.requiredDirectories,
+        requiredFiles: declaration.requiredFiles,
+      }),
+    onSuccess: (nextStatus) => {
+      setMessage({
+        type: nextStatus.healthy ? "success" : "error",
+        text: nextStatus.healthy
+          ? "Local folder saved."
+          : "Local folder saved, but validation still needs attention.",
+      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders(pluginId, companyId) });
+    },
+    onError: (err: Error) => {
+      setMessage({ type: "error", text: err.message || "Failed to save local folder." });
+    },
+  });
+
+  const trimmedPath = pathValue.trim();
+  const isDirty = trimmedPath !== serverPath;
+  const access = status?.access ?? declaration.access ?? "readWrite";
+
+  const handleSave = useCallback(() => {
+    if (!trimmedPath) {
+      setMessage({ type: "error", text: "Local folder path is required." });
+      return;
+    }
+    if (!isLikelyAbsolutePath(trimmedPath)) {
+      setMessage({ type: "error", text: "Local folder must be a full absolute path." });
+      return;
+    }
+    setMessage(null);
+    saveMutation.mutate(trimmedPath);
+  }, [saveMutation, trimmedPath]);
+
+  return (
+    <div className="space-y-4 rounded-md border border-border/70 bg-background px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-sm font-medium">{declaration.displayName}</h4>
+            <Badge variant="outline" className="font-mono text-[10px]">
+              {declaration.folderKey}
+            </Badge>
+            <Badge variant={status?.healthy ? "default" : "secondary"}>
+              {status?.healthy ? "Healthy" : "Needs attention"}
+            </Badge>
+          </div>
+          {declaration.description ? (
+            <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+              {declaration.description}
+            </p>
+          ) : null}
+        </div>
+        <Badge variant={access === "readWrite" ? "default" : "outline"}>
+          {access === "readWrite" ? "Read/write" : "Read only"}
+        </Badge>
+      </div>
+
+      <div className="grid gap-3 text-sm sm:grid-cols-3">
+        <FolderStatusMetric label="Configured" value={status?.configured ? "Yes" : "No"} ok={!!status?.configured} />
+        <FolderStatusMetric label="Readable" value={status?.readable ? "Yes" : "No"} ok={!!status?.readable} />
+        <FolderStatusMetric
+          label="Writable"
+          value={access === "read" ? "Not requested" : status?.writable ? "Yes" : "No"}
+          ok={access === "read" || !!status?.writable}
+        />
+      </div>
+
+      {status?.path ? (
+        <div className="space-y-1 text-sm">
+          <div className="text-xs font-medium text-muted-foreground">Configured path</div>
+          <div className="break-all rounded-md bg-muted/60 px-2 py-1.5 font-mono text-xs text-foreground">
+            {status.path}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-muted-foreground" htmlFor={`local-folder-${declaration.folderKey}`}>
+          Local folder path
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id={`local-folder-${declaration.folderKey}`}
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-sm outline-none focus:border-foreground/40 focus:ring-2 focus:ring-ring/20"
+            value={pathValue}
+            onChange={(event) => {
+              setPathValue(event.target.value);
+              setMessage(null);
+            }}
+            placeholder="/absolute/path/to/folder"
+          />
+          <ChoosePathButton className="h-8" />
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saveMutation.isPending || !isDirty}
+          >
+            {saveMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            Save
+          </Button>
+        </div>
+      </div>
+
+      <FolderRequirements status={status} declaration={declaration} />
+
+      {status?.problems?.length ? (
+        <div className="space-y-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div className="font-medium">Validation problems</div>
+          <ul className="space-y-1">
+            {status.problems.map((problem, index) => (
+              <li key={`${problem.code}:${problem.path ?? ""}:${index}`}>
+                {problem.message}
+                {problem.path ? <span className="font-mono"> {problem.path}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {message ? (
+        <div
+          className={`rounded-md border px-3 py-2 text-sm ${
+            message.type === "success"
+              ? "border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-400"
+              : "border-destructive/20 bg-destructive/10 text-destructive"
+          }`}
+        >
+          {message.text}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FolderStatusMetric({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+  return (
+    <div className="flex items-center justify-between rounded-md border border-border/60 px-2.5 py-2">
+      <span className="text-muted-foreground">{label}</span>
+      <Badge variant={ok ? "default" : "secondary"}>{value}</Badge>
+    </div>
+  );
+}
+
+function FolderRequirements({
+  status,
+  declaration,
+}: {
+  status?: PluginLocalFolderStatus;
+  declaration: PluginLocalFolderDeclaration;
+}) {
+  const requiredDirectories = status?.requiredDirectories ?? declaration.requiredDirectories ?? [];
+  const requiredFiles = status?.requiredFiles ?? declaration.requiredFiles ?? [];
+  const missingDirectories = status?.missingDirectories ?? requiredDirectories;
+  const missingFiles = status?.missingFiles ?? requiredFiles;
+  const rootNotInspected = isRootNotInspected(status);
+
+  if (requiredDirectories.length === 0 && requiredFiles.length === 0) return null;
+
+  return (
+    <div className="grid gap-3 text-sm md:grid-cols-2">
+      <RequirementList
+        title="Required directories"
+        items={requiredDirectories}
+        missingItems={missingDirectories}
+        missingLabel="Missing directories"
+        inspectionUnavailable={rootNotInspected}
+      />
+      <RequirementList
+        title="Required files"
+        items={requiredFiles}
+        missingItems={missingFiles}
+        missingLabel="Missing files"
+        inspectionUnavailable={rootNotInspected}
+      />
+    </div>
+  );
+}
+
+function isRootNotInspected(status?: PluginLocalFolderStatus) {
+  if (!status?.configured || status.readable) return false;
+  return status.problems.some((problem) =>
+    problem.code === "missing" || problem.code === "not_readable" || problem.code === "not_directory"
+  );
+}
+
+function RequirementList({
+  title,
+  items,
+  missingItems,
+  missingLabel,
+  inspectionUnavailable,
+}: {
+  title: string;
+  items: string[];
+  missingItems: string[];
+  missingLabel: string;
+  inspectionUnavailable?: boolean;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">{title}</span>
+        {inspectionUnavailable ? (
+          <Badge variant="secondary" className="text-[10px]">
+            Not inspected
+          </Badge>
+        ) : missingItems.length > 0 ? (
+          <Badge variant="destructive" className="text-[10px]">
+            {missingItems.length} missing
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="text-[10px]">Present</Badge>
+        )}
+      </div>
+      {items.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {items.map((item) => {
+            const missing = missingItems.includes(item);
+            return (
+              <span
+                key={item}
+                className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                  inspectionUnavailable
+                    ? "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-300"
+                    : missing
+                    ? "border-destructive/30 bg-destructive/10 text-destructive"
+                    : "border-border bg-muted/50 text-foreground/80"
+                }`}
+              >
+                {item}
+              </span>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">None declared.</p>
+      )}
+      {inspectionUnavailable ? (
+        <p className="text-xs text-amber-700 dark:text-amber-300">Configured root was not inspected.</p>
+      ) : missingItems.length > 0 ? (
+        <p className="text-xs text-destructive">{missingLabel}: {missingItems.join(", ")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function isLikelyAbsolutePath(pathValue: string) {
+  return (
+    pathValue.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(pathValue) ||
+    pathValue.startsWith("\\\\")
   );
 }
 

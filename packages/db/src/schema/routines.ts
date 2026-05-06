@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   boolean,
   index,
   integer,
@@ -15,7 +16,8 @@ import { companySecrets } from "./company_secrets.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
-import type { RoutineVariable } from "@paperclipai/shared";
+import { heartbeatRuns } from "./heartbeat_runs.js";
+import type { RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -33,6 +35,8 @@ export const routines = pgTable(
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
+    latestRevisionId: uuid("latest_revision_id"),
+    latestRevisionNumber: integer("latest_revision_number").notNull().default(1),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
@@ -46,6 +50,39 @@ export const routines = pgTable(
     companyStatusIdx: index("routines_company_status_idx").on(table.companyId, table.status),
     companyAssigneeIdx: index("routines_company_assignee_idx").on(table.companyId, table.assigneeAgentId),
     companyProjectIdx: index("routines_company_project_idx").on(table.companyId, table.projectId),
+  }),
+);
+
+export const routineRevisions = pgTable(
+  "routine_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    routineId: uuid("routine_id").notNull().references(() => routines.id, { onDelete: "cascade" }),
+    revisionNumber: integer("revision_number").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    snapshot: jsonb("snapshot").$type<RoutineRevisionSnapshotV1>().notNull(),
+    changeSummary: text("change_summary"),
+    restoredFromRevisionId: uuid("restored_from_revision_id").references(
+      (): AnyPgColumn => routineRevisions.id,
+      { onDelete: "set null" },
+    ),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    routineRevisionUq: uniqueIndex("routine_revisions_routine_revision_uq").on(
+      table.routineId,
+      table.revisionNumber,
+    ),
+    companyRoutineCreatedIdx: index("routine_revisions_company_routine_created_idx").on(
+      table.companyId,
+      table.routineId,
+      table.createdAt,
+    ),
   }),
 );
 
