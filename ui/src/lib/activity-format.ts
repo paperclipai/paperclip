@@ -33,8 +33,19 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.document_created": "created document for",
   "issue.document_updated": "updated document on",
   "issue.document_deleted": "deleted document from",
+  "issue.monitor_scheduled": "scheduled monitor on",
+  "issue.monitor_triggered": "triggered monitor for",
+  "issue.monitor_cleared": "cleared monitor on",
+  "issue.monitor_skipped": "skipped monitor for",
+  "issue.monitor_exhausted": "exhausted monitor on",
+  "issue.monitor_recovery_wake_queued": "queued monitor recovery for",
+  "issue.monitor_recovery_issue_created": "created monitor recovery for",
+  "issue.monitor_escalated_to_board": "escalated monitor for",
   "issue.commented": "commented on",
   "issue.deleted": "deleted",
+  "issue.successful_run_handoff_required": "flagged missing next step on",
+  "issue.successful_run_handoff_resolved": "recorded next step chosen on",
+  "issue.successful_run_handoff_escalated": "escalated missing next step on",
   "agent.created": "created",
   "agent.updated": "updated",
   "agent.paused": "paused",
@@ -75,7 +86,18 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.document_created": "created a document",
   "issue.document_updated": "updated a document",
   "issue.document_deleted": "deleted a document",
+  "issue.monitor_scheduled": "scheduled a monitor",
+  "issue.monitor_triggered": "triggered a monitor",
+  "issue.monitor_cleared": "cleared a monitor",
+  "issue.monitor_skipped": "skipped a monitor",
+  "issue.monitor_exhausted": "exhausted a monitor",
+  "issue.monitor_recovery_wake_queued": "queued a monitor recovery wake",
+  "issue.monitor_recovery_issue_created": "created a monitor recovery issue",
+  "issue.monitor_escalated_to_board": "escalated a monitor to the board",
   "issue.deleted": "deleted the issue",
+  "issue.successful_run_handoff_required": "Run finished without a clear next step",
+  "issue.successful_run_handoff_resolved": "Next step chosen",
+  "issue.successful_run_handoff_escalated": "Run finished without a next step - recovery escalated",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
@@ -295,6 +317,14 @@ export function formatIssueActivityAction(
     forIssueDetail: true,
   });
   if (structuredChange) return structuredChange;
+
+  if (action.startsWith("issue.monitor_") && details) {
+    const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()
+      ? details.serviceName.trim()
+      : null;
+    const base = ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");
+    return serviceName ? `${base} for ${serviceName}` : base;
+  }
 
   if (
     (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&

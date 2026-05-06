@@ -3,6 +3,8 @@ import { constants as fsConstants, createReadStream, createWriteStream, promises
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import type { RunProcessResult } from "./server-utils.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -21,7 +23,87 @@ export interface SshCommandResult {
 
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
-  paperclipApiUrl?: string | null;
+}
+
+export function createSshCommandManagedRuntimeRunner(input: {
+  spec: SshRemoteExecutionSpec;
+  defaultCwd?: string | null;
+  maxBufferBytes?: number | null;
+}): CommandManagedRuntimeRunner {
+  const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
+  const maxBufferBytes =
+    typeof input.maxBufferBytes === "number" && Number.isFinite(input.maxBufferBytes) && input.maxBufferBytes > 0
+      ? Math.trunc(input.maxBufferBytes)
+      : 1024 * 1024;
+
+  return {
+    execute: async (commandInput): Promise<RunProcessResult> => {
+      const startedAt = new Date().toISOString();
+      const command = commandInput.command.trim();
+      const args = commandInput.args ?? [];
+      const cwd = commandInput.cwd?.trim() || defaultCwd;
+      const envEntries = Object.entries(commandInput.env ?? {})
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+      const envPrefix = envEntries.length > 0
+        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
+        : "";
+      const exportPrefix = envEntries.length > 0
+        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
+        : "";
+      const commandScript = command === "sh" || command === "bash"
+        ? args[0] === "-lc" && typeof args[1] === "string"
+          ? `${exportPrefix}${args[1]}`
+          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const remoteCommand = `${command === "bash" ? "bash" : "sh"} -lc ${
+        shellQuote(`cd ${shellQuote(cwd)} && ${commandScript}`)
+      }`;
+
+      try {
+        const result = await runSshCommand(input.spec, remoteCommand, {
+          stdin: commandInput.stdin,
+          timeoutMs: commandInput.timeoutMs,
+          maxBuffer: maxBufferBytes,
+        });
+        if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
+        if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          pid: null,
+          startedAt,
+        };
+      } catch (error) {
+        const failure = error as {
+          stdout?: unknown;
+          stderr?: unknown;
+          code?: unknown;
+          signal?: unknown;
+          killed?: unknown;
+        };
+        const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
+        const stderr = typeof failure.stderr === "string"
+          ? failure.stderr
+          : error instanceof Error
+            ? error.message
+            : String(error);
+        if (stdout) await commandInput.onLog?.("stdout", stdout);
+        if (stderr) await commandInput.onLog?.("stderr", stderr);
+        return {
+          exitCode: typeof failure.code === "number" ? failure.code : null,
+          signal: typeof failure.signal === "string" ? failure.signal : null,
+          timedOut: failure.killed === true,
+          stdout,
+          stderr,
+          pid: null,
+          startedAt,
+        };
+      }
+    },
+  };
 }
 
 export interface SshEnvLabSupport {
@@ -83,10 +165,6 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     port: portValue,
     username,
     remoteCwd,
-    paperclipApiUrl:
-      typeof parsed.paperclipApiUrl === "string" && parsed.paperclipApiUrl.trim().length > 0
-        ? parsed.paperclipApiUrl.trim()
-        : null,
     remoteWorkspacePath:
       typeof parsed.remoteWorkspacePath === "string" && parsed.remoteWorkspacePath.trim().length > 0
         ? parsed.remoteWorkspacePath.trim()
@@ -96,50 +174,6 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
   };
-}
-
-function normalizeHttpUrlCandidate(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
-    return parsed.origin;
-  } catch {
-    return null;
-  }
-}
-
-export async function findReachablePaperclipApiUrlOverSsh(input: {
-  config: SshConnectionConfig;
-  candidates: string[];
-  timeoutMs?: number;
-}): Promise<string | null> {
-  const uniqueCandidates = Array.from(
-    new Set(
-      input.candidates
-        .map((candidate) => normalizeHttpUrlCandidate(candidate))
-        .filter((candidate): candidate is string => candidate !== null),
-    ),
-  );
-
-  for (const candidate of uniqueCandidates) {
-    const healthUrl = new URL("/api/health", candidate).toString();
-    try {
-      await runSshCommand(
-        input.config,
-        `sh -lc ${shellQuote(`curl -fsS -m ${Math.max(1, Math.ceil((input.timeoutMs ?? 5_000) / 1000))} ${shellQuote(healthUrl)} >/dev/null`)}`,
-        { timeoutMs: input.timeoutMs ?? 5_000 },
-      );
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
 }
 
 async function execFileText(
@@ -169,6 +203,113 @@ async function execFileText(
         });
       },
     );
+  });
+}
+
+async function spawnText(
+  file: string,
+  args: string[],
+  options: {
+    stdin?: string;
+    timeout?: number;
+    maxBuffer?: number;
+  } = {},
+): Promise<SshCommandResult> {
+  return await new Promise<SshCommandResult>((resolve, reject) => {
+    const child = spawn(file, args, {
+      stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+    });
+
+    const maxBuffer = options.maxBuffer ?? 1024 * 128;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+
+    const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
+      if (settled) return;
+      settled = true;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      error.killed = timedOut;
+      reject(error);
+    };
+
+    const append = (
+      streamName: "stdout" | "stderr",
+      chunk: unknown,
+    ) => {
+      const text = String(chunk);
+      if (streamName === "stdout") {
+        stdout += text;
+      } else {
+        stderr += text;
+      }
+      if (Buffer.byteLength(stdout, "utf8") > maxBuffer || Buffer.byteLength(stderr, "utf8") > maxBuffer) {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`), {
+          code: null,
+        }));
+      }
+    };
+
+    let killEscalation: NodeJS.Timeout | null = null;
+    const timeout = options.timeout && options.timeout > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+          // Escalate to SIGKILL after a 5s grace window so a hung remote
+          // command that ignores SIGTERM cannot keep the child alive
+          // indefinitely.
+          killEscalation = setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // child may have already exited between the SIGTERM and the
+              // escalation — that's fine.
+            }
+          }, 5_000);
+          killEscalation.unref?.();
+        }, options.timeout)
+      : null;
+
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (killEscalation) clearTimeout(killEscalation);
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      append("stdout", chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      append("stderr", chunk);
+    });
+
+    child.on("error", (error) => {
+      clearTimers();
+      finishReject(Object.assign(error, { code: null }));
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimers();
+      if (settled) return;
+      settled = true;
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
+        stdout,
+        stderr,
+        code,
+        signal,
+        killed: timedOut,
+      }));
+    });
+
+    if (options.stdin != null && child.stdin) {
+      child.stdin.end(options.stdin);
+    }
   });
 }
 
@@ -476,8 +617,8 @@ async function importGitWorkspaceToSsh(input: {
       `if [ ! -d ${shellQuote(path.posix.join(input.remoteDir, ".git"))} ]; then git init ${shellQuote(input.remoteDir)} >/dev/null; fi`,
       `git -C ${shellQuote(input.remoteDir)} fetch --force "$tmp_bundle" '${tempRef}:${tempRef}' >/dev/null`,
       input.snapshot.branchName
-        ? `git -C ${shellQuote(input.remoteDir)} checkout -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
-        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
+        ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
+        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
     ].join("\n");
@@ -688,6 +829,8 @@ export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
   options: {
+    env?: Record<string, string>;
+    stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
   } = {},
@@ -697,18 +840,45 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const envEntries = Object.entries(options.env ?? {})
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+    for (const [key] of envEntries) {
+      if (!isValidShellEnvKey(key)) {
+        throw new Error(`Invalid SSH environment variable key: ${key}`);
+      }
+    }
+
+    // Mirror buildSshSpawnTarget: source login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
+    // a profile re-exports. Without this, a remote profile that resets HOME
+    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
+    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const remoteScript = [
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      envArgs.length > 0
+        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
+        : `exec sh -c ${shellQuote(remoteCommand)}`,
+    ].join(" && ");
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      remoteCommand,
+      `sh -lc ${shellQuote(remoteScript)}`,
     );
 
-    return await execFileText("ssh", sshArgs, {
-      timeout: options.timeoutMs ?? 15_000,
-      maxBuffer: options.maxBuffer ?? 1024 * 128,
-    });
+    return options.stdin != null
+      ? await spawnText("ssh", sshArgs, {
+          stdin: options.stdin,
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: options.maxBuffer ?? 1024 * 128,
+        })
+      : await execFileText("ssh", sshArgs, {
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: options.maxBuffer ?? 1024 * 128,
+        });
   } finally {
     await cleanup();
   }

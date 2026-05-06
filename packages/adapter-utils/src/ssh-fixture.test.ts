@@ -70,6 +70,42 @@ describe("ssh env-lab fixture", () => {
     expect(stopped.running).toBe(false);
   });
 
+  it("forwards stdin to remote SSH commands", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping SSH stdin forwarding test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remotePath = path.posix.join(started.workspaceDir, "stdin-forwarded.txt");
+
+    await runSshCommand(
+      config,
+      `sh -lc 'cat > ${JSON.stringify(remotePath)}'`,
+      {
+        stdin: "hello over ssh stdin\n",
+        timeoutMs: 30_000,
+        maxBuffer: 256 * 1024,
+      },
+    );
+
+    const result = await runSshCommand(
+      config,
+      `sh -lc 'cat ${JSON.stringify(remotePath)}'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    expect(result.stdout).toBe("hello over ssh stdin\n");
+  });
+
   it("does not treat an unrelated reused pid as the running fixture", async () => {
     const support = await getSshEnvLabSupport();
     if (!support.supported) {

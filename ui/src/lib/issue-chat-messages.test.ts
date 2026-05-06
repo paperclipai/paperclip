@@ -39,6 +39,7 @@ function createAgent(id: string, name: string): Agent {
 }
 
 function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComment {
+  const authorAgentId = overrides.authorAgentId ?? null;
   return {
     id: "comment-1",
     companyId: "company-1",
@@ -46,6 +47,9 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     authorAgentId: null,
     authorUserId: "user-1",
     body: "Hello",
+    authorType: authorAgentId ? "agent" : "user",
+    presentation: null,
+    metadata: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
@@ -602,6 +606,37 @@ describe("buildIssueChatMessages", () => {
       id: "run-assistant:run-1",
       status: { type: "complete", reason: "stop" },
       metadata: { custom: { runStatus: "cancelled" } },
+    });
+  });
+
+  it("labels pause-caused cancelled runs as paused by board", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-paused",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          resultJson: { stopReason: "paused" },
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-paused", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-paused",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      chainOfThoughtLabel: "Paused by board after 1 minute",
+      runStatus: "cancelled",
     });
   });
 

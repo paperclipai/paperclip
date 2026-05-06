@@ -22,7 +22,10 @@ export interface IssueLivenessIssueInput {
   assigneeUserId?: string | null;
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
+  executionPolicy?: Record<string, unknown> | null;
   executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 }
 
 export interface IssueLivenessRelationInput {
@@ -99,6 +102,7 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  now?: Date | string;
 }
 
 const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
@@ -138,6 +142,45 @@ function hasWaitingPath(
   waitingPaths: IssueLivenessWaitingPathInput[],
 ) {
   return waitingPaths.some((entry) => entry.companyId === companyId && entry.issueId === issueId);
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function readDateMs(value: unknown): number | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const time = date.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function monitorFromIssue(issue: IssueLivenessIssueInput) {
+  const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
+  const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
+  return { policyMonitor, stateMonitor };
+}
+
+function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
+
+  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
+  const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
+  if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
+  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
+  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -308,6 +351,7 @@ function finding(input: {
 }
 
 export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): IssueLivenessFinding[] {
+  const nowMs = readDateMs(input.now ?? new Date()) ?? Date.now();
   const issuesById = new Map(input.issues.map((issue) => [issue.id, issue]));
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const blockersByBlockedIssueId = new Map<string, IssueLivenessRelationInput[]>();
@@ -351,6 +395,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
+      hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
