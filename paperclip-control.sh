@@ -157,7 +157,9 @@ require_auth_secret() {
 # Silent on purpose — the user-facing warning belongs on start/restart paths
 # only and lives in warn_missing_gh_token below.
 ensure_gh_token() {
-  if [[ -z "${GH_TOKEN:-}" ]]; then
+  # If GH_TOKEN is not defined in .env, export a descriptive placeholder
+  # so compose interpolation doesn't produce a bare warning.
+  if ! grep -qE '^GH_TOKEN=' .env 2>/dev/null; then
     export GH_TOKEN="Set this in .env for GitHub for paperclip to work with github"
   fi
 }
@@ -173,39 +175,25 @@ warn_missing_gh_token() {
 
 # Run a docker compose subcommand with .env's op:// URIs resolved.
 #
-# Subtlety: `op run` resolves EVERY op:// reference it finds in the env passed
-# to the child — including ones inherited from the user's shell (e.g. an
-# unrelated OPENROUTER_API_KEY in .zshenv used by other tools). If any single
-# resolution fails (wrong vault, wrong item, etc.) `op run` aborts before the
-# child even launches.
+# Isolation Model: `op run` resolves EVERY op:// reference it finds in the env
+# passed to it. To prevent host-level variables (e.g. from .zshenv) from
+# leaking into the orchestration or causing resolution failures, we use `env -i`
+# to start with a blank slate.
 #
-# To stay isolated from the interactive shell's secrets we strip exactly the
-# keys that .env defines from the inherited env right before invoking op run.
-# Net effect: paperclip-managed keys come authoritatively from .env, but any
-# OTHER inherited op:// refs are still resolved (and will still error loudly
-# if broken — we don't want to silently mask real misconfiguration).
+# Only essential variables (HOME, PATH, OP_SERVICE_ACCOUNT_TOKEN) are passed
+# through to the op CLI. Everything else comes authoritatively from .env.
 with_secrets() {
   require_op_token
   require_auth_secret
   warn_missing_gh_token
-  strip_dotenv_keys unset
   ensure_gh_token
 
-  # Warn about stray op:// references in the inherited shell environment that
-  # are NOT declared in .env.  op run will try to resolve them and abort if the
-  # service account can't access the referenced vault/item.
-  local stray
-  stray=$(
-    env | grep -E '^[A-Z_].*=op://' | cut -d= -f1 | while read -r k; do
-      grep -qE "^${k}=" .env 2>/dev/null || echo "$k"
-    done || true
-  )
-  if [[ -n "$stray" ]]; then
-    echo "  ⚠ Non-.env op:// references in shell (may cause op run to fail):" >&2
-    printf '    %s\n' $stray >&2
-  fi
-
-  op run --env-file=.env -- "${COMPOSE[@]}" "$@"
+  env -i \
+    HOME="${HOME:-}" \
+    PATH="${PATH:-}" \
+    OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-}" \
+    GH_TOKEN="${GH_TOKEN:-}" \
+    op run --env-file=.env -- "${COMPOSE[@]}" "$@"
 }
 
 # Run a compose subcommand that does NOT need real secret values.
@@ -216,7 +204,23 @@ with_secrets() {
 without_secrets() {
   strip_dotenv_keys stub
   ensure_gh_token
-  "${COMPOSE[@]}" "$@"
+
+  # Whitelist for non-secret commands: HOME, PATH, and every key from .env
+  # (which strip_dotenv_keys has already stubbed to empty strings).
+  local env_args=(
+    "HOME=${HOME:-}"
+    "PATH=${PATH:-}"
+    "GH_TOKEN=${GH_TOKEN:-}"
+    "BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}"
+  )
+
+  while IFS= read -r k; do
+    # Skip keys we handled explicitly above to avoid duplicates
+    [[ "$k" == "GH_TOKEN" || "$k" == "BETTER_AUTH_SECRET" ]] && continue
+    env_args+=("$k=${!k:-}")
+  done < <(grep -E '^[A-Z_][A-Z0-9_]*=' .env 2>/dev/null | cut -d= -f1)
+
+  env -i "${env_args[@]}" "${COMPOSE[@]}" "$@"
 }
 
 # Print which environment variables compose will inject, grouped by source file.

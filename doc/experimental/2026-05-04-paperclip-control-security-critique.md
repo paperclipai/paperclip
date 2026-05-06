@@ -2,7 +2,7 @@
 
 ## Verdict
 
-The script is **well-designed** for a single-operator dev/staging context. The `op run` + `strip_dotenv_keys` pattern is genuinely good — secrets are ephemeral, never written to disk by the script, and shell injection is actively defended against. The layered compose approach keeps upstream files clean.
+The script is **excellently designed** for a single-operator dev/staging context. The transition to `env -i` isolation significantly hardens the orchestration against environment leakage. Secrets are ephemeral, never written to disk, and the execution environment is whitelisted to the bare minimum, providing defense-in-depth against host-level shell poisoning.
 
 ---
 
@@ -40,10 +40,11 @@ The script is **well-designed** for a single-operator dev/staging context. The `
 | Practice | Implementation |
 |---|---|
 | **Secrets never on disk** | `op run` resolves `op://` URIs in-process; the script never writes resolved values |
-| **Shell injection defence** | `strip_dotenv_keys` neutralises inherited env before both code paths |
-| **Dual-mode strip** | `unset` for real runs, `stub` for compose-validation-only commands — minimal secret exposure |
+| **Strong Env Isolation** | `env -i` wipes the environment before `op run` and `docker compose`, passing only whitelisted vars |
+| **Whitelist vs Blacklist** | Moved from "stripping known keys" to "denying all by default"—prevents host-env leakage |
+| **Stray op:// Immunity** | `env -i` renders `op run` physically incapable of seeing (and failing on) stray host-shell secrets |
+| **Dual-mode Orchestration** | `with_secrets` for start/restart, `without_secrets` (also isolated) for status/logs — minimal exposure |
 | **Compose `:?` isolation** | `BETTER_AUTH_SECRET:?` handled per-path — dummy for stop, pre-flight check for start |
-| **No hardcoded var names** | Strip/stub loop driven from `.env` keys, not a hardcoded list |
 | **Authoritative `.envrc` source** | Always sourced — overrides any inherited token from a different 1Password account |
 | **`.env`/`.envrc` gitignored** | Neither is tracked; both are in `.gitignore` |
 | **File permissions** | Both `.env` and `.envrc` set to `0600` |
@@ -51,7 +52,6 @@ The script is **well-designed** for a single-operator dev/staging context. The `
 | **`set -euo pipefail`** | Fail-fast on errors, undefined vars, and pipe failures |
 | **Verbose mode** | Debug output gated behind `-v` — no secret leakage in normal operation |
 | **Value redaction** | Sensitive-looking keys show `prefix••••suffix` in verbose output for disambiguation without exposure |
-| **Stray op:// detection** | `with_secrets` warns about inherited `op://` refs not declared in `.env` that may break `op run` |
 
 ---
 
