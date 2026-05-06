@@ -2,7 +2,6 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { ReactNode } from "react";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
@@ -78,18 +77,22 @@ function renderBoard(
   document.body.appendChild(container);
   const root = createRoot(container);
 
-  act(() => {
-    root.render(
-      <KanbanBoard
-        agents={[{ id: "agent-1", name: "Codex" }]}
-        liveIssueIds={new Set(["issue-todo-1"])}
-        onUpdateIssue={vi.fn()}
-        {...props}
-      />,
-    );
-  });
+  const render = (nextProps: Partial<React.ComponentProps<typeof KanbanBoard>> & { issues: Issue[] }) => {
+    act(() => {
+      root.render(
+        <KanbanBoard
+          agents={[{ id: "agent-1", name: "Codex" }]}
+          liveIssueIds={new Set(["issue-todo-1"])}
+          onUpdateIssue={vi.fn()}
+          {...nextProps}
+        />,
+      );
+    });
+  };
 
-  return { container, root };
+  render(props);
+
+  return { container, root, render };
 }
 
 describe("KanbanBoard", () => {
@@ -125,6 +128,37 @@ describe("KanbanBoard", () => {
 
     expect(container.textContent).toContain("Issue 60");
     expect(container.textContent).not.toContain("Show 10 more");
+  });
+
+  it("resets visible counts when the column page size changes", () => {
+    const issues = createIssues(60, "todo");
+    const { container, render } = renderBoard({
+      issues,
+      initialVisibleCount: 50,
+      revealIncrement: 50,
+    });
+
+    const showMoreButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show 10 more"),
+    );
+    expect(showMoreButton).toBeTruthy();
+
+    act(() => {
+      showMoreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Issue 60");
+
+    render({
+      issues,
+      initialVisibleCount: 10,
+      revealIncrement: 10,
+    });
+
+    expect(container.textContent).toContain("Showing 10 of 60");
+    expect(container.textContent).toContain("Show 10 more");
+    expect(container.textContent).toContain("Issue 10");
+    expect(container.textContent).not.toContain("Issue 11");
   });
 
   it("renders collapsed statuses as rails without cards", () => {

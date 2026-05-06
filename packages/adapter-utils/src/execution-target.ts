@@ -26,6 +26,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
@@ -94,6 +95,8 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
   env: Record<string, string>;
   stop(): Promise<void>;
 }
+
+export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -340,11 +343,12 @@ export async function runAdapterExecutionTargetProcess(
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
+    const env = sanitizeRemoteExecutionEnv(options.env);
     return await runner.execute({
       command,
       args,
       cwd: target.remoteCwd,
-      env: options.env,
+      env,
       stdin: options.stdin,
       timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
       onLog: options.onLog,
@@ -354,9 +358,14 @@ export async function runAdapterExecutionTargetProcess(
     });
   }
 
+  const env =
+    target?.kind === "remote" && target.transport === "ssh"
+      ? sanitizeRemoteExecutionEnv(options.env)
+      : options.env;
+
   return await runChildProcess(runId, command, args, {
     cwd: options.cwd,
-    env: options.env,
+    env,
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
@@ -376,9 +385,16 @@ export async function runAdapterExecutionTargetShellCommand(
   const onLog = options.onLog ?? (async () => {});
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();
+    const env = sanitizeRemoteExecutionEnv(options.env);
     if (target.transport === "ssh") {
       try {
-        const result = await runSshCommand(target.spec, `sh -lc ${shellQuote(command)}`, {
+        // Pass the raw command — `runSshCommand` owns profile sourcing and
+        // the outer `sh -lc` wrapper. Wrapping again here would nest a second
+        // `sh -lc` after the explicit `env KEY=VAL` overrides, re-sourcing
+        // login profiles AFTER the override and silently undoing any
+        // identity var (NVM_DIR / PATH / etc.) that a profile re-exports.
+        const result = await runSshCommand(target.spec, command, {
+          env,
           timeoutMs: (options.timeoutSec ?? 15) * 1000,
         });
         if (result.stdout) await onLog("stdout", result.stdout);
@@ -435,7 +451,7 @@ export async function runAdapterExecutionTargetShellCommand(
       command: shellCommand,
       args: ["-lc", command],
       cwd: target.remoteCwd,
-      env: options.env,
+      env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
     });
