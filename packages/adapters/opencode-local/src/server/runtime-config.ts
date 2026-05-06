@@ -34,9 +34,23 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
+  targetIsRemote?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
+    return {
+      env: input.env,
+      notes: [],
+      cleanup: async () => {},
+    };
+  }
+
+  // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
+  // (and actively harmful — it leaks a macOS-only path into the remote Linux
+  // env). Callers that need to ship a runtime opencode config to the remote
+  // box do that via prepareAdapterExecutionTargetRuntime in execute.ts; this
+  // host-fs helper is local-only.
+  if (input.targetIsRemote) {
     return {
       env: input.env,
       notes: [],

@@ -90,7 +90,7 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
@@ -146,6 +146,8 @@ export type {
   IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueExecutionMonitorPolicy,
+  IssueExecutionMonitorState,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,
@@ -220,8 +222,14 @@ export type {
 } from "./secrets.js";
 export type {
   Routine,
+  RoutineManagedByPlugin,
   RoutineVariable,
   RoutineVariableDefaultValue,
+  RoutineRevisionSnapshotRoutineV1,
+  RoutineRevisionSnapshotTriggerV1,
+  RoutineRevisionSnapshotV1,
+  RoutineRevisionSnapshot,
+  RoutineRevision,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
@@ -314,6 +322,15 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  PluginManagedAgentDeclaration,
+  PluginManagedProjectDeclaration,
+  PluginManagedRoutineDeclaration,
+  PluginLocalFolderDeclaration,
+  PluginManagedAgentResolution,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineResolution,
+  PluginManagedResourceKind,
+  PluginManagedResourceRef,
   PluginUiSlotDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,
@@ -330,6 +347,7 @@ export type {
   PluginMigrationRecord,
   PluginStateRecord,
   PluginConfig,
+  PluginCompanySettings,
   PluginEntityRecord,
   PluginEntityQuery,
   PluginJobRecord,

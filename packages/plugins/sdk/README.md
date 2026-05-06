@@ -15,7 +15,7 @@ Reference: `doc/plugins/PLUGIN_SPEC.md`
 | Import | Purpose |
 |--------|--------|
 | `@paperclipai/plugin-sdk` | Worker entry: `definePlugin`, `runWorker`, context types, protocol helpers |
-| `@paperclipai/plugin-sdk/ui` | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, slot prop types |
+| `@paperclipai/plugin-sdk/ui` | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, `useHostNavigation`, slot prop types |
 | `@paperclipai/plugin-sdk/ui/hooks` | Hooks only |
 | `@paperclipai/plugin-sdk/ui/types` | UI types and slot prop interfaces |
 | `@paperclipai/plugin-sdk/testing` | `createTestHarness` for unit/integration tests |
@@ -47,7 +47,7 @@ The SDK is stable enough for local development and first-party examples, but the
 - For deployed plugins, publish an npm package and install that package into the Paperclip instance at runtime.
 - The current host runtime expects a writable filesystem, `npm` available at runtime, and network access to the package registry used for plugin installation.
 - Dynamic plugin install is currently best suited to single-node persistent deployments. Multi-instance cloud deployments still need a shared artifact/distribution model before runtime installs are reliable across nodes.
-- The host does not currently ship a real shared React component kit for plugins. Build your plugin UI with ordinary React components and CSS.
+- The host ships a small shared React component kit through `@paperclipai/plugin-sdk/ui`. Use it for native Paperclip controls; custom React and CSS are still supported.
 - `ctx.assets` is not part of the supported runtime in this build. Do not depend on asset upload/read APIs yet.
 
 If you are authoring a plugin for others to deploy, treat npm-packaged installation as the supported path and treat repo-local example installs as a development convenience.
@@ -100,11 +100,13 @@ runWorker(plugin, import.meta.url);
 | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
 | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
-**Context (`ctx`) in setup:** `config`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
+**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
 **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
 
 **Jobs:** Declare in `manifest.jobs` with `jobKey`, `displayName`, `schedule` (cron). Register handler with `ctx.jobs.register(jobKey, fn)`. **Webhooks:** Declare in `manifest.webhooks` with `endpointKey`; handle in `onWebhook(input)`. **State:** `ctx.state.get/set/delete(scopeKey)`; scope kinds: `instance`, `company`, `project`, `project_workspace`, `agent`, `issue`, `goal`, `run`.
+
+**Trusted local folders:** Declare `manifest.localFolders[]` and the `local.folders` capability when a plugin needs an operator-configured company-scoped folder. Use `ctx.localFolders.configure()`, `status()`, `readText()`, and `writeTextAtomic()` instead of resolving arbitrary filesystem paths yourself. The host validates absolute roots, read/write access, required relative folders/files, traversal attempts, symlink escapes, and writes through temp-file-plus-rename atomic replacement.
 
 ## Events
 
@@ -201,12 +203,13 @@ Slots are mount points for plugin React components. Launchers are host-rendered 
 
 ### Slot types / launcher placement zones
 
-The same set of values is used as **slot types** (where a component mounts) and **launcher placement zones** (where a launcher can appear). Hierarchy:
+Slot types describe where a component mounts. Most values also exist as launcher placement zones.
 
 | Slot type / placement zone | Scope | Entity types (when context-sensitive) |
 |----------------------------|-------|---------------------------------------|
 | `page` | Global | — |
 | `sidebar` | Global | — |
+| `routeSidebar` | Global | — |
 | `sidebarPanel` | Global | — |
 | `settingsPage` | Global | — |
 | `dashboardWidget` | Global | — |
@@ -232,6 +235,10 @@ A full-page extension mounted at `/plugins/:pluginId` (global) or `/:company/plu
 #### `sidebar`
 
 Adds a navigation-style entry to the main company sidebar navigation area, rendered alongside the core nav items (Dashboard, Issues, Goals, etc.). Use this for lightweight, always-visible links or status indicators that feel native to the sidebar. Receives `PluginSidebarProps` with `context.companyId` set to the active company. Requires the `ui.sidebar.register` capability.
+
+#### `routeSidebar`
+
+Replaces the normal company sidebar while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation while keeping the company rail and account footer. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
 
 #### `sidebarPanel`
 
@@ -338,6 +345,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `http.outbound` |
 | | `secrets.read-ref` |
 | | `environment.drivers.register` |
+| | `local.folders` |
 | **Agent** | `agent.tools.register` |
 | | `agents.invoke` |
 | | `agent.sessions.create` |
@@ -371,6 +379,38 @@ only inside the plugin namespace. Runtime `ctx.db.query()` allows `SELECT` from
 `ctx.db.namespace` plus manifest-whitelisted `public` core tables. Runtime
 `ctx.db.execute()` allows `INSERT`, `UPDATE`, and `DELETE` only against the
 plugin namespace.
+
+### Trusted Local Folders
+
+Trusted local plugins can request operator-configured folders per company:
+
+```ts
+export const manifest = {
+  // ...
+  capabilities: ["local.folders"],
+  localFolders: [
+    {
+      folderKey: "content-root",
+      displayName: "Content root",
+      access: "readWrite",
+      requiredDirectories: ["sources", "pages"],
+      requiredFiles: ["schema.md"],
+    },
+  ],
+};
+```
+
+The host stores the selected path in company-scoped plugin settings and exposes
+readiness through:
+
+- `GET /api/plugins/:pluginId/companies/:companyId/local-folders`
+- `GET /api/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/status`
+- `POST /api/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/validate`
+- `PUT /api/plugins/:pluginId/companies/:companyId/local-folders/:folderKey`
+
+Worker code should access files through `ctx.localFolders.readText()` and
+`ctx.localFolders.writeTextAtomic()`. Relative paths must stay inside the
+configured root; symlinks that escape the root are rejected.
 
 ### Scoped API Routes
 
@@ -599,6 +639,23 @@ export function IssueLinearLink({ context }: PluginDetailTabProps) {
 }
 ```
 
+#### `useHostNavigation()`
+
+Routes Paperclip-internal plugin links through the host router without a full document reload. Use `linkProps()` for anchors so the browser still gets a real `href` for copy-link, modifier-click, middle-click, and open-in-new-tab behavior.
+
+```tsx
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+
+export function WikiSidebarLink() {
+  const hostNavigation = useHostNavigation();
+  return <a {...hostNavigation.linkProps("/wiki")}>Wiki</a>;
+}
+```
+
+`linkProps("/wiki")` resolves against the active company prefix, so in company `PAP` it renders `href="/PAP/wiki"`. Already-prefixed paths such as `/PAP/wiki` are not prefixed again. For button-style commands, call `hostNavigation.navigate("/issues/PAP-123")`.
+
+Avoid raw same-origin `href`s or `window.location.assign()` for Paperclip-internal navigation from plugin UI. Those bypass the host router and can reload the whole app. External links should keep normal anchors with `target="_blank"` and `rel="noopener noreferrer"` as appropriate.
+
 #### `usePluginStream<T>(channel, options?)`
 
 Subscribes to a real-time event stream pushed from the plugin worker via SSE. The worker pushes events using `ctx.streams.emit(channel, event)` and the hook receives them as they arrive. Returns `{ events, lastEvent, connecting, connected, error, close }`.
@@ -629,7 +686,118 @@ The SSE connection targets `GET /api/plugins/:pluginId/bridge/stream/:channel?co
 
 ### UI authoring note
 
-The current host does **not** provide a real shared component library to plugins yet. Use normal React components, your own CSS, or your own small design primitives inside the plugin package.
+The host provides selected shared UI components through `@paperclipai/plugin-sdk/ui`.
+Plugins can also use normal React components, their own CSS, or small design
+primitives inside the plugin package.
+
+Use the shared components when the plugin needs to look and behave like a native
+Paperclip surface:
+
+| Component | Use when |
+|---|---|
+| `MarkdownBlock` | Rendering markdown from plugin or host data |
+| `MarkdownEditor` | Editing markdown with the host editor treatment |
+| `FileTree` | Showing serializable workspace/wiki/import paths |
+| `IssuesList` | Embedding a company-scoped native issue list |
+| `AssigneePicker` | Selecting an agent or board user with the same picker as the new issue pane |
+| `ProjectPicker` | Selecting a project with the same picker as the new issue pane |
+| `ManagedRoutinesList` | Showing plugin-managed routines in settings UI |
+
+#### Shared Markdown Components
+
+Plugin UI can render markdown and edit markdown using the same host components
+used by Paperclip issue comments and documents:
+
+```tsx
+import { MarkdownBlock, MarkdownEditor } from "@paperclipai/plugin-sdk/ui";
+
+export function WikiPageEditor() {
+  const [body, setBody] = useState("# Wiki page");
+
+  return (
+    <>
+      <MarkdownBlock content={body} />
+      <MarkdownEditor value={body} onChange={setBody} bordered />
+    </>
+  );
+}
+```
+
+`MarkdownBlock` can opt into Obsidian-style wikilinks when a plugin owns the
+target URL shape:
+
+```tsx
+<MarkdownBlock
+  content={"See [[wiki/entities/paperclip|Paperclip]]."}
+  enableWikiLinks
+  wikiLinkRoot="/wiki/page"
+/>
+```
+
+#### Shared FileTree
+
+Plugin UI can render the host file tree without importing host internals:
+
+```tsx
+import { FileTree, type FileTreeNode } from "@paperclipai/plugin-sdk/ui";
+
+const nodes: FileTreeNode[] = [
+  { name: "AGENTS.md", path: "AGENTS.md", kind: "file", children: [] },
+  {
+    name: "wiki",
+    path: "wiki",
+    kind: "dir",
+    children: [
+      { name: "index.md", path: "wiki/index.md", kind: "file", children: [] },
+    ],
+  },
+];
+
+export function WikiFiles() {
+  return (
+    <FileTree
+      nodes={nodes}
+      expandedPaths={["wiki"]}
+      selectedFile="wiki/index.md"
+      onToggleDir={(path) => console.log("toggle", path)}
+      onSelectFile={(path) => console.log("select", path)}
+    />
+  );
+}
+```
+
+#### Shared Assignee and Project Pickers
+
+Use `AssigneePicker` and `ProjectPicker` when a plugin needs to create, filter,
+or configure work against Paperclip entities. Both are controlled components and
+load their options from the host for the provided company.
+
+```tsx
+import { AssigneePicker, ProjectPicker } from "@paperclipai/plugin-sdk/ui";
+
+export function AssignmentControls({ companyId }: { companyId: string }) {
+  const [assignee, setAssignee] = useState("");
+  const [projectId, setProjectId] = useState("");
+
+  return (
+    <>
+      <AssigneePicker
+        companyId={companyId}
+        value={assignee}
+        onChange={(value, selection) => {
+          setAssignee(value);
+          console.log(selection.assigneeAgentId, selection.assigneeUserId);
+        }}
+      />
+      <ProjectPicker
+        companyId={companyId}
+        value={projectId}
+        onChange={setProjectId}
+      />
+    </>
+  );
+}
+```
 
 ### Slot component props
 
@@ -639,6 +807,7 @@ Each slot type receives a typed props object with `context: PluginHostContext`. 
 |-----------|----------------|------------------|
 | `page` | `PluginPageProps` | — |
 | `sidebar` | `PluginSidebarProps` | — |
+| `routeSidebar` | `PluginRouteSidebarProps` | — |
 | `settingsPage` | `PluginSettingsPageProps` | — |
 | `dashboardWidget` | `PluginWidgetProps` | — |
 | `globalToolbarButton` | `PluginGlobalToolbarButtonProps` | — |
@@ -741,14 +910,17 @@ Plugins can add a link under each project in the sidebar via the `projectSidebar
 Minimal React component that links to the project’s plugin tab (see project detail tabs in the spec):
 
 ```tsx
-import type { PluginProjectSidebarItemProps } from "@paperclipai/plugin-sdk/ui";
+import {
+  useHostNavigation,
+  type PluginProjectSidebarItemProps,
+} from "@paperclipai/plugin-sdk/ui";
 
 export function FilesLink({ context }: PluginProjectSidebarItemProps) {
+  const hostNavigation = useHostNavigation();
   const projectId = context.entityId;
-  const prefix = context.companyPrefix ? `/${context.companyPrefix}` : "";
   const projectRef = projectId; // or resolve from host; entityId is project id
   return (
-    <a href={`${prefix}/projects/${projectRef}?tab=plugin:your-plugin:files`}>
+    <a {...hostNavigation.linkProps(`/projects/${projectRef}?tab=plugin:your-plugin:files`)}>
       Files
     </a>
   );
