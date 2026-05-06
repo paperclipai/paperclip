@@ -51,7 +51,10 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
         message: `Claude API returned status ${res.status}`,
       };
     } else {
-      const res = await fetch("https://api.openai.com/v1/models", {
+      const baseUrl = process.env.OPENAI_BASE_URL
+        ? process.env.OPENAI_BASE_URL.replace(/\/$/, "")
+        : "https://api.openai.com";
+      const res = await fetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${config.llm.apiKey}` },
       });
       if (res.ok) {
