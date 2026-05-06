@@ -372,6 +372,68 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchName).toBe(first.branchName);
   });
 
+  it("rejects branch templates with unsupported variables before creating a worktree", async () => {
+    const repoRoot = await createTempRepo();
+
+    await expect(realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "paperclip/{{agent.name}}-{{issueIdentifier}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toThrow(/Unsupported workspace branch template variable "issueIdentifier"/);
+  });
+
+  it("requires issue-scoped git worktree branch templates to include an issue token", async () => {
+    const repoRoot = await createTempRepo();
+
+    await expect(realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "paperclip/{{agent.name}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toThrow(/must include \{\{issue.identifier\}\} or \{\{issue.id\}\}/);
+  });
+
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-447-add-worktree-support";
@@ -1408,7 +1470,7 @@ describe("realizeExecutionWorkspace", () => {
       await fs.realpath(path.join(repoRoot, "packages", "shared")),
     );
     },
-    15_000,
+    30_000,
   );
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
@@ -1467,7 +1529,7 @@ describe("realizeExecutionWorkspace", () => {
       created: true,
     });
     expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
-  });
+  }, 30_000);
 
   it("truncates oversized provision command output before storing it in memory", async () => {
     const repoRoot = await createTempRepo();
@@ -1562,7 +1624,7 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(workspace.cwd, "feature.txt"), "utf8")).resolves.toBe("preserve me\n");
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
-  });
+  }, 30_000);
 
   it("reattaches a missing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();

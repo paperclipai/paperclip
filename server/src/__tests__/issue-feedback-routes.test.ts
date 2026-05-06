@@ -87,7 +87,9 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
-    documentService: () => ({}),
+    documentService: () => ({
+      getIssueDocumentByKey: vi.fn(async () => null),
+    }),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,

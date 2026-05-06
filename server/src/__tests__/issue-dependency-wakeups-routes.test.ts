@@ -28,6 +28,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   documentService: () => ({
+    getIssueDocumentByKey: vi.fn(async () => null),
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
   executionWorkspaceService: () => ({

@@ -54,7 +54,9 @@ function registerModuleMocks() {
     clampIssueListLimit: (value: number) => value,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
-    documentService: () => ({}),
+    documentService: () => ({
+      getIssueDocumentByKey: vi.fn(async () => null),
+    }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),

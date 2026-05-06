@@ -44,7 +44,7 @@ function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRe
     requestedMode: readString(parsed.requestedMode),
     source: {
       kind:
-        source.kind === "task_session" || source.kind === "agent_home"
+        source.kind === "task_session" || source.kind === "adapter_config" || source.kind === "agent_home"
           ? source.kind
           : "project_primary",
       localPath,

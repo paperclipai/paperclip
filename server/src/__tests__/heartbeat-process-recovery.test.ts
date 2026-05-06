@@ -21,6 +21,7 @@ import {
   issueComments,
   issueDocuments,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -317,6 +318,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
@@ -2357,5 +2359,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("skips stranded recovery when a pending wake interaction exists", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Approve the plan?" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
   });
 });

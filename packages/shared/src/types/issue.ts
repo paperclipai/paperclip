@@ -18,6 +18,7 @@ import type {
   IssueStatus,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
+import type { MissionContract } from "./mission.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
@@ -91,6 +92,11 @@ export interface IssueDocumentSummary {
 
 export interface IssueDocument extends IssueDocumentSummary {
   body: string;
+}
+
+export interface IssueDocumentParseError {
+  message: string;
+  details?: unknown;
 }
 
 export interface DocumentRevision {
@@ -327,6 +333,9 @@ export interface Issue {
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
+  missionDocument?: IssueDocument | null;
+  missionContract?: MissionContract | null;
+  missionContractError?: IssueDocumentParseError | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;

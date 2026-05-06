@@ -40,7 +40,7 @@ export function resolveShell(): string {
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "adapter_config" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -365,6 +365,7 @@ function renderWorkspaceTemplate(template: string, input: {
   projectId: string | null;
   repoRef: string | null;
 }) {
+  validateWorkspaceBranchTemplate(template, { hasIssue: input.issue !== null });
   const issueIdentifier = input.issue?.identifier ?? input.issue?.id ?? "issue";
   const slug = sanitizeSlugPart(input.issue?.title, sanitizeSlugPart(issueIdentifier, "issue"));
   return renderTemplate(template, {
@@ -385,6 +386,37 @@ function renderWorkspaceTemplate(template: string, input: {
     },
     slug,
   });
+}
+
+const WORKSPACE_BRANCH_TEMPLATE_VARIABLE_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+const SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES = new Set([
+  "issue.id",
+  "issue.identifier",
+  "issue.title",
+  "agent.id",
+  "agent.name",
+  "project.id",
+  "workspace.repoRef",
+  "slug",
+]);
+
+function validateWorkspaceBranchTemplate(template: string, input: { hasIssue: boolean }) {
+  const variables = Array.from(template.matchAll(WORKSPACE_BRANCH_TEMPLATE_VARIABLE_PATTERN), (match) => match[1] ?? "");
+  for (const variable of variables) {
+    if (!SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES.has(variable)) {
+      throw new Error(
+        `Unsupported workspace branch template variable "${variable}". Supported variables: ${
+          Array.from(SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES).sort().join(", ")
+        }.`,
+      );
+    }
+  }
+
+  if (!input.hasIssue) return;
+  if (variables.includes("issue.id") || variables.includes("issue.identifier")) return;
+  throw new Error(
+    "Issue-scoped git worktree branch templates must include {{issue.identifier}} or {{issue.id}} so concurrent issue runs do not share a writable branch.",
+  );
 }
 
 function sanitizeBranchName(value: string): string {

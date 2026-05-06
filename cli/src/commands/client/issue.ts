@@ -8,6 +8,7 @@ import {
   updateIssueSchema,
   type Issue,
   type IssueComment,
+  type IssueDocument,
 } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
@@ -22,6 +23,17 @@ import {
   normalizeFeedbackTraceExportFormat,
   serializeFeedbackTraces,
 } from "./feedback.js";
+import {
+  buildMissionContractDocumentFromOptions,
+  collectRepeatableOption,
+  type MissionContractCliOptions,
+} from "./issue-mission.js";
+import {
+  appendEvidenceRecordDocument,
+  buildEvidenceRecordFromOptions,
+  collectRepeatableOption as collectEvidenceRepeatableOption,
+  type EvidenceRecordCliOptions,
+} from "./issue-evidence.js";
 
 interface IssueBaseOptions extends BaseClientOptions {
   status?: string;
@@ -79,6 +91,20 @@ interface IssueFeedbackOptions extends BaseClientOptions {
   includePayload?: boolean;
   out?: string;
   format?: string;
+}
+
+interface IssueMissionDraftOptions extends BaseClientOptions, MissionContractCliOptions {
+  out?: string;
+}
+
+interface IssueMissionUpsertOptions extends BaseClientOptions, MissionContractCliOptions {
+  baseRevisionId?: string;
+}
+
+interface IssueEvidenceAppendOptions extends BaseClientOptions, EvidenceRecordCliOptions {}
+
+interface IssueGateMaterializeOptions extends BaseClientOptions {
+  blockParent?: boolean;
 }
 
 export function registerIssueCommands(program: Command): void {
@@ -185,6 +211,133 @@ export function registerIssueCommands(program: Command): void {
 
           const created = await ctx.api.post<Issue>(`/api/companies/${ctx.companyId}/issues`, payload);
           printOutput(created, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("mission:draft")
+      .description("Build a canonical mission contract issue-document payload")
+      .requiredOption("--request <text>", "Original user or board request")
+      .option("--scope <scope>", "Mission scope item (repeatable)", collectRepeatableOption, [])
+      .option("--acceptance <criterion>", "Acceptance criterion (repeatable)", collectRepeatableOption, [])
+      .option("--gates <csv>", "Required gate CSV", "implementation,review,qa,release,production_smoke")
+      .option("--out <path>", "Write document payload JSON to a file")
+      .action(async (opts: IssueMissionDraftOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const document = buildMissionContractDocumentFromOptions(opts);
+          if (opts.out?.trim()) {
+            await writeFile(opts.out, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+            printOutput({ out: opts.out, key: document.key }, { json: ctx.json });
+            return;
+          }
+          printOutput(document, { json: true });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("mission:upsert")
+      .description("Create or update an issue's mission contract document")
+      .argument("<issueId>", "Issue ID")
+      .requiredOption("--request <text>", "Original user or board request")
+      .option("--scope <scope>", "Mission scope item (repeatable)", collectRepeatableOption, [])
+      .option("--acceptance <criterion>", "Acceptance criterion (repeatable)", collectRepeatableOption, [])
+      .option("--gates <csv>", "Required gate CSV", "implementation,review,qa,release,production_smoke")
+      .option("--base-revision-id <id>", "Expected current mission document revision id")
+      .action(async (issueId: string, opts: IssueMissionUpsertOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const document = buildMissionContractDocumentFromOptions(opts);
+          const updated = await ctx.api.put<IssueDocument>(
+            `/api/issues/${issueId}/documents/${document.key}`,
+            {
+              title: document.title,
+              format: document.format,
+              body: document.body,
+              changeSummary: document.changeSummary,
+              baseRevisionId: opts.baseRevisionId ?? null,
+            },
+          );
+          printOutput(updated, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("evidence:append")
+      .description("Append a structured evidence record to an issue evidence document")
+      .argument("<issueId>", "Issue ID")
+      .requiredOption("--id <id>", "Evidence record id")
+      .requiredOption("--gate-id <id>", "Gate id from the gate manifest")
+      .requiredOption("--gate-type <type>", "Gate type, e.g. implementation, release, production_smoke")
+      .option("--status <status>", "Evidence status", "passed")
+      .option("--timestamp <iso8601>", "Evidence timestamp")
+      .option("--agent-id <id>", "Agent ID")
+      .option("--agent-name <name>", "Agent name")
+      .option("--run-id <id>", "Heartbeat run ID")
+      .option("--repo <repo>", "Repository name")
+      .option("--branch <branch>", "Branch name")
+      .option("--commit-sha <sha>", "Commit SHA")
+      .option("--command <command>", "Command evidence (repeatable)", collectEvidenceRepeatableOption, [])
+      .option("--url <label=url>", "URL evidence (repeatable)", collectEvidenceRepeatableOption, [])
+      .option("--screenshot <label=path>", "Screenshot artifact evidence (repeatable)", collectEvidenceRepeatableOption, [])
+      .option("--artifact <label=path>", "Artifact evidence (repeatable)", collectEvidenceRepeatableOption, [])
+      .option("--notes <text>", "Evidence notes")
+      .action(async (issueId: string, opts: IssueEvidenceAppendOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const record = buildEvidenceRecordFromOptions(opts);
+          const existing = await ctx.api.get<IssueDocument>(
+            `/api/issues/${issueId}/documents/evidence_records`,
+            { ignoreNotFound: true },
+          );
+          const document = appendEvidenceRecordDocument(existing?.body ?? null, record);
+          const updated = await ctx.api.put<IssueDocument>(
+            `/api/issues/${issueId}/documents/${document.key}`,
+            {
+              title: document.title,
+              format: document.format,
+              body: document.body,
+              changeSummary: document.changeSummary,
+              baseRevisionId: existing?.latestRevisionId ?? null,
+            },
+          );
+          printOutput(updated, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("gates:materialize")
+      .description("Create or reuse child issues for an issue's gate manifest")
+      .argument("<issueId>", "Issue ID")
+      .option("--no-block-parent", "Do not add materialized gate issues as blockers on the parent issue")
+      .action(async (issueId: string, opts: IssueGateMaterializeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.post<unknown>(
+            `/api/issues/${issueId}/gate-manifest/materialize`,
+            { blockParentUntilDone: opts.blockParent !== false },
+          );
+          printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }

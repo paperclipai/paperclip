@@ -35,7 +35,9 @@ function registerModuleMocks() {
       hasPermission: vi.fn(),
     }),
     agentService: () => mockAgentService,
-    documentService: () => ({}),
+    documentService: () => ({
+      getIssueDocumentByKey: vi.fn(async () => null),
+    }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
     goalService: () => ({}),

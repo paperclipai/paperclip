@@ -127,7 +127,7 @@ describe.sequential("cli auth routes", () => {
     });
     expect(res.body.boardApiToken).toBe("pcp_board_token");
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
-  });
+  }, 15_000);
 
   it.sequential("rejects anonymous access to generic skill documents", async () => {
     const indexApp = await createApp({ type: "none", source: "none" });

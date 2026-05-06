@@ -41,7 +41,9 @@ vi.mock("../services/index.js", () => ({
       agent: { id: raw },
     })),
   }),
-  documentService: () => ({}),
+  documentService: () => ({
+    getIssueDocumentByKey: vi.fn(async () => null),
+  }),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(async () => []),
@@ -99,7 +101,9 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
-    documentService: () => ({}),
+    documentService: () => ({
+      getIssueDocumentByKey: vi.fn(async () => null),
+    }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),

@@ -21,7 +21,19 @@ import {
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  EVIDENCE_RECORDS_DOCUMENT_KEY,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  GATE_MANIFEST_DOCUMENT_KEY,
+  MISSION_CONTRACT_DOCUMENT_KEY,
+  READINESS_RECORDS_DOCUMENT_KEY,
+  RELIABILITY_SCORECARD_DOCUMENT_KEY,
+  formatGateManifestDocumentBody,
+  parseEvidenceRecordsDocumentBody,
+  parseGateManifestDocumentBody,
+  parseMissionContractDocumentBody,
+  parseReadinessRecordsDocumentBody,
+  parseReliabilityScorecardDocumentBody,
+  materializeGateManifestSchema,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -31,8 +43,11 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  type GateManifest,
+  type GateManifestGate,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
+import { evaluateGateManifestCompletion } from "@paperclipai/shared/validators/gate-manifest";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
@@ -59,7 +74,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -253,6 +268,168 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+}
+
+function missionContractErrorDetails(error: unknown) {
+  if (error instanceof z.ZodError) return error.issues;
+  if (error instanceof SyntaxError) return [{ message: error.message }];
+  return undefined;
+}
+
+function issueDocumentContractErrorDetails(error: unknown) {
+  if (error instanceof z.ZodError) return error.issues;
+  if (error instanceof SyntaxError) return [{ message: error.message }];
+  if (error instanceof Error) return [{ message: error.message }];
+  return undefined;
+}
+
+function evaluateGateManifestDocuments(input: {
+  gateManifestBody: string;
+  evidenceRecordsBody?: string | null;
+}) {
+  const manifest = parseGateManifestDocumentBody(input.gateManifestBody);
+  const evidenceRecords = input.evidenceRecordsBody
+    ? parseEvidenceRecordsDocumentBody(input.evidenceRecordsBody)
+    : { version: 1 as const, records: [] };
+  return evaluateGateManifestCompletion(manifest, evidenceRecords);
+}
+
+const MISSION_GATE_ISSUE_ORIGIN_KIND = "plugin:paperclip.missions:gate";
+
+function missionGateIssueOriginId(parentIssueId: string, gateId: string) {
+  return `${parentIssueId}:${gateId}`;
+}
+
+function orderGatesForMaterialization(manifest: GateManifest): GateManifestGate[] {
+  const byId = new Map(manifest.gates.map((gate) => [gate.id, gate]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const ordered: GateManifestGate[] = [];
+
+  const visit = (gate: GateManifestGate, path: string[]) => {
+    if (visited.has(gate.id)) return;
+    if (visiting.has(gate.id)) {
+      throw unprocessable("Gate manifest contains a dependency cycle", {
+        gateIds: [...path, gate.id],
+      });
+    }
+    visiting.add(gate.id);
+    for (const blockerGateId of gate.blockedByGateIds) {
+      const blocker = byId.get(blockerGateId);
+      if (!blocker) {
+        throw badRequest("Gate manifest references an unknown blocker gate", {
+          gateId: gate.id,
+          blockerGateId,
+        });
+      }
+      visit(blocker, [...path, gate.id]);
+    }
+    visiting.delete(gate.id);
+    visited.add(gate.id);
+    ordered.push(gate);
+  };
+
+  for (const gate of manifest.gates) {
+    visit(gate, []);
+  }
+
+  return ordered;
+}
+
+function gateIssueTitle(gate: GateManifestGate) {
+  return `[Gate: ${gate.type}] ${gate.title}`;
+}
+
+function gateIssueStatus(gate: GateManifestGate, blockedByIssueIds: string[]) {
+  if (gate.status === "passed" || gate.status === "waived") return "done";
+  return blockedByIssueIds.length > 0 ? "blocked" : "todo";
+}
+
+function gateIssueDescription(parent: { identifier?: string | null; title: string }, gate: GateManifestGate) {
+  const parentRef = parent.identifier ?? parent.title;
+  const lines = [
+    `Materialized gate for parent mission ${parentRef}.`,
+    "",
+    `Gate id: \`${gate.id}\``,
+    `Gate type: \`${gate.type}\``,
+    `Gate status: \`${gate.status}\``,
+  ];
+  if (gate.requiredEvidence.length > 0) {
+    lines.push("", "Required structured evidence:");
+    lines.push(...gate.requiredEvidence.map((item) => `- ${item}`));
+  }
+  if (gate.blockedByGateIds.length > 0) {
+    lines.push("", "Blocked by gates:");
+    lines.push(...gate.blockedByGateIds.map((item) => `- ${item}`));
+  }
+  if (gate.notes) {
+    lines.push("", "Gate notes:", gate.notes);
+  }
+  lines.push("", "Complete this child issue only after attaching the required evidence to the parent mission gate manifest/evidence records.");
+  return lines.join("\n");
+}
+
+function summarizeMissionDocument(
+  document: {
+    key: string;
+    title?: string | null;
+    body?: string;
+    latestRevisionId?: string | null;
+    latestRevisionNumber?: number | null;
+    updatedAt?: Date | string | null;
+  } | null,
+) {
+  if (!document) {
+    return {
+      missionDocument: null,
+      missionContract: null,
+      missionContractError: null,
+    };
+  }
+  if (typeof document.body !== "string") {
+    return {
+      missionDocument: {
+        key: document.key,
+        title: document.title ?? null,
+        latestRevisionId: document.latestRevisionId ?? null,
+        latestRevisionNumber: document.latestRevisionNumber ?? null,
+        updatedAt: document.updatedAt ?? null,
+      },
+      missionContract: null,
+      missionContractError: {
+        message: "Invalid mission contract",
+        details: [{ message: "Mission document body is missing" }],
+      },
+    };
+  }
+  try {
+    return {
+      missionDocument: {
+        key: document.key,
+        title: document.title ?? null,
+        latestRevisionId: document.latestRevisionId ?? null,
+        latestRevisionNumber: document.latestRevisionNumber ?? null,
+        updatedAt: document.updatedAt ?? null,
+      },
+      missionContract: parseMissionContractDocumentBody(document.body),
+      missionContractError: null,
+    };
+  } catch (error) {
+    return {
+      missionDocument: {
+        key: document.key,
+        title: document.title ?? null,
+        latestRevisionId: document.latestRevisionId ?? null,
+        latestRevisionNumber: document.latestRevisionNumber ?? null,
+        updatedAt: document.updatedAt ?? null,
+      },
+      missionContract: null,
+      missionContractError: {
+        message: "Invalid mission contract",
+        details: missionContractErrorDetails(error),
+      },
+    };
+  }
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -1117,6 +1294,7 @@ export function issueRoutes(
       productivityReview,
       attachments,
       continuationSummary,
+      missionDocument,
       currentExecutionWorkspace,
     ] =
       await Promise.all([
@@ -1129,8 +1307,10 @@ export function issueRoutes(
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+        documentsSvc.getIssueDocumentByKey(issue.id, MISSION_CONTRACT_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
       ]);
+    const mission = summarizeMissionDocument(missionDocument);
 
     res.json({
       issue: {
@@ -1200,6 +1380,7 @@ export function issueRoutes(
             updatedAt: continuationSummary.updatedAt,
           }
         : null,
+      ...mission,
       currentExecutionWorkspace,
     });
   });
@@ -1317,6 +1498,61 @@ export function issueRoutes(
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
+    }
+    if (keyParsed.data === MISSION_CONTRACT_DOCUMENT_KEY) {
+      try {
+        parseMissionContractDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid mission contract",
+          details: missionContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === GATE_MANIFEST_DOCUMENT_KEY) {
+      try {
+        parseGateManifestDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid gate manifest",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === EVIDENCE_RECORDS_DOCUMENT_KEY) {
+      try {
+        parseEvidenceRecordsDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid evidence records",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === READINESS_RECORDS_DOCUMENT_KEY) {
+      try {
+        parseReadinessRecordsDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid readiness records",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === RELIABILITY_SCORECARD_DOCUMENT_KEY) {
+      try {
+        parseReliabilityScorecardDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid reliability scorecard",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
     }
 
     const actor = getActorInfo(req);
@@ -2030,6 +2266,166 @@ export function issueRoutes(
     res.status(201).json(issue);
   });
 
+  router.post("/issues/:id/gate-manifest/materialize", validate(materializeGateManifestSchema), async (req, res) => {
+    const parentId = req.params.id as string;
+    const parent = await svc.getById(parentId);
+    if (!parent) {
+      res.status(404).json({ error: "Parent issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, parent.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, parent))) return;
+
+    const gateManifestDocument = await documentsSvc.getIssueDocumentByKey(parent.id, GATE_MANIFEST_DOCUMENT_KEY);
+    if (!gateManifestDocument) {
+      res.status(404).json({ error: "Gate manifest document not found" });
+      return;
+    }
+    if (typeof gateManifestDocument.body !== "string") {
+      res.status(400).json({ error: "Invalid gate manifest", details: [{ message: "Gate manifest body is missing" }] });
+      return;
+    }
+
+    let manifest: GateManifest;
+    try {
+      manifest = parseGateManifestDocumentBody(gateManifestDocument.body);
+    } catch (error) {
+      res.status(400).json({
+        error: "Invalid gate manifest",
+        details: issueDocumentContractErrorDetails(error),
+      });
+      return;
+    }
+
+    if (manifest.gates.some((gate) => gate.ownerAgentId)) {
+      await assertCanAssignTasks(req, parent.companyId);
+    }
+
+    const orderedGates = orderGatesForMaterialization(manifest);
+    const actor = getActorInfo(req);
+    const issueByGateId = new Map<string, Awaited<ReturnType<typeof svc.getById>>>();
+    const updatedGateById = new Map<string, GateManifestGate>();
+    const createdIssues: Array<{ gateId: string; issue: Awaited<ReturnType<typeof svc.getById>>; blockedByIssueIds: string[] }> = [];
+    const existingIssues: Array<{ gateId: string; issue: Awaited<ReturnType<typeof svc.getById>>; blockedByIssueIds: string[] }> = [];
+
+    for (const gate of orderedGates) {
+      let gateIssue = gate.issueId ? await svc.getById(gate.issueId) : null;
+      if (gateIssue && gateIssue.companyId !== parent.companyId) {
+        throw conflict("Gate issue belongs to a different company", { gateId: gate.id, issueId: gateIssue.id });
+      }
+      if (!gateIssue) {
+        const existingMatches = await svc.list(parent.companyId, {
+          parentId: parent.id,
+          originKind: MISSION_GATE_ISSUE_ORIGIN_KIND,
+          originId: missionGateIssueOriginId(parent.id, gate.id),
+          limit: 1,
+        });
+        gateIssue = existingMatches[0] ?? null;
+      }
+
+      const blockedByGateIssueIds = gate.blockedByGateIds.map((blockerGateId) => {
+        const blockerIssue = issueByGateId.get(blockerGateId);
+        if (!blockerIssue) {
+          throw conflict("Gate blocker issue has not been materialized", { gateId: gate.id, blockerGateId });
+        }
+        return blockerIssue.id;
+      });
+      const blockedByIssueIds = [...new Set([...gate.blockedByIssueIds, ...blockedByGateIssueIds])];
+
+      if (!gateIssue) {
+        const created = await svc.createChild(parent.id, {
+          title: gateIssueTitle(gate),
+          description: gateIssueDescription(parent, gate),
+          status: gateIssueStatus(gate, blockedByIssueIds),
+          priority: parent.priority,
+          assigneeAgentId: gate.ownerAgentId ?? null,
+          blockedByIssueIds,
+          blockParentUntilDone: req.body.blockParentUntilDone,
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          actorAgentId: actor.agentId,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          originKind: MISSION_GATE_ISSUE_ORIGIN_KIND,
+          originId: missionGateIssueOriginId(parent.id, gate.id),
+          originFingerprint: missionGateIssueOriginId(parent.id, gate.id),
+          billingCode: parent.billingCode,
+        });
+        gateIssue = created.issue;
+        createdIssues.push({ gateId: gate.id, issue: gateIssue, blockedByIssueIds });
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: gateIssue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "issue.gate_materialize",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      } else {
+        existingIssues.push({ gateId: gate.id, issue: gateIssue, blockedByIssueIds });
+      }
+
+      issueByGateId.set(gate.id, gateIssue);
+      updatedGateById.set(gate.id, {
+        ...gate,
+        issueId: gateIssue.id,
+        blockedByIssueIds,
+      });
+    }
+
+    const updatedManifest: GateManifest = {
+      ...manifest,
+      gates: manifest.gates.map((gate) => updatedGateById.get(gate.id) ?? gate),
+    };
+    const result = await documentsSvc.upsertIssueDocument({
+      issueId: parent.id,
+      key: GATE_MANIFEST_DOCUMENT_KEY,
+      title: gateManifestDocument.title ?? "Gate Manifest",
+      format: gateManifestDocument.format ?? "markdown",
+      body: formatGateManifestDocumentBody(updatedManifest),
+      changeSummary: createdIssues.length > 0
+        ? `Materialized ${createdIssues.length} gate issue${createdIssues.length === 1 ? "" : "s"}.`
+        : "Confirmed gate issues are already materialized.",
+      baseRevisionId: gateManifestDocument.latestRevisionId ?? null,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
+    });
+    await issueReferencesSvc.syncDocument(result.document.id);
+
+    await logActivity(db, {
+      companyId: parent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.gates_materialized",
+      entityType: "issue",
+      entityId: parent.id,
+      details: {
+        gateCount: manifest.gates.length,
+        createdIssueIds: createdIssues.map(({ issue }) => issue?.id).filter(Boolean),
+        existingIssueIds: existingIssues.map(({ issue }) => issue?.id).filter(Boolean),
+        blockParentUntilDone: req.body.blockParentUntilDone,
+      },
+    });
+
+    const summarize = ({ gateId, issue, blockedByIssueIds }: { gateId: string; issue: Awaited<ReturnType<typeof svc.getById>>; blockedByIssueIds: string[] }) => ({
+      gateId,
+      issueId: issue?.id ?? null,
+      identifier: issue?.identifier ?? null,
+      title: issue?.title ?? null,
+      status: issue?.status ?? null,
+      blockedByIssueIds,
+    });
+    res.status(createdIssues.length > 0 ? 201 : 200).json({
+      gateManifest: updatedManifest,
+      document: result.document,
+      createdIssues: createdIssues.map(summarize),
+      existingIssues: existingIssues.map(summarize),
+    });
+  });
+
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2177,6 +2573,56 @@ export function issueRoutes(
         normalizeIssueExecutionPolicy(req.body.executionPolicy),
         actor.actorType,
       );
+    }
+    if (updateFields.status === "done") {
+      const gateManifestDocument = await documentsSvc.getIssueDocumentByKey(existing.id, GATE_MANIFEST_DOCUMENT_KEY);
+      if (gateManifestDocument) {
+        if (typeof gateManifestDocument.body !== "string") {
+          res.status(409).json({
+            error: "Gate manifest is invalid",
+            details: { reason: "Gate manifest document body is missing" },
+          });
+          return;
+        }
+        const evidenceRecordsDocument = await documentsSvc.getIssueDocumentByKey(existing.id, EVIDENCE_RECORDS_DOCUMENT_KEY);
+        if (evidenceRecordsDocument && typeof evidenceRecordsDocument.body !== "string") {
+          res.status(409).json({
+            error: "Evidence records are invalid",
+            details: { reason: "Evidence records document body is missing" },
+          });
+          return;
+        }
+        let gateCompletion;
+        try {
+          gateCompletion = evaluateGateManifestDocuments({
+            gateManifestBody: gateManifestDocument.body,
+            evidenceRecordsBody: evidenceRecordsDocument?.body ?? null,
+          });
+        } catch (error) {
+          res.status(409).json({
+            error: "Gate manifest is invalid",
+            details: issueDocumentContractErrorDetails(error),
+          });
+          return;
+        }
+        if (gateCompletion.statusIncompleteGateIds.length > 0) {
+          res.status(409).json({
+            error: "Required gates are incomplete",
+            details: { incompleteGateIds: gateCompletion.incompleteGateIds },
+          });
+          return;
+        }
+        if (gateCompletion.gateEvidenceFailures.length > 0) {
+          res.status(409).json({
+            error: "Required gate evidence is incomplete",
+            details: {
+              incompleteGateIds: gateCompletion.incompleteGateIds,
+              gateEvidenceFailures: gateCompletion.gateEvidenceFailures,
+            },
+          });
+          return;
+        }
+      }
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =
