@@ -78,6 +78,7 @@ export interface AdapterExecutionTargetProcessOptions {
   stdin?: string;
   timeoutSec: number;
   graceSec: number;
+  silenceTimeoutSec?: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
@@ -342,6 +343,11 @@ export async function runAdapterExecutionTargetProcess(
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
+    // TODO(stream-silence-remote): silenceTimeoutSec is accepted but ignored on
+    // sandbox/remote paths in v1 — sandbox runners don't expose live data
+    // events the same way runChildProcess does. Plumbing silence detection
+    // here requires a separate change. The bug fix this option targets
+    // (claude_local CLI socket-stall) is local-only.
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
     return await runner.execute({
@@ -369,6 +375,7 @@ export async function runAdapterExecutionTargetProcess(
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
+    silenceTimeoutSec: options.silenceTimeoutSec,
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
