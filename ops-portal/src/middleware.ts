@@ -1,4 +1,4 @@
-import { auth } from '@/lib/auth';
+import { auth, OPERATOR_ROLE } from '@/lib/auth';
 import type { Session } from 'next-auth';
 import { NextResponse } from 'next/server';
 
@@ -17,7 +17,7 @@ export default auth((req) => {
     return NextResponse.redirect(loginUrl);
   }
 
-  const hasRole = session.roles?.includes('paperclip-ops:operator') ?? false;
+  const hasRole = session.roles?.includes(OPERATOR_ROLE) ?? false;
   if (!hasRole) {
     return NextResponse.json(
       { error: 'Insufficient role — paperclip-ops:operator required.' },
