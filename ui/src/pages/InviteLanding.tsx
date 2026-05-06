@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
-import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import type { AgentAdapterType, Company, JoinRequest } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { useCompany } from "@/context/CompanyContext";
@@ -35,6 +35,13 @@ function readNestedString(value: unknown, path: string[]): string | null {
     current = (current as Record<string, unknown>)[segment];
   }
   return typeof current === "string" && current.trim().length > 0 ? current : null;
+}
+
+function normalizeCompaniesResponse(value: unknown): Company[] {
+  if (Array.isArray(value)) return value as Company[];
+  if (!value || typeof value !== "object") return [];
+  const companies = (value as { companies?: unknown }).companies;
+  return Array.isArray(companies) ? (companies as Company[]) : [];
 }
 
 const fieldClassName =
@@ -254,6 +261,11 @@ export function InviteLandingPage() {
     retry: false,
   });
 
+  const companies = useMemo(
+    () => normalizeCompaniesResponse(companiesQuery.data),
+    [companiesQuery.data],
+  );
+
   useEffect(() => {
     if (token) rememberPendingInviteToken(token);
   }, [token]);
@@ -264,14 +276,14 @@ export function InviteLandingPage() {
 
   useEffect(() => {
     if (!companiesQuery.data || !inviteQuery.data?.companyId) return;
-    const isMember = companiesQuery.data.some(
+    const isMember = companies.some(
       (c) => c.id === inviteQuery.data!.companyId
     );
     if (isMember) {
       clearPendingInviteToken(token);
       navigate("/", { replace: true });
     }
-  }, [companiesQuery.data, inviteQuery.data, token, navigate]);
+  }, [companies, inviteQuery.data, token, navigate]);
 
   const invite = inviteQuery.data;
   const isCheckingExistingMembership =
@@ -280,9 +292,7 @@ export function InviteLandingPage() {
     companiesQuery.isLoading;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
-    Boolean(
-      companiesQuery.data?.some((company) => company.id === invite?.companyId),
-    );
+    companies.some((company) => company.id === invite?.companyId);
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
@@ -375,13 +385,15 @@ export function InviteLandingPage() {
       setAuthFeedback(null);
       rememberPendingInviteToken(token);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      const companies = await queryClient.fetchQuery({
-        queryKey: queryKeys.companies.all,
-        queryFn: () => companiesApi.list(),
-        retry: false,
-      });
+      const fetchedCompanies = normalizeCompaniesResponse(
+        await queryClient.fetchQuery({
+          queryKey: queryKeys.companies.all,
+          queryFn: () => companiesApi.list(),
+          retry: false,
+        }),
+      );
 
-      if (invite?.companyId && companies.some((company) => company.id === invite.companyId)) {
+      if (invite?.companyId && fetchedCompanies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
         setSelectedCompanyId(invite.companyId, { source: "manual" });
         navigate("/", { replace: true });

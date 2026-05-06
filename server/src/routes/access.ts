@@ -1916,6 +1916,21 @@ function extractInviteHumanRole(invite: typeof invites.$inferSelect) {
   );
 }
 
+function explicitHumanInviteRole(
+  defaultsPayload: Record<string, unknown> | null | undefined
+) {
+  if (!defaultsPayload || typeof defaultsPayload !== "object") return null;
+  const scoped = defaultsPayload.human;
+  if (!scoped || typeof scoped !== "object" || Array.isArray(scoped)) {
+    return null;
+  }
+  const role = (scoped as Record<string, unknown>).role;
+  if (!["owner", "admin", "operator", "viewer", "member"].includes(role as string)) {
+    return null;
+  }
+  return normalizeHumanRole(role, "operator");
+}
+
 function isLocalImplicit(req: Request) {
   return req.actor.type === "board" && req.actor.source === "local_implicit";
 }
@@ -3384,6 +3399,12 @@ export function accessRoutes(
 
       const actorEmail =
         requestType === "human" ? await resolveActorEmail(db, req) : null;
+      const autoApproveHumanRole =
+        requestType === "human"
+          ? explicitHumanInviteRole(
+              invite.defaultsPayload as Record<string, unknown> | null
+            )
+          : null;
       const existingHumanJoinRequest =
         requestType === "human"
           ? findReusableHumanJoinRequest(
@@ -3403,7 +3424,7 @@ export function accessRoutes(
               }
             )
           : null;
-      const created = !inviteAlreadyAccepted
+      let created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
               await tx
@@ -3487,6 +3508,53 @@ export function accessRoutes(
 
       if (!created) {
         throw conflict("Join request not found");
+      }
+
+      if (
+        requestType === "human" &&
+        autoApproveHumanRole &&
+        created.requestingUserId
+      ) {
+        await access.ensureMembership(
+          companyId,
+          "user",
+          created.requestingUserId,
+          autoApproveHumanRole,
+          "active"
+        );
+        const grants = humanJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null,
+          autoApproveHumanRole
+        );
+        await access.setPrincipalGrants(
+          companyId,
+          "user",
+          created.requestingUserId,
+          grants,
+          invite.invitedByUserId ?? req.actor.userId ?? null
+        );
+        if (created.status !== "approved") {
+          created = await db
+            .update(joinRequests)
+            .set({
+              status: "approved",
+              approvedByUserId: invite.invitedByUserId ?? req.actor.userId ?? null,
+              approvedAt: new Date(),
+              updatedAt: new Date()
+            })
+            .where(eq(joinRequests.id, created.id))
+            .returning()
+            .then((rows) => rows[0] ?? created);
+        }
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: invite.invitedByUserId ?? req.actor.userId ?? "board",
+          action: "join.auto_approved",
+          entityType: "join_request",
+          entityId: created.id,
+          details: { requestType: "human", membershipRole: autoApproveHumanRole }
+        });
       }
 
       if (
