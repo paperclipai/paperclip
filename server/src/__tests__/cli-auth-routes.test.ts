@@ -28,6 +28,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  documentService: () => ({}),
   boardAuthService: () => mockBoardAuthService,
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
@@ -40,6 +41,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    documentService: () => ({}),
     boardAuthService: () => mockBoardAuthService,
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
