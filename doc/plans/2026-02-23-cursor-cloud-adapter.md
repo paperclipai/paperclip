@@ -1,5 +1,12 @@
 # Cursor Cloud Agent Adapter — Technical Plan
 
+> **SUPERSEDED 2026-05-03** by [`2026-05-03-cursor-sdk-adapter.md`](./2026-05-03-cursor-sdk-adapter.md).
+>
+> This plan predates the public `@cursor/sdk` TypeScript SDK (announced 2026-Q1). The SDK
+> replaces the handrolled REST client, removes the webhook+polling+bootstrap-exchange
+> complexity for the basic flow, and adds local/self-hosted runtime modes that this plan
+> never covered. Keep this doc for historical context; do not implement against it.
+
 ## Overview
 
 This document defines the V1 design for a Paperclip adapter that integrates with

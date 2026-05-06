@@ -3,6 +3,7 @@ import { printAcpxStreamEvent } from "@paperclipai/adapter-acpx-local/cli";
 import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
+import { printCursorSdkStreamEvent } from "@paperclipai/adapter-cursor-sdk/cli";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
@@ -40,6 +41,11 @@ const cursorLocalCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printCursorStreamEvent,
 };
 
+const cursorSdkCLIAdapter: CLIAdapterModule = {
+  type: "cursor_sdk",
+  formatStdoutEvent: printCursorSdkStreamEvent,
+};
+
 const geminiLocalCLIAdapter: CLIAdapterModule = {
   type: "gemini_local",
   formatStdoutEvent: printGeminiStreamEvent,
@@ -58,6 +64,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     openCodeLocalCLIAdapter,
     piLocalCLIAdapter,
     cursorLocalCLIAdapter,
+    cursorSdkCLIAdapter,
     geminiLocalCLIAdapter,
     openclawGatewayCLIAdapter,
     processCLIAdapter,

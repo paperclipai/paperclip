@@ -57,6 +57,16 @@ import {
   modelProfiles as cursorModelProfiles,
 } from "@paperclipai/adapter-cursor-local";
 import {
+  execute as cursorSdkExecute,
+  testEnvironment as cursorSdkTestEnvironment,
+  sessionCodec as cursorSdkSessionCodec,
+} from "@paperclipai/adapter-cursor-sdk/server";
+import {
+  agentConfigurationDoc as cursorSdkAgentConfigurationDoc,
+  models as cursorSdkModels,
+  modelProfiles as cursorSdkModelProfiles,
+} from "@paperclipai/adapter-cursor-sdk";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -285,6 +295,21 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+const cursorSdkAdapter: ServerAdapterModule = {
+  type: "cursor_sdk",
+  execute: cursorSdkExecute,
+  testEnvironment: cursorSdkTestEnvironment,
+  sessionCodec: cursorSdkSessionCodec,
+  sessionManagement: getAdapterSessionManagement("cursor_sdk") ?? getAdapterSessionManagement("cursor") ?? undefined,
+  models: cursorSdkModels,
+  modelProfiles: cursorSdkModelProfiles,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: cursorSdkAgentConfigurationDoc,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -458,6 +483,7 @@ function registerBuiltInAdapters() {
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
+    cursorSdkAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
