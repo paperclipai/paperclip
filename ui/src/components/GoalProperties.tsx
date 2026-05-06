@@ -1,4 +1,5 @@
 import { useState } from "react";
+import i18n from "@/i18n";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Goal } from "@paperclipai/shared";
@@ -138,7 +139,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
         </PropertyRow>
 
         {goal.parentId && (
-          <PropertyRow label="Parent Goal">
+          <PropertyRow label={i18n.t("components.GoalProperties.label")}>
             <Link
               to={`/goals/${goal.parentId}`}
               className="text-sm hover:underline"

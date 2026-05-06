@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
@@ -92,11 +93,9 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
     <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/80 shadow-[0_18px_50px_rgba(6,182,212,0.08)]">
       <div className="border-b border-border/60 bg-cyan-500/[0.04] px-4 py-3">
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">
-          Live Runs
-        </div>
+          {i18n.t("components.LiveRunWidget.div")}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Uses the shared chat-style run surface from issue activity.
-        </div>
+          {i18n.t("components.LiveRunWidget.div_1")}</div>
       </div>
 
       <div className="divide-y divide-border/60">
@@ -130,7 +129,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                       className="inline-flex items-center gap-1 rounded-full border border-red-500/20 bg-red-500/[0.06] px-2.5 py-1 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-500/[0.12] dark:text-red-300 disabled:opacity-50"
                     >
                       <Square className="h-2.5 w-2.5" fill="currentColor" />
-                      {cancellingRunIds.has(run.id) ? "Stopping…" : "Stop"}
+                      {cancellingRunIds.has(run.id) ? i18n.t("components.LiveRunWidget.conditional") : "Stop"}
                     </button>
                   )}
                   <Link

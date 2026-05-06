@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { Link } from "@/lib/router";
 import {
   DndContext,
@@ -146,7 +147,7 @@ function KanbanCard({
       {...listeners}
       className={`rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow ${
         isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : i18n.t("components.KanbanBoard.conditional")}`}
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}

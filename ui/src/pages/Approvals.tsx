@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "@/i18n";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -49,7 +50,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Approvals.conditional"));
     },
   });
 
@@ -60,7 +61,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Approvals.conditional_1"));
     },
   });
 
@@ -75,7 +76,7 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">{i18n.t("pages.Approvals.p")}</p>;
   }
 
   if (isLoading) {
@@ -107,7 +108,7 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+            {statusFilter === "pending" ? i18n.t("pages.Approvals.conditional_2") : i18n.t("pages.Approvals.conditional_3")}
           </p>
         </div>
       )}

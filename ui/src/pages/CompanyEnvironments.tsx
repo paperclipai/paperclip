@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AGENT_ADAPTER_TYPES,
@@ -126,7 +127,7 @@ function readSandboxConfig(environment: Environment) {
   return {
     provider: typeof rawProvider === "string" && rawProvider.trim().length > 0
       ? rawProvider
-      : "fake",
+      : i18n.t("pages.CompanyEnvironments.conditional"),
     config: providerConfig,
   };
 }
@@ -216,15 +217,15 @@ export function CompanyEnvironments() {
       setEditingEnvironmentId(null);
       setEnvironmentForm(createEmptyEnvironmentForm());
       pushToast({
-        title: editingEnvironmentId ? "Environment updated" : "Environment created",
+        title: editingEnvironmentId ? i18n.t("pages.CompanyEnvironments.conditional_1") : i18n.t("pages.CompanyEnvironments.conditional_2"),
         body: `${environment.name} is ready.`,
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to save environment",
-        body: error instanceof Error ? error.message : "Environment save failed.",
+        title: i18n.t("pages.CompanyEnvironments.title"),
+        body: error instanceof Error ? error.message : i18n.t("pages.CompanyEnvironments.conditional_3"),
         tone: "error",
       });
     },
@@ -238,7 +239,7 @@ export function CompanyEnvironments() {
         [environmentId]: probe,
       }));
       pushToast({
-        title: probe.ok ? "Environment probe passed" : "Environment probe failed",
+        title: probe.ok ? i18n.t("pages.CompanyEnvironments.conditional_4") : i18n.t("pages.CompanyEnvironments.conditional_5"),
         body: probe.summary,
         tone: probe.ok ? "success" : "error",
       });
@@ -250,13 +251,13 @@ export function CompanyEnvironments() {
         [environmentId]: {
           ok: false,
           driver: failedEnvironment?.driver ?? "local",
-          summary: error instanceof Error ? error.message : "Environment probe failed.",
+          summary: error instanceof Error ? error.message : i18n.t("pages.CompanyEnvironments.conditional_6"),
           details: null,
         },
       }));
       pushToast({
-        title: "Environment probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
+        title: i18n.t("pages.CompanyEnvironments.title_1"),
+        body: error instanceof Error ? error.message : i18n.t("pages.CompanyEnvironments.conditional_7"),
         tone: "error",
       });
     },
@@ -269,15 +270,15 @@ export function CompanyEnvironments() {
     },
     onSuccess: (probe) => {
       pushToast({
-        title: probe.ok ? "Draft probe passed" : "Draft probe failed",
+        title: probe.ok ? i18n.t("pages.CompanyEnvironments.conditional_8") : i18n.t("pages.CompanyEnvironments.conditional_9"),
         body: probe.summary,
         tone: probe.ok ? "success" : "error",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Draft probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
+        title: i18n.t("pages.CompanyEnvironments.title_2"),
+        body: error instanceof Error ? error.message : i18n.t("pages.CompanyEnvironments.conditional_10"),
         tone: "error",
       });
     },
@@ -397,7 +398,7 @@ export function CompanyEnvironments() {
       Object.keys(sandboxConfigErrors).length === 0);
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage environments.</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.CompanyEnvironments.div")}</div>;
   }
 
   if (!environmentsEnabled) {
@@ -405,11 +406,10 @@ export function CompanyEnvironments() {
       <div className="max-w-3xl space-y-4">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Environments</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.CompanyEnvironments.h1")}</h1>
         </div>
         <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
-          Enable Environments in instance experimental settings to manage company execution targets.
-        </div>
+          {i18n.t("pages.CompanyEnvironments.div_1")}</div>
       </div>
     );
   }
@@ -419,23 +419,19 @@ export function CompanyEnvironments() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Environments</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.CompanyEnvironments.h1_1")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Define reusable execution targets for projects, issue workspaces, and remote-capable adapters.
-        </p>
+          {i18n.t("pages.CompanyEnvironments.p")}</p>
       </div>
 
       <div className="space-y-4 rounded-md border border-border px-4 py-4">
         <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          Environment choices use the same adapter support matrix as agent defaults. SSH is always available for
-          remote-managed adapters, and sandbox environments appear only when a run-capable sandbox provider plugin is
-          installed.
-        </div>
+          {i18n.t("pages.CompanyEnvironments.div_2")}</div>
 
         <div className="overflow-x-auto">
           <table className="w-full min-w-[34rem] text-left text-xs">
-            <caption className="sr-only">Environment support by adapter</caption>
+            <caption className="sr-only">{i18n.t("pages.CompanyEnvironments.caption")}</caption>
             <thead className="border-b border-border text-muted-foreground">
               <tr>
                 <th className="py-2 pr-3 font-medium">Adapter</th>
@@ -477,7 +473,7 @@ export function CompanyEnvironments() {
 
         <div className="space-y-3">
           {(environments ?? []).length === 0 ? (
-            <div className="text-sm text-muted-foreground">No environments saved for this company yet.</div>
+            <div className="text-sm text-muted-foreground">{i18n.t("pages.CompanyEnvironments.div_3")}</div>
           ) : (
             (environments ?? []).map((environment) => {
               const probe = probeResults[environment.id] ?? null;
@@ -497,14 +493,14 @@ export function CompanyEnvironments() {
                       ) : null}
                       {environment.driver === "ssh" ? (
                         <div className="text-xs text-muted-foreground">
-                          {typeof environment.config.host === "string" ? environment.config.host : "SSH host"} ·{" "}
+                          {typeof environment.config.host === "string" ? environment.config.host : i18n.t("pages.CompanyEnvironments.conditional_11")} ·{" "}
                           {typeof environment.config.username === "string" ? environment.config.username : "user"}
                         </div>
                       ) : environment.driver === "sandbox" ? (
                         <div className="text-xs text-muted-foreground">
                           {(() => {
                             const provider =
-                              typeof environment.config.provider === "string" ? environment.config.provider : "sandbox";
+                              typeof environment.config.provider === "string" ? environment.config.provider : i18n.t("pages.CompanyEnvironments.conditional_12");
                             const displayName =
                               environmentCapabilities?.sandboxProviders?.[provider]?.displayName ?? provider;
                             const summary = summarizeSandboxConfig(environment.config as Record<string, unknown>);
@@ -512,7 +508,7 @@ export function CompanyEnvironments() {
                           })()}
                         </div>
                       ) : (
-                        <div className="text-xs text-muted-foreground">Runs on this Paperclip host.</div>
+                        <div className="text-xs text-muted-foreground">{i18n.t("pages.CompanyEnvironments.div_4")}</div>
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -524,10 +520,10 @@ export function CompanyEnvironments() {
                           disabled={environmentProbeMutation.isPending}
                         >
                           {environmentProbeMutation.isPending
-                            ? "Testing..."
+                            ? i18n.t("pages.CompanyEnvironments.conditional_13")
                             : environment.driver === "ssh"
-                              ? "Test connection"
-                              : "Test provider"}
+                              ? i18n.t("pages.CompanyEnvironments.conditional_14")
+                              : i18n.t("pages.CompanyEnvironments.conditional_15")}
                         </Button>
                       ) : null}
                       <Button
@@ -561,7 +557,7 @@ export function CompanyEnvironments() {
 
         <div className="border-t border-border/60 pt-4">
           <div className="mb-3 text-sm font-medium">
-            {editingEnvironmentId ? "Edit environment" : "Add environment"}
+            {editingEnvironmentId ? i18n.t("pages.CompanyEnvironments.conditional_16") : i18n.t("pages.CompanyEnvironments.conditional_17")}
           </div>
           <div className="space-y-3">
             <Field label="Name" hint="Operator-facing name for this execution target.">
@@ -645,7 +641,7 @@ export function CompanyEnvironments() {
                     onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshUsername: e.target.value }))}
                   />
                 </Field>
-                <Field label="Remote workspace path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
+                <Field label={i18n.t("pages.CompanyEnvironments.label")} hint="Absolute path that Paperclip will verify during SSH connection tests.">
                   <input
                     className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                     type="text"
@@ -655,7 +651,7 @@ export function CompanyEnvironments() {
                       setEnvironmentForm((current) => ({ ...current, sshRemoteWorkspacePath: e.target.value }))}
                   />
                 </Field>
-                <Field label="Private key" hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
+                <Field label={i18n.t("pages.CompanyEnvironments.label_1")} hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
                   <div className="space-y-2">
                     <select
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -680,7 +676,7 @@ export function CompanyEnvironments() {
                     />
                   </div>
                 </Field>
-                <Field label="Known hosts" hint="Optional known_hosts block used when strict host key checking is enabled.">
+                <Field label={i18n.t("pages.CompanyEnvironments.label_2")} hint="Optional known_hosts block used when strict host key checking is enabled.">
                   <textarea
                     className="h-32 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none"
                     value={environmentForm.sshKnownHosts}
@@ -689,7 +685,7 @@ export function CompanyEnvironments() {
                 </Field>
                 <div className="md:col-span-2">
                   <ToggleField
-                    label="Strict host key checking"
+                    label={i18n.t("pages.CompanyEnvironments.label_3")}
                     hint="Keep this on unless you deliberately want probe-time host key acceptance disabled."
                     checked={environmentForm.sshStrictHostKeyChecking}
                     onChange={(checked) =>
@@ -743,8 +739,7 @@ export function CompanyEnvironments() {
                     />
                   ) : (
                     <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                      This provider does not declare additional configuration fields.
-                    </div>
+                      {i18n.t("pages.CompanyEnvironments.div_5")}</div>
                   )}
                 </div>
               </div>
@@ -758,11 +753,11 @@ export function CompanyEnvironments() {
               >
                 {environmentMutation.isPending
                   ? editingEnvironmentId
-                    ? "Saving..."
-                    : "Creating..."
+                    ? i18n.t("pages.CompanyEnvironments.conditional_21")
+                    : i18n.t("pages.CompanyEnvironments.conditional_22")
                   : editingEnvironmentId
-                    ? "Save environment"
-                    : "Create environment"}
+                    ? i18n.t("pages.CompanyEnvironments.conditional_23")
+                    : i18n.t("pages.CompanyEnvironments.conditional_24")}
               </Button>
               {editingEnvironmentId ? (
                 <Button
@@ -781,14 +776,14 @@ export function CompanyEnvironments() {
                   onClick={() => draftEnvironmentProbeMutation.mutate(environmentForm)}
                   disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
                 >
-                  {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test draft"}
+                  {draftEnvironmentProbeMutation.isPending ? i18n.t("pages.CompanyEnvironments.conditional_25") : i18n.t("pages.CompanyEnvironments.conditional_26")}
                 </Button>
               ) : null}
               {environmentMutation.isError ? (
                 <span className="text-xs text-destructive">
                   {environmentMutation.error instanceof Error
                     ? environmentMutation.error.message
-                    : "Failed to save environment"}
+                    : i18n.t("pages.CompanyEnvironments.conditional_27")}
                 </span>
               ) : null}
               {draftEnvironmentProbeMutation.data ? (

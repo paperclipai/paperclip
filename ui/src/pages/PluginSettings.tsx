@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
@@ -128,7 +129,7 @@ export function PluginSettings() {
   }, [pluginId]);
 
   if (pluginLoading) {
-    return <div className="p-4 text-sm text-muted-foreground">Loading plugin details...</div>;
+    return <div className="p-4 text-sm text-muted-foreground">{i18n.t("pages.PluginSettings.div")}</div>;
   }
 
   if (!plugin) {
@@ -253,7 +254,7 @@ export function PluginSettings() {
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Company Environments.</p>
+                  <p className="font-medium text-foreground">{i18n.t("pages.PluginSettings.p")}</p>
                   <p className="mt-1 text-muted-foreground">
                     {driverLabel || "This plugin"} registers environment runtime settings there so credentials stay
                     company-scoped instead of instance-global.
@@ -266,7 +267,7 @@ export function PluginSettings() {
                 </div>
               ) : !hasLocalFolders ? (
                 <p className="text-sm text-muted-foreground">
-                  This plugin does not require any settings.
+                  {i18n.t("pages.PluginSettings.p_1")}
                 </p>
               ) : null}
             </section>
@@ -283,8 +284,7 @@ export function PluginSettings() {
                     Runtime Dashboard
                   </CardTitle>
                   <CardDescription>
-                    Worker process, scheduled jobs, and webhook deliveries
-                  </CardDescription>
+                    {i18n.t("pages.PluginSettings.carddescription")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   {dashboardData ? (
@@ -311,7 +311,7 @@ export function PluginSettings() {
                               <span className="text-xs">{formatUptime(dashboardData.worker.uptime)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Pending RPCs</span>
+                              <span className="text-muted-foreground">{i18n.t("pages.PluginSettings.span")}</span>
                               <span className="text-xs">{dashboardData.worker.pendingRequests}</span>
                             </div>
                             {dashboardData.worker.totalCrashes > 0 && (
@@ -327,7 +327,7 @@ export function PluginSettings() {
                                 </div>
                                 {dashboardData.worker.lastCrashAt && (
                                   <div className="flex justify-between col-span-2">
-                                    <span className="text-muted-foreground">Last Crash</span>
+                                    <span className="text-muted-foreground">{i18n.t("pages.PluginSettings.span_1")}</span>
                                     <span className="text-xs">{formatTimestamp(dashboardData.worker.lastCrashAt)}</span>
                                   </div>
                                 )}
@@ -335,7 +335,7 @@ export function PluginSettings() {
                             )}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No worker process registered.</p>
+                          <p className="text-sm text-muted-foreground italic">{i18n.t("pages.PluginSettings.p_2")}</p>
                         )}
                       </div>
 
@@ -370,7 +370,7 @@ export function PluginSettings() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No job runs recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">{i18n.t("pages.PluginSettings.p_3")}</p>
                         )}
                       </div>
 
@@ -402,7 +402,7 @@ export function PluginSettings() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No webhook deliveries recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">{i18n.t("pages.PluginSettings.p_4")}</p>
                         )}
                       </div>
 
@@ -413,8 +413,7 @@ export function PluginSettings() {
                     </>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      Runtime diagnostics are unavailable right now.
-                    </p>
+                      {i18n.t("pages.PluginSettings.p_5")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -464,7 +463,7 @@ export function PluginSettings() {
                 </CardHeader>
                 <CardContent>
                   {healthLoading ? (
-                    <p className="text-sm text-muted-foreground">Checking health...</p>
+                    <p className="text-sm text-muted-foreground">{i18n.t("pages.PluginSettings.p_6")}</p>
                   ) : healthData ? (
                     <div className="space-y-4 text-sm">
                       <div className="flex items-center justify-between">
@@ -503,7 +502,7 @@ export function PluginSettings() {
                         <span>Lifecycle</span>
                         <Badge variant={statusVariant}>{displayStatus}</Badge>
                       </div>
-                      <p>Health checks run once the plugin is ready.</p>
+                      <p>{i18n.t("pages.PluginSettings.p_7")}</p>
                       {plugin.lastError ? (
                         <div className="break-words rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive">
                           {plugin.lastError}
@@ -520,15 +519,15 @@ export function PluginSettings() {
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-3">
-                    <span>Plugin ID</span>
+                    <span>{i18n.t("pages.PluginSettings.span_2")}</span>
                     <span className="font-mono text-xs text-right">{plugin.id}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Plugin Key</span>
+                    <span>{i18n.t("pages.PluginSettings.span_3")}</span>
                     <span className="font-mono text-xs text-right">{plugin.pluginKey}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>NPM Package</span>
+                    <span>{i18n.t("pages.PluginSettings.span_4")}</span>
                     <span className="max-w-[170px] truncate text-right text-xs" title={plugin.packageName}>
                       {plugin.packageName}
                     </span>
@@ -557,7 +556,7 @@ export function PluginSettings() {
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
+                    <p className="text-sm text-muted-foreground italic">{i18n.t("pages.PluginSettings.p_8")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -973,7 +972,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
     mutationFn: (configJson: Record<string, unknown>) =>
       pluginsApi.saveConfig(pluginId, configJson),
     onSuccess: () => {
-      setSaveMessage({ type: "success", text: "Configuration saved." });
+      setSaveMessage({ type: "success", text: i18n.t("pages.PluginSettings.text") });
       setTestResult(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
       // Clear success message after 3s
@@ -990,7 +989,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
       pluginsApi.testConfig(pluginId, configJson),
     onSuccess: (result) => {
       if (result.valid) {
-        setTestResult({ type: "success", text: "Configuration test passed." });
+        setTestResult({ type: "success", text: i18n.t("pages.PluginSettings.text_1") });
       } else {
         setTestResult({ type: "error", text: result.message || "Configuration test failed." });
       }

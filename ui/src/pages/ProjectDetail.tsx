@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import i18n from "@/i18n";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
@@ -74,7 +75,7 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={i18n.t("pages.ProjectDetail.placeholder")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
@@ -88,7 +89,7 @@ function OverviewContent({
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{i18n.t("pages.ProjectDetail.span")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -126,7 +127,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={i18n.t("pages.ProjectDetail.ariaLabel")}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -141,7 +142,7 @@ function ColorPicker({
                 className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
                   color === currentColor
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
-                    : "hover:ring-2 hover:ring-foreground/30"
+                    : i18n.t("pages.ProjectDetail.conditional")
                 }`}
                 style={{ backgroundColor: color }}
                 aria-label={`Select color ${color}`}
@@ -405,7 +406,7 @@ export function ProjectDetail() {
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived ? i18n.t("pages.ProjectDetail.conditional_1") : i18n.t("pages.ProjectDetail.conditional_2"),
         tone: "error",
       });
     },
@@ -750,7 +751,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{i18n.t("pages.ProjectDetail.p")}</p>
         )
       ) : null}
 

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { Link, NavLink, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -62,12 +63,12 @@ function SidebarAgentItem({
   const isActive = activeAgentId === routeRef;
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
-  const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
+  const pauseResumeLabel = isPaused ? i18n.t("components.SidebarAgents.conditional") : i18n.t("components.SidebarAgents.conditional_1");
   const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused;
   const pauseResumeDisabledLabel = disabled
-    ? "Updating..."
+    ? i18n.t("components.SidebarAgents.conditional_2")
     : isBudgetPaused
-      ? "Budget paused"
+      ? i18n.t("components.SidebarAgents.conditional_3")
       : pauseResumeLabel;
 
   return (
@@ -90,7 +91,7 @@ function SidebarAgentItem({
         {(agent.pauseReason === "budget" || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
             {agent.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Agent paused by budget" />
+              <BudgetSidebarMarker title={i18n.t("components.SidebarAgents.title")} />
             ) : null}
             {runCount > 0 ? (
               <span className="relative flex h-2 w-2">
@@ -132,7 +133,7 @@ function SidebarAgentItem({
               }}
             >
               <Pencil className="size-4" />
-              <span>Edit agent</span>
+              <span>{i18n.t("components.SidebarAgents.span")}</span>
             </Link>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -142,7 +143,7 @@ function SidebarAgentItem({
               onPauseResume(agent, isPaused ? "resume" : "pause");
             }}
             disabled={pauseResumeDisabled}
-            title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+            title={isBudgetPaused ? i18n.t("components.SidebarAgents.conditional_6") : undefined}
           >
             {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
             <span>{pauseResumeDisabledLabel}</span>
@@ -230,14 +231,14 @@ export function SidebarAgents() {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
       ]);
       pushToast({
-        title: action === "pause" ? "Agent paused" : "Agent resumed",
+        title: action === "pause" ? i18n.t("components.SidebarAgents.conditional_7") : i18n.t("components.SidebarAgents.conditional_8"),
         body: agent.name,
         tone: "success",
       });
     },
     onError: (error, { agent, action }) => {
       pushToast({
-        title: action === "pause" ? "Could not pause agent" : "Could not resume agent",
+        title: action === "pause" ? i18n.t("components.SidebarAgents.conditional_9") : i18n.t("components.SidebarAgents.conditional_10"),
         body: error instanceof Error ? error.message : agent.name,
         tone: "error",
       });
@@ -272,7 +273,7 @@ export function SidebarAgents() {
               openNewAgent();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New agent"
+            aria-label={i18n.t("components.SidebarAgents.ariaLabel")}
           >
             <Plus className="h-3 w-3" />
           </button>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import i18n from "@/i18n";
 import { Link, Navigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
@@ -125,7 +126,7 @@ export function Workspaces() {
       </div>
 
       {groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No workspace activity yet.</p>
+        <p className="text-sm text-muted-foreground">{i18n.t("pages.Workspaces.p")}</p>
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (

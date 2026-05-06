@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import i18n from "@/i18n";
 import {
   Field,
   ToggleField,
@@ -42,15 +43,15 @@ export function CodexLocalConfigFields({
   const fastModeSupported = isCodexLocalFastModeSupported(currentModel);
   const supportedModelsLabel = CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
   const fastModeMessage = fastModeManualModel
-    ? "Fast mode will be passed through for this manual model. If Codex rejects it, turn the toggle off."
+    ? i18n.t("adapters.codex-local.config-fields.conditional_2")
     : fastModeSupported
-      ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
+      ? i18n.t("adapters.codex-local.config-fields.conditional_3")
       : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
 
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={i18n.t("adapters.codex-local.config-fields.label_4")} hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -76,7 +77,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       <ToggleField
-        label="Bypass sandbox"
+        label={i18n.t("adapters.codex-local.config-fields.label_5")}
         hint={help.dangerouslyBypassSandbox}
         checked={
           isCreate
@@ -94,7 +95,7 @@ export function CodexLocalConfigFields({
         }
       />
       <ToggleField
-        label="Enable search"
+        label={i18n.t("adapters.codex-local.config-fields.label_6")}
         hint={help.search}
         checked={
           isCreate
@@ -108,7 +109,7 @@ export function CodexLocalConfigFields({
         }
       />
       <ToggleField
-        label="Fast mode"
+        label={i18n.t("adapters.codex-local.config-fields.label_7")}
         hint={help.fastMode}
         checked={fastModeEnabled}
         onChange={(v) =>

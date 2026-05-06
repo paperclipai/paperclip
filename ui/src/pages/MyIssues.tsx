@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
@@ -17,7 +18,7 @@ export function MyIssues() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Issues" }]);
+    setBreadcrumbs([{ label: i18n.t("pages.MyIssues.label") }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({

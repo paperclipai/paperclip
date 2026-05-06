@@ -1,4 +1,5 @@
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import i18n from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 
 export function ModeBadge({
@@ -12,7 +13,7 @@ export function ModeBadge({
 
   const label =
     deploymentMode === "local_trusted"
-      ? "Local trusted"
+      ? i18n.t("components.access.ModeBadge.conditional")
       : `Authenticated ${deploymentExposure ?? "private"}`;
 
   return <Badge variant="outline">{label}</Badge>;

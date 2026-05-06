@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   DocumentRevision,
@@ -258,7 +259,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to delete document");
+      setError(err instanceof Error ? err.message : i18n.t("components.IssueDocumentsSection.conditional"));
     },
   });
 
@@ -275,7 +276,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to restore document revision");
+      setError(err instanceof Error ? err.message : i18n.t("components.IssueDocumentsSection.conditional_1"));
     },
   });
 
@@ -300,7 +301,7 @@ export function IssueDocumentsSection({
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? i18n.t("components.IssueDocumentsSection.conditional_2")
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -466,7 +467,7 @@ export function IssueDocumentsSection({
           return false;
         }
       }
-      setError(err instanceof Error ? err.message : "Failed to save document");
+      setError(err instanceof Error ? err.message : i18n.t("components.IssueDocumentsSection.conditional_3"));
       return false;
     }
   }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
@@ -694,7 +695,7 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
+            <span className="hidden sm:inline">{i18n.t("components.IssueDocumentsSection.span")}</span>
             <span className="sm:hidden">New</span>
           </Button>
         </div>
@@ -705,7 +706,7 @@ export function IssueDocumentsSection({
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
+              <span className="hidden sm:inline">{i18n.t("components.IssueDocumentsSection.span_1")}</span>
               <span className="sm:hidden">New</span>
             </Button>
           </div>
@@ -726,7 +727,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={i18n.t("components.IssueDocumentsSection.placeholder")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -737,7 +738,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={i18n.t("components.IssueDocumentsSection.placeholder_1")}
             />
           )}
           <MarkdownEditor
@@ -745,7 +746,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={i18n.t("components.IssueDocumentsSection.placeholder_2")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-[220px] text-[15px] leading-7"
@@ -763,7 +764,7 @@ export function IssueDocumentsSection({
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending ? i18n.t("components.IssueDocumentsSection.conditional_4") : i18n.t("components.IssueDocumentsSection.conditional_5")}
             </Button>
           </div>
         </div>
@@ -905,7 +906,7 @@ export function IssueDocumentsSection({
                       "text-muted-foreground transition-colors",
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
-                    title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                    title={copiedDocumentKey === doc.key ? "Copied" : i18n.t("components.IssueDocumentsSection.conditional_6")}
                     onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                   >
                     {copiedDocumentKey === doc.key ? (
@@ -920,7 +921,7 @@ export function IssueDocumentsSection({
                         variant="ghost"
                         size="icon-xs"
                         className="text-muted-foreground"
-                        title="Document actions"
+                        title={i18n.t("components.IssueDocumentsSection.title")}
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
@@ -986,8 +987,7 @@ export function IssueDocumentsSection({
                             Viewing revision {selectedHistoricalRevision.revisionNumber}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.
-                          </p>
+                            {i18n.t("components.IssueDocumentsSection.p")}</p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           <Button
@@ -1006,8 +1006,8 @@ export function IssueDocumentsSection({
                             disabled={restoreDocumentRevision.isPending}
                           >
                             {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
-                              ? "Restoring..."
-                              : "Restore this revision"}
+                              ? i18n.t("components.IssueDocumentsSection.conditional_7")
+                              : i18n.t("components.IssueDocumentsSection.conditional_8")}
                           </Button>
                         </div>
                       </div>
@@ -1017,10 +1017,9 @@ export function IssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-amber-200">{i18n.t("components.IssueDocumentsSection.p_1")}</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
-                          </p>
+                            {i18n.t("components.IssueDocumentsSection.p_2")}</p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           <Button
@@ -1034,7 +1033,7 @@ export function IssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? "Hide remote" : "Review remote"}
+                            {activeConflict.showRemote ? i18n.t("components.IssueDocumentsSection.conditional_9") : i18n.t("components.IssueDocumentsSection.conditional_10")}
                           </Button>
                           <Button
                             variant="outline"
@@ -1055,7 +1054,7 @@ export function IssueDocumentsSection({
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
+                            {upsertDocument.isPending ? i18n.t("components.IssueDocumentsSection.conditional_11") : i18n.t("components.IssueDocumentsSection.conditional_12")}
                           </Button>
                         </div>
                       </div>
@@ -1081,7 +1080,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={i18n.t("components.IssueDocumentsSection.placeholder_3")}
                     />
                   )}
                   <div
@@ -1103,7 +1102,7 @@ export function IssueDocumentsSection({
                             return current;
                           });
                         }}
-                        placeholder="Markdown body"
+                        placeholder={i18n.t("components.IssueDocumentsSection.placeholder_4")}
                         bordered={false}
                         className="bg-transparent"
                         contentClassName={documentBodyContentClassName}
@@ -1128,17 +1127,17 @@ export function IssueDocumentsSection({
                       } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
                       {isHistoricalPreview
-                        ? "Viewing historical revision"
+                        ? i18n.t("components.IssueDocumentsSection.conditional_13")
                         : activeDraft
                           ? activeConflict
-                          ? "Out of date"
+                          ? i18n.t("components.IssueDocumentsSection.conditional_14")
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
-                              ? "Autosaving..."
+                              ? i18n.t("components.IssueDocumentsSection.conditional_15")
                               : autosaveState === "saved"
                                 ? "Saved"
                                 : autosaveState === "error"
-                                  ? "Could not save"
+                                  ? i18n.t("components.IssueDocumentsSection.conditional_16")
                                   : ""
                             : ""
                           : ""}
@@ -1160,8 +1159,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
-                  </p>
+                    {i18n.t("components.IssueDocumentsSection.p_3")}</p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
                       variant="ghost"
@@ -1177,7 +1175,7 @@ export function IssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? "Deleting..." : "Delete"}
+                      {deleteDocument.isPending ? i18n.t("components.IssueDocumentsSection.conditional_17") : "Delete"}
                     </Button>
                   </div>
                 </div>

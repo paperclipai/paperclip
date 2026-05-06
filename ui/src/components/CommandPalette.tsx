@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import i18n from "@/i18n";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
@@ -121,7 +122,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder={i18n.t("components.CommandPalette.placeholder")}
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {

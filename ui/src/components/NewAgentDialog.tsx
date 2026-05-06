@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -89,8 +90,8 @@ export function NewAgentDialog() {
     closeNewAgent();
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
-      title: "Create a new agent",
-      description: "(type in what kind of agent you want here)",
+      title: i18n.t("components.NewAgentDialog.title"),
+      description: i18n.t("components.NewAgentDialog.description"),
     });
   }
 
@@ -120,7 +121,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{i18n.t("components.NewAgentDialog.span")}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -130,7 +131,7 @@ export function NewAgentDialog() {
               closeNewAgent();
             }}
           >
-            <span className="text-lg leading-none">&times;</span>
+            <span className="text-lg leading-none">{i18n.t("components.NewAgentDialog.span_1")}</span>
           </Button>
         </div>
 
@@ -143,10 +144,7 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  We recommend letting your CEO handle agent setup — they know the
-                  org structure and can configure reporting, permissions, and
-                  adapters.
-                </p>
+                  {i18n.t("components.NewAgentDialog.p")}</p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
@@ -160,8 +158,7 @@ export function NewAgentDialog() {
                   className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
                   onClick={handleAdvancedConfig}
                 >
-                  I want advanced configuration myself
-                </button>
+                  {i18n.t("components.NewAgentDialog.button")}</button>
               </div>
             </>
           ) : (
@@ -175,8 +172,7 @@ export function NewAgentDialog() {
                   Back
                 </button>
                 <p className="text-sm text-muted-foreground">
-                  Choose your adapter type for advanced setup.
-                </p>
+                  {i18n.t("components.NewAgentDialog.p_1")}</p>
               </div>
 
               <div className="grid grid-cols-2 gap-2">

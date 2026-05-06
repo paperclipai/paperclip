@@ -1,4 +1,5 @@
 import * as React from "react";
+import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export interface ToggleSwitchProps
@@ -42,7 +43,7 @@ export const ToggleSwitch = React.forwardRef<
           className={cn(
             "pointer-events-none inline-block rounded-full bg-white shadow-sm transition-transform",
             // Thumb
-            isLg ? "size-5.5 sm:size-5" : "size-4.5 sm:size-3.5",
+            isLg ? i18n.t("components.ui.toggle-switch.conditional") : i18n.t("components.ui.toggle-switch.conditional_1"),
             // Slide position
             checked
               ? isLg

@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import i18n from "@/i18n";
 import type { TranscriptEntry } from "../adapters";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import { IssueChatThread } from "./IssueChatThread";
@@ -60,7 +61,7 @@ export const RunChatSurface = memo(function RunChatSurface({
       showComposer={false}
       showJumpToLatest={false}
       variant="embedded"
-      emptyMessage={active ? "Waiting for run output..." : "No run output captured."}
+      emptyMessage={active ? i18n.t("components.RunChatSurface.conditional") : i18n.t("components.RunChatSurface.conditional_1")}
       enableLiveTranscriptPolling={false}
       transcriptsByRunId={transcriptsByRunId}
       hasOutputForRun={(runId) => runId === run.id && hasOutput}

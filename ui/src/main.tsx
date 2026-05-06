@@ -1,3 +1,4 @@
+import "./i18n";
 import * as React from "react";
 import { StrictMode } from "react";
 import * as ReactDOM from "react-dom";
@@ -19,7 +20,6 @@ import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
-
 initPluginBridge(React, ReactDOM);
 
 if ("serviceWorker" in navigator) {

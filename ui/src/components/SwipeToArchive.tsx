@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import i18n from "@/i18n";
 import { Archive } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -126,7 +127,7 @@ export function SwipeToArchive({
       style={{
         height: lockedHeight === null ? undefined : isCollapsing ? 0 : lockedHeight,
         opacity: isCollapsing ? 0 : 1,
-        transition: isCollapsing ? "height 200ms ease, opacity 200ms ease" : undefined,
+        transition: isCollapsing ? i18n.t("components.SwipeToArchive.conditional") : undefined,
       }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
@@ -157,7 +158,7 @@ export function SwipeToArchive({
         )}
         style={{
           transform: `translate3d(${offsetX}px, 0, 0)`,
-          transition: isDragging ? "none" : "transform 180ms ease-out",
+          transition: isDragging ? "none" : i18n.t("components.SwipeToArchive.conditional_1"),
         }}
       >
         {children}

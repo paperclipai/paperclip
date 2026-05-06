@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import i18n from "@/i18n";
 import { cn } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
@@ -306,7 +307,7 @@ export function InlineEditor({
         className={cn(
           markdownPad,
           "rounded transition-colors",
-          multilineFocused ? "bg-transparent" : "hover:bg-accent/20",
+          multilineFocused ? "bg-transparent" : i18n.t("components.InlineEditor.conditional"),
         )}
         onFocusCapture={(event) => {
           // Ignore focus events where the active element isn't actually inside
@@ -350,11 +351,11 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? i18n.t("components.InlineEditor.conditional_1")
               : autosaveState === "saved"
                 ? "Saved"
                 : autosaveState === "error"
-                  ? "Could not save"
+                  ? i18n.t("components.InlineEditor.conditional_2")
                   : "Idle"}
           </span>
         </div>

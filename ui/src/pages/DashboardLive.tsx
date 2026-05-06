@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import i18n from "@/i18n";
 import { ArrowLeft, RadioTower } from "lucide-react";
 import { Link } from "@/lib/router";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
@@ -15,7 +16,7 @@ export function DashboardLive() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Dashboard", href: "/dashboard" },
-      { label: "Live runs" },
+      { label: i18n.t("pages.DashboardLive.label") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -23,7 +24,7 @@ export function DashboardLive() {
     return (
       <EmptyState
         icon={RadioTower}
-        message={companies.length === 0 ? "Create a company to view live runs." : "Select a company to view live runs."}
+        message={companies.length === 0 ? i18n.t("pages.DashboardLive.conditional") : i18n.t("pages.DashboardLive.conditional_1")}
       />
     );
   }
@@ -39,17 +40,16 @@ export function DashboardLive() {
             <ArrowLeft className="h-3.5 w-3.5" />
             Dashboard
           </Link>
-          <h1 className="mt-2 text-2xl font-semibold tracking-normal text-foreground">Live agent runs</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-normal text-foreground">{i18n.t("pages.DashboardLive.h1")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Active runs first, followed by the most recent completed runs.
-          </p>
+            {i18n.t("pages.DashboardLive.p")}</p>
         </div>
         <div className="text-sm text-muted-foreground">Showing up to {DASHBOARD_LIVE_RUN_LIMIT}</div>
       </div>
 
       <ActiveAgentsPanel
         companyId={selectedCompanyId}
-        title="Active / recent"
+        title={i18n.t("pages.DashboardLive.title")}
         minRunCount={DASHBOARD_LIVE_RUN_LIMIT}
         fetchLimit={DASHBOARD_LIVE_RUN_LIMIT}
         cardLimit={DASHBOARD_LIVE_RUN_LIMIT}

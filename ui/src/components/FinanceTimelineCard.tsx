@@ -1,4 +1,5 @@
 import type { FinanceEvent } from "@paperclipai/shared";
+import i18n from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -21,8 +22,8 @@ export function FinanceTimelineCard({
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Recent financial events</CardTitle>
-        <CardDescription>Top-ups, fees, credits, commitments, and other non-request charges.</CardDescription>
+        <CardTitle className="text-base">{i18n.t("components.FinanceTimelineCard.cardtitle")}</CardTitle>
+        <CardDescription>{i18n.t("components.FinanceTimelineCard.carddescription")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 px-4 pb-4 pt-3">
         {rows.length === 0 ? (
@@ -59,7 +60,7 @@ export function FinanceTimelineCard({
                 <div className="text-right tabular-nums">
                   <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
-                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div> : null}
+                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">{i18n.t("components.FinanceTimelineCard.div")}</div> : null}
                 </div>
               </div>
             </div>

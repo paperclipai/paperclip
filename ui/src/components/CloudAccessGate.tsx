@@ -1,4 +1,5 @@
 import { Navigate, Outlet, useLocation } from "@/lib/router";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
@@ -9,11 +10,11 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Instance setup required</h1>
+        <h1 className="text-xl font-semibold">{i18n.t("components.CloudAccessGate.h1")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {hasActiveInvite
-            ? "No instance admin exists yet. A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:"
-            : "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"}
+            ? i18n.t("components.CloudAccessGate.conditional")
+            : i18n.t("components.CloudAccessGate.conditional_1")}
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
 {`pnpm paperclipai auth bootstrap-ceo`}
@@ -27,14 +28,11 @@ function NoBoardAccessPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">No company access</h1>
+        <h1 className="text-xl font-semibold">{i18n.t("components.CloudAccessGate.h1_1")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This account is signed in, but it does not have an active company membership or instance-admin access on
-          this Paperclip instance.
-        </p>
+          {i18n.t("components.CloudAccessGate.p")}</p>
         <p className="mt-2 text-sm text-muted-foreground">
-          Use a company invite or sign in with an account that already belongs to this org.
-        </p>
+          {i18n.t("components.CloudAccessGate.p_1")}</p>
       </div>
     </div>
   );
@@ -77,7 +75,7 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{i18n.t("components.CloudAccessGate.div")}</div>;
   }
 
   if (healthQuery.error || boardAccessQuery.error) {
@@ -87,7 +85,7 @@ export function CloudAccessGate() {
           ? healthQuery.error.message
           : boardAccessQuery.error instanceof Error
             ? boardAccessQuery.error.message
-            : "Failed to load app state"}
+            : i18n.t("components.CloudAccessGate.conditional_2")}
       </div>
     );
   }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UserPlus2 } from "lucide-react";
 import { accessApi } from "@/api/access";
@@ -22,7 +23,7 @@ export function JoinRequestQueue() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Inbox", href: "/inbox" },
-      { label: "Join Requests" },
+      { label: i18n.t("pages.JoinRequestQueue.label") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -43,7 +44,7 @@ export function JoinRequestQueue() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!, `${status}:${requestType}`) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.companyMembers(selectedCompanyId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!) });
-      pushToast({ title: "Join request approved", tone: "success" });
+      pushToast({ title: i18n.t("pages.JoinRequestQueue.title"), tone: "success" });
     },
   });
 
@@ -51,25 +52,25 @@ export function JoinRequestQueue() {
     mutationFn: (requestId: string) => accessApi.rejectJoinRequest(selectedCompanyId!, requestId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!, `${status}:${requestType}`) });
-      pushToast({ title: "Join request rejected", tone: "success" });
+      pushToast({ title: i18n.t("pages.JoinRequestQueue.title_1"), tone: "success" });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to review join requests.</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.JoinRequestQueue.div")}</div>;
   }
 
   if (requestsQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading join requests…</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.JoinRequestQueue.div_1")}</div>;
   }
 
   if (requestsQuery.error) {
     const message =
       requestsQuery.error instanceof ApiError && requestsQuery.error.status === 403
-        ? "You do not have permission to review join requests for this company."
+        ? i18n.t("pages.JoinRequestQueue.conditional")
         : requestsQuery.error instanceof Error
           ? requestsQuery.error.message
-          : "Failed to load join requests.";
+          : i18n.t("pages.JoinRequestQueue.conditional_1");
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -78,11 +79,10 @@ export function JoinRequestQueue() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <UserPlus2 className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Join Request Queue</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.JoinRequestQueue.h1")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Review human and agent join requests outside the mixed inbox feed. This queue uses the same approval mutations as the inline inbox cards.
-        </p>
+          {i18n.t("pages.JoinRequestQueue.p")}</p>
       </div>
 
       <div className="flex flex-wrap gap-3 rounded-xl border border-border bg-card p-4">
@@ -101,7 +101,7 @@ export function JoinRequestQueue() {
           </select>
         </label>
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Request type</span>
+          <span className="font-medium">{i18n.t("pages.JoinRequestQueue.span")}</span>
           <select
             className="rounded-md border border-border bg-background px-3 py-2"
             value={requestType}
@@ -119,8 +119,7 @@ export function JoinRequestQueue() {
       <div className="space-y-4">
         {(requestsQuery.data ?? []).length === 0 ? (
           <div className="rounded-xl border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
-            No join requests match the current filters.
-          </div>
+            {i18n.t("pages.JoinRequestQueue.div_2")}</div>
         ) : (
           requestsQuery.data!.map((request) => (
             <div key={request.id} className="rounded-xl border border-border bg-card p-4">
@@ -168,18 +167,18 @@ export function JoinRequestQueue() {
 
               <div className="mt-4 grid gap-3 text-sm text-muted-foreground md:grid-cols-2">
                 <div className="rounded-lg border border-border bg-background px-3 py-2">
-                  <div className="text-xs font-medium uppercase tracking-wide">Invite context</div>
+                  <div className="text-xs font-medium uppercase tracking-wide">{i18n.t("pages.JoinRequestQueue.div_3")}</div>
                   <div className="mt-2">
                     {request.invite
                       ? `${request.invite.allowedJoinTypes} join invite${request.invite.humanRole ? ` • default role ${request.invite.humanRole}` : ""}`
-                      : "Invite metadata unavailable"}
+                      : i18n.t("pages.JoinRequestQueue.conditional_2")}
                   </div>
                   {request.invite?.inviteMessage ? (
                     <div className="mt-2 text-foreground">{request.invite.inviteMessage}</div>
                   ) : null}
                 </div>
                 <div className="rounded-lg border border-border bg-background px-3 py-2">
-                  <div className="text-xs font-medium uppercase tracking-wide">Request details</div>
+                  <div className="text-xs font-medium uppercase tracking-wide">{i18n.t("pages.JoinRequestQueue.div_4")}</div>
                   <div className="mt-2">Submitted {new Date(request.createdAt).toLocaleString()}</div>
                   <div>Source IP {request.requestIp}</div>
                   {request.requestType === "agent" && request.capabilities ? <div>{request.capabilities}</div> : null}

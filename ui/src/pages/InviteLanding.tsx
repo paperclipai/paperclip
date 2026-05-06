@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
@@ -67,7 +68,7 @@ function mapInviteAuthFeedback(
 ): AuthFeedback {
   const code = getAuthErrorCode(error);
   const message = getAuthErrorMessage(error);
-  const emailLabel = email.trim().length > 0 ? email.trim() : "that email";
+  const emailLabel = email.trim().length > 0 ? email.trim() : i18n.t("pages.InviteLanding.conditional");
 
   if (code === "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL") {
     return {
@@ -80,7 +81,7 @@ function mapInviteAuthFeedback(
     return {
       tone: "error",
       message:
-        "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+        i18n.t("pages.InviteLanding.message"),
     };
   }
 
@@ -88,7 +89,7 @@ function mapInviteAuthFeedback(
     return {
       tone: "error",
       message:
-        "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+        i18n.t("pages.InviteLanding.message_1"),
     };
   }
 
@@ -180,24 +181,22 @@ function AwaitingJoinApprovalPanel({
             Your request is still awaiting approval. {approverLabel} must approve your request to join.
           </p>
           <div className="border border-zinc-800 p-3">
-            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
+            <p className="text-xs text-zinc-500 mb-1">{i18n.t("pages.InviteLanding.p")}</p>
             <a
               href={approvalUrl}
               className="text-sm text-zinc-200 underline underline-offset-2 hover:text-zinc-100"
             >
-              Company Settings → Access
-            </a>
+              {i18n.t("pages.InviteLanding.a")}</a>
           </div>
           <p className="text-sm text-zinc-400">
-            Ask them to visit <a href={approvalUrl} className="text-zinc-200 underline underline-offset-2 hover:text-zinc-100">Company Settings → Access</a> to approve your request.
+            Ask them to visit <a href={approvalUrl} className="text-zinc-200 underline underline-offset-2 hover:text-zinc-100">{i18n.t("pages.InviteLanding.a_1")}</a> to approve your request.
           </p>
           <p className="text-xs text-zinc-500">
-            Refresh this page after you've been approved — you'll be redirected automatically.
-          </p>
+            {i18n.t("pages.InviteLanding.p_1")}</p>
         </div>
         {claimSecret && claimApiKeyPath ? (
           <div className="mt-4 space-y-1 border border-zinc-800 p-3 text-xs text-zinc-400">
-            <div className="text-zinc-200">Claim secret</div>
+            <div className="text-zinc-200">{i18n.t("pages.InviteLanding.div")}</div>
             <div className="font-mono break-all">{claimSecret}</div>
             <div className="font-mono break-all">POST {claimApiKeyPath}</div>
           </div>
@@ -348,7 +347,7 @@ export function InviteLandingPage() {
       }
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to accept invite");
+      setError(err instanceof Error ? err.message : i18n.t("pages.InviteLanding.conditional_3"));
     },
   });
 
@@ -415,29 +414,28 @@ export function InviteLandingPage() {
     if (!invite) return "Continue";
     if (invite.inviteType === "bootstrap_ceo") return "Accept invite";
     if (showsAgentForm) return "Submit request";
-    return sessionQuery.data ? "Accept invite" : "Continue";
+    return sessionQuery.data ? i18n.t("pages.InviteLanding.conditional_4") : "Continue";
   }, [invite, sessionQuery.data, showsAgentForm]);
 
   if (!token) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid invite token.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">{i18n.t("pages.InviteLanding.div_1")}</div>;
   }
 
   if (inviteQuery.isLoading || healthQuery.isLoading || sessionQuery.isLoading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading invite...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{i18n.t("pages.InviteLanding.div_2")}</div>;
   }
 
   if (isCheckingExistingMembership) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Checking your access...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{i18n.t("pages.InviteLanding.div_3")}</div>;
   }
 
   if (inviteQuery.error || !invite) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="border border-border bg-card p-6" data-testid="invite-error">
-          <h1 className="text-lg font-semibold">Invite not available</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.InviteLanding.h1")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This invite may be expired, revoked, or already used.
-          </p>
+            {i18n.t("pages.InviteLanding.p_2")}</p>
         </div>
       </div>
     );
@@ -448,7 +446,7 @@ export function InviteLandingPage() {
     inviteJoinRequestType === "human" &&
     isCurrentMember
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Opening company...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{i18n.t("pages.InviteLanding.div_4")}</div>;
   }
 
   if (inviteJoinRequestStatus === "pending_approval") {
@@ -466,11 +464,11 @@ export function InviteLandingPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="border border-border bg-card p-6" data-testid="invite-error">
-          <h1 className="text-lg font-semibold">Invite not available</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.InviteLanding.h1_1")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             {inviteJoinRequestStatus === "rejected"
-              ? "This join request was not approved."
-              : "This invite has already been used."}
+              ? i18n.t("pages.InviteLanding.conditional_5")
+              : i18n.t("pages.InviteLanding.conditional_6")}
           </p>
         </div>
       </div>
@@ -481,7 +479,7 @@ export function InviteLandingPage() {
     return (
       <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
         <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6">
-          <h1 className="text-lg font-semibold">Bootstrap complete</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.InviteLanding.h1_2")}</h1>
           <div className="mt-4">
             <Button asChild className="rounded-none">
               <Link to="/">Open board</Link>
@@ -514,7 +512,7 @@ export function InviteLandingPage() {
                 companyBrandColor={companyBrandColor}
                 className="h-12 w-12 border border-zinc-800 rounded-none"
               />
-              <h1 className="text-lg font-semibold">You joined the company</h1>
+              <h1 className="text-lg font-semibold">{i18n.t("pages.InviteLanding.h1_3")}</h1>
             </div>
             <div className="mt-4">
               <Button asChild className="w-full rounded-none">
@@ -551,17 +549,16 @@ export function InviteLandingPage() {
               />
               <div className="min-w-0">
                 <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">
-                  You&apos;ve been invited to join Paperclip
-                </p>
+                  {i18n.t("pages.InviteLanding.p_3")}</p>
                 <h1 className="mt-2 text-2xl font-semibold">
-                  {invite.inviteType === "bootstrap_ceo" ? "Set up Paperclip" : `Join ${companyDisplayName}`}
+                  {invite.inviteType === "bootstrap_ceo" ? i18n.t("pages.InviteLanding.conditional_7") : `Join ${companyDisplayName}`}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">
                   {showsAgentForm
-                    ? "Review the invite details, then submit the agent information below to start the join request."
+                    ? i18n.t("pages.InviteLanding.conditional_8")
                     : requiresHumanAccount
-                      ? "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email."
-                      : "Your account is ready. Review the invite details, then accept it to continue."}
+                      ? i18n.t("pages.InviteLanding.conditional_9")
+                      : i18n.t("pages.InviteLanding.conditional_10")}
                 </p>
               </div>
             </div>
@@ -572,24 +569,24 @@ export function InviteLandingPage() {
                 <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
               </div>
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invited by</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{i18n.t("pages.InviteLanding.div_5")}</div>
                 <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? "Paperclip board"}</div>
               </div>
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Requested access</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{i18n.t("pages.InviteLanding.div_6")}</div>
                 <div className="mt-1 text-sm text-zinc-100">
-                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
+                  {showsAgentForm ? i18n.t("pages.InviteLanding.conditional_11") : requestedHumanRole ?? "Company access"}
                 </div>
               </div>
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invite expires</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{i18n.t("pages.InviteLanding.div_7")}</div>
                 <div className="mt-1 text-sm text-zinc-100">{formatDate(invite.expiresAt)}</div>
               </div>
             </div>
 
             {inviteMessage ? (
               <div className="border border-amber-500/40 bg-amber-500/10 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-amber-200/80">Message from inviter</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-amber-200/80">{i18n.t("pages.InviteLanding.div_8")}</div>
                 <p className="mt-2 text-sm leading-6 text-amber-50">{inviteMessage}</p>
               </div>
             ) : null}
@@ -605,13 +602,13 @@ export function InviteLandingPage() {
             {showsAgentForm ? (
               <div className="space-y-4">
                 <div>
-                  <h2 className="text-lg font-semibold">Submit agent details</h2>
+                  <h2 className="text-lg font-semibold">{i18n.t("pages.InviteLanding.h2")}</h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     This invite will create an approval request for a new agent in {companyDisplayName}.
                   </p>
                 </div>
                 <label className="block text-sm">
-                  <span className="mb-1 block text-zinc-400">Agent name</span>
+                  <span className="mb-1 block text-zinc-400">{i18n.t("pages.InviteLanding.span")}</span>
                   <input
                     className={fieldClassName}
                     value={agentName}
@@ -619,7 +616,7 @@ export function InviteLandingPage() {
                   />
                 </label>
                 <label className="block text-sm">
-                  <span className="mb-1 block text-zinc-400">Adapter type</span>
+                  <span className="mb-1 block text-zinc-400">{i18n.t("pages.InviteLanding.span_1")}</span>
                   <select
                     className={fieldClassName}
                     value={adapterType}
@@ -627,7 +624,7 @@ export function InviteLandingPage() {
                   >
                     {joinAdapterOptions.map((type) => (
                       <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                        {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                        {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? i18n.t("pages.InviteLanding.conditional_12") : ""}
                       </option>
                     ))}
                   </select>
@@ -647,19 +644,19 @@ export function InviteLandingPage() {
                   disabled={acceptMutation.isPending || agentName.trim().length === 0}
                   onClick={() => acceptMutation.mutate()}
                 >
-                  {acceptMutation.isPending ? "Working..." : joinButtonLabel}
+                  {acceptMutation.isPending ? i18n.t("pages.InviteLanding.conditional_13") : joinButtonLabel}
                 </Button>
               </div>
             ) : requiresHumanAccount ? (
               <div className="space-y-5">
                 <div>
                   <h2 className="text-lg font-semibold">
-                    {authMode === "sign_up" ? "Create your account" : "Sign in to continue"}
+                    {authMode === "sign_up" ? i18n.t("pages.InviteLanding.conditional_14") : i18n.t("pages.InviteLanding.conditional_15")}
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {authMode === "sign_up"
                       ? `Start with a Paperclip account. After that, you'll come right back here to accept the invite for ${companyDisplayName}.`
-                      : "Use the Paperclip account that already matches this invite. If you do not have one yet, switch back to create account."}
+                      : i18n.t("pages.InviteLanding.conditional_16")}
                   </p>
                 </div>
 
@@ -676,8 +673,7 @@ export function InviteLandingPage() {
                       setAuthMode("sign_up");
                     }}
                   >
-                    Create account
-                  </button>
+                    {i18n.t("pages.InviteLanding.button")}</button>
                   <button
                     type="button"
                     className={`${modeButtonBaseClassName} ${
@@ -690,8 +686,7 @@ export function InviteLandingPage() {
                       setAuthMode("sign_in");
                     }}
                   >
-                    I already have an account
-                  </button>
+                    {i18n.t("pages.InviteLanding.button_1")}</button>
                 </div>
 
                 <form
@@ -702,7 +697,7 @@ export function InviteLandingPage() {
                     event.preventDefault();
                     if (authMutation.isPending) return;
                     if (!authCanSubmit) {
-                      setAuthFeedback({ tone: "error", message: "Please fill in all required fields." });
+                      setAuthFeedback({ tone: "error", message: i18n.t("pages.InviteLanding.message_2") });
                       return;
                     }
                     authMutation.mutate();
@@ -751,7 +746,7 @@ export function InviteLandingPage() {
                         setPassword(event.target.value);
                         setAuthFeedback(null);
                       }}
-                      autoComplete={authMode === "sign_in" ? "current-password" : "new-password"}
+                      autoComplete={authMode === "sign_in" ? i18n.t("pages.InviteLanding.conditional_17") : i18n.t("pages.InviteLanding.conditional_18")}
                     />
                   </label>
                   {authFeedback ? (
@@ -770,17 +765,17 @@ export function InviteLandingPage() {
                     aria-disabled={!authCanSubmit || authMutation.isPending}
                   >
                     {authMutation.isPending
-                      ? "Working..."
+                      ? i18n.t("pages.InviteLanding.conditional_19")
                       : authMode === "sign_in"
-                        ? "Sign in and continue"
-                        : "Create account and continue"}
+                        ? i18n.t("pages.InviteLanding.conditional_20")
+                        : i18n.t("pages.InviteLanding.conditional_21")}
                   </Button>
                 </form>
 
                 <p className="text-xs leading-5 text-zinc-500">
                   {authMode === "sign_up"
-                    ? "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user."
-                    : "No account yet? Switch back to create account so you can accept the invite with a new login."}
+                    ? i18n.t("pages.InviteLanding.conditional_22")
+                    : i18n.t("pages.InviteLanding.conditional_23")}
                 </p>
               </div>
             ) : (
@@ -788,10 +783,10 @@ export function InviteLandingPage() {
                 <div>
                   <h2 className="text-lg font-semibold">
                     {shouldAutoAcceptHumanInvite
-                      ? "Submitting join request"
+                      ? i18n.t("pages.InviteLanding.conditional_24")
                       : invite.inviteType === "bootstrap_ceo"
-                        ? "Accept bootstrap invite"
-                        : "Accept company invite"}
+                        ? i18n.t("pages.InviteLanding.conditional_25")
+                        : i18n.t("pages.InviteLanding.conditional_26")}
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {shouldAutoAcceptHumanInvite
@@ -799,14 +794,14 @@ export function InviteLandingPage() {
                       : isCurrentMember
                       ? `This account already belongs to ${companyDisplayName}.`
                       : `This will ${
-                          invite.inviteType === "bootstrap_ceo" ? "finish setting up Paperclip" : `submit or complete your join request for ${companyDisplayName}`
+                          invite.inviteType === "bootstrap_ceo" ? i18n.t("pages.InviteLanding.conditional_27") : `submit or complete your join request for ${companyDisplayName}`
                         }.`}
                   </p>
                 </div>
                 {error ? <p className="text-xs text-red-400">{error}</p> : null}
                 {shouldAutoAcceptHumanInvite ? (
                   <div className="text-sm text-zinc-400">
-                    {acceptMutation.isPending ? "Submitting request..." : "Finishing sign-in..."}
+                    {acceptMutation.isPending ? i18n.t("pages.InviteLanding.conditional_28") : i18n.t("pages.InviteLanding.conditional_29")}
                   </div>
                 ) : (
                   <Button
@@ -814,7 +809,7 @@ export function InviteLandingPage() {
                     disabled={acceptMutation.isPending || isCurrentMember}
                     onClick={() => acceptMutation.mutate()}
                   >
-                    {acceptMutation.isPending ? "Working..." : joinButtonLabel}
+                    {acceptMutation.isPending ? i18n.t("pages.InviteLanding.conditional_30") : joinButtonLabel}
                   </Button>
                 )}
               </div>

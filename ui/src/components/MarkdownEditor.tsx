@@ -13,6 +13,7 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import i18n from "@/i18n";
 import {
   CodeMirrorEditor,
   MDXEditor,
@@ -724,7 +725,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : i18n.t("components.MarkdownEditor.conditional_2");
             setUploadError(message);
             throw err;
           }
@@ -1029,7 +1030,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>{i18n.t("components.MarkdownEditor.p")}</p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
@@ -1037,8 +1038,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               setRichEditorError(null);
             }}
           >
-            Retry rich editor
-          </button>
+            {i18n.t("components.MarkdownEditor.button")}</button>
         </div>
         <textarea
           ref={fallbackTextareaRef}
@@ -1300,7 +1300,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop {onDropFile ? "file" : "image"} to upload
+          Drop {onDropFile ? "file" : i18n.t("components.MarkdownEditor.conditional_3")} to upload
         </div>
       )}
       {uploadError && (

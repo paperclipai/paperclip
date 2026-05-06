@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { cn } from "../lib/utils";
 
 const BAYER_4X4 = [
@@ -193,7 +194,7 @@ export function CompanyPatternIcon({
           onError={() => setImageError(true)}
           className={cn(
             "absolute inset-0 h-full w-full",
-            logoFit === "contain" ? "object-contain" : "object-cover",
+            logoFit === "contain" ? i18n.t("components.CompanyPatternIcon.conditional") : i18n.t("components.CompanyPatternIcon.conditional_1"),
           )}
         />
       ) : patternDataUrl ? (

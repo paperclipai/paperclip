@@ -15,6 +15,7 @@ import {
   Terminal,
   Cpu,
 } from "lucide-react";
+import i18n from "@/i18n";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { HermesIcon } from "@/components/HermesIcon";
 
@@ -136,7 +137,10 @@ function humanizeType(type: string): string {
 }
 
 export function getAdapterLabel(type: string): string {
-  const base = adapterDisplayMap[type]?.label ?? humanizeType(type);
+  const fallback = adapterDisplayMap[type]?.label ?? humanizeType(type);
+  const key = `adapters.adapterDisplayRegistry.label.${type}`;
+  const translated = i18n.t(key);
+  const base = translated === key ? fallback : translated;
   return withSuffix(base, getTypeSuffix(type));
 }
 
@@ -150,15 +154,32 @@ export function getAdapterLabels(): Record<string, string> {
 
 export function getAdapterDisplay(type: string): AdapterDisplayInfo {
   const known = adapterDisplayMap[type];
-  if (known) return known;
+  if (known) {
+    return {
+      ...known,
+      description: getAdapterDescription(type, known.description),
+      disabledLabel: known.disabledLabel
+        ? i18n.t("adapters.adapterDisplayRegistry.disabledLabel." + type)
+        : undefined,
+    };
+  }
 
   const suffix = getTypeSuffix(type);
   const label = withSuffix(humanizeType(type), suffix);
   return {
     label,
-    description: suffix ? `External ${suffix} adapter` : "External adapter",
+    description: suffix
+      ? i18n.t("adapters.adapterDisplayRegistry.externalSuffix", { suffix })
+      : i18n.t("adapters.adapterDisplayRegistry.external"),
     icon: Cpu,
   };
+}
+
+function getAdapterDescription(_type: string, fallback: string): string {
+  const key = `adapters.adapterDisplayRegistry.description.${_type}`;
+  const translated = i18n.t(key);
+  // i18next returns the key itself when missing; fall back to the static string.
+  return translated === key ? fallback : translated;
 }
 
 export function isKnownAdapterType(type: string): boolean {

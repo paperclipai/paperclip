@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
@@ -55,7 +56,7 @@ export function AuthPage() {
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Authentication failed");
+      setError(err instanceof Error ? err.message : i18n.t("pages.Auth.conditional"));
     },
   });
 
@@ -67,7 +68,7 @@ export function AuthPage() {
   if (isSessionLoading) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="text-sm text-muted-foreground">{i18n.t("pages.Auth.p")}</p>
       </div>
     );
   }
@@ -83,12 +84,12 @@ export function AuthPage() {
           </div>
 
           <h1 className="text-xl font-semibold">
-            {mode === "sign_in" ? "Sign in to Paperclip" : "Create your Paperclip account"}
+            {mode === "sign_in" ? i18n.t("pages.Auth.conditional_1") : i18n.t("pages.Auth.conditional_2")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "sign_in"
-              ? "Use your email and password to access this instance."
-              : "Create an account for this instance. Email confirmation is not required in v1."}
+              ? i18n.t("pages.Auth.conditional_3")
+              : i18n.t("pages.Auth.conditional_4")}
           </p>
 
           <form
@@ -141,7 +142,7 @@ export function AuthPage() {
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
+                autoComplete={mode === "sign_in" ? i18n.t("pages.Auth.conditional_5") : i18n.t("pages.Auth.conditional_6")}
               />
             </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
@@ -152,15 +153,15 @@ export function AuthPage() {
               className={`w-full ${!canSubmit && !mutation.isPending ? "opacity-50" : ""}`}
             >
               {mutation.isPending
-                ? "Working…"
+                ? i18n.t("pages.Auth.conditional_7")
                 : mode === "sign_in"
-                  ? "Sign In"
-                  : "Create Account"}
+                  ? i18n.t("pages.Auth.conditional_8")
+                  : i18n.t("pages.Auth.conditional_9")}
             </Button>
           </form>
 
           <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+            {mode === "sign_in" ? i18n.t("pages.Auth.conditional_10") : i18n.t("pages.Auth.conditional_11")}{" "}
             <button
               type="button"
               className="font-medium text-foreground underline underline-offset-2"
@@ -169,7 +170,7 @@ export function AuthPage() {
                 setMode(mode === "sign_in" ? "sign_up" : "sign_in");
               }}
             >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
+              {mode === "sign_in" ? i18n.t("pages.Auth.conditional_14") : i18n.t("pages.Auth.conditional_15")}
             </button>
           </div>
         </div>

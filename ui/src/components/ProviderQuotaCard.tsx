@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import i18n from "@/i18n";
 import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -147,7 +148,7 @@ export function ProviderQuotaCard({
                   {totalApiRuns > 0 && `~${totalApiRuns} api`}
                   {totalApiRuns > 0 && totalSubRuns > 0 && " / "}
                   {totalSubRuns > 0 && `~${totalSubRuns} sub`}
-                  {" runs"}
+                  {i18n.t("components.ProviderQuotaCard.span")}
                 </span>
               )}
             </CardDescription>
@@ -162,14 +163,14 @@ export function ProviderQuotaCard({
         {hasBudget && (
           <div className="space-y-3">
             <QuotaBar
-              label="Period spend"
+              label={i18n.t("components.ProviderQuotaCard.label")}
               percentUsed={budgetPct}
               leftLabel={formatCents(totalCostCents)}
               rightLabel={`${Math.round(budgetPct)}% of allocation`}
               showDeficitNotch={showDeficitNotch}
             />
             <QuotaBar
-              label="This week"
+              label={i18n.t("components.ProviderQuotaCard.label_1")}
               percentUsed={weekPct}
               leftLabel={formatCents(weekSpendCents)}
               rightLabel={`~${formatCents(Math.round(weeklyBudgetShare))} / wk`}
@@ -184,8 +185,7 @@ export function ProviderQuotaCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Rolling windows
-              </p>
+                {i18n.t("components.ProviderQuotaCard.p")}</p>
               <div className="space-y-2.5">
                 {ROLLING_WINDOWS.map((w) => {
                   const row = windowMap.get(w);
@@ -311,8 +311,7 @@ export function ProviderQuotaCard({
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  Subscription quota
-                </p>
+                  {i18n.t("components.ProviderQuotaCard.p_1")}</p>
                 {quotaSource && !isClaudeQuotaPanel && !isCodexQuotaPanel ? (
                   <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                     {quotaSourceDisplayName(quotaSource)}

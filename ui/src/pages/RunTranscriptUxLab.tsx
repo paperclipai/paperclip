@@ -1,4 +1,5 @@
 import { useState } from "react";
+import i18n from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDateTime } from "../lib/utils";
@@ -19,23 +20,23 @@ const surfaceOptions: Array<{
 }> = [
   {
     id: "detail",
-    label: "Run Detail",
+    label: i18n.t("pages.RunTranscriptUxLab.label"),
     eyebrow: "Full transcript",
-    description: "The long-form run page with the `Nice | Raw` toggle and the most inspectable transcript view.",
+    description: i18n.t("pages.RunTranscriptUxLab.description"),
     icon: MonitorCog,
   },
   {
     id: "live",
-    label: "Issue Widget",
+    label: i18n.t("pages.RunTranscriptUxLab.label_1"),
     eyebrow: "Live stream",
-    description: "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
+    description: i18n.t("pages.RunTranscriptUxLab.description_1"),
     icon: RadioTower,
   },
   {
     id: "dashboard",
-    label: "Dashboard Card",
+    label: i18n.t("pages.RunTranscriptUxLab.label_2"),
     eyebrow: "Dense card",
-    description: "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
+    description: i18n.t("pages.RunTranscriptUxLab.description_2"),
     icon: PanelsTopLeft,
   },
 ];
@@ -64,9 +65,8 @@ function RunDetailPreview({
       <div className="border-b border-border/60 bg-background/90 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="uppercase tracking-[0.18em] text-[10px]">
-            Run Detail
-          </Badge>
-          <StatusBadge status={streaming ? "running" : "succeeded"} />
+            {i18n.t("pages.RunTranscriptUxLab.badge")}</Badge>
+          <StatusBadge status={streaming ? i18n.t("pages.RunTranscriptUxLab.conditional") : i18n.t("pages.RunTranscriptUxLab.conditional_1")} />
           <span className="text-xs text-muted-foreground">
             {formatDateTime(runTranscriptFixtureMeta.startedAt)}
           </span>
@@ -100,11 +100,9 @@ function LiveWidgetPreview({
     <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/85 shadow-[0_20px_50px_rgba(6,182,212,0.10)]">
       <div className="border-b border-border/60 bg-cyan-500/[0.05] px-5 py-4">
         <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700 dark:text-cyan-300">
-          Live Runs
-        </div>
+          {i18n.t("pages.RunTranscriptUxLab.div")}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Compact live transcript stream for the issue detail page.
-        </div>
+          {i18n.t("pages.RunTranscriptUxLab.div_1")}</div>
       </div>
       <div className="px-5 py-4">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -114,7 +112,7 @@ function LiveWidgetPreview({
               <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 font-mono">
                 {runTranscriptFixtureMeta.sourceRunId.slice(0, 8)}
               </span>
-              <StatusBadge status={streaming ? "running" : "succeeded"} />
+              <StatusBadge status={streaming ? i18n.t("pages.RunTranscriptUxLab.conditional_2") : i18n.t("pages.RunTranscriptUxLab.conditional_3")} />
               <span>{formatDateTime(runTranscriptFixtureMeta.startedAt)}</span>
             </div>
           </div>
@@ -165,7 +163,7 @@ function DashboardPreview({
                 <Identity name={runTranscriptFixtureMeta.agentName} size="sm" />
               </div>
               <div className="mt-2 text-[11px] text-muted-foreground">
-                {streaming ? "Live now" : "Finished 2m ago"}
+                {streaming ? i18n.t("pages.RunTranscriptUxLab.conditional_4") : i18n.t("pages.RunTranscriptUxLab.conditional_5")}
               </div>
             </div>
             <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">
@@ -208,10 +206,9 @@ export function RunTranscriptUxLab() {
                 <FlaskConical className="h-3.5 w-3.5" />
                 UX Lab
               </div>
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight">Run Transcript Fixtures</h1>
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight">{i18n.t("pages.RunTranscriptUxLab.h1")}</h1>
               <p className="mt-2 text-sm text-muted-foreground">
-                Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.
-              </p>
+                {i18n.t("pages.RunTranscriptUxLab.p")}</p>
             </div>
 
             <div className="space-y-2">
@@ -311,7 +308,7 @@ export function RunTranscriptUxLab() {
                 className="rounded-full"
                 onClick={() => setStreaming((value) => !value)}
               >
-                {streaming ? "Show settled state" : "Show streaming state"}
+                {streaming ? i18n.t("pages.RunTranscriptUxLab.conditional_6") : i18n.t("pages.RunTranscriptUxLab.conditional_7")}
               </Button>
             </div>
 

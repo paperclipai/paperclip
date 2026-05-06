@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import i18n from "@/i18n";
 import {
   Field,
   DraftInput,
@@ -48,10 +49,10 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. node, python"
+          placeholder={i18n.t("adapters.process.config-fields.placeholder")}
         />
       </Field>
-      <Field label="Args (comma-separated)" hint={help.args}>
+      <Field label={i18n.t("adapters.process.config-fields.label")} hint={help.args}>
         <DraftInput
           value={
             isCreate
@@ -69,7 +70,7 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. script.js, --flag"
+          placeholder={i18n.t("adapters.process.config-fields.placeholder_1")}
         />
       </Field>
     </>

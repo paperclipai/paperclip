@@ -29,6 +29,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useLocation } from "@/lib/router";
+import i18n from "@/i18n";
 import type {
   Agent,
   FeedbackDataSharingPreference,
@@ -414,10 +415,10 @@ function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
 
   const pauseDetail =
     agent.pauseReason === "budget"
-      ? "It was paused by a budget hard stop."
+      ? i18n.t("components.IssueChatThread.conditional")
       : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : "It was paused manually.";
+        ? i18n.t("components.IssueChatThread.conditional_1")
+        : i18n.t("components.IssueChatThread.conditional_2");
 
   return (
     <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
@@ -477,10 +478,9 @@ function IssueChatFallbackThread({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="font-medium">{i18n.t("components.IssueChatThread.p")}</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
-            </p>
+              {i18n.t("components.IssueChatThread.p_1")}</p>
           </div>
         </div>
       </div>
@@ -512,7 +512,7 @@ function IssueChatFallbackThread({
                   {lines.length > 0 ? lines.map((line, index) => (
                     <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
                   )) : (
-                    <p className="text-sm text-muted-foreground">No message content.</p>
+                    <p className="text-sm text-muted-foreground">{i18n.t("components.IssueChatThread.p_2")}</p>
                   )}
                 </div>
               </div>
@@ -1264,7 +1264,7 @@ function IssueChatUserMessage({
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
   const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
-  const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
+  const queueBadgeLabel = queueReason === "hold" ? i18n.t("components.IssueChatThread.conditional_3") : "Queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
@@ -1290,8 +1290,7 @@ function IssueChatUserMessage({
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-            Follow-up
-          </Badge>
+            {i18n.t("components.IssueChatThread.badge")}</Badge>
         ) : null}
       </div>
       <div
@@ -1316,7 +1315,7 @@ function IssueChatUserMessage({
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
+                {isInterruptingQueuedRun ? i18n.t("components.IssueChatThread.conditional_4") : "Interrupt"}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -1338,8 +1337,7 @@ function IssueChatUserMessage({
 
       {pending ? (
         <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
-          Sending...
-        </div>
+          {i18n.t("components.IssueChatThread.div")}</div>
       ) : (
         <div
           className={cn(
@@ -1363,8 +1361,8 @@ function IssueChatUserMessage({
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
+            title={i18n.t("components.IssueChatThread.title")}
+            aria-label={i18n.t("components.IssueChatThread.ariaLabel")}
             onClick={() => {
               const text = message.content
                 .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -1513,8 +1511,7 @@ function IssueChatAssistantMessage({
               <span className="text-sm font-medium text-foreground">{authorName}</span>
               {followUpRequested ? (
                 <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-                  Follow-up
-                </Badge>
+                  {i18n.t("components.IssueChatThread.badge_1")}</Badge>
               ) : null}
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
@@ -1559,8 +1556,8 @@ function IssueChatAssistantMessage({
                 <button
                   type="button"
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  title="Copy message"
-                  aria-label="Copy message"
+                  title={i18n.t("components.IssueChatThread.title_1")}
+                  aria-label={i18n.t("components.IssueChatThread.ariaLabel_1")}
                   onClick={() => {
                     void navigator.clipboard.writeText(copyText).then(() => {
                       setCopied(true);
@@ -1597,8 +1594,8 @@ function IssueChatAssistantMessage({
                       variant="ghost"
                       size="icon-xs"
                       className="text-muted-foreground hover:text-foreground"
-                      title="More actions"
-                      aria-label="More actions"
+                      title={i18n.t("components.IssueChatThread.title_2")}
+                      aria-label={i18n.t("components.IssueChatThread.ariaLabel_2")}
                     >
                       <MoreHorizontal className="h-3.5 w-3.5" />
                     </Button>
@@ -1758,19 +1755,19 @@ function IssueChatFeedbackButtons({
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            title="Needs work"
-            aria-label="Needs work"
+            title={i18n.t("components.IssueChatThread.title_3")}
+            aria-label={i18n.t("components.IssueChatThread.ariaLabel_3")}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{i18n.t("components.IssueChatThread.div_1")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={i18n.t("components.IssueChatThread.placeholder")}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -1793,7 +1790,7 @@ function IssueChatFeedbackButtons({
               disabled={isSaving || !downvoteReason.trim()}
               onClick={handleSubmitReason}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? i18n.t("components.IssueChatThread.conditional_5") : i18n.t("components.IssueChatThread.conditional_6")}
             </Button>
           </div>
         </PopoverContent>
@@ -1810,21 +1807,19 @@ function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{i18n.t("components.IssueChatThread.dialogtitle")}</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
-            </DialogDescription>
+              {i18n.t("components.IssueChatThread.dialogdescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
+            <p>{i18n.t("components.IssueChatThread.p_3")}</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
+              Choose <span className="font-medium text-foreground">{i18n.t("components.IssueChatThread.span")}</span> to share
               this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
+              <span className="font-medium text-foreground">{i18n.t("components.IssueChatThread.span_1")}</span> to keep this vote
               and future votes local.
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>{i18n.t("components.IssueChatThread.p_4")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
@@ -1832,8 +1827,7 @@ function IssueChatFeedbackButtons({
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
               >
-                Read our terms of service
-              </a>
+                {i18n.t("components.IssueChatThread.a")}</a>
             ) : null}
           </div>
           <DialogFooter>
@@ -1849,7 +1843,7 @@ function IssueChatFeedbackButtons({
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? i18n.t("components.IssueChatThread.conditional_7") : i18n.t("components.IssueChatThread.conditional_8")}
             </Button>
             <Button
               type="button"
@@ -1862,7 +1856,7 @@ function IssueChatFeedbackButtons({
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? i18n.t("components.IssueChatThread.conditional_9") : i18n.t("components.IssueChatThread.conditional_10")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1912,7 +1906,7 @@ function ExpiredRequestConfirmationActivity({
     <div className="min-w-0 flex-1">
       <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
         <span className="font-medium text-foreground">{actorName}</span>
-        <span className="text-muted-foreground">updated this task</span>
+        <span className="text-muted-foreground">{i18n.t("components.IssueChatThread.span_2")}</span>
         <a
           href={anchorId ? `#${anchorId}` : undefined}
           className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -1927,7 +1921,7 @@ function ExpiredRequestConfirmationActivity({
           onClick={() => setExpanded((current) => !current)}
         >
           <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
-          {expanded ? "Hide confirmation" : "Expired confirmation"}
+          {expanded ? i18n.t("components.IssueChatThread.conditional_11") : i18n.t("components.IssueChatThread.conditional_12")}
         </button>
       </div>
       {expanded ? (
@@ -2414,7 +2408,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">
-            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+            {custom.followUpRequested === true ? i18n.t("components.IssueChatThread.conditional_13") : i18n.t("components.IssueChatThread.conditional_14")}
           </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
@@ -2514,7 +2508,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
                 {displayedRunAgentName}
               </Link>
-              <span className="text-muted-foreground">run</span>
+              <span className="text-muted-foreground">{i18n.t("components.IssueChatThread.span_3")}</span>
               <Link
                 to={`/agents/${runAgentId}/runs/${runId}`}
                 className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -2830,7 +2824,7 @@ const VirtualizedIssueChatThreadList = forwardRef<VirtualizedIssueChatThreadList
 
   return (
     <VirtualizedIssueChatThreadListInner
-      key={mode.kind === "window" ? "window" : "element"}
+      key={mode.kind === "window" ? i18n.t("components.IssueChatThread.conditional_15") : i18n.t("components.IssueChatThread.conditional_16")}
       ref={ref}
       probeRef={probeRef}
       mode={mode}
@@ -3189,7 +3183,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       && !unassignedConfirmed
     ) {
       toastActions?.pushToast({
-        title: "No assignee selected",
+        title: i18n.t("components.IssueChatThread.title_4"),
         body: "Pick an assignee or click Send again to post without one.",
         tone: "warn",
         dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
@@ -3295,7 +3289,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           ? {
               ...item,
               status: "error",
-              error: err instanceof Error ? err.message : "Upload failed",
+              error: err instanceof Error ? err.message : i18n.t("components.IssueChatThread.conditional_17"),
             }
           : item,
       ));
@@ -3399,10 +3393,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               <Paperclip className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="text-sm font-medium text-foreground">{i18n.t("components.IssueChatThread.div_2")}</div>
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Images insert into the reply. Other files are added to this issue.
-              </div>
+                {i18n.t("components.IssueChatThread.div_3")}</div>
             </div>
           </div>
         </div>
@@ -3436,12 +3429,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading to issue"
+                ? i18n.t("components.IssueChatThread.conditional_18")
                 : attachment.status === "error"
                   ? attachment.error ?? "Upload failed"
                   : attachment.inline
-                    ? "Inserted inline"
-                    : "Attached to issue";
+                    ? i18n.t("components.IssueChatThread.conditional_19")
+                    : i18n.t("components.IssueChatThread.conditional_20");
             return (
               <div
                 key={attachment.id}
@@ -3487,7 +3480,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach file"
+                title={i18n.t("components.IssueChatThread.title_5")}
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -3550,7 +3543,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             value={reassignTarget}
             options={reassignOptions}
             placeholder="Assignee"
-            noneLabel="No assignee"
+            noneLabel={i18n.t("components.IssueChatThread.nonelabel")}
             searchPlaceholder="Search assignees..."
             emptyMessage="No assignees found."
             onChange={setReassignTarget}
@@ -3585,7 +3578,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ) : null}
 
         <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-          {submitting ? "Posting..." : "Send"}
+          {submitting ? i18n.t("components.IssueChatThread.conditional_21") : "Send"}
         </Button>
       </div>
     </div>
@@ -4157,8 +4150,8 @@ export function IssueChatThread({
   const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
   const resolvedEmptyMessage = emptyMessage
     ?? (variant === "embedded"
-      ? "No run output yet."
-      : "This issue conversation is empty. Start with a message below.");
+      ? i18n.t("components.IssueChatThread.conditional_22")
+      : i18n.t("components.IssueChatThread.conditional_23"));
   const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
   const errorBoundaryResetVersionRef = useRef(0);
   if (previousErrorBoundaryMessagesRef.current !== messages) {
@@ -4178,8 +4171,7 @@ export function IssueChatThread({
               onClick={handleJumpToLatest}
               className="text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
-              Jump to latest
-            </button>
+              {i18n.t("components.IssueChatThread.button")}</button>
           </div>
         ) : null}
 

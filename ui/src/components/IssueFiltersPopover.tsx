@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -108,7 +109,7 @@ export function IssueFiltersPopover({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant={buttonVariant} size={iconOnly ? "icon" : "sm"} className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""} ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`} title={iconOnly ? (activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter") : undefined}>
+        <Button variant={buttonVariant} size={iconOnly ? "icon" : "sm"} className={`text-xs ${iconOnly ? i18n.t("components.IssueFiltersPopover.conditional") : ""} ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`} title={iconOnly ? (activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter") : undefined}>
           <Filter className={iconOnly ? "h-3.5 w-3.5" : "h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1"} />
           {!iconOnly && <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>}
           {!iconOnly && activeFilterCount > 0 ? <span className="ml-0.5 text-[10px] font-medium sm:hidden">{activeFilterCount}</span> : null}
@@ -143,7 +144,7 @@ export function IssueFiltersPopover({
           </div>
 
           <div className="space-y-1.5">
-            <span className="text-xs text-muted-foreground">Quick filters</span>
+            <span className="text-xs text-muted-foreground">{i18n.t("components.IssueFiltersPopover.span")}</span>
             <div className="flex flex-wrap gap-1.5">
               {issueQuickFilterPresets.map((preset) => {
                 const isActive = issueFilterArraysEqual(state.statuses, preset.statuses);
@@ -211,7 +212,7 @@ export function IssueFiltersPopover({
                       checked={state.assignees.includes("__unassigned")}
                       onCheckedChange={() => onChange({ assignees: toggleIssueFilterValue(state.assignees, "__unassigned") })}
                     />
-                    <span className="text-sm">No assignee</span>
+                    <span className="text-sm">{i18n.t("components.IssueFiltersPopover.span_1")}</span>
                   </label>
                   {currentUserId ? (
                     <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -261,7 +262,7 @@ export function IssueFiltersPopover({
                     <Input
                       value={creatorSearch}
                       onChange={(event) => setCreatorSearch(event.target.value)}
-                      placeholder="Search creators..."
+                      placeholder={i18n.t("components.IssueFiltersPopover.placeholder")}
                       className="h-8 pl-7 text-xs"
                     />
                   </div>
@@ -283,7 +284,7 @@ export function IssueFiltersPopover({
                         </button>
                       );
                     }) : (
-                      <div className="px-2 py-1 text-xs text-muted-foreground">No creators match.</div>
+                      <div className="px-2 py-1 text-xs text-muted-foreground">{i18n.t("components.IssueFiltersPopover.div")}</div>
                     )}
                   </div>
                 </div>
@@ -351,7 +352,7 @@ export function IssueFiltersPopover({
                     checked={state.liveOnly}
                     onCheckedChange={(checked) => onChange({ liveOnly: checked === true })}
                   />
-                  <span className="text-sm">Live runs only</span>
+                  <span className="text-sm">{i18n.t("components.IssueFiltersPopover.span_2")}</span>
                 </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -359,7 +360,7 @@ export function IssueFiltersPopover({
                       checked={state.hideRoutineExecutions}
                       onCheckedChange={(checked) => onChange({ hideRoutineExecutions: checked === true })}
                     />
-                    <span className="text-sm">Hide routine runs</span>
+                    <span className="text-sm">{i18n.t("components.IssueFiltersPopover.span_3")}</span>
                   </label>
                 ) : null}
               </div>

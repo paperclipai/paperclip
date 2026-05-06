@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import i18n from "@/i18n";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -286,8 +287,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
-        </p>
+          {i18n.t("pages.Agents.p")}</p>
       )}
 
       {/* Org chart view */}
@@ -301,14 +301,12 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
-        </p>
+          {i18n.t("pages.Agents.p_1")}</p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
-        </p>
+          {i18n.t("pages.Agents.p_2")}</p>
       )}
     </div>
   );

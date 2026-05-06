@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
@@ -66,7 +67,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
         type="button"
         className="text-sm font-mono min-w-0 break-all text-left cursor-pointer hover:text-foreground transition-colors"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Click to copy"}
+        title={copied ? i18n.t("components.IssueProperties.conditional") : i18n.t("components.IssueProperties.conditional_1")}
       >
         {value}
       </button>
@@ -542,7 +543,7 @@ export function IssueProperties({
         className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         onClick={() => onUpdate({ status: "in_review" })}
       >
-        {stageType === "review" ? "Run review now" : "Run approval now"}
+        {stageType === "review" ? i18n.t("components.IssueProperties.conditional_2") : i18n.t("components.IssueProperties.conditional_3")}
       </button>
     </PropertyRow>
   );
@@ -602,7 +603,7 @@ export function IssueProperties({
       nextCheckAt: nextCheckAt.toISOString(),
       notes: monitorNotesInput.trim() || null,
       scheduledBy: "board",
-      kind: serviceName ? "external_service" : null,
+      kind: serviceName ? i18n.t("components.IssueProperties.conditional_4") : null,
       serviceName,
       externalRef: null,
     });
@@ -663,7 +664,7 @@ export function IssueProperties({
         <input
           type="text"
           className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-          placeholder="What should the agent re-check?"
+          placeholder={i18n.t("components.IssueProperties.placeholder")}
           value={monitorNotesInput}
           onChange={(e) => setMonitorNotesInput(e.target.value)}
         />
@@ -672,7 +673,7 @@ export function IssueProperties({
         <input
           type="text"
           className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-          placeholder="External service"
+          placeholder={i18n.t("components.IssueProperties.placeholder_1")}
           value={monitorServiceInput}
           onChange={(e) => setMonitorServiceInput(e.target.value)}
         />
@@ -734,7 +735,7 @@ export function IssueProperties({
   ) : (
     <>
       <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No labels</span>
+      <span className="text-sm text-muted-foreground">{i18n.t("components.IssueProperties.span")}</span>
     </>
   );
   const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
@@ -742,8 +743,8 @@ export function IssueProperties({
       type="button"
       className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
       onClick={() => setLabelsOpen(true)}
-      aria-label="Add label"
-      title="Add label"
+      aria-label={i18n.t("components.IssueProperties.ariaLabel")}
+      title={i18n.t("components.IssueProperties.title")}
     >
       <Plus className="h-3 w-3" />
     </button>
@@ -753,7 +754,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search labels..."
+        placeholder={i18n.t("components.IssueProperties.placeholder_2")}
         value={labelSearch}
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
@@ -792,7 +793,7 @@ export function IssueProperties({
           />
           <input
             className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder="New label"
+            placeholder={i18n.t("components.IssueProperties.placeholder_3")}
             value={newLabelName}
             onChange={(e) => setNewLabelName(e.target.value)}
           />
@@ -808,7 +809,7 @@ export function IssueProperties({
           }
         >
           <Plus className="h-3 w-3" />
-          {createLabel.isPending ? "Creating…" : "Create label"}
+          {createLabel.isPending ? i18n.t("components.IssueProperties.conditional_5") : i18n.t("components.IssueProperties.conditional_6")}
         </button>
       </div>
     </>
@@ -830,13 +831,13 @@ export function IssueProperties({
 
   const assigneePickerOptions = orderItemsBySelectedAndRecent(
     [
-      { id: "", kind: "none" as const, label: "No assignee", searchText: "" },
+      { id: "", kind: "none" as const, label: i18n.t("components.IssueProperties.label"), searchText: "" },
       ...(currentUserId
         ? [{
             id: `user:${currentUserId}`,
             kind: "user" as const,
             userId: currentUserId,
-            label: "Assign to me",
+            label: i18n.t("components.IssueProperties.label_1"),
             searchText: userLabel(currentUserId) ?? "",
           }]
         : []),
@@ -845,7 +846,7 @@ export function IssueProperties({
             id: `user:${issue.createdByUserId}`,
             kind: "user" as const,
             userId: issue.createdByUserId,
-            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : i18n.t("components.IssueProperties.conditional_7"),
             searchText: creatorUserLabel ?? "requester",
           }]
         : []),
@@ -872,7 +873,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search assignees..."
+        placeholder={i18n.t("components.IssueProperties.placeholder_4")}
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
@@ -926,7 +927,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={`Search ${stageType === "review" ? "reviewers" : "approvers"}...`}
+        placeholder={`Search ${stageType === "review" ? i18n.t("components.IssueProperties.conditional_8") : i18n.t("components.IssueProperties.conditional_9")}...`}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         autoFocus={!inline}
@@ -939,7 +940,7 @@ export function IssueProperties({
           )}
           onClick={onClear}
         >
-          No {stageType === "review" ? "reviewers" : "approvers"}
+          No {stageType === "review" ? i18n.t("components.IssueProperties.conditional_10") : i18n.t("components.IssueProperties.conditional_11")}
         </button>
         {currentUserId && (
           <button
@@ -1019,7 +1020,7 @@ export function IssueProperties({
   ) : (
     <>
       <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No project</span>
+      <span className="text-sm text-muted-foreground">{i18n.t("components.IssueProperties.span_1")}</span>
     </>
   );
   const projectPickerOptions = orderItemsBySelectedAndRecent(
@@ -1041,7 +1042,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search projects..."
+        placeholder={i18n.t("components.IssueProperties.placeholder_5")}
         value={projectSearch}
         onChange={(e) => setProjectSearch(e.target.value)}
         autoFocus={!inline}
@@ -1131,7 +1132,7 @@ export function IssueProperties({
       {parentTitle}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <span className="text-sm text-muted-foreground">{i18n.t("components.IssueProperties.span_2")}</span>
   );
   const parentLink = issue.parentId ? (
     <Link
@@ -1162,7 +1163,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={i18n.t("components.IssueProperties.placeholder_6")}
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -1178,8 +1179,7 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
-        </button>
+          {i18n.t("components.IssueProperties.button")}</button>
         {parentOptions.map((candidate) => (
           <button
             key={candidate.id}
@@ -1233,7 +1233,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={i18n.t("components.IssueProperties.placeholder_7")}
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
@@ -1246,8 +1246,7 @@ export function IssueProperties({
           )}
           onClick={() => onUpdate({ blockedByIssueIds: [] })}
         >
-          No blockers
-        </button>
+          {i18n.t("components.IssueProperties.button_1")}</button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
           return (
@@ -1373,7 +1372,7 @@ export function IssueProperties({
 
         {inline ? (
           <div>
-            <PropertyRow label="Blocked by">
+            <PropertyRow label={i18n.t("components.IssueProperties.label_2")}>
               {(issue.blockedBy ?? []).map((relation) => (
                 <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
               ))}
@@ -1386,7 +1385,7 @@ export function IssueProperties({
             )}
           </div>
         ) : (
-          <PropertyRow label="Blocked by">
+          <PropertyRow label={i18n.t("components.IssueProperties.label_3")}>
             {(issue.blockedBy ?? []).map((relation) => (
               <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
             ))}
@@ -1417,7 +1416,7 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label={i18n.t("components.IssueProperties.label_4")}>
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
@@ -1438,7 +1437,7 @@ export function IssueProperties({
         </PropertyRow>
 
         {relatedTasks.length > 0 ? (
-          <PropertyRow label="Related Tasks">
+          <PropertyRow label={i18n.t("components.IssueProperties.label_5")}>
             <div className="flex flex-wrap gap-1">
               {relatedTasks.map((related) => (
                 <IssueReferencePill key={related.id} issue={related} />
@@ -1574,7 +1573,7 @@ export function IssueProperties({
 
       <div className="space-y-1">
         {(issue.createdByAgentId || issue.createdByUserId) && (
-          <PropertyRow label="Created by">
+          <PropertyRow label={i18n.t("components.IssueProperties.label_6")}>
             {issue.createdByAgentId ? (
               <Link
                 to={`/agents/${issue.createdByAgentId}`}

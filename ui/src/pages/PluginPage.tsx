@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import i18n from "@/i18n";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
@@ -130,13 +131,13 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">{i18n.t("pages.PluginPage.p")}</p>
       </div>
     );
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.PluginPage.div")}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {

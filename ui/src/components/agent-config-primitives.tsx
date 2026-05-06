@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import i18n from "@/i18n";
 import {
   Tooltip,
   TooltipTrigger,
@@ -21,7 +22,7 @@ import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
   name: "Display name for this agent.",
-  title: "Job title shown in the org chart.",
+  title: i18n.t("components.agent-config-primitives.title"),
   role: "Organizational role. Determines position and capabilities.",
   reportsTo: "The agent this one reports to in the org hierarchy.",
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
@@ -399,43 +400,40 @@ export function ChoosePathButton() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{i18n.t("components.agent-config-primitives.dialogtitle")}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
-            </DialogDescription>
+              {i18n.t("components.agent-config-primitives.dialogdescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{i18n.t("components.agent-config-primitives.p")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
+                <li>{i18n.t("components.agent-config-primitives.li")}</li>
                 <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{i18n.t("components.agent-config-primitives.li_1")}</li>
+                <li>{i18n.t("components.agent-config-primitives.li_2")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{i18n.t("components.agent-config-primitives.p_1")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
+                <li>{i18n.t("components.agent-config-primitives.li_3")}</li>
                 <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{i18n.t("components.agent-config-primitives.li_4")}</li>
+                <li>{i18n.t("components.agent-config-primitives.li_5")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                C:\Users\yourname\Documents\project
-              </p>
+                {i18n.t("components.agent-config-primitives.p_2")}</p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{i18n.t("components.agent-config-primitives.p_3")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Run <code>cd /path/to/folder</code>.</li>
                 <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{i18n.t("components.agent-config-primitives.li_6")}</li>
               </ol>
             </section>
           </div>

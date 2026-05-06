@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -91,7 +92,7 @@ export function ApprovalDetail() {
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("pages.ApprovalDetail.conditional")),
   });
 
   const rejectMutation = useMutation({
@@ -100,7 +101,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("pages.ApprovalDetail.conditional_1")),
   });
 
   const revisionMutation = useMutation({
@@ -109,7 +110,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("pages.ApprovalDetail.conditional_2")),
   });
 
   const resubmitMutation = useMutation({
@@ -118,7 +119,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Resubmit failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("pages.ApprovalDetail.conditional_3")),
   });
 
   const addCommentMutation = useMutation({
@@ -128,7 +129,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Comment failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("pages.ApprovalDetail.conditional_4")),
   });
 
   const deleteAgentMutation = useMutation({
@@ -138,11 +139,11 @@ export function ApprovalDetail() {
       refresh();
       navigate("/approvals");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("pages.ApprovalDetail.conditional_5")),
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
-  if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
+  if (!approval) return <p className="text-sm text-muted-foreground">{i18n.t("pages.ApprovalDetail.p")}</p>;
 
   const payload = approval.payload as Record<string, unknown>;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
@@ -156,17 +157,17 @@ export function ApprovalDetail() {
       ? {
           label:
             (linkedIssues?.length ?? 0) > 1
-              ? "Review linked issues"
-              : "Review linked issue",
+              ? i18n.t("pages.ApprovalDetail.conditional_6")
+              : i18n.t("pages.ApprovalDetail.conditional_7"),
           to: `/issues/${primaryLinkedIssue.identifier ?? primaryLinkedIssue.id}`,
         }
       : linkedAgentId
         ? {
-            label: "Open hired agent",
+            label: i18n.t("pages.ApprovalDetail.label"),
             to: `/agents/${linkedAgentId}`,
           }
         : {
-            label: "Back to approvals",
+            label: i18n.t("pages.ApprovalDetail.label_1"),
             to: "/approvals",
           };
 
@@ -181,10 +182,9 @@ export function ApprovalDetail() {
                 <Sparkles className="h-3 w-3 text-green-500 dark:text-green-200 absolute -right-2 -top-1 animate-pulse" />
               </div>
               <div>
-                <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>
+                <p className="text-sm text-green-800 dark:text-green-100 font-medium">{i18n.t("pages.ApprovalDetail.p_1")}</p>
                 <p className="text-xs text-green-700 dark:text-green-200/90">
-                  Requesting agent was notified to review this approval and linked issues.
-                </p>
+                  {i18n.t("pages.ApprovalDetail.p_2")}</p>
               </div>
             </div>
             <Button
@@ -212,7 +212,7 @@ export function ApprovalDetail() {
         <div className="text-sm space-y-1">
           {approval.requestedByAgentId && (
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground text-xs">Requested by</span>
+              <span className="text-muted-foreground text-xs">{i18n.t("pages.ApprovalDetail.span")}</span>
               <Identity
                 name={agentNameById.get(approval.requestedByAgentId) ?? approval.requestedByAgentId.slice(0, 8)}
                 size="sm"
@@ -240,7 +240,7 @@ export function ApprovalDetail() {
         {error && <p className="text-sm text-destructive">{error}</p>}
         {linkedIssues && linkedIssues.length > 0 && (
           <div className="pt-2 border-t border-border/60">
-            <p className="text-xs text-muted-foreground mb-1.5">Linked Issues</p>
+            <p className="text-xs text-muted-foreground mb-1.5">{i18n.t("pages.ApprovalDetail.p_3")}</p>
             <div className="space-y-1.5">
               {linkedIssues.map((issue) => (
                 <Link
@@ -256,8 +256,7 @@ export function ApprovalDetail() {
               ))}
             </div>
             <p className="text-[11px] text-muted-foreground mt-2">
-              Linked issues remain open until the requesting agent follows up and closes them.
-            </p>
+              {i18n.t("pages.ApprovalDetail.p_4")}</p>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
@@ -350,7 +349,7 @@ export function ApprovalDetail() {
         <Textarea
           value={commentBody}
           onChange={(e) => setCommentBody(e.target.value)}
-          placeholder="Add a comment..."
+          placeholder={i18n.t("pages.ApprovalDetail.placeholder")}
           rows={3}
         />
         <div className="flex justify-end">
@@ -359,7 +358,7 @@ export function ApprovalDetail() {
             onClick={() => addCommentMutation.mutate()}
             disabled={!commentBody.trim() || addCommentMutation.isPending}
           >
-            {addCommentMutation.isPending ? "Posting…" : "Post comment"}
+            {addCommentMutation.isPending ? i18n.t("pages.ApprovalDetail.conditional_8") : i18n.t("pages.ApprovalDetail.conditional_9")}
           </Button>
         </div>
       </div>

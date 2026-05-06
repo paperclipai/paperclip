@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import i18n from "@/i18n";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -194,7 +195,7 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: i18n.t("pages.OrgChart.label") }]);
   }, [setBreadcrumbs]);
 
   // Layout computation
@@ -461,7 +462,7 @@ export function OrgChart() {
         data-testid="org-chart-viewport"
         className="w-full flex-1 min-h-0 overflow-hidden relative bg-muted/20 border border-border rounded-lg"
         style={{
-          cursor: dragging ? "grabbing" : "grab",
+          cursor: dragging ? i18n.t("pages.OrgChart.conditional") : i18n.t("pages.OrgChart.conditional_1"),
           touchAction: "none",
           overscrollBehavior: "contain",
         }}
@@ -488,8 +489,8 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={i18n.t("pages.OrgChart.title")}
+            aria-label={i18n.t("pages.OrgChart.ariaLabel")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -504,16 +505,16 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={i18n.t("pages.OrgChart.title_1")}
+            aria-label={i18n.t("pages.OrgChart.ariaLabel_1")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-[10px] transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={i18n.t("pages.OrgChart.title_2")}
+            aria-label={i18n.t("pages.OrgChart.ariaLabel_2")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

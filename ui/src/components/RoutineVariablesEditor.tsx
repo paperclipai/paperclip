@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { ChevronDown, ChevronRight, HelpCircle } from "lucide-react";
 import { syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
@@ -77,7 +78,7 @@ export function RoutineVariablesEditor({
         <div>
           <p className="text-sm font-medium">Variables</p>
           <p className="text-xs text-muted-foreground">
-            Detected from `{"{{name}}"}` placeholders in the routine title and instructions.
+            Detected from `{i18n.t("components.RoutineVariablesEditor.p")}` placeholders in the routine title and instructions.
           </p>
         </div>
         {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
@@ -90,8 +91,7 @@ export function RoutineVariablesEditor({
                 {`{{${variable.name}}}`}
               </Badge>
               <span className="text-xs text-muted-foreground">
-                Prompt the user for this value before each manual run.
-              </span>
+                {i18n.t("components.RoutineVariablesEditor.span")}</span>
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
@@ -166,7 +166,7 @@ export function RoutineVariablesEditor({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__unset__">No default</SelectItem>
+                      <SelectItem value="__unset__">{i18n.t("components.RoutineVariablesEditor.selectitem")}</SelectItem>
                       <SelectItem value="true">True</SelectItem>
                       <SelectItem value="false">False</SelectItem>
                     </SelectContent>
@@ -188,7 +188,7 @@ export function RoutineVariablesEditor({
                                 : null,
                           })));
                         }}
-                        placeholder="high, medium, low"
+                        placeholder={i18n.t("components.RoutineVariablesEditor.placeholder")}
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -201,10 +201,10 @@ export function RoutineVariablesEditor({
                         })))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="No default" />
+                          <SelectValue placeholder={i18n.t("components.RoutineVariablesEditor.placeholder_1")} />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="__unset__">No default</SelectItem>
+                          <SelectItem value="__unset__">{i18n.t("components.RoutineVariablesEditor.selectitem_1")}</SelectItem>
                           {variable.options.map((option) => (
                             <SelectItem key={option} value={option}>{option}</SelectItem>
                           ))}
@@ -214,13 +214,13 @@ export function RoutineVariablesEditor({
                   </div>
                 ) : (
                   <Input
-                    type={variable.type === "number" ? "number" : "text"}
+                    type={variable.type === "number" ? i18n.t("components.RoutineVariablesEditor.conditional") : "text"}
                     value={variable.defaultValue == null ? "" : String(variable.defaultValue)}
                     onChange={(event) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                       ...current,
                       defaultValue: event.target.value || null,
                     })))}
-                    placeholder={variable.type === "number" ? "42" : "Default value"}
+                    placeholder={variable.type === "number" ? "42" : i18n.t("components.RoutineVariablesEditor.conditional_1")}
                   />
                 )}
               </div>
@@ -242,12 +242,12 @@ const BUILTIN_VARIABLE_DOCS: BuiltinVariableDoc[] = [
   {
     name: "date",
     example: "2026-04-28",
-    description: "Current date in YYYY-MM-DD format (UTC) at the time the routine runs.",
+    description: i18n.t("components.RoutineVariablesEditor.description"),
   },
   {
     name: "timestamp",
     example: "April 28, 2026 at 12:17 PM UTC",
-    description: "Human-readable date and time (UTC) at the time the routine runs.",
+    description: i18n.t("components.RoutineVariablesEditor.description_1"),
   },
 ];
 
@@ -258,13 +258,13 @@ export function RoutineVariablesHint() {
     <>
       <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
         <span>
-          Use `{"{{variable_name}}"}` placeholders in the instructions to prompt for inputs when the routine runs.
+          Use `{i18n.t("components.RoutineVariablesEditor.span_1")}` placeholders in the instructions to prompt for inputs when the routine runs.
         </span>
         <button
           type="button"
           onClick={() => setHelpOpen(true)}
           className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Show variable help"
+          aria-label={i18n.t("components.RoutineVariablesEditor.ariaLabel")}
         >
           <HelpCircle className="h-3.5 w-3.5" />
         </button>
@@ -273,17 +273,15 @@ export function RoutineVariablesHint() {
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Routine variables</DialogTitle>
+            <DialogTitle>{i18n.t("components.RoutineVariablesEditor.dialogtitle")}</DialogTitle>
             <DialogDescription>
-              How to prompt for inputs and which variables Paperclip fills in automatically.
-            </DialogDescription>
+              {i18n.t("components.RoutineVariablesEditor.dialogdescription")}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-5 text-sm">
             <section className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Custom variables
-              </h3>
+                {i18n.t("components.RoutineVariablesEditor.h3")}</h3>
               <p className="text-muted-foreground">
                 Type{" "}
                 <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
@@ -294,20 +292,17 @@ export function RoutineVariablesHint() {
                 for a value before each run.
               </p>
               <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                <li>Names must start with a letter and may use letters, numbers, and underscores.</li>
-                <li>Pick a type (text, textarea, number, boolean, select), default value, and whether it is required.</li>
-                <li>The same name reused across the title and instructions is treated as one variable.</li>
+                <li>{i18n.t("components.RoutineVariablesEditor.li")}</li>
+                <li>{i18n.t("components.RoutineVariablesEditor.li_1")}</li>
+                <li>{i18n.t("components.RoutineVariablesEditor.li_2")}</li>
               </ul>
             </section>
 
             <section className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Built-in variables
-              </h3>
+                {i18n.t("components.RoutineVariablesEditor.h3_1")}</h3>
               <p className="text-muted-foreground">
-                These are filled in automatically — no setup needed and they will not appear in the
-                Variables list.
-              </p>
+                {i18n.t("components.RoutineVariablesEditor.p_1")}</p>
               <div className="overflow-hidden rounded-lg border border-border/70">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-muted/40 text-muted-foreground">

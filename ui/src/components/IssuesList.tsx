@@ -1,4 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import i18n from "@/i18n";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
@@ -433,9 +434,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder={i18n.t("components.IssuesList.placeholder")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label={i18n.t("components.IssuesList.ariaLabel")}
         data-page-search-target="true"
       />
     </div>
@@ -508,7 +509,7 @@ function SubIssueProgressSummaryStrip({
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-issues completion progress"
+            aria-label={i18n.t("components.IssuesList.ariaLabel_1")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -530,7 +531,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? i18n.t("components.IssuesList.conditional") : i18n.t("components.IssuesList.conditional_1")}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}
@@ -545,11 +546,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{i18n.t("components.IssuesList.div")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">{i18n.t("components.IssuesList.div_1")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{i18n.t("components.IssuesList.div_2")}</div>
           )}
         </div>
       </div>
@@ -671,7 +672,7 @@ export function IssuesList({
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
       ISSUE_SEARCH_RESULT_LIMIT,
-      enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      enableRoutineVisibilityFilter ? i18n.t("components.IssuesList.conditional_2") : i18n.t("components.IssuesList.conditional_3"),
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
@@ -694,7 +695,7 @@ export function IssuesList({
         projectId ?? "__all-projects__",
         searchFilters ?? {},
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
-        enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+        enableRoutineVisibilityFilter ? i18n.t("components.IssuesList.conditional_4") : i18n.t("components.IssuesList.conditional_5"),
       ],
       queryFn: () =>
         issuesApi.list(selectedCompanyId!, {
@@ -821,7 +822,7 @@ export function IssuesList({
         id: `user:${currentUserId}`,
         label: currentUserId === "local-board" ? "Board" : "Me",
         kind: "user",
-        searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
+        searchText: currentUserId === "local-board" ? i18n.t("components.IssuesList.conditional_6") : `me board human ${currentUserId}`,
       });
     }
 
@@ -1033,7 +1034,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? i18n.t("components.IssuesList.conditional_7") : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1064,14 +1065,14 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_parent" ? i18n.t("components.IssuesList.conditional_8") : (issueTitleMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
     // assignee
     const groups = groupBy(
       filtered,
-      (issue) => issue.assigneeAgentId ?? (issue.assigneeUserId ? `__user:${issue.assigneeUserId}` : "__unassigned"),
+      (issue) => issue.assigneeAgentId ?? (issue.assigneeUserId ? `__user:${issue.assigneeUserId}` : i18n.t("components.IssuesList.conditional_9")),
     );
     return Object.keys(groups).map((key) => ({
       key,
@@ -1199,8 +1200,8 @@ export function IssuesList({
     return defaults;
   }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : i18n.t("components.IssuesList.conditional_10");
+  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : i18n.t("components.IssuesList.conditional_11");
   const openCreateIssueDialog = useCallback((groupKey?: string) => {
     openNewIssue(newIssueDefaults(groupKey));
   }, [newIssueDefaults, openNewIssue]);
@@ -1263,14 +1264,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={i18n.t("components.IssuesList.title")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={i18n.t("components.IssuesList.title_1")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1283,7 +1284,7 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? i18n.t("components.IssuesList.conditional_12") : i18n.t("components.IssuesList.conditional_13")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1294,7 +1295,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={i18n.t("components.IssuesList.title_2")}
             iconOnly
           />
 
@@ -1333,7 +1334,7 @@ export function IssuesList({
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        viewState.sortField === field ? "bg-accent/50 text-foreground" : i18n.t("components.IssuesList.conditional_14")
                       }`}
                       onClick={() => {
                         if (viewState.sortField === field) {
@@ -1378,7 +1379,7 @@ export function IssuesList({
                     <button
                       key={value}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.groupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        viewState.groupBy === value ? "bg-accent/50 text-foreground" : i18n.t("components.IssuesList.conditional_17")
                       }`}
                       onClick={() => updateView({ groupBy: value })}
                     >
@@ -1705,7 +1706,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder={i18n.t("components.IssuesList.placeholder_1")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1722,8 +1723,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
-                                      </button>
+                                        {i18n.t("components.IssuesList.button")}</button>
                                       {currentUserId && (
                                         <button
                                           className={cn(
@@ -1784,10 +1784,10 @@ export function IssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more issues..."
+                  ? i18n.t("components.IssuesList.conditional_18")
                   : remainingIssueRowCount > 0
                     ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} issues`
-                    : "Scroll to load more issues"}
+                    : i18n.t("components.IssuesList.conditional_19")}
               </p>
             </div>
           )}

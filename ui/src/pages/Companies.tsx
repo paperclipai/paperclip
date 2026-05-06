@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -97,7 +98,7 @@ export function Companies() {
       </div>
 
       <div className="h-6">
-        {loading && <p className="text-sm text-muted-foreground">Loading companies...</p>}
+        {loading && <p className="text-sm text-muted-foreground">{i18n.t("pages.Companies.p")}</p>}
         {error && <p className="text-sm text-destructive">{error.message}</p>}
       </div>
 
@@ -235,13 +236,13 @@ export function Companies() {
                 <div className="flex items-center gap-1.5">
                   <Users className="h-3.5 w-3.5" />
                   <span>
-                    {agentCount} {agentCount === 1 ? "agent" : "agents"}
+                    {agentCount} {agentCount === 1 ? "agent" : i18n.t("pages.Companies.conditional")}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <CircleDot className="h-3.5 w-3.5" />
                   <span>
-                    {issueCount} {issueCount === 1 ? "issue" : "issues"}
+                    {issueCount} {issueCount === 1 ? i18n.t("pages.Companies.conditional_1") : i18n.t("pages.Companies.conditional_2")}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 tabular-nums">
@@ -250,7 +251,7 @@ export function Companies() {
                     {formatCents(company.spentMonthlyCents)}
                     {company.budgetMonthlyCents > 0
                       ? <> / {formatCents(company.budgetMonthlyCents)} <span className="text-xs">({budgetPct}%)</span></>
-                      : <span className="text-xs ml-1">Unlimited budget</span>}
+                      : <span className="text-xs ml-1">{i18n.t("pages.Companies.span")}</span>}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 ml-auto">
@@ -266,8 +267,7 @@ export function Companies() {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-sm text-destructive font-medium">
-                    Delete this company and all its data? This cannot be undone.
-                  </p>
+                    {i18n.t("pages.Companies.p_1")}</p>
                   <div className="flex items-center gap-2 ml-4 shrink-0">
                     <Button
                       variant="ghost"
@@ -283,7 +283,7 @@ export function Companies() {
                       onClick={() => deleteMutation.mutate(company.id)}
                       disabled={deleteMutation.isPending}
                     >
-                      {deleteMutation.isPending ? "Deleting…" : "Delete"}
+                      {deleteMutation.isPending ? i18n.t("pages.Companies.conditional_3") : "Delete"}
                     </Button>
                   </div>
                 </div>

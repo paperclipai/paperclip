@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
+import i18n from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatDateTime } from "@/lib/utils";
@@ -37,7 +38,7 @@ export function IssueMonitorActivityCard({
     <div className="mb-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Monitor scheduled</div>
+          <div className="text-sm font-medium text-foreground">{i18n.t("components.IssueMonitorActivityCard.div")}</div>
           <div className="text-xs text-muted-foreground">
             Next check {formatDateTime(monitor.nextCheckAt)} ({formatMonitorOffset(monitor.nextCheckAt)})
           </div>
@@ -62,7 +63,7 @@ export function IssueMonitorActivityCard({
             onClick={onCheckNow}
             disabled={checkingNow}
           >
-            {checkingNow ? "Checking..." : "Check now"}
+            {checkingNow ? i18n.t("components.IssueMonitorActivityCard.conditional") : i18n.t("components.IssueMonitorActivityCard.conditional_1")}
           </Button>
         ) : null}
       </div>

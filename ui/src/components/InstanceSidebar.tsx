@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import i18n from "@/i18n";
 import { Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
@@ -17,7 +18,7 @@ export function InstanceSidebar() {
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
         <span className="flex-1 text-sm font-bold text-foreground truncate">
-          Instance Settings
+          {i18n.t("components.InstanceSidebar.span")}
         </span>
       </div>
 

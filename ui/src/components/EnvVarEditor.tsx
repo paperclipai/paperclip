@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import i18n from "@/i18n";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -144,8 +145,8 @@ export function EnvVarEditor({
     const plain = row.plainValue;
     if (!key || plain.length === 0) return;
 
-    const suggested = defaultSecretName(key) || "secret";
-    const name = window.prompt("Secret name", suggested)?.trim();
+    const suggested = defaultSecretName(key) || i18n.t("components.EnvVarEditor.defaultSecretName");
+    const name = window.prompt(i18n.t("components.EnvVarEditor.promptSecretName"), suggested)?.trim();
     if (!name) return;
 
     try {
@@ -153,7 +154,7 @@ export function EnvVarEditor({
       const created = await onCreateSecret(name, plain);
       updateRow(index, { source: "secret", secretId: created.id });
     } catch (error) {
-      setSealError(error instanceof Error ? error.message : "Failed to create secret");
+      setSealError(error instanceof Error ? error.message : i18n.t("components.EnvVarEditor.conditional"));
     }
   }
 
@@ -183,8 +184,8 @@ export function EnvVarEditor({
                 })
               }
             >
-              <option value="plain">Plain</option>
-              <option value="secret">Secret</option>
+              <option value="plain">{i18n.t("components.EnvVarEditor.plain")}</option>
+              <option value="secret">{i18n.t("components.EnvVarEditor.secret")}</option>
             </select>
             {row.source === "secret" ? (
               <>
@@ -205,7 +206,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  title={i18n.t("components.EnvVarEditor.title")}
                 >
                   New
                 </button>
@@ -214,7 +215,7 @@ export function EnvVarEditor({
               <>
                 <input
                   className={cn(inputClass, "flex-[3]")}
-                  placeholder="value"
+                  placeholder={i18n.t("components.EnvVarEditor.placeholder")}
                   value={row.plainValue}
                   onChange={(event) => updateRow(index, { plainValue: event.target.value })}
                 />
@@ -223,7 +224,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Store value as secret and replace with reference"
+                  title={i18n.t("components.EnvVarEditor.title_1")}
                 >
                   Seal
                 </button>
@@ -245,8 +246,7 @@ export function EnvVarEditor({
       })}
       {sealError && <p className="text-[11px] text-destructive">{sealError}</p>}
       <p className="text-[11px] text-muted-foreground/60">
-        PAPERCLIP_* variables are injected automatically at runtime.
-      </p>
+        {i18n.t("components.EnvVarEditor.p")}</p>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import {
   ChevronDown,
   ChevronRight,
@@ -451,7 +452,7 @@ const EnumField = React.memo(({
       disabled={disabled}
     >
       <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
+        <SelectValue placeholder={i18n.t("components.JsonSchemaForm.placeholder")} />
       </SelectTrigger>
       <SelectContent>
         {options.map((option) => (
@@ -524,7 +525,7 @@ const SecretField = React.memo(({
             <Eye className="h-4 w-4 text-muted-foreground" />
           )}
           <span className="sr-only">
-            {isVisible ? "Hide secret" : "Show secret"}
+            {isVisible ? i18n.t("components.JsonSchemaForm.conditional") : i18n.t("components.JsonSchemaForm.conditional_1")}
           </span>
         </Button>
       </div>
@@ -567,7 +568,7 @@ const NumberField = React.memo(({
   >
     <Input
       type="number"
-      step={type === "integer" ? "1" : "any"}
+      step={type === "integer" ? "1" : i18n.t("components.JsonSchemaForm.conditional_2")}
       value={value !== undefined ? String(value) : ""}
       onChange={(e) => {
         const val = e.target.value;
@@ -694,7 +695,7 @@ const ArrayField = React.memo(({
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isComplex ? "Add item" : "Add"}
+          {isComplex ? i18n.t("components.JsonSchemaForm.conditional_3") : "Add"}
         </Button>
       </div>
 
@@ -739,14 +740,13 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{i18n.t("components.JsonSchemaForm.span")}</span>
             </Button>
           </div>
         ))}
         {items.length === 0 && (
           <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            No items added yet.
-          </div>
+            {i18n.t("components.JsonSchemaForm.div")}</div>
         )}
       </div>
       {error && (
@@ -1014,8 +1014,7 @@ export function JsonSchemaForm({
           className,
         )}
       >
-        No configuration options available.
-      </div>
+        {i18n.t("components.JsonSchemaForm.div_1")}</div>
     );
   }
 

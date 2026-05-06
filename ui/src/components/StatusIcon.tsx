@@ -1,4 +1,5 @@
 import { useState } from "react";
+import i18n from "@/i18n";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";

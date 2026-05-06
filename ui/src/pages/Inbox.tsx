@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
@@ -275,7 +276,7 @@ export function FailedRunInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={i18n.t("pages.Inbox.ariaLabel")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -289,7 +290,7 @@ export function FailedRunInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
+                aria-label={i18n.t("pages.Inbox.ariaLabel_1")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -302,7 +303,7 @@ export function FailedRunInboxRow({
           to={`/agents/${run.agentId}/runs/${run.id}`}
           className={cn(
             "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors",
-            selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+            selected ? i18n.t("pages.Inbox.conditional") : i18n.t("pages.Inbox.conditional_1"),
           )}
         >
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
@@ -341,7 +342,7 @@ export function FailedRunInboxRow({
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Retrying…" : "Retry"}
+            {isRetrying ? i18n.t("pages.Inbox.conditional_2") : "Retry"}
           </Button>
           {!showUnreadSlot && (
             <button
@@ -365,7 +366,7 @@ export function FailedRunInboxRow({
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Retrying…" : "Retry"}
+          {isRetrying ? i18n.t("pages.Inbox.conditional_3") : "Retry"}
         </Button>
         {!showUnreadSlot && (
           <button
@@ -431,7 +432,7 @@ function ApprovalInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={i18n.t("pages.Inbox.ariaLabel_2")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -445,7 +446,7 @@ function ApprovalInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
+                aria-label={i18n.t("pages.Inbox.ariaLabel_3")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -458,7 +459,7 @@ function ApprovalInboxRow({
           to={`/approvals/${approval.id}`}
           className={cn(
             "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors",
-            selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+            selected ? i18n.t("pages.Inbox.conditional_4") : i18n.t("pages.Inbox.conditional_5"),
           )}
         >
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
@@ -567,7 +568,7 @@ function JoinRequestInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={i18n.t("pages.Inbox.ariaLabel_4")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -581,7 +582,7 @@ function JoinRequestInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
+                aria-label={i18n.t("pages.Inbox.ariaLabel_5")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -867,7 +868,7 @@ export function Inbox() {
         id: `user:${currentUserId}`,
         label: currentUserId === "local-board" ? "Board" : "Me",
         kind: "user",
-        searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
+        searchText: currentUserId === "local-board" ? i18n.t("pages.Inbox.conditional_7") : `me board human ${currentUserId}`,
       });
     }
 
@@ -1333,7 +1334,7 @@ export function Inbox() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Inbox.conditional_8"));
     },
   });
 
@@ -1344,7 +1345,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Inbox.conditional_9"));
     },
   });
 
@@ -1359,7 +1360,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Inbox.conditional_10"));
     },
   });
 
@@ -1372,7 +1373,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Inbox.conditional_11"));
     },
   });
 
@@ -1462,7 +1463,7 @@ export function Inbox() {
       return { previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive issue");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Inbox.conditional_12"));
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
@@ -1496,7 +1497,7 @@ export function Inbox() {
       setUnarchivingIssueIds((prev) => new Set(prev).add(id));
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(err instanceof Error ? err.message : i18n.t("pages.Inbox.conditional_13"));
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => {
@@ -1862,8 +1863,8 @@ export function Inbox() {
   });
 
   const visibleSections = [
-    showAlertsSection ? "alerts" : null,
-    showWorkItemsSection ? "work_items" : null,
+    showAlertsSection ? i18n.t("pages.Inbox.conditional_14") : null,
+    showWorkItemsSection ? i18n.t("pages.Inbox.conditional_15") : null,
   ].filter((key): key is SectionKey => key !== null);
 
   const allLoaded =
@@ -1890,7 +1891,7 @@ export function Inbox() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
-            placeholder="Search inbox…"
+            placeholder={i18n.t("pages.Inbox.placeholder")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -1937,7 +1938,7 @@ export function Inbox() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search inbox…"
+              placeholder={i18n.t("pages.Inbox.placeholder_1")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -1967,7 +1968,7 @@ export function Inbox() {
             size="icon"
             className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
             onClick={toggleNesting}
-            title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+            title={nestingEnabled ? i18n.t("pages.Inbox.conditional_16") : i18n.t("pages.Inbox.conditional_17")}
           >
             <ListTree className="h-3.5 w-3.5" />
           </Button>
@@ -2027,7 +2028,7 @@ export function Inbox() {
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which inbox columns stay visible"
+            title={i18n.t("pages.Inbox.title")}
             iconOnly
           />
           {canMarkAllRead && (
@@ -2040,14 +2041,14 @@ export function Inbox() {
                 onClick={() => setShowMarkAllReadConfirm(true)}
                 disabled={markAllReadMutation.isPending}
               >
-                {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                {markAllReadMutation.isPending ? i18n.t("pages.Inbox.conditional_18") : i18n.t("pages.Inbox.conditional_19")}
               </Button>
               <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                 <DialogContent className="sm:max-w-md">
                   <DialogHeader>
-                    <DialogTitle>Mark all as read?</DialogTitle>
+                    <DialogTitle>{i18n.t("pages.Inbox.dialogtitle")}</DialogTitle>
                     <DialogDescription>
-                      This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
+                      This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? i18n.t("pages.Inbox.conditional_20") : i18n.t("pages.Inbox.conditional_21")} as read.
                     </DialogDescription>
                   </DialogHeader>
                   <DialogFooter>
@@ -2081,11 +2082,11 @@ export function Inbox() {
               <SelectValue placeholder="Category" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
+              <SelectItem value="everything">{i18n.t("pages.Inbox.selectitem")}</SelectItem>
+              <SelectItem value="issues_i_touched">{i18n.t("pages.Inbox.selectitem_1")}</SelectItem>
+              <SelectItem value="join_requests">{i18n.t("pages.Inbox.selectitem_2")}</SelectItem>
               <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
+              <SelectItem value="failed_runs">{i18n.t("pages.Inbox.selectitem_3")}</SelectItem>
               <SelectItem value="alerts">Alerts</SelectItem>
             </SelectContent>
           </Select>
@@ -2096,11 +2097,11 @@ export function Inbox() {
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
               <SelectTrigger className="h-8 w-[170px] text-xs">
-                <SelectValue placeholder="Approval status" />
+                <SelectValue placeholder={i18n.t("pages.Inbox.placeholder_2")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All approval statuses</SelectItem>
-                <SelectItem value="actionable">Needs action</SelectItem>
+                <SelectItem value="all">{i18n.t("pages.Inbox.selectitem_4")}</SelectItem>
+                <SelectItem value="actionable">{i18n.t("pages.Inbox.selectitem_5")}</SelectItem>
                 <SelectItem value="resolved">Resolved</SelectItem>
               </SelectContent>
             </Select>
@@ -2120,14 +2121,14 @@ export function Inbox() {
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
-              ? "No inbox items match your search."
+              ? i18n.t("pages.Inbox.conditional_22")
               : tab === "mine"
-              ? "Inbox zero."
+              ? i18n.t("pages.Inbox.conditional_23")
               : tab === "unread"
-              ? "No new inbox items."
+              ? i18n.t("pages.Inbox.conditional_24")
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? i18n.t("pages.Inbox.conditional_25")
+                : i18n.t("pages.Inbox.conditional_26")
           }
         />
       )}
@@ -2271,7 +2272,7 @@ export function Inbox() {
                       >
                         <div className="h-px flex-1 bg-border/80" />
                         <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          {group.searchSection === "archived" ? "Archived" : "Other results"}
+                          {group.searchSection === "archived" ? "Archived" : i18n.t("pages.Inbox.conditional_29")}
                         </span>
                         <div className="h-px flex-1 bg-border/80" />
                       </div>,
@@ -2551,7 +2552,7 @@ export function Inbox() {
                     <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
                     <span className="text-sm">
                       <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                      {dashboard!.agents.error === 1 ? i18n.t("pages.Inbox.conditional_30") : i18n.t("pages.Inbox.conditional_31")} errors
                     </span>
                   </Link>
                   <button

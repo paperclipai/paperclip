@@ -1,4 +1,5 @@
 import type { QuotaWindow } from "@paperclipai/shared";
+import i18n from "@/i18n";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
 
 interface CodexSubscriptionPanelProps {
@@ -66,11 +67,9 @@ export function CodexSubscriptionPanel({
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-            Codex subscription
-          </div>
+            {i18n.t("components.CodexSubscriptionPanel.div")}</div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Live Codex quota windows.
-          </div>
+            {i18n.t("components.CodexSubscriptionPanel.div_1")}</div>
         </div>
         {source ? (
           <span className="shrink-0 border border-border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -88,8 +87,7 @@ export function CodexSubscriptionPanel({
       <div className="mt-4 space-y-5">
         <div className="space-y-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Account windows
-          </div>
+            {i18n.t("components.CodexSubscriptionPanel.div_2")}</div>
           <div className="space-y-3">
             {accountWindows.map((window) => (
               <QuotaWindowRow key={window.label} window={window} />
@@ -100,8 +98,7 @@ export function CodexSubscriptionPanel({
         {modelWindows.length > 0 ? (
           <div className="space-y-3">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Model windows
-            </div>
+              {i18n.t("components.CodexSubscriptionPanel.div_3")}</div>
             <div className="space-y-3">
               {modelWindows.map((window) => (
                 <QuotaWindowRow key={window.label} window={window} />

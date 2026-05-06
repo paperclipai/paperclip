@@ -1,4 +1,5 @@
 import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
@@ -401,7 +402,7 @@ function CodeBlock({
     }, 1500);
   }, [children]);
 
-  const label = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
+  const label = failed ? i18n.t("components.MarkdownBody.conditional") : copied ? i18n.t("components.MarkdownBody.conditional_1") : "Copy";
 
   return (
     <div className="paperclip-markdown-codeblock">
@@ -415,7 +416,7 @@ function CodeBlock({
       <button
         type="button"
         onClick={handleCopy}
-        aria-label="Copy code"
+        aria-label={i18n.t("components.MarkdownBody.ariaLabel")}
         title={label}
         className="paperclip-markdown-codeblock-copy"
         data-copied={copied || undefined}
@@ -460,7 +461,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         const message =
           err instanceof Error && err.message
             ? err.message
-            : "Failed to render Mermaid diagram.";
+            : i18n.t("components.MarkdownBody.conditional_2");
         setError(message);
       });
 
@@ -476,7 +477,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
       ) : (
         <>
           <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
-            {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
+            {error ? `Unable to render Mermaid diagram: ${error}` : i18n.t("components.MarkdownBody.conditional_3")}
           </p>
           <pre className="paperclip-mermaid-source">
             <code className="language-mermaid">{source}</code>

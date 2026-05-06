@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock, FlaskConical, Play, Search } from "lucide-react";
 import type {
@@ -50,20 +51,18 @@ function RecoveryPreviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Confirm auto-recovery</DialogTitle>
+          <DialogTitle>{i18n.t("pages.InstanceExperimentalSettings.dialogtitle")}</DialogTitle>
           <DialogDescription>
             {preview
-              ? `${count} recovery ${count === 1 ? "task" : "tasks"} match the last ${preview.lookbackHours} hours.`
-              : "Checking recovery candidates before enabling."}
+              ? `${count} recovery ${count === 1 ? i18n.t("pages.InstanceExperimentalSettings.conditional") : i18n.t("pages.InstanceExperimentalSettings.conditional_1")} match the last ${preview.lookbackHours} hours.`
+              : i18n.t("pages.InstanceExperimentalSettings.conditional_2")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="max-h-[min(28rem,65vh)] space-y-3 overflow-y-auto pr-1">
           {preview && preview.items.length === 0 ? (
             <div className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-              No recovery tasks would be created right now. Auto-recovery can still run for future liveness incidents in
-              this window.
-            </div>
+              {i18n.t("pages.InstanceExperimentalSettings.div")}</div>
           ) : null}
 
           {preview?.items.map((item) => (
@@ -97,7 +96,7 @@ function RecoveryPreviewDialog({
         {preview && preview.skippedOutsideLookback > 0 ? (
           <p className="text-xs text-muted-foreground">
             {preview.skippedOutsideLookback} current{" "}
-            {preview.skippedOutsideLookback === 1 ? "finding is" : "findings are"} outside the configured lookback and
+            {preview.skippedOutsideLookback === 1 ? i18n.t("pages.InstanceExperimentalSettings.conditional_3") : i18n.t("pages.InstanceExperimentalSettings.conditional_4")} outside the configured lookback and
             will not be touched.
           </p>
         ) : null}
@@ -128,7 +127,7 @@ export function InstanceExperimentalSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: i18n.t("pages.InstanceExperimentalSettings.label") },
       { label: "Experimental" },
     ]);
   }, [setBreadcrumbs]);
@@ -149,7 +148,7 @@ export function InstanceExperimentalSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.InstanceExperimentalSettings.conditional_5"));
     },
   });
 
@@ -162,7 +161,7 @@ export function InstanceExperimentalSettings() {
       setPreviewDialogOpen(true);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to preview recovery tasks.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.InstanceExperimentalSettings.conditional_6"));
     },
   });
 
@@ -178,7 +177,7 @@ export function InstanceExperimentalSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to create recovery tasks.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.InstanceExperimentalSettings.conditional_7"));
     },
   });
 
@@ -190,7 +189,7 @@ export function InstanceExperimentalSettings() {
   }, [experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours]);
 
   if (experimentalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.InstanceExperimentalSettings.div_1")}</div>;
   }
 
   if (experimentalQuery.error) {
@@ -198,7 +197,7 @@ export function InstanceExperimentalSettings() {
       <div className="text-sm text-destructive">
         {experimentalQuery.error instanceof Error
           ? experimentalQuery.error.message
-          : "Failed to load experimental settings."}
+          : i18n.t("pages.InstanceExperimentalSettings.conditional_8")}
       </div>
     );
   }
@@ -252,8 +251,7 @@ export function InstanceExperimentalSettings() {
           <h1 className="text-lg font-semibold">Experimental</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Opt into features that are still being evaluated before they become default behavior.
-        </p>
+          {i18n.t("pages.InstanceExperimentalSettings.p")}</p>
       </div>
 
       {actionError && (
@@ -265,17 +263,15 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Environments</h2>
+            <h2 className="text-sm font-semibold">{i18n.t("pages.InstanceExperimentalSettings.h2")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show environment management in company settings and allow project and agent environment assignment
-              controls.
-            </p>
+              {i18n.t("pages.InstanceExperimentalSettings.p_1")}</p>
           </div>
           <ToggleSwitch
             checked={enableEnvironments}
             onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle environments experimental setting"
+            aria-label={i18n.t("pages.InstanceExperimentalSettings.ariaLabel")}
           />
         </div>
       </section>
@@ -283,17 +279,15 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
+            <h2 className="text-sm font-semibold">{i18n.t("pages.InstanceExperimentalSettings.h2_1")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show execution workspace controls in project configuration and allow isolated workspace behavior for new
-              and existing issue runs.
-            </p>
+              {i18n.t("pages.InstanceExperimentalSettings.p_2")}</p>
           </div>
           <ToggleSwitch
             checked={enableIsolatedWorkspaces}
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle isolated workspaces experimental setting"
+            aria-label={i18n.t("pages.InstanceExperimentalSettings.ariaLabel_1")}
           />
         </div>
       </section>
@@ -301,17 +295,15 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
+            <h2 className="text-sm font-semibold">{i18n.t("pages.InstanceExperimentalSettings.h2_2")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server
-              automatically when backend changes or migrations make the current boot stale.
-            </p>
+              {i18n.t("pages.InstanceExperimentalSettings.p_3")}</p>
           </div>
           <ToggleSwitch
             checked={autoRestartDevServerWhenIdle}
             onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle guarded dev-server auto-restart"
+            aria-label={i18n.t("pages.InstanceExperimentalSettings.ariaLabel_2")}
           />
         </div>
       </section>
@@ -320,11 +312,9 @@ export function InstanceExperimentalSettings() {
         <div className="flex flex-col gap-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Auto-Create Issue Recovery Tasks</h2>
+              <h2 className="text-sm font-semibold">{i18n.t("pages.InstanceExperimentalSettings.h2_3")}</h2>
               <p className="max-w-2xl text-sm text-muted-foreground">
-                Let the heartbeat scheduler create recovery issues for issue dependency chains found inside the
-                configured lookback window.
-              </p>
+                {i18n.t("pages.InstanceExperimentalSettings.p_4")}</p>
             </div>
             <ToggleSwitch
               checked={enableIssueGraphLivenessAutoRecovery}
@@ -336,7 +326,7 @@ export function InstanceExperimentalSettings() {
                 previewForEnable();
               }}
               disabled={recoveryActionPending}
-              aria-label="Toggle issue graph liveness auto-recovery"
+              aria-label={i18n.t("pages.InstanceExperimentalSettings.ariaLabel_3")}
             />
           </div>
 
@@ -397,7 +387,7 @@ export function InstanceExperimentalSettings() {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Current window: last {lookbackHours} {lookbackHours === 1 ? "hour" : "hours"}.
+            Current window: last {lookbackHours} {lookbackHours === 1 ? i18n.t("pages.InstanceExperimentalSettings.conditional_9") : i18n.t("pages.InstanceExperimentalSettings.conditional_10")}.
           </p>
         </div>
       </section>

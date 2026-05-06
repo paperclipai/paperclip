@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import i18n from "@/i18n";
 import {
   Field,
   DraftInput,
@@ -21,7 +22,7 @@ export function HermesLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   if (hideInstructionsFile) return null;
   return (
-    <Field label="Agent instructions file" hint={instructionsFileHint}>
+    <Field label={i18n.t("adapters.hermes-local.config-fields.label_1")} hint={instructionsFileHint}>
       <div className="flex items-center gap-2">
         <DraftInput
           value={

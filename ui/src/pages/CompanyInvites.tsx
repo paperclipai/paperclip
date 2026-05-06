@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, ExternalLink, MailPlus } from "lucide-react";
 import { accessApi } from "@/api/access";
@@ -14,25 +15,25 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view company work and follow along without operational permissions.",
+    description: i18n.t("pages.CompanyInvites.description"),
     gets: "No built-in grants.",
   },
   {
     value: "operator",
     label: "Operator",
-    description: "Recommended for people who need to help run work without managing access.",
+    description: i18n.t("pages.CompanyInvites.description_1"),
     gets: "Can assign tasks.",
   },
   {
     value: "admin",
     label: "Admin",
-    description: "Recommended for operators who need to invite people, create agents, and approve joins.",
+    description: i18n.t("pages.CompanyInvites.description_2"),
     gets: "Can create agents, invite users, assign tasks, and approve join requests.",
   },
   {
     value: "owner",
     label: "Owner",
-    description: "Full company access, including membership and permission management.",
+    description: i18n.t("pages.CompanyInvites.description_3"),
     gets: "Everything in Admin, plus managing members and permission grants.",
   },
 ] as const;
@@ -72,7 +73,7 @@ export function CompanyInvites() {
     }
 
     pushToast({
-      title: "Clipboard unavailable",
+      title: i18n.t("pages.CompanyInvites.title"),
       body: "Copy the invite URL manually from the field below.",
       tone: "warn",
     });
@@ -121,15 +122,15 @@ export function CompanyInvites() {
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
-        title: "Invite created",
-        body: copied ? "Invite ready below and copied to clipboard." : "Invite ready below.",
+        title: i18n.t("pages.CompanyInvites.title_1"),
+        body: copied ? i18n.t("pages.CompanyInvites.conditional") : i18n.t("pages.CompanyInvites.conditional_1"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to create invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: i18n.t("pages.CompanyInvites.title_2"),
+        body: error instanceof Error ? error.message : i18n.t("pages.CompanyInvites.conditional_2"),
         tone: "error",
       });
     },
@@ -139,32 +140,32 @@ export function CompanyInvites() {
     mutationFn: (inviteId: string) => accessApi.revokeInvite(inviteId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
-      pushToast({ title: "Invite revoked", tone: "success" });
+      pushToast({ title: i18n.t("pages.CompanyInvites.title_3"), tone: "success" });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to revoke invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: i18n.t("pages.CompanyInvites.title_4"),
+        body: error instanceof Error ? error.message : i18n.t("pages.CompanyInvites.conditional_3"),
         tone: "error",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.CompanyInvites.div")}</div>;
   }
 
   if (invitesQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading invites…</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.CompanyInvites.div_1")}</div>;
   }
 
   if (invitesQuery.error) {
     const message =
       invitesQuery.error instanceof ApiError && invitesQuery.error.status === 403
-        ? "You do not have permission to manage company invites."
+        ? i18n.t("pages.CompanyInvites.conditional_4")
         : invitesQuery.error instanceof Error
           ? invitesQuery.error.message
-          : "Failed to load invites.";
+          : i18n.t("pages.CompanyInvites.conditional_5");
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -173,19 +174,17 @@ export function CompanyInvites() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <MailPlus className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Invites</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.CompanyInvites.h1")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Create human invite links for company access. New invite links are copied to your clipboard when they are generated.
-        </p>
+          {i18n.t("pages.CompanyInvites.p")}</p>
       </div>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Create invite</h2>
+          <h2 className="text-sm font-semibold">{i18n.t("pages.CompanyInvites.h2")}</h2>
           <p className="text-sm text-muted-foreground">
-            Generate a human invite link and choose the default access it should request.
-          </p>
+            {i18n.t("pages.CompanyInvites.p_1")}</p>
         </div>
 
         <fieldset className="space-y-3">
@@ -225,21 +224,20 @@ export function CompanyInvites() {
         </fieldset>
 
         <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.
-        </div>
+          {i18n.t("pages.CompanyInvites.div_2")}</div>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
-            {createInviteMutation.isPending ? "Creating…" : "Create invite"}
+            {createInviteMutation.isPending ? i18n.t("pages.CompanyInvites.conditional_6") : i18n.t("pages.CompanyInvites.conditional_7")}
           </Button>
-          <span className="text-sm text-muted-foreground">Invite history below keeps the audit trail.</span>
+          <span className="text-sm text-muted-foreground">{i18n.t("pages.CompanyInvites.span")}</span>
         </div>
 
         {latestInviteUrl ? (
           <div className="space-y-3 rounded-lg border border-border px-4 py-4">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium">Latest invite link</div>
+                <div className="text-sm font-medium">{i18n.t("pages.CompanyInvites.div_3")}</div>
                 {latestInviteCopied ? (
                   <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                     <Check className="h-3.5 w-3.5" />
@@ -248,8 +246,7 @@ export function CompanyInvites() {
                 ) : null}
               </div>
               <div className="text-sm text-muted-foreground">
-                This URL includes the current Paperclip domain returned by the server.
-              </div>
+                {i18n.t("pages.CompanyInvites.div_4")}</div>
             </div>
             <button
               type="button"
@@ -276,10 +273,9 @@ export function CompanyInvites() {
       <section className="rounded-xl border border-border">
         <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold">Invite history</h2>
+            <h2 className="text-sm font-semibold">{i18n.t("pages.CompanyInvites.h2_1")}</h2>
             <p className="text-sm text-muted-foreground">
-              Review invite status, role, inviter, and any linked join request.
-            </p>
+              {i18n.t("pages.CompanyInvites.p_2")}</p>
           </div>
           <Link to="/inbox/requests" className="text-sm underline underline-offset-4">
             Open join request queue
@@ -288,8 +284,7 @@ export function CompanyInvites() {
 
         {inviteHistory.length === 0 ? (
           <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this company yet.
-          </div>
+            {i18n.t("pages.CompanyInvites.div_5")}</div>
         ) : (
           <div className="border-t border-border">
             <div className="overflow-x-auto">
@@ -298,9 +293,9 @@ export function CompanyInvites() {
                   <tr className="border-b border-border">
                     <th className="px-5 py-3 font-medium text-muted-foreground">State</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Role</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Invited by</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{i18n.t("pages.CompanyInvites.th")}</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Created</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Join request</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{i18n.t("pages.CompanyInvites.th_1")}</th>
                     <th className="px-5 py-3 text-right font-medium text-muted-foreground">Action</th>
                   </tr>
                 </thead>
@@ -358,7 +353,7 @@ export function CompanyInvites() {
                   onClick={() => invitesQuery.fetchNextPage()}
                   disabled={invitesQuery.isFetchingNextPage}
                 >
-                  {invitesQuery.isFetchingNextPage ? "Loading more…" : "View more"}
+                  {invitesQuery.isFetchingNextPage ? i18n.t("pages.CompanyInvites.conditional_8") : i18n.t("pages.CompanyInvites.conditional_9")}
                 </Button>
               </div>
             ) : null}

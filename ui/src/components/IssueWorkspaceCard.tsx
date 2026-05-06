@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { Link } from "@/lib/router";
 import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
@@ -17,9 +18,9 @@ import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "shared_workspace", label: i18n.t("components.IssueWorkspaceCard.label") },
+  { value: "isolated_workspace", label: i18n.t("components.IssueWorkspaceCard.label_1") },
+  { value: "reuse_existing", label: i18n.t("components.IssueWorkspaceCard.label_2") },
 ] as const;
 
 function issueModeForExistingWorkspace(mode: string | null | undefined) {
@@ -87,7 +88,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         type="button"
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
+        title={copied ? i18n.t("components.IssueWorkspaceCard.conditional") : "Copy"}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
@@ -114,8 +115,8 @@ function configuredWorkspaceLabel(
       return "New isolated workspace";
     case "reuse_existing":
       return reusableWorkspace?.mode === "isolated_workspace"
-        ? "Existing isolated workspace"
-        : "Reuse existing workspace";
+        ? i18n.t("components.IssueWorkspaceCard.conditional_1")
+        : i18n.t("components.IssueWorkspaceCard.conditional_2");
     default:
       return "Project default";
   }
@@ -247,7 +248,7 @@ export function IssueWorkspaceCard({
     ?? null;
 
   const currentSelection = shouldPresentExistingWorkspaceSelection(issue)
-    ? "reuse_existing"
+    ? i18n.t("components.IssueWorkspaceCard.conditional_3")
     : (
         issue.executionWorkspacePreference
         ?? issue.executionWorkspaceSettings?.mode
@@ -421,7 +422,7 @@ export function IssueWorkspaceCard({
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">Repo:</span>
+              <span className="text-[11px]">{i18n.t("components.IssueWorkspaceCard.span")}</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}
@@ -429,19 +430,19 @@ export function IssueWorkspaceCard({
             <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
               Environment: <span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>
               {currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
-                ? " · reused workspace"
+                ? i18n.t("components.IssueWorkspaceCard.conditional_4")
                 : !issue.executionWorkspaceSettings?.environmentId && projectEnvironmentId === currentEnvironmentId
-                ? " · project default"
+                ? i18n.t("components.IssueWorkspaceCard.conditional_5")
                 : null}
             </div>
           )}
           {!workspace && (
             <div className="text-muted-foreground">
               {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this issue runs."
+                ? i18n.t("components.IssueWorkspaceCard.conditional_6")
                 : currentSelection === "reuse_existing"
-                  ? "This issue will reuse an existing workspace when it runs."
-                  : "This issue will use the project default workspace configuration when it runs."}
+                  ? i18n.t("components.IssueWorkspaceCard.conditional_7")
+                  : i18n.t("components.IssueWorkspaceCard.conditional_8")}
             </div>
           )}
           {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
@@ -491,7 +492,7 @@ export function IssueWorkspaceCard({
             {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
-                  ? "Existing isolated workspace"
+                  ? i18n.t("components.IssueWorkspaceCard.conditional_9")
                   : option.label}
               </option>
             ))}
@@ -528,11 +529,11 @@ export function IssueWorkspaceCard({
                 <option value="">
                   {reuseExistingSelection
                     ? configuredReusableWorkspace
-                      ? "No environment on reused workspace"
-                      : "Select an existing workspace to inspect its environment"
+                      ? i18n.t("components.IssueWorkspaceCard.conditional_10")
+                      : i18n.t("components.IssueWorkspaceCard.conditional_11")
                     : projectEnvironmentId
-                      ? "Project default environment"
-                      : "No environment"}
+                      ? i18n.t("components.IssueWorkspaceCard.conditional_12")
+                      : i18n.t("components.IssueWorkspaceCard.conditional_13")}
                 </option>
                 {runSelectableEnvironments.map((environment) => (
                   <option key={environment.id} value={environment.id}>
@@ -543,8 +544,8 @@ export function IssueWorkspaceCard({
               {reuseExistingSelection && (
                 <div className="text-[11px] text-muted-foreground">
                   {configuredReusableWorkspace
-                    ? "Environment selection is locked while reusing an existing workspace. The next run will use that workspace's persisted environment config."
-                    : "Choose an existing workspace first. Its persisted environment config will determine the next run."}
+                    ? i18n.t("components.IssueWorkspaceCard.conditional_14")
+                    : i18n.t("components.IssueWorkspaceCard.conditional_15")}
                 </div>
               )}
             </>

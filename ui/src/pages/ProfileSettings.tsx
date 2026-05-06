@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
@@ -35,7 +36,7 @@ export function ProfileSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: i18n.t("pages.ProfileSettings.label") },
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
@@ -78,7 +79,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.ProfileSettings.conditional"));
     },
   });
 
@@ -101,7 +102,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.ProfileSettings.conditional_1"));
     },
   });
 
@@ -113,18 +114,18 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.ProfileSettings.conditional_2"));
     },
   });
 
   if (sessionQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.ProfileSettings.div")}</div>;
   }
 
   if (sessionQuery.error || !sessionQuery.data) {
     return (
       <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
+        {sessionQuery.error instanceof Error ? sessionQuery.error.message : i18n.t("pages.ProfileSettings.conditional_3")}
       </div>
     );
   }
@@ -135,7 +136,7 @@ export function ProfileSettings() {
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
     ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
-    : "Select a company to upload an avatar into Paperclip storage.";
+    : i18n.t("pages.ProfileSettings.conditional_4");
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -145,8 +146,7 @@ export function ProfileSettings() {
           <h1 className="text-lg font-semibold">Profile</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Control how your account appears in the sidebar and other board surfaces.
-        </p>
+          {i18n.t("pages.ProfileSettings.p")}</p>
       </div>
 
       {actionError ? (
@@ -197,7 +197,7 @@ export function ProfileSettings() {
                     disabled={!selectedCompanyId || isSavingProfile}
                   >
                     {uploadAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Camera className="size-4" />}
-                    {currentImage ? "Change photo" : "Upload photo"}
+                    {currentImage ? i18n.t("pages.ProfileSettings.conditional_5") : i18n.t("pages.ProfileSettings.conditional_6")}
                   </Button>
                   {currentImage ? (
                     <Button
@@ -243,8 +243,7 @@ export function ProfileSettings() {
               placeholder="Board"
             />
             <p className="text-xs text-muted-foreground">
-              Shown in the sidebar account footer and comment author surfaces.
-            </p>
+              {i18n.t("pages.ProfileSettings.p_1")}</p>
           </div>
 
           <div className="space-y-2">
@@ -256,14 +255,13 @@ export function ProfileSettings() {
               disabled
             />
             <p className="text-xs text-muted-foreground">
-              Email is managed by your auth session and is read-only here.
-            </p>
+              {i18n.t("pages.ProfileSettings.p_2")}</p>
           </div>
 
           <div className="md:col-span-2 flex justify-end">
             <Button type="submit" disabled={isSavingProfile || !name.trim()}>
               {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {updateMutation.isPending ? "Saving..." : "Save profile"}
+              {updateMutation.isPending ? i18n.t("pages.ProfileSettings.conditional_7") : i18n.t("pages.ProfileSettings.conditional_8")}
             </Button>
           </div>
         </form>

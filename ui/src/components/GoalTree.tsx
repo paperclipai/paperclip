@@ -1,4 +1,5 @@
 import type { Goal } from "@paperclipai/shared";
+import i18n from "@/i18n";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
 import { ChevronRight } from "lucide-react";
@@ -96,7 +97,7 @@ export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
   if (goals.length === 0) {
-    return <p className="text-sm text-muted-foreground">No goals.</p>;
+    return <p className="text-sm text-muted-foreground">{i18n.t("components.GoalTree.p")}</p>;
   }
 
   return (

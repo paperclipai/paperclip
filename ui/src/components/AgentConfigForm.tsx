@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -151,7 +152,7 @@ const codexThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
+  { id: "xhigh", label: i18n.t("components.AgentConfigForm.label") },
 ] as const;
 
 const openCodeThinkingEffortOptions = [
@@ -160,7 +161,7 @@ const openCodeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
+  { id: "xhigh", label: i18n.t("components.AgentConfigForm.label_1") },
   { id: "max", label: "Max" },
 ] as const;
 
@@ -509,7 +510,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       errorMessage: testEnvironment.error instanceof Error
         ? testEnvironment.error.message
         : testEnvironment.error
-          ? "Environment test failed"
+          ? i18n.t("components.AgentConfigForm.conditional_2")
           : null,
       result: testEnvironment.data ?? null,
     });
@@ -531,7 +532,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      setRefreshModelsError(error instanceof Error ? error.message : i18n.t("components.AgentConfigForm.conditional_3"));
     } finally {
       setRefreshingModels(false);
     }
@@ -690,13 +691,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">Unsaved changes</span>
+            <span className="text-xs text-muted-foreground">{i18n.t("components.AgentConfigForm.span")}</span>
             <Button
               size="sm"
               onClick={handleSave}
               disabled={!isCreate && props.isSaving}
             >
-              {!isCreate && props.isSaving ? "Saving..." : "Save"}
+              {!isCreate && props.isSaving ? i18n.t("components.AgentConfigForm.conditional_8") : "Save"}
             </Button>
           </div>
         </div>
@@ -709,14 +710,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Identity</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? i18n.t("components.AgentConfigForm.conditional_9") : "px-4 pb-3 space-y-3")}>
             <Field label="Name" hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
                 onCommit={(v) => mark("identity", "name", v)}
                 immediate
                 className={inputClass}
-                placeholder="Agent name"
+                placeholder={i18n.t("components.AgentConfigForm.placeholder")}
               />
             </Field>
             <Field label="Title" hint={help.title}>
@@ -725,23 +726,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onCommit={(v) => mark("identity", "title", v || null)}
                 immediate
                 className={inputClass}
-                placeholder="e.g. VP of Engineering"
+                placeholder={i18n.t("components.AgentConfigForm.placeholder_1")}
               />
             </Field>
-            <Field label="Reports to" hint={help.reportsTo}>
+            <Field label={i18n.t("components.AgentConfigForm.label_2")} hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
                 value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
                 onChange={(id) => mark("identity", "reportsTo", id)}
                 excludeAgentIds={[props.agent.id]}
-                chooseLabel="Choose manager…"
+                chooseLabel={i18n.t("components.AgentConfigForm.chooselabel")}
               />
             </Field>
             <Field label="Capabilities" hint={help.capabilities}>
               <MarkdownEditor
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
                 onChange={(v) => mark("identity", "capabilities", v || null)}
-                placeholder="Describe what this agent can do..."
+                placeholder={i18n.t("components.AgentConfigForm.placeholder_2")}
                 contentClassName="min-h-[44px] text-sm font-mono"
                 imageUploadHandler={async (file) => {
                   const asset = await uploadMarkdownImage.mutateAsync({
@@ -754,7 +755,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
             {isLocal && !props.hidePromptTemplate && (
               <>
-                <Field label="Prompt Template" hint={help.promptTemplate}>
+                <Field label={i18n.t("components.AgentConfigForm.label_3")} hint={help.promptTemplate}>
                   <MarkdownEditor
                     value={eff(
                       "adapterConfig",
@@ -762,7 +763,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       String(config.promptTemplate ?? ""),
                     )}
                     onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
-                    placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
+                    placeholder={i18n.t("components.AgentConfigForm.placeholder_3")}
                     contentClassName="min-h-[88px] text-sm font-mono"
                     imageUploadHandler={async (file) => {
                       const namespace = `agents/${props.agent.id}/prompt-template`;
@@ -772,8 +773,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   />
                 </Field>
                 <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                  Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
-                </div>
+                  {i18n.t("components.AgentConfigForm.div")}</div>
               </>
             )}
           </div>
@@ -787,9 +787,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Execution</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? i18n.t("components.AgentConfigForm.conditional_10") : "px-4 pb-3 space-y-3")}>
             <Field
-              label="Default environment"
+              label={i18n.t("components.AgentConfigForm.label_4")}
               hint="Agent-level default execution target. Project and issue settings can still override this."
             >
               <select
@@ -832,13 +832,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onClick={triggerTestEnvironment}
               disabled={testEnvironmentDisabled}
             >
-              {testEnvironment.isPending ? "Testing..." : "Test"}
+              {testEnvironment.isPending ? i18n.t("components.AgentConfigForm.conditional_11") : "Test"}
             </Button>
           )}
         </div>
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+        <div className={cn(cards ? i18n.t("components.AgentConfigForm.conditional_12") : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && (
-            <Field label="Adapter type" hint={help.adapterType}>
+            <Field label={i18n.t("components.AgentConfigForm.label_5")} hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
                 disabledTypes={disabledTypes}
@@ -899,7 +899,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testEnvironment.error instanceof Error
                 ? testEnvironment.error.message
-                : "Environment test failed"}
+                : i18n.t("components.AgentConfigForm.conditional_13")}
             </div>
           )}
 
@@ -909,7 +909,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {/* Working directory */}
           {showLegacyWorkingDirectoryField && (
-            <Field label="Working directory (deprecated)" hint={help.cwd}>
+            <Field label={i18n.t("components.AgentConfigForm.label_6")} hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <DraftInput
@@ -941,10 +941,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+            ? <h3 className="text-sm font-medium mb-3">{i18n.t("components.AgentConfigForm.h3")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{i18n.t("components.AgentConfigForm.div_1")}</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? i18n.t("components.AgentConfigForm.conditional_14") : "px-4 pb-3 space-y-3")}>
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -981,7 +981,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
 
               {supportsModelProfiles && (
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{i18n.t("components.AgentConfigForm.div_2")}</div>
               )}
               <ModelDropdown
                 models={models}
@@ -1011,7 +1011,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     : undefined
                 }
                 refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
+                detectModelLabel={i18n.t("components.AgentConfigForm.detectmodellabel")}
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
               {(refreshModelsError || fetchedModelsError) && (
@@ -1019,7 +1019,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   {refreshModelsError
                     ?? (fetchedModelsError instanceof Error
                       ? fetchedModelsError.message
-                      : "Failed to load adapter models.")}
+                      : i18n.t("components.AgentConfigForm.conditional_15"))}
                 </p>
               )}
               {adapterType === "opencode_local"
@@ -1061,14 +1061,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     codexSearchEnabled &&
                     currentThinkingEffort === "minimal" && (
                       <p className="text-xs text-amber-400">
-                        Codex may reject `minimal` thinking when search is enabled.
-                      </p>
+                        {i18n.t("components.AgentConfigForm.p")}</p>
                     )}
                 </>
               )}
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
-                  <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
+                  <Field label={i18n.t("components.AgentConfigForm.label_7")} hint={help.bootstrapPrompt}>
                     <MarkdownEditor
                       value={eff(
                         "adapterConfig",
@@ -1078,7 +1077,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       onChange={(v) =>
                         mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
                       }
-                      placeholder="Optional initial setup prompt for the first run"
+                      placeholder={i18n.t("components.AgentConfigForm.placeholder_4")}
                       contentClassName="min-h-[44px] text-sm font-mono"
                       imageUploadHandler={async (file) => {
                         const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
@@ -1088,8 +1087,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     />
                   </Field>
                   <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                    Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
-                  </div>
+                    {i18n.t("components.AgentConfigForm.div_3")}</div>
                 </>
               )}
               {adapterType === "claude_local" && (
@@ -1097,7 +1095,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
               <uiAdapter.ConfigFields {...adapterFieldProps} />
 
-              <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
+              <Field label={i18n.t("components.AgentConfigForm.label_8")} hint={help.extraArgs}>
                 <DraftInput
                   value={
                     isCreate
@@ -1111,11 +1109,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                   immediate
                   className={inputClass}
-                  placeholder="e.g. --verbose, --foo=bar"
+                  placeholder={i18n.t("components.AgentConfigForm.placeholder_5")}
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
+              <Field label={i18n.t("components.AgentConfigForm.label_9")} hint={help.envVars}>
                 <EnvVarEditor
                   value={
                     isCreate
@@ -1139,7 +1137,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                  <Field label={i18n.t("components.AgentConfigForm.label_10")} hint={help.timeoutSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
@@ -1151,7 +1149,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       className={inputClass}
                     />
                   </Field>
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
+                  <Field label={i18n.t("components.AgentConfigForm.label_11")} hint={help.graceSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
@@ -1176,15 +1174,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? i18n.t("components.AgentConfigForm.conditional_16") : "px-4 pb-3 space-y-3")}>
             <ToggleWithNumber
-              label="Heartbeat on interval"
+              label={i18n.t("components.AgentConfigForm.label_12")}
               hint={help.heartbeatInterval}
               checked={val!.heartbeatEnabled}
               onCheckedChange={(v) => set!({ heartbeatEnabled: v })}
               number={val!.intervalSec}
               onNumberChange={(v) => set!({ intervalSec: v })}
-              numberLabel="sec"
+              numberLabel={i18n.t("components.AgentConfigForm.numberlabel")}
               numberPrefix="Run heartbeat every"
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
@@ -1197,30 +1195,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
+          <div className={cn(cards ? i18n.t("components.AgentConfigForm.conditional_17") : "")}>
             <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <ToggleWithNumber
-                label="Heartbeat on interval"
+                label={i18n.t("components.AgentConfigForm.label_13")}
                 hint={help.heartbeatInterval}
                 checked={eff("heartbeat", "enabled", heartbeat.enabled === true)}
                 onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
                 number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
                 onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
-                numberLabel="sec"
+                numberLabel={i18n.t("components.AgentConfigForm.numberlabel_1")}
                 numberPrefix="Run heartbeat every"
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
               />
             </div>
             <CollapsibleSection
-              title="Advanced Run Policy"
+              title={i18n.t("components.AgentConfigForm.title")}
               bordered={cards}
               open={runPolicyAdvancedOpen}
               onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
             >
             <div className="space-y-3">
               <ToggleField
-                label="Wake on demand"
+                label={i18n.t("components.AgentConfigForm.label_14")}
                 hint={help.wakeOnDemand}
                 checked={eff(
                   "heartbeat",
@@ -1229,7 +1227,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 )}
                 onChange={(v) => mark("heartbeat", "wakeOnDemand", v)}
               />
-              <Field label="Cooldown (sec)" hint={help.cooldownSec}>
+              <Field label={i18n.t("components.AgentConfigForm.label_15")} hint={help.cooldownSec}>
                 <DraftNumberInput
                   value={eff(
                     "heartbeat",
@@ -1241,7 +1239,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
-              <Field label="Max concurrent runs" hint={help.maxConcurrentRuns}>
+              <Field label={i18n.t("components.AgentConfigForm.label_16")} hint={help.maxConcurrentRuns}>
                 <DraftNumberInput
                   value={eff(
                     "heartbeat",
@@ -1255,14 +1253,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
               <div className="rounded-md border border-border/70 px-3 py-2">
                 <ToggleField
-                  label="Continue after max-turn stop"
+                  label={i18n.t("components.AgentConfigForm.label_17")}
                   hint={help.maxTurnContinuationEnabled}
                   checked={maxTurnContinuationEnabled}
                   onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
                 />
                 {maxTurnContinuationEnabled ? (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label="Continuation attempts" hint={help.maxTurnContinuationMaxAttempts}>
+                    <Field label={i18n.t("components.AgentConfigForm.label_18")} hint={help.maxTurnContinuationMaxAttempts}>
                       <DraftNumberInput
                         value={maxTurnContinuationMaxAttempts}
                         onCommit={(v) =>
@@ -1273,7 +1271,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         className={inputClass}
                       />
                     </Field>
-                    <Field label="Continuation delay (sec)" hint={help.maxTurnContinuationDelaySec}>
+                    <Field label={i18n.t("components.AgentConfigForm.label_19")} hint={help.maxTurnContinuationDelaySec}>
                       <DraftNumberInput
                         value={maxTurnContinuationDelaySec}
                         onCommit={(v) =>
@@ -1374,7 +1372,7 @@ function AdapterTypeDropdown({
               "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded",
               item.comingSoon
                 ? "opacity-40 cursor-not-allowed"
-                : "hover:bg-accent/50",
+                : i18n.t("components.AgentConfigForm.conditional_18"),
               item.value === value && !item.comingSoon && "bg-accent",
             )}
             onClick={() => {
@@ -1390,7 +1388,7 @@ function AdapterTypeDropdown({
               {item.experimental && <ExperimentalBadge />}
             </span>
             {item.comingSoon && (
-              <span className="text-[10px] text-muted-foreground">Coming soon</span>
+              <span className="text-[10px] text-muted-foreground">{i18n.t("components.AgentConfigForm.span_1")}</span>
             )}
           </button>
         ))}
@@ -1530,7 +1528,7 @@ function ModelDropdown({
               {selected
                 ? selected.label
                 : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
+                  || (allowDefault ? (defaultLabel ?? "Default") : required ? i18n.t("components.AgentConfigForm.conditional_19") : i18n.t("components.AgentConfigForm.conditional_20"))}
             </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
@@ -1539,7 +1537,7 @@ function ModelDropdown({
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
-              placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
+              placeholder={creatable ? i18n.t("components.AgentConfigForm.conditional_21") : i18n.t("components.AgentConfigForm.conditional_22")}
               value={modelSearch}
               onChange={(e) => setModelSearch(e.target.value)}
               autoFocus
@@ -1570,7 +1568,7 @@ function ModelDropdown({
                 <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
                 <path d="M3 3v5h5" />
               </svg>
-              {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
+              {detectingModel ? i18n.t("components.AgentConfigForm.conditional_23") : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
             </button>
           )}
           {onRefreshModels && !modelSearch.trim() && (
@@ -1588,7 +1586,7 @@ function ModelDropdown({
                 <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
                 <path d="M8 16H3v5" />
               </svg>
-              {refreshingModels ? "Refreshing..." : "Refresh models"}
+              {refreshingModels ? i18n.t("components.AgentConfigForm.conditional_24") : i18n.t("components.AgentConfigForm.conditional_25")}
             </button>
           )}
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
@@ -1605,8 +1603,7 @@ function ModelDropdown({
                 {models.find((m) => m.id === value)?.label ?? value}
               </span>
               <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
-                current
-              </span>
+                {i18n.t("components.AgentConfigForm.span_2")}</span>
             </button>
           )}
           {detectedModel && detectedModel !== value && (
@@ -1624,8 +1621,7 @@ function ModelDropdown({
                 {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
               </span>
               <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
-                detected
-              </span>
+                {i18n.t("components.AgentConfigForm.span_3")}</span>
             </button>
           )}
           {detectedModelCandidates
@@ -1648,8 +1644,7 @@ function ModelDropdown({
                     {entry?.label ?? candidate}
                   </span>
                   <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
-                    config
-                  </span>
+                    {i18n.t("components.AgentConfigForm.span_4")}</span>
                 </button>
               );
             })}
@@ -1679,7 +1674,7 @@ function ModelDropdown({
                   setModelSearch("");
                 }}
               >
-                <span>Use manual model</span>
+                <span>{i18n.t("components.AgentConfigForm.span_5")}</span>
                 <span className="text-xs font-mono text-muted-foreground">{manualModel}</span>
               </button>
             )}
@@ -1715,7 +1710,7 @@ function ModelDropdown({
                 <p className="text-xs text-muted-foreground">
                   {onDetectModel
                     ? (emptyDetectHint ?? "No model detected yet. Enter a provider/model manually.")
-                    : "No models found."}
+                    : i18n.t("components.AgentConfigForm.conditional_26")}
                 </p>
               </div>
             )}
@@ -1749,15 +1744,14 @@ function CheapModelSection({
 }) {
   const placeholderHint = adapterDefaultModel
     ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
+    : i18n.t("components.AgentConfigForm.conditional_27");
   return (
     <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Cheap model</div>
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{i18n.t("components.AgentConfigForm.div_4")}</div>
           <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
-          </p>
+            {i18n.t("components.AgentConfigForm.p_1")}</p>
         </div>
         <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
       </div>
@@ -1785,8 +1779,7 @@ function CheapModelSection({
       ) : null}
       {enabled && !model && !adapterDefaultModel ? (
         <p className="text-[11px] text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
-        </p>
+          {i18n.t("components.AgentConfigForm.p_2")}</p>
       ) : null}
     </div>
   );
@@ -1808,7 +1801,7 @@ function ThinkingEffortDropdown({
   const selected = options.find((option) => option.id === value) ?? options[0];
 
   return (
-    <Field label="Thinking effort" hint={help.thinkingEffort}>
+    <Field label={i18n.t("components.AgentConfigForm.label_20")} hint={help.thinkingEffort}>
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">

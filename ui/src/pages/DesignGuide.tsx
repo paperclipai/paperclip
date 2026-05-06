@@ -1,4 +1,5 @@
 import { useState } from "react";
+import i18n from "@/i18n";
 import {
   BookOpen,
   Bot,
@@ -193,21 +194,19 @@ export function DesignGuide() {
     <div className="space-y-10 max-w-4xl">
       {/* Page header */}
       <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
+        <h2 className="text-xl font-bold">{i18n.t("pages.DesignGuide.h2")}</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
-        </p>
+          {i18n.t("pages.DesignGuide.p")}</p>
       </div>
 
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
-      <Section title="Component Coverage">
+      <Section title={i18n.t("pages.DesignGuide.title")}>
         <p className="text-sm text-muted-foreground">
-          This page should be updated when new UI primitives or app-level patterns ship.
-        </p>
+          {i18n.t("pages.DesignGuide.p_1")}</p>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="UI primitives">
+          <SubSection title={i18n.t("pages.DesignGuide.title_1")}>
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
@@ -220,7 +219,7 @@ export function DesignGuide() {
               ))}
             </div>
           </SubSection>
-          <SubSection title="App components">
+          <SubSection title={i18n.t("pages.DesignGuide.title_2")}>
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
@@ -280,25 +279,21 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Typography">
         <div className="space-y-3">
-          <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
-          <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
+          <h2 className="text-xl font-bold">{i18n.t("pages.DesignGuide.h2_1")}</h2>
+          <h2 className="text-lg font-semibold">{i18n.t("pages.DesignGuide.h2_2")}</h2>
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Section Heading — text-sm font-semibold uppercase tracking-wide
-          </h3>
-          <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
-          <p className="text-sm font-semibold">Card Title Alt — text-sm font-semibold</p>
-          <p className="text-sm">Body text — text-sm</p>
+            {i18n.t("pages.DesignGuide.h3")}</h3>
+          <p className="text-sm font-medium">{i18n.t("pages.DesignGuide.p_2")}</p>
+          <p className="text-sm font-semibold">{i18n.t("pages.DesignGuide.p_3")}</p>
+          <p className="text-sm">{i18n.t("pages.DesignGuide.p_4")}</p>
           <p className="text-sm text-muted-foreground">
-            Muted description — text-sm text-muted-foreground
-          </p>
+            {i18n.t("pages.DesignGuide.p_5")}</p>
           <p className="text-xs text-muted-foreground">
-            Tiny label — text-xs text-muted-foreground
-          </p>
+            {i18n.t("pages.DesignGuide.p_6")}</p>
           <p className="text-sm font-mono text-muted-foreground">
-            Mono identifier — text-sm font-mono text-muted-foreground
-          </p>
-          <p className="text-2xl font-bold">Large stat — text-2xl font-bold</p>
-          <p className="font-mono text-xs">Log/code text — font-mono text-xs</p>
+            {i18n.t("pages.DesignGuide.p_7")}</p>
+          <p className="text-2xl font-bold">{i18n.t("pages.DesignGuide.p_8")}</p>
+          <p className="font-mono text-xs">{i18n.t("pages.DesignGuide.p_9")}</p>
         </div>
       </Section>
 
@@ -349,7 +344,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Icon buttons">
+        <SubSection title={i18n.t("pages.DesignGuide.title_3")}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="ghost" size="icon-xs"><Search /></Button>
             <Button variant="ghost" size="icon-sm"><Search /></Button>
@@ -358,7 +353,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="With icons">
+        <SubSection title={i18n.t("pages.DesignGuide.title_4")}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button><Plus /> New Issue</Button>
             <Button variant="outline"><Upload /> Upload</Button>
@@ -393,8 +388,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  STATUS BADGES & ICONS                                        */}
       {/* ============================================================ */}
-      <Section title="Status System">
-        <SubSection title="StatusBadge (all statuses)">
+      <Section title={i18n.t("pages.DesignGuide.title_5")}>
+        <SubSection title={i18n.t("pages.DesignGuide.title_6")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               "active", "running", "paused", "idle", "archived", "planned",
@@ -408,7 +403,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="StatusIcon (interactive)">
+        <SubSection title={i18n.t("pages.DesignGuide.title_7")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
               (s) => (
@@ -425,7 +420,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="PriorityIcon (interactive)">
+        <SubSection title={i18n.t("pages.DesignGuide.title_8")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
               <div key={p} className="flex items-center gap-1.5">
@@ -440,7 +435,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Agent status dots">
+        <SubSection title={i18n.t("pages.DesignGuide.title_9")}>
           <div className="flex items-center gap-4 flex-wrap">
             {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
@@ -453,7 +448,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Run invocation badges">
+        <SubSection title={i18n.t("pages.DesignGuide.title_10")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               ["timer", "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"],
@@ -475,11 +470,11 @@ export function DesignGuide() {
             Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
           </p>
           <div className="flex items-center gap-2 flex-wrap">
-            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: "Identifier only — no status yet" }} />
-            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
-            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
-            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
-            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: i18n.t("pages.DesignGuide.title_11") }} />
+            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: i18n.t("pages.DesignGuide.title_12"), status: "in_progress" }} />
+            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: i18n.t("pages.DesignGuide.title_13"), status: "done" }} />
+            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: i18n.t("pages.DesignGuide.title_14"), status: "blocked" }} />
+            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: i18n.t("pages.DesignGuide.title_15"), status: "todo" }} />
           </div>
         </SubSection>
       </Section>
@@ -487,18 +482,18 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FORM ELEMENTS                                                */}
       {/* ============================================================ */}
-      <Section title="Form Elements">
+      <Section title={i18n.t("pages.DesignGuide.title_16")}>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Input">
-            <Input placeholder="Default input" />
-            <Input placeholder="Disabled input" disabled className="mt-2" />
+            <Input placeholder={i18n.t("pages.DesignGuide.placeholder")} />
+            <Input placeholder={i18n.t("pages.DesignGuide.placeholder_1")} disabled className="mt-2" />
           </SubSection>
 
           <SubSection title="Textarea">
-            <Textarea placeholder="Write something..." />
+            <Textarea placeholder={i18n.t("pages.DesignGuide.placeholder_2")} />
           </SubSection>
 
-          <SubSection title="Checkbox & Label">
+          <SubSection title={i18n.t("pages.DesignGuide.title_17")}>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Checkbox id="check1" defaultChecked />
@@ -515,10 +510,10 @@ export function DesignGuide() {
             </div>
           </SubSection>
 
-          <SubSection title="Inline Editor">
+          <SubSection title={i18n.t("pages.DesignGuide.title_18")}>
             <div className="space-y-4">
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Title (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{i18n.t("pages.DesignGuide.p_10")}</p>
                 <InlineEditor
                   value={inlineTitle}
                   onSave={setInlineTitle}
@@ -527,7 +522,7 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Body text (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{i18n.t("pages.DesignGuide.p_11")}</p>
                 <InlineEditor
                   value={inlineText}
                   onSave={setInlineText}
@@ -536,13 +531,13 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Description (multiline, auto-sizing)</p>
+                <p className="text-xs text-muted-foreground mb-1">{i18n.t("pages.DesignGuide.p_12")}</p>
                 <InlineEditor
                   value={inlineDesc}
                   onSave={setInlineDesc}
                   as="p"
                   className="text-sm text-muted-foreground"
-                  placeholder="Add a description..."
+                  placeholder={i18n.t("pages.DesignGuide.placeholder_3")}
                   multiline
                 />
               </div>
@@ -556,22 +551,22 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Select">
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Default size">
+          <SubSection title={i18n.t("pages.DesignGuide.title_19")}>
             <Select value={selectValue} onValueChange={setSelectValue}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select status" />
+                <SelectValue placeholder={i18n.t("pages.DesignGuide.placeholder_4")} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="backlog">Backlog</SelectItem>
                 <SelectItem value="todo">Todo</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
+                <SelectItem value="in_progress">{i18n.t("pages.DesignGuide.selectitem")}</SelectItem>
+                <SelectItem value="in_review">{i18n.t("pages.DesignGuide.selectitem_1")}</SelectItem>
                 <SelectItem value="done">Done</SelectItem>
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">Current value: {selectValue}</p>
           </SubSection>
-          <SubSection title="Small trigger">
+          <SubSection title={i18n.t("pages.DesignGuide.title_20")}>
             <Select defaultValue="high">
               <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
@@ -590,7 +585,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DROPDOWN MENU                                                */}
       {/* ============================================================ */}
-      <Section title="Dropdown Menu">
+      <Section title={i18n.t("pages.DesignGuide.title_21")}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm">
@@ -632,10 +627,9 @@ export function DesignGuide() {
             <Button variant="outline" size="sm">Open Popover</Button>
           </PopoverTrigger>
           <PopoverContent className="space-y-2">
-            <p className="text-sm font-medium">Agent heartbeat</p>
+            <p className="text-sm font-medium">{i18n.t("pages.DesignGuide.p_13")}</p>
             <p className="text-xs text-muted-foreground">
-              Last run succeeded 24s ago. Next timer run in 9m.
-            </p>
+              {i18n.t("pages.DesignGuide.p_14")}</p>
             <Button size="xs">Wake now</Button>
           </PopoverContent>
         </Popover>
@@ -654,7 +648,7 @@ export function DesignGuide() {
           <CollapsibleContent className="rounded-md border border-border p-3">
             <div className="space-y-2">
               <Label htmlFor="owner-filter">Owner</Label>
-              <Input id="owner-filter" placeholder="Filter by agent name" />
+              <Input id="owner-filter" placeholder={i18n.t("pages.DesignGuide.placeholder_5")} />
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -694,7 +688,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SCROLL AREA                                                  */}
       {/* ============================================================ */}
-      <Section title="Scroll Area">
+      <Section title={i18n.t("pages.DesignGuide.title_22")}>
         <ScrollArea className="h-36 rounded-md border border-border">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
@@ -709,10 +703,10 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMAND                                                      */}
       {/* ============================================================ */}
-      <Section title="Command (CMDK)">
+      <Section title={i18n.t("pages.DesignGuide.title_23")}>
         <div className="rounded-md border border-border">
           <Command>
-            <CommandInput placeholder="Type a command or search..." />
+            <CommandInput placeholder={i18n.t("pages.DesignGuide.placeholder_6")} />
             <CommandList>
               <CommandEmpty>No results found.</CommandEmpty>
               <CommandGroup heading="Pages">
@@ -766,14 +760,14 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title="Cards">
-        <SubSection title="Standard Card">
+        <SubSection title={i18n.t("pages.DesignGuide.title_24")}>
           <Card>
             <CardHeader>
-              <CardTitle>Card Title</CardTitle>
-              <CardDescription>Card description with supporting text.</CardDescription>
+              <CardTitle>{i18n.t("pages.DesignGuide.cardtitle")}</CardTitle>
+              <CardDescription>{i18n.t("pages.DesignGuide.carddescription")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">Card content goes here. This is the main body area.</p>
+              <p className="text-sm">{i18n.t("pages.DesignGuide.p_15")}</p>
             </CardContent>
             <CardFooter className="gap-2">
               <Button size="sm">Action</Button>
@@ -782,11 +776,11 @@ export function DesignGuide() {
           </Card>
         </SubSection>
 
-        <SubSection title="Metric Cards">
+        <SubSection title={i18n.t("pages.DesignGuide.title_25")}>
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
-            <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
+            <MetricCard icon={Bot} value={12} label={i18n.t("pages.DesignGuide.label")} description={i18n.t("pages.DesignGuide.description")} />
+            <MetricCard icon={CircleDot} value={48} label={i18n.t("pages.DesignGuide.label_1")} />
+            <MetricCard icon={DollarSign} value="$1,234" label={i18n.t("pages.DesignGuide.label_2")} description={i18n.t("pages.DesignGuide.description_1")} />
             <MetricCard icon={Zap} value="99.9%" label="Uptime" />
           </div>
         </SubSection>
@@ -796,7 +790,7 @@ export function DesignGuide() {
       {/*  TABS                                                         */}
       {/* ============================================================ */}
       <Section title="Tabs">
-        <SubSection title="Default (pill) variant">
+        <SubSection title={i18n.t("pages.DesignGuide.title_26")}>
           <Tabs defaultValue="overview">
             <TabsList>
               <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -805,21 +799,21 @@ export function DesignGuide() {
               <TabsTrigger value="costs">Costs</TabsTrigger>
             </TabsList>
             <TabsContent value="overview">
-              <p className="text-sm text-muted-foreground py-4">Overview tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_16")}</p>
             </TabsContent>
             <TabsContent value="runs">
-              <p className="text-sm text-muted-foreground py-4">Runs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_17")}</p>
             </TabsContent>
             <TabsContent value="config">
-              <p className="text-sm text-muted-foreground py-4">Config tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_18")}</p>
             </TabsContent>
             <TabsContent value="costs">
-              <p className="text-sm text-muted-foreground py-4">Costs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_19")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
 
-        <SubSection title="Line variant">
+        <SubSection title={i18n.t("pages.DesignGuide.title_27")}>
           <Tabs defaultValue="summary">
             <TabsList variant="line">
               <TabsTrigger value="summary">Summary</TabsTrigger>
@@ -827,13 +821,13 @@ export function DesignGuide() {
               <TabsTrigger value="comments">Comments</TabsTrigger>
             </TabsList>
             <TabsContent value="summary">
-              <p className="text-sm text-muted-foreground py-4">Summary content with underline tabs.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_20")}</p>
             </TabsContent>
             <TabsContent value="details">
-              <p className="text-sm text-muted-foreground py-4">Details content.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_21")}</p>
             </TabsContent>
             <TabsContent value="comments">
-              <p className="text-sm text-muted-foreground py-4">Comments content.</p>
+              <p className="text-sm text-muted-foreground py-4">{i18n.t("pages.DesignGuide.p_22")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
@@ -842,7 +836,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ENTITY ROWS                                                  */}
       {/* ============================================================ */}
-      <Section title="Entity Rows">
+      <Section title={i18n.t("pages.DesignGuide.title_28")}>
         <div className="border border-border rounded-md">
           <EntityRow
             leading={
@@ -852,7 +846,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-001"
-            title="Implement authentication flow"
+            title={i18n.t("pages.DesignGuide.title_29")}
             subtitle="Assigned to Agent Alpha"
             trailing={<StatusBadge status="in_progress" />}
             onClick={() => {}}
@@ -865,7 +859,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-002"
-            title="Set up CI/CD pipeline"
+            title={i18n.t("pages.DesignGuide.title_30")}
             subtitle="Completed 2 days ago"
             trailing={<StatusBadge status="done" />}
             onClick={() => {}}
@@ -878,7 +872,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-003"
-            title="Write API documentation"
+            title={i18n.t("pages.DesignGuide.title_31")}
             trailing={<StatusBadge status="todo" />}
             onClick={() => {}}
           />
@@ -890,7 +884,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-004"
-            title="Deploy to production"
+            title={i18n.t("pages.DesignGuide.title_32")}
             subtitle="Blocked by PAP-001"
             trailing={<StatusBadge status="blocked" />}
             selected
@@ -901,7 +895,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FILTER BAR                                                   */}
       {/* ============================================================ */}
-      <Section title="Filter Bar">
+      <Section title={i18n.t("pages.DesignGuide.title_33")}>
         <FilterBar
           filters={filters}
           onRemove={(key) => setFilters((f) => f.filter((x) => x.key !== key))}
@@ -957,7 +951,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Initials derivation">
+        <SubSection title={i18n.t("pages.DesignGuide.title_34")}>
           <div className="flex flex-col gap-2">
             <Identity name="CEO Agent" size="sm" />
             <Identity name="Alpha" size="sm" />
@@ -965,7 +959,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Custom initials">
+        <SubSection title={i18n.t("pages.DesignGuide.title_35")}>
           <Identity name="Backend Service" initials="BS" size="sm" />
         </SubSection>
       </Section>
@@ -979,7 +973,7 @@ export function DesignGuide() {
             <TooltipTrigger asChild>
               <Button variant="outline" size="sm">Hover me</Button>
             </TooltipTrigger>
-            <TooltipContent>This is a tooltip</TooltipContent>
+            <TooltipContent>{i18n.t("pages.DesignGuide.tooltipcontent")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1000,19 +994,18 @@ export function DesignGuide() {
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Dialog Title</DialogTitle>
+              <DialogTitle>{i18n.t("pages.DesignGuide.dialogtitle")}</DialogTitle>
               <DialogDescription>
-                This is a sample dialog showing the standard layout with header, content, and footer.
-              </DialogDescription>
+                {i18n.t("pages.DesignGuide.dialogdescription")}</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
                 <Label>Name</Label>
-                <Input placeholder="Enter a name" className="mt-1.5" />
+                <Input placeholder={i18n.t("pages.DesignGuide.placeholder_7")} className="mt-1.5" />
               </div>
               <div>
                 <Label>Description</Label>
-                <Textarea placeholder="Describe..." className="mt-1.5" />
+                <Textarea placeholder={i18n.t("pages.DesignGuide.placeholder_8")} className="mt-1.5" />
               </div>
             </div>
             <DialogFooter>
@@ -1026,7 +1019,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  EMPTY STATE                                                  */}
       {/* ============================================================ */}
-      <Section title="Empty State">
+      <Section title={i18n.t("pages.DesignGuide.title_36")}>
         <div className="border border-border rounded-md">
           <EmptyState
             icon={Inbox}
@@ -1040,12 +1033,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROGRESS BARS                                                */}
       {/* ============================================================ */}
-      <Section title="Progress Bars (Budget)">
+      <Section title={i18n.t("pages.DesignGuide.title_37")}>
         <div className="space-y-3">
           {[
-            { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
-            { label: "Warning (75%)", pct: 75, color: "bg-yellow-400" },
-            { label: "Over budget (95%)", pct: 95, color: "bg-red-400" },
+            { label: i18n.t("pages.DesignGuide.label_3"), pct: 40, color: "bg-green-400" },
+            { label: i18n.t("pages.DesignGuide.label_4"), pct: 75, color: "bg-yellow-400" },
+            { label: i18n.t("pages.DesignGuide.label_5"), pct: 95, color: "bg-red-400" },
           ].map(({ label, pct, color }) => (
             <div key={label} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -1066,15 +1059,15 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  LOG VIEWER                                                   */}
       {/* ============================================================ */}
-      <Section title="Log Viewer">
+      <Section title={i18n.t("pages.DesignGuide.title_38")}>
         <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
-          <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
-          <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
-          <div className="text-yellow-400">[12:00:05] WARN  Rate limit approaching (80%)</div>
-          <div className="text-foreground">[12:00:08] INFO  Task PAP-001 completed</div>
-          <div className="text-red-400">[12:00:12] ERROR Connection timeout to upstream service</div>
-          <div className="text-blue-300">[12:00:12] SYS   Retrying connection in 5s...</div>
-          <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
+          <div className="text-foreground">{i18n.t("pages.DesignGuide.div")}</div>
+          <div className="text-foreground">{i18n.t("pages.DesignGuide.div_1")}</div>
+          <div className="text-yellow-400">{i18n.t("pages.DesignGuide.div_2")}</div>
+          <div className="text-foreground">{i18n.t("pages.DesignGuide.div_3")}</div>
+          <div className="text-red-400">{i18n.t("pages.DesignGuide.div_4")}</div>
+          <div className="text-blue-300">{i18n.t("pages.DesignGuide.div_5")}</div>
+          <div className="text-foreground">{i18n.t("pages.DesignGuide.div_6")}</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full rounded-full bg-cyan-400 animate-pulse" />
@@ -1088,7 +1081,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROPERTY ROW PATTERN                                         */}
       {/* ============================================================ */}
-      <Section title="Property Row Pattern">
+      <Section title={i18n.t("pages.DesignGuide.title_39")}>
         <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Status</span>
@@ -1102,12 +1095,12 @@ export function DesignGuide() {
             <span className="text-xs text-muted-foreground">Assignee</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
-              <span className="text-xs">Agent Alpha</span>
+              <span className="text-xs">{i18n.t("pages.DesignGuide.span")}</span>
             </div>
           </div>
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Created</span>
-            <span className="text-xs">Jan 15, 2025</span>
+            <span className="text-xs">{i18n.t("pages.DesignGuide.span_1")}</span>
           </div>
         </div>
       </Section>
@@ -1115,8 +1108,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
-      <Section title="Navigation Patterns">
-        <SubSection title="Sidebar nav items">
+      <Section title={i18n.t("pages.DesignGuide.title_40")}>
+        <SubSection title={i18n.t("pages.DesignGuide.title_41")}>
           <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
@@ -1140,7 +1133,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="View toggle">
+        <SubSection title={i18n.t("pages.DesignGuide.title_42")}>
           <div className="flex items-center border border-border rounded-md w-fit">
             <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
               <ListTodo className="h-3.5 w-3.5 inline mr-1" />
@@ -1157,24 +1150,24 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title={i18n.t("pages.DesignGuide.title_43")}>
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
-            <span className="text-sm font-medium">In Progress</span>
+            <span className="text-sm font-medium">{i18n.t("pages.DesignGuide.span_2")}</span>
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
             <EntityRow
               leading={<PriorityIcon priority="high" />}
               identifier="PAP-101"
-              title="Build agent heartbeat system"
+              title={i18n.t("pages.DesignGuide.title_44")}
               onClick={() => {}}
             />
             <EntityRow
               leading={<PriorityIcon priority="medium" />}
               identifier="PAP-102"
-              title="Add cost tracking dashboard"
+              title={i18n.t("pages.DesignGuide.title_45")}
               onClick={() => {}}
             />
           </div>
@@ -1184,27 +1177,27 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMENT THREAD PATTERN                                       */}
       {/* ============================================================ */}
-      <Section title="Comment Thread Pattern">
+      <Section title={i18n.t("pages.DesignGuide.title_46")}>
         <div className="space-y-3 max-w-2xl">
-          <h3 className="text-sm font-semibold">Comments (2)</h3>
+          <h3 className="text-sm font-semibold">{i18n.t("pages.DesignGuide.h3_1")}</h3>
           <div className="space-y-3">
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-muted-foreground">Agent</span>
-                <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
+                <span className="text-xs text-muted-foreground">{i18n.t("pages.DesignGuide.span_3")}</span>
               </div>
-              <p className="text-sm">Started working on the authentication module. Will need API keys configured.</p>
+              <p className="text-sm">{i18n.t("pages.DesignGuide.p_23")}</p>
             </div>
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-muted-foreground">Human</span>
-                <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
+                <span className="text-xs text-muted-foreground">{i18n.t("pages.DesignGuide.span_4")}</span>
               </div>
-              <p className="text-sm">API keys have been added to the vault. Please proceed.</p>
+              <p className="text-sm">{i18n.t("pages.DesignGuide.p_24")}</p>
             </div>
           </div>
           <div className="space-y-2">
-            <Textarea placeholder="Leave a comment..." rows={3} />
+            <Textarea placeholder={i18n.t("pages.DesignGuide.placeholder_9")} rows={3} />
             <Button size="sm">Comment</Button>
           </div>
         </div>
@@ -1213,7 +1206,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
-      <Section title="Cost Table Pattern">
+      <Section title={i18n.t("pages.DesignGuide.title_47")}>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
@@ -1225,13 +1218,13 @@ export function DesignGuide() {
             </thead>
             <tbody>
               <tr className="border-b border-border">
-                <td className="px-3 py-2">claude-sonnet-4-20250514</td>
+                <td className="px-3 py-2">{i18n.t("pages.DesignGuide.td")}</td>
                 <td className="px-3 py-2 font-mono">1.2M</td>
                 <td className="px-3 py-2 font-mono">$18.00</td>
               </tr>
               <tr className="border-b border-border">
-                <td className="px-3 py-2">claude-haiku-4-20250506</td>
-                <td className="px-3 py-2 font-mono">500k</td>
+                <td className="px-3 py-2">{i18n.t("pages.DesignGuide.td_1")}</td>
+                <td className="px-3 py-2 font-mono">{i18n.t("pages.DesignGuide.td_2")}</td>
                 <td className="px-3 py-2 font-mono">$1.25</td>
               </tr>
               <tr>
@@ -1256,13 +1249,13 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (list)">
+        <SubSection title={i18n.t("pages.DesignGuide.title_48")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="list" />
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (detail)">
+        <SubSection title={i18n.t("pages.DesignGuide.title_49")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="detail" />
           </div>
@@ -1287,7 +1280,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ICON REFERENCE                                               */}
       {/* ============================================================ */}
-      <Section title="Common Icons (Lucide)">
+      <Section title={i18n.t("pages.DesignGuide.title_50")}>
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
           {[
             ["Inbox", Inbox],
@@ -1322,7 +1315,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
-      <Section title="Keyboard Shortcuts">
+      <Section title={i18n.t("pages.DesignGuide.title_51")}>
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
             ["Cmd+K / Ctrl+K", "Open Command Palette"],

@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import i18n from "@/i18n";
 import { Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -67,7 +68,7 @@ export function BreadcrumbBar() {
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={i18n.t("components.BreadcrumbBar.ariaLabel")}
     >
       <Menu className="h-5 w-5" />
     </Button>
@@ -100,7 +101,7 @@ export function BreadcrumbBar() {
               return (
                 <Fragment key={i}>
                   {i > 0 && <BreadcrumbSeparator />}
-                  <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
+                  <BreadcrumbItem className={isLast ? "min-w-0" : i18n.t("components.BreadcrumbBar.conditional")}>
                     {isLast || !crumb.href ? (
                       <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
                     ) : (

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "@/i18n";
 import type { FeedbackDataSharingPreference, FeedbackVoteValue } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -141,11 +142,11 @@ export function OutputFeedbackButtons({
       </div>
       {collectingDownvoteReason ? (
         <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{i18n.t("components.OutputFeedbackButtons.div")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={i18n.t("components.OutputFeedbackButtons.placeholder")}
             className="min-h-20 resize-y bg-background"
             disabled={disabled || isSaving}
           />
@@ -174,7 +175,7 @@ export function OutputFeedbackButtons({
                 });
               }}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? i18n.t("components.OutputFeedbackButtons.conditional") : i18n.t("components.OutputFeedbackButtons.conditional_1")}
             </Button>
           </div>
         </div>
@@ -191,25 +192,21 @@ export function OutputFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{i18n.t("components.OutputFeedbackButtons.dialogtitle")}</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
-            </DialogDescription>
+              {i18n.t("components.OutputFeedbackButtons.dialogdescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>
-              This vote is always saved locally.
-            </p>
+              {i18n.t("components.OutputFeedbackButtons.p")}</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
+              Choose <span className="font-medium text-foreground">{i18n.t("components.OutputFeedbackButtons.span")}</span> to share
               this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
+              <span className="font-medium text-foreground">{i18n.t("components.OutputFeedbackButtons.span_1")}</span> to keep this vote
               and future votes local.
             </p>
             <p>
-              You can change this later in Instance Settings &gt; General.
-            </p>
+              {i18n.t("components.OutputFeedbackButtons.p_1")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
@@ -217,8 +214,7 @@ export function OutputFeedbackButtons({
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
               >
-                Read our terms of service
-              </a>
+                {i18n.t("components.OutputFeedbackButtons.a")}</a>
             ) : null}
           </div>
           <DialogFooter>
@@ -238,7 +234,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? i18n.t("components.OutputFeedbackButtons.conditional_2") : i18n.t("components.OutputFeedbackButtons.conditional_3")}
             </Button>
             <Button
               type="button"
@@ -258,7 +254,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? i18n.t("components.OutputFeedbackButtons.conditional_4") : i18n.t("components.OutputFeedbackButtons.conditional_5")}
             </Button>
           </DialogFooter>
         </DialogContent>

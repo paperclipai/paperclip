@@ -16,6 +16,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import i18n from "@/i18n";
 import { PLUGIN_LAUNCHER_BOUNDS } from "@paperclipai/shared";
 import type {
   PluginLauncherBounds,
@@ -522,10 +523,10 @@ function LauncherModalShell({
     : launcherShellBoundsStyle(instance.bounds);
 
   const panelClassName = shellType === "openDrawer"
-    ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
+    ? i18n.t("plugins.launchers.conditional")
     : shellType === "openPopover"
-      ? "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
-      : "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
+      ? i18n.t("plugins.launchers.conditional_1")
+      : i18n.t("plugins.launchers.conditional_2");
 
   return (
     <>

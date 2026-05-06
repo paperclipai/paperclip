@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import i18n from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -94,12 +95,12 @@ export function NewAgent() {
   });
 
   const isFirstAgent = !agents || agents.length === 0;
-  const effectiveRole = isFirstAgent ? "ceo" : role;
+  const effectiveRole = isFirstAgent ? i18n.t("pages.NewAgent.conditional") : role;
 
   useEffect(() => {
     setBreadcrumbs([
       { label: "Agents", href: "/agents" },
-      { label: "New Agent" },
+      { label: i18n.t("pages.NewAgent.label") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -129,7 +130,7 @@ export function NewAgent() {
       navigate(agentUrl(result.agent));
     },
     onError: (error) => {
-      setFormError(error instanceof Error ? error.message : "Failed to create agent");
+      setFormError(error instanceof Error ? error.message : i18n.t("pages.NewAgent.conditional_1"));
     },
   });
 
@@ -189,10 +190,9 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
+        <h1 className="text-lg font-semibold">{i18n.t("pages.NewAgent.h1")}</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Advanced agent configuration
-        </p>
+          {i18n.t("pages.NewAgent.p")}</p>
       </div>
 
       <div className="border border-border">
@@ -200,7 +200,7 @@ export function NewAgent() {
         <div className="px-4 pt-4 pb-2">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Agent name"
+            placeholder={i18n.t("pages.NewAgent.placeholder")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -211,7 +211,7 @@ export function NewAgent() {
         <div className="px-4 pb-2">
           <input
             className="w-full bg-transparent outline-none text-sm text-muted-foreground placeholder:text-muted-foreground/40"
-            placeholder="Title (e.g. VP of Engineering)"
+            placeholder={i18n.t("pages.NewAgent.placeholder_1")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
@@ -269,15 +269,13 @@ export function NewAgent() {
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
-              <h2 className="text-sm font-medium">Company skills</h2>
+              <h2 className="text-sm font-medium">{i18n.t("pages.NewAgent.h2")}</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
-              </p>
+                {i18n.t("pages.NewAgent.p_1")}</p>
             </div>
             {availableSkills.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
-              </p>
+                {i18n.t("pages.NewAgent.p_2")}</p>
             ) : (
               <div className="space-y-3">
                 {availableSkills.map((skill) => {
@@ -307,7 +305,7 @@ export function NewAgent() {
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
+            <p className="text-xs text-muted-foreground mb-2">{i18n.t("pages.NewAgent.p_3")}</p>
           )}
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
@@ -333,14 +331,14 @@ export function NewAgent() {
                   disabled={testAgentState.disabled}
                   onClick={() => testAgentAction?.()}
                 >
-                  {testAgentState.pending ? "Testing..." : "Test Agent"}
+                  {testAgentState.pending ? i18n.t("pages.NewAgent.conditional_2") : i18n.t("pages.NewAgent.conditional_3")}
                 </Button>
                 <Button
                   size="sm"
                   disabled={!name.trim() || createAgent.isPending}
                   onClick={handleSubmit}
                 >
-                  {createAgent.isPending ? "Creating…" : "Create agent"}
+                  {createAgent.isPending ? i18n.t("pages.NewAgent.conditional_4") : i18n.t("pages.NewAgent.conditional_5")}
                 </Button>
               </div>
             </div>

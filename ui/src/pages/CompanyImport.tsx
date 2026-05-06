@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CompanyPortabilityCollisionStrategy,
@@ -255,8 +256,7 @@ function ImportPreviewPane({
           </pre>
         ) : (
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
-          </div>
+            {i18n.t("pages.CompanyImport.div")}</div>
         )}
       </div>
     </div>
@@ -442,7 +442,7 @@ function ConflictResolutionList({
                   )}
                   onClick={() => onToggleSkip(item.slug, item.filePath)}
                 >
-                  {isSkipped ? "skipped" : "skip"}
+                  {isSkipped ? i18n.t("pages.CompanyImport.conditional") : "skip"}
                 </button>
 
                 <span className={cn(
@@ -708,7 +708,7 @@ export function CompanyImport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
+      { label: i18n.t("pages.CompanyImport.label"), href: "/org" },
       { label: "Import" },
     ]);
   }, [setBreadcrumbs]);
@@ -804,8 +804,8 @@ export function CompanyImport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Preview failed",
-        body: err instanceof Error ? err.message : "Failed to preview import.",
+        title: i18n.t("pages.CompanyImport.title"),
+        body: err instanceof Error ? err.message : i18n.t("pages.CompanyImport.conditional_1"),
       });
     },
   });
@@ -863,7 +863,7 @@ export function CompanyImport() {
       setSelectedCompanyId(importedCompany.id);
       pushToast({
         tone: "success",
-        title: "Import complete",
+        title: i18n.t("pages.CompanyImport.title_1"),
         body: `${result.company.name}: ${result.agents.length} agent${result.agents.length === 1 ? "" : "s"} processed.`,
       });
       // Force a fresh dashboard load so newly imported agents are immediately visible.
@@ -872,8 +872,8 @@ export function CompanyImport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Import failed",
-        body: err instanceof Error ? err.message : "Failed to apply import.",
+        title: i18n.t("pages.CompanyImport.title_2"),
+        body: err instanceof Error ? err.message : i18n.t("pages.CompanyImport.conditional_2"),
       });
     },
   });
@@ -888,8 +888,8 @@ export function CompanyImport() {
     } catch (err) {
       pushToast({
         tone: "error",
-        title: "Package read failed",
-        body: err instanceof Error ? err.message : "Failed to read folder.",
+        title: i18n.t("pages.CompanyImport.title_3"),
+        body: err instanceof Error ? err.message : i18n.t("pages.CompanyImport.conditional_3"),
       });
     }
   }
@@ -1094,17 +1094,16 @@ export function CompanyImport() {
       {/* Source form section */}
       <div className="border-b border-border px-5 py-5 space-y-4">
         <div>
-          <h2 className="text-base font-semibold">Import source</h2>
+          <h2 className="text-base font-semibold">{i18n.t("pages.CompanyImport.h2")}</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Choose a GitHub repo or upload a local Paperclip zip package.
-          </p>
+            {i18n.t("pages.CompanyImport.p")}</p>
         </div>
 
         <div className="grid gap-2 md:grid-cols-2">
           {(
             [
-              { key: "github", icon: Github, label: "GitHub repo" },
-              { key: "local", icon: Upload, label: "Local zip" },
+              { key: "github", icon: Github, label: i18n.t("pages.CompanyImport.label_1") },
+              { key: "local", icon: Upload, label: i18n.t("pages.CompanyImport.label_2") },
             ] as const
           ).map(({ key, icon: Icon, label }) => (
             <button
@@ -1162,7 +1161,7 @@ export function CompanyImport() {
           </div>
         ) : (
           <Field
-            label="GitHub URL"
+            label={i18n.t("pages.CompanyImport.label_3")}
             hint="Repo tree path or blob URL to COMPANY.md (e.g. github.com/owner/repo/tree/main/company)."
           >
             <input
@@ -1196,7 +1195,7 @@ export function CompanyImport() {
 
         {targetMode === "new" && (
           <Field
-            label="New company name"
+            label={i18n.t("pages.CompanyImport.label_4")}
             hint="Optional override. Leave blank to use the package name."
           >
             <input
@@ -1204,13 +1203,13 @@ export function CompanyImport() {
               type="text"
               value={newCompanyName}
               onChange={(e) => setNewCompanyName(e.target.value)}
-              placeholder="Imported Company"
+              placeholder={i18n.t("pages.CompanyImport.placeholder")}
             />
           </Field>
         )}
 
         <Field
-          label="Collision strategy"
+          label={i18n.t("pages.CompanyImport.label_5")}
           hint="Board imports can rename, skip, or replace matching company content."
         >
           <select
@@ -1234,7 +1233,7 @@ export function CompanyImport() {
             onClick={() => previewMutation.mutate()}
             disabled={previewMutation.isPending || !hasSource}
           >
-            {previewMutation.isPending ? "Previewing..." : "Preview import"}
+            {previewMutation.isPending ? i18n.t("pages.CompanyImport.conditional_4") : i18n.t("pages.CompanyImport.conditional_5")}
           </Button>
         </div>
       </div>
@@ -1246,8 +1245,7 @@ export function CompanyImport() {
           <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
             <div className="flex flex-wrap items-center gap-4 text-sm">
               <span className="font-medium">
-                Import preview
-              </span>
+                {i18n.t("pages.CompanyImport.span")}</span>
               <span className="text-muted-foreground">
                 {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
               </span>
@@ -1295,7 +1293,7 @@ export function CompanyImport() {
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending
-                ? "Importing..."
+                ? i18n.t("pages.CompanyImport.conditional_6")
                 : `Import ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
             </Button>
           </div>
@@ -1322,7 +1320,7 @@ export function CompanyImport() {
           <div className="grid h-[calc(100vh-16rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
             <aside className="flex flex-col border-r border-border overflow-hidden">
               <div className="border-b border-border px-4 py-3 shrink-0">
-                <h2 className="text-base font-semibold">Package files</h2>
+                <h2 className="text-base font-semibold">{i18n.t("pages.CompanyImport.h2_1")}</h2>
               </div>
               <div className="flex-1 overflow-y-auto">
                 <FileTree

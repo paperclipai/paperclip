@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   type Agent,
@@ -340,10 +341,9 @@ export function RoutineRunVariablesDialog({
           {routineName && (
             <p className="text-muted-foreground text-sm">{routineName}</p>
           )}
-          <DialogTitle>Run routine</DialogTitle>
+          <DialogTitle>{i18n.t("components.RoutineRunVariablesDialog.dialogtitle")}</DialogTitle>
           <DialogDescription>
-            Choose the agent and optional project for this one run. Routine defaults are prefilled and won&apos;t be changed.
-          </DialogDescription>
+            {i18n.t("components.RoutineRunVariablesDialog.dialogdescription")}</DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
@@ -355,7 +355,7 @@ export function RoutineRunVariablesDialog({
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeIds}
                 placeholder="Agent"
-                noneLabel="Select an agent"
+                noneLabel={i18n.t("components.RoutineRunVariablesDialog.nonelabel")}
                 searchPlaceholder="Search agents..."
                 emptyMessage="No agents found."
                 disablePortal
@@ -375,7 +375,7 @@ export function RoutineRunVariablesDialog({
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Select an agent</span>
+                    <span className="text-muted-foreground">{i18n.t("components.RoutineRunVariablesDialog.span")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -397,7 +397,7 @@ export function RoutineRunVariablesDialog({
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
-                noneLabel="No project"
+                noneLabel={i18n.t("components.RoutineRunVariablesDialog.nonelabel_1")}
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
                 disablePortal
@@ -424,7 +424,7 @@ export function RoutineRunVariablesDialog({
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">No project</span>
+                    <span className="text-muted-foreground">{i18n.t("components.RoutineRunVariablesDialog.span_1")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -474,7 +474,7 @@ export function RoutineRunVariablesDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
+                    <SelectItem value="__unset__">{i18n.t("components.RoutineRunVariablesDialog.selectitem")}</SelectItem>
                     <SelectItem value="true">True</SelectItem>
                     <SelectItem value="false">False</SelectItem>
                   </SelectContent>
@@ -488,10 +488,10 @@ export function RoutineRunVariablesDialog({
                   }))}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Choose a value" />
+                    <SelectValue placeholder={i18n.t("components.RoutineRunVariablesDialog.placeholder")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
+                    <SelectItem value="__unset__">{i18n.t("components.RoutineRunVariablesDialog.selectitem_1")}</SelectItem>
                     {variable.options.map((option) => (
                       <SelectItem key={option} value={option}>{option}</SelectItem>
                     ))}
@@ -499,7 +499,7 @@ export function RoutineRunVariablesDialog({
                 </Select>
               ) : (
                 <Input
-                  type={variable.type === "number" ? "number" : "text"}
+                  type={variable.type === "number" ? i18n.t("components.RoutineRunVariablesDialog.conditional_1") : "text"}
                   value={values[variable.name] == null ? "" : String(values[variable.name])}
                   onChange={(event) => setValues((current) => ({ ...current, [variable.name]: event.target.value }))}
                 />
@@ -509,7 +509,7 @@ export function RoutineRunVariablesDialog({
 
           {workspaceSelectionEnabled && selectedProject && companyId ? (
             <IssueWorkspaceCard
-              key={`${open ? "open" : "closed"}:${selectedProject.id}`}
+              key={`${open ? i18n.t("components.RoutineRunVariablesDialog.conditional_2") : i18n.t("components.RoutineRunVariablesDialog.conditional_3")}:${selectedProject.id}`}
               issue={workspaceIssue}
               project={selectedProject}
               initialEditing
@@ -525,15 +525,14 @@ export function RoutineRunVariablesDialog({
           className="shrink-0 border-t border-border/60 bg-background px-6 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
         >
           {!selection.assigneeAgentId ? (
-            <p className="mr-auto text-xs text-amber-600">Default agent required for this run.</p>
+            <p className="mr-auto text-xs text-amber-600">{i18n.t("components.RoutineRunVariablesDialog.p")}</p>
           ) : missingRequired.length > 0 ? (
             <p className="mr-auto text-xs text-amber-600">
               Missing: {missingRequired.join(", ")}
             </p>
           ) : workspaceSelectionEnabled && !workspaceConfigValid ? (
             <p className="mr-auto text-xs text-amber-600">
-              Choose an existing workspace before running.
-            </p>
+              {i18n.t("components.RoutineRunVariablesDialog.p_1")}</p>
           ) : (
             <span className="mr-auto" />
           )}
@@ -573,7 +572,7 @@ export function RoutineRunVariablesDialog({
             }}
             disabled={isPending || !canSubmit}
           >
-            {isPending ? "Running..." : "Run routine"}
+            {isPending ? i18n.t("components.RoutineRunVariablesDialog.conditional_4") : i18n.t("components.RoutineRunVariablesDialog.conditional_5")}
           </Button>
         </DialogFooter>
       </DialogContent>

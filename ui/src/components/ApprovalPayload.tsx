@@ -1,4 +1,5 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import i18n from "@/i18n";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -191,14 +192,13 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {recommendedAction && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
-            Recommended action
-          </p>
+            {i18n.t("components.ApprovalPayload.p")}</p>
           <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
         </div>
       )}
       {nextActionOnApproval && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">On approval</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{i18n.t("components.ApprovalPayload.p_1")}</p>
           <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
         </div>
       )}
@@ -218,8 +218,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {proposedComment && (
         <div className="space-y-1.5">
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-            Proposed comment
-          </p>
+            {i18n.t("components.ApprovalPayload.p_2")}</p>
           <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
             {proposedComment}
           </pre>

@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import i18n from "@/i18n";
 import {
   Field,
   ToggleField,
@@ -24,7 +25,7 @@ export function OpenCodeLocalConfigFields({
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={i18n.t("adapters.opencode-local.config-fields.label")} hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -50,7 +51,7 @@ export function OpenCodeLocalConfigFields({
         </Field>
       )}
       <ToggleField
-        label="Skip permissions"
+        label={i18n.t("adapters.opencode-local.config-fields.label_1")}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate

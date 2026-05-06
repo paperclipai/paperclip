@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
@@ -289,7 +290,7 @@ function displayToolName(name: string, input: unknown): string {
 }
 
 function summarizeToolResult(result: string | undefined, isError: boolean | undefined, density: TranscriptDensity): string {
-  if (!result) return isError ? "Tool failed" : "Waiting for result";
+  if (!result) return isError ? i18n.t("components.transcript.RunTranscriptView.conditional") : i18n.t("components.transcript.RunTranscriptView.conditional_1");
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {
@@ -499,7 +500,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       blocks.push({
         type: "event",
         ts: entry.ts,
-        label: "init",
+        label: i18n.t("components.transcript.RunTranscriptView.label"),
         tone: "info",
         text: `model ${entry.model}${entry.sessionId ? ` • session ${entry.sessionId}` : ""}`,
       });
@@ -510,9 +511,9 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       blocks.push({
         type: "event",
         ts: entry.ts,
-        label: "result",
+        label: i18n.t("components.transcript.RunTranscriptView.label_1"),
         tone: entry.isError ? "error" : "info",
-        text: entry.text.trim() || entry.errors[0] || (entry.isError ? "Run failed" : "Completed"),
+        text: entry.text.trim() || entry.errors[0] || (entry.isError ? i18n.t("components.transcript.RunTranscriptView.conditional_6") : "Completed"),
         detail:
           !entry.isError && entry.text.trim().length > 0
             ? `${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
@@ -761,7 +762,7 @@ function TranscriptToolCard({
           type="button"
           className="mt-0.5 inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? "Collapse tool details" : "Expand tool details"}
+          aria-label={open ? i18n.t("components.transcript.RunTranscriptView.conditional_7") : i18n.t("components.transcript.RunTranscriptView.conditional_8")}
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -769,7 +770,7 @@ function TranscriptToolCard({
       {open && (
         <div className="mt-3">
           <div className={detailsClass}>
-            <div className={cn("grid gap-3", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
+            <div className={cn("grid gap-3", compact ? "grid-cols-1" : i18n.t("components.transcript.RunTranscriptView.conditional_9"))}>
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Input
@@ -786,7 +787,7 @@ function TranscriptToolCard({
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
                   block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
                 )}>
-                  {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
+                  {block.result ? formatToolPayload(block.result) : i18n.t("components.transcript.RunTranscriptView.conditional_10")}
                 </pre>
               </div>
             </div>
@@ -817,9 +818,9 @@ function TranscriptCommandGroup({
   const isRunning = Boolean(runningItem);
   const showExpandedErrorState = open && hasError;
   const title = isRunning
-    ? "Executing command"
+    ? i18n.t("components.transcript.RunTranscriptView.conditional_11")
     : block.items.length === 1
-      ? "Executed command"
+      ? i18n.t("components.transcript.RunTranscriptView.conditional_12")
       : `Executed ${block.items.length} commands`;
   const subtitle = runningItem
     ? summarizeToolInput("command_execution", runningItem.input, density)
@@ -873,8 +874,7 @@ function TranscriptCommandGroup({
           )}
           {!subtitle && latestItem?.status === "error" && open && (
             <div className={cn("mt-1", compact ? "text-xs" : "text-sm", statusTone)}>
-              Command failed
-            </div>
+              {i18n.t("components.transcript.RunTranscriptView.div")}</div>
           )}
         </div>
         <button
@@ -887,7 +887,7 @@ function TranscriptCommandGroup({
             event.stopPropagation();
             setOpen((value) => !value);
           }}
-          aria-label={open ? "Collapse command details" : "Expand command details"}
+          aria-label={open ? i18n.t("components.transcript.RunTranscriptView.conditional_13") : i18n.t("components.transcript.RunTranscriptView.conditional_14")}
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -1002,7 +1002,7 @@ function TranscriptToolGroup({
           type="button"
           className={cn("inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground", subtitle && "mt-0.5")}
           onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
-          aria-label={open ? "Collapse tool details" : "Expand tool details"}
+          aria-label={open ? i18n.t("components.transcript.RunTranscriptView.conditional_15") : i18n.t("components.transcript.RunTranscriptView.conditional_16")}
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -1033,7 +1033,7 @@ function TranscriptToolGroup({
                   {item.status === "running" ? "Running" : item.status === "error" ? "Errored" : "Completed"}
                 </span>
               </div>
-              <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
+              <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : i18n.t("components.transcript.RunTranscriptView.conditional_17"))}>
                 <div>
                   <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Input</div>
                   <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
@@ -1161,7 +1161,7 @@ function TranscriptDiffGroup({
   // Extract a short file name from the path
   const shortFile = block.filePath
     ? block.filePath.split("/").pop() ?? block.filePath
-    : "diff";
+    : i18n.t("components.transcript.RunTranscriptView.conditional_18");
 
   return (
     <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-2">
@@ -1259,7 +1259,7 @@ function TranscriptStderrGroup({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
       >
         <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]")}>
-          {block.lines.length} log {block.lines.length === 1 ? "line" : "lines"}
+          {block.lines.length} log {block.lines.length === 1 ? i18n.t("components.transcript.RunTranscriptView.conditional_19") : i18n.t("components.transcript.RunTranscriptView.conditional_20")}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
@@ -1296,7 +1296,7 @@ function TranscriptSystemGroup({
       >
         <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
-          {block.lines.length} system {block.lines.length === 1 ? "message" : "messages"}
+          {block.lines.length} system {block.lines.length === 1 ? i18n.t("components.transcript.RunTranscriptView.conditional_21") : i18n.t("components.transcript.RunTranscriptView.conditional_22")}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
@@ -1335,7 +1335,7 @@ function TranscriptStdoutRow({
           type="button"
           className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? "Collapse stdout" : "Expand stdout"}
+          aria-label={open ? i18n.t("components.transcript.RunTranscriptView.conditional_23") : i18n.t("components.transcript.RunTranscriptView.conditional_24")}
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>

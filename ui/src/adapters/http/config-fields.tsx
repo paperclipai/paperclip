@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import i18n from "@/i18n";
 import {
   Field,
   DraftInput,
@@ -17,7 +18,7 @@ export function HttpConfigFields({
   mark,
 }: AdapterConfigFieldsProps) {
   return (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
+    <Field label={i18n.t("adapters.http.config-fields.label_1")} hint={help.webhookUrl}>
       <DraftInput
         value={
           isCreate

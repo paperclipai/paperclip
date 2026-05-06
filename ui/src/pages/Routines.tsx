@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "@/lib/router";
 import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, Plus, Repeat } from "lucide-react";
@@ -145,13 +146,13 @@ export function buildRoutineGroups(
     const groups = groupBy(routines, (routine) => routine.projectId ?? "__no_project");
     return Object.keys(groups)
       .sort((left, right) => {
-        const leftLabel = left === "__no_project" ? "No project" : (projectById.get(left)?.name ?? "Unknown project");
-        const rightLabel = right === "__no_project" ? "No project" : (projectById.get(right)?.name ?? "Unknown project");
+        const leftLabel = left === "__no_project" ? i18n.t("pages.Routines.conditional") : (projectById.get(left)?.name ?? "Unknown project");
+        const rightLabel = right === "__no_project" ? i18n.t("pages.Routines.conditional_1") : (projectById.get(right)?.name ?? "Unknown project");
         return leftLabel.localeCompare(rightLabel);
       })
       .map((key) => ({
         key,
-        label: key === "__no_project" ? "No project" : (projectById.get(key)?.name ?? "Unknown project"),
+        label: key === "__no_project" ? i18n.t("pages.Routines.conditional_2") : (projectById.get(key)?.name ?? "Unknown project"),
         items: groups[key]!,
       }));
   }
@@ -199,6 +200,7 @@ function buildRoutinesTabHref(tab: RoutinesTab) {
   return tab === "runs" ? "/routines?tab=runs" : "/routines";
 }
 
+
 export function Routines() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -237,7 +239,7 @@ export function Routines() {
   });
   const routineViewStateKey = selectedCompanyId
     ? `paperclip:routines-view:${selectedCompanyId}`
-    : "paperclip:routines-view";
+    : i18n.t("pages.Routines.conditional_11");
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
 
   useEffect(() => {
@@ -310,10 +312,10 @@ export function Routines() {
       setAdvancedOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
       pushToast({
-        title: "Routine created",
+        title: i18n.t("pages.Routines.title"),
         body: routine.assigneeAgentId
-          ? "Add the first trigger to turn it into a live workflow."
-          : "Draft saved. Add a default agent before enabling automation.",
+          ? i18n.t("pages.Routines.conditional_12")
+          : i18n.t("pages.Routines.conditional_13"),
         tone: "success",
       });
       navigate(`/routines/${routine.id}?tab=triggers`);
@@ -343,8 +345,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        title: i18n.t("pages.Routines.title_1"),
+        body: mutationError instanceof Error ? mutationError.message : i18n.t("pages.Routines.conditional_14"),
         tone: "error",
       });
     },
@@ -378,8 +380,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        title: i18n.t("pages.Routines.title_2"),
+        body: mutationError instanceof Error ? mutationError.message : i18n.t("pages.Routines.conditional_15"),
         tone: "error",
       });
     },
@@ -459,7 +461,7 @@ export function Routines() {
   function handleToggleEnabled(routine: RoutineListItem, enabled: boolean) {
     if (!enabled && !routine.assigneeAgentId) {
       pushToast({
-        title: "Default agent required",
+        title: i18n.t("pages.Routines.title_3"),
         body: "Set a default agent before enabling routine automation.",
         tone: "warn",
       });
@@ -474,7 +476,7 @@ export function Routines() {
   function handleToggleArchived(routine: RoutineListItem) {
     updateRoutineStatus.mutate({
       id: routine.id,
-      status: routine.status === "archived" ? "active" : "archived",
+      status: routine.status === "archived" ? "active" : i18n.t("pages.Routines.conditional_18"),
     });
   }
 
@@ -494,8 +496,7 @@ export function Routines() {
             Routines
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution issues.
-          </p>
+            {i18n.t("pages.Routines.p")}</p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
@@ -510,7 +511,7 @@ export function Routines() {
           onValueChange={handleTabChange}
           items={[
             { value: "routines", label: "Routines" },
-            { value: "runs", label: "Recent Runs" },
+            { value: "runs", label: i18n.t("pages.Routines.label") },
           ]}
         />
         <TabsContent value="routines" className="space-y-4">
@@ -622,10 +623,9 @@ export function Routines() {
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{i18n.t("pages.Routines.p_1")}</p>
               <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Default project and agent are optional for draft routines.
-              </p>
+                {i18n.t("pages.Routines.p_2")}</p>
             </div>
             <Button
               variant="ghost"
@@ -645,7 +645,7 @@ export function Routines() {
               <textarea
                 ref={titleInputRef}
                 className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
+                placeholder={i18n.t("pages.Routines.placeholder")}
                 rows={1}
                 value={draft.title}
                 onChange={(event) => {
@@ -685,7 +685,7 @@ export function Routines() {
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
                     placeholder="Assignee"
-                    noneLabel="No assignee"
+                    noneLabel={i18n.t("pages.Routines.nonelabel")}
                     searchPlaceholder="Search assignees..."
                     emptyMessage="No assignees found."
                     onChange={(assigneeAgentId) => {
@@ -724,14 +724,14 @@ export function Routines() {
                       );
                     }}
                   />
-                  <span>in</span>
+                  <span>{i18n.t("pages.Routines.span")}</span>
                   <InlineEntitySelector
                     ref={projectSelectorRef}
                     value={draft.projectId}
                     options={projectOptions}
                     recentOptionIds={recentProjectIds}
                     placeholder="Project"
-                    noneLabel="No project"
+                    noneLabel={i18n.t("pages.Routines.nonelabel_1")}
                     searchPlaceholder="Search projects..."
                     emptyMessage="No projects found."
                     onChange={(projectId) => {
@@ -775,7 +775,7 @@ export function Routines() {
                 ref={descriptionEditorRef}
                 value={draft.description}
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
-                placeholder="Add instructions..."
+                placeholder={i18n.t("pages.Routines.placeholder_1")}
                 bordered={false}
                 contentClassName="min-h-[160px] text-sm text-muted-foreground"
                 mentions={mentionOptions}
@@ -791,8 +791,8 @@ export function Routines() {
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                   <div>
-                    <p className="text-sm font-medium">Advanced delivery settings</p>
-                    <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                    <p className="text-sm font-medium">{i18n.t("pages.Routines.p_3")}</p>
+                    <p className="text-sm text-muted-foreground">{i18n.t("pages.Routines.p_4")}</p>
                   </div>
                   {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                 </CollapsibleTrigger>
@@ -816,7 +816,7 @@ export function Routines() {
                       <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{i18n.t("pages.Routines.p_5")}</p>
                       <Select
                         value={draft.catchUpPolicy}
                         onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -840,8 +840,7 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
-            </div>
+              {i18n.t("pages.Routines.div")}</div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
                 onClick={() => createRoutine.mutate()}
@@ -851,11 +850,11 @@ export function Routines() {
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
+                {createRoutine.isPending ? i18n.t("pages.Routines.conditional_23") : i18n.t("pages.Routines.conditional_24")}
               </Button>
               {createRoutine.isError ? (
                 <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+                  {createRoutine.error instanceof Error ? createRoutine.error.message : i18n.t("pages.Routines.conditional_25")}
                 </p>
               ) : null}
             </div>
@@ -866,7 +865,7 @@ export function Routines() {
       {error ? (
         <Card>
           <CardContent className="pt-6 text-sm text-destructive">
-            {error instanceof Error ? error.message : "Failed to load routines"}
+            {error instanceof Error ? error.message : i18n.t("pages.Routines.conditional_26")}
           </CardContent>
         </Card>
       ) : null}

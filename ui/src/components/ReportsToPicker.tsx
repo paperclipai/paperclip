@@ -1,4 +1,5 @@
 import { useState } from "react";
+import i18n from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
 import {
   Popover,
@@ -51,7 +52,7 @@ export function ReportsToPicker({
           {unknownManager ? (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate text-muted-foreground">Unknown manager (stale ID)</span>
+              <span className="min-w-0 truncate text-muted-foreground">{i18n.t("components.ReportsToPicker.span")}</span>
             </>
           ) : current ? (
             <>
@@ -62,7 +63,7 @@ export function ReportsToPicker({
                   terminatedManager && "text-amber-900 dark:text-amber-200",
                 )}
               >
-                {`Reports to ${current.name}${terminatedManager ? " (terminated)" : ""}`}
+                {`Reports to ${current.name}${terminatedManager ? i18n.t("components.ReportsToPicker.conditional") : ""}`}
               </span>
             </>
           ) : (
@@ -87,8 +88,7 @@ export function ReportsToPicker({
             setOpen(false);
           }}
         >
-          No manager
-        </button>
+          {i18n.t("components.ReportsToPicker.button")}</button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
             <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
@@ -99,8 +99,7 @@ export function ReportsToPicker({
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
-          </div>
+            {i18n.t("components.ReportsToPicker.div")}</div>
         )}
         {rows.map((a) => (
           <button

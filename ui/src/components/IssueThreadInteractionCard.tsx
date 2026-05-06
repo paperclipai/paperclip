@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, GitBranch, ListChecks, Loader2, MessageSquareQuote, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -254,8 +255,7 @@ function TaskTreeNode({
                 </div>
                 {depth > 0 ? (
                   <div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                    Child task
-                  </div>
+                    {i18n.t("components.IssueThreadInteractionCard.div")}</div>
                 ) : null}
                 {node.task.description ? (
                   <p className="mt-0.5 text-sm leading-5 text-muted-foreground">
@@ -303,7 +303,7 @@ function TaskTreeNode({
             <GitBranch className="h-3.5 w-3.5 shrink-0" />
             <span>
               {hiddenChildCount === 1
-                ? "1 follow-on task hidden in preview"
+                ? i18n.t("components.IssueThreadInteractionCard.conditional")
                 : `${hiddenChildCount} follow-on tasks hidden in preview`}
             </span>
           </div>
@@ -452,9 +452,9 @@ function SuggestTasksCard({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
+        <span>{totalTasks === 1 ? i18n.t("components.IssueThreadInteractionCard.conditional_1") : `${totalTasks} draft issues`}</span>
         {interaction.payload.defaultParentId ? (
-          <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
+          <TaskField label={i18n.t("components.IssueThreadInteractionCard.label")} value={interaction.payload.defaultParentId} tone="subtle" />
         ) : null}
       </div>
 
@@ -478,12 +478,11 @@ function SuggestTasksCard({
       {interaction.status === "accepted" ? (
         <div className="rounded-sm border border-emerald-500/60 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
           <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
-            Resolution summary
-          </div>
+            {i18n.t("components.IssueThreadInteractionCard.div_1")}</div>
           <p className="mt-1 leading-6">
             {skippedCount > 0
-              ? `Created ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"} and skipped ${skippedCount} during review.`
-              : `Created all ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"}.`}
+              ? `Created ${createdCount} draft ${createdCount === 1 ? i18n.t("components.IssueThreadInteractionCard.conditional_2") : i18n.t("components.IssueThreadInteractionCard.conditional_3")} and skipped ${skippedCount} during review.`
+              : `Created all ${createdCount} draft ${createdCount === 1 ? i18n.t("components.IssueThreadInteractionCard.conditional_4") : i18n.t("components.IssueThreadInteractionCard.conditional_5")}.`}
           </p>
         </div>
       ) : null}
@@ -491,8 +490,7 @@ function SuggestTasksCard({
       {interaction.status === "rejected" ? (
         <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
           <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
-            Rejection reason
-          </div>
+            {i18n.t("components.IssueThreadInteractionCard.div_2")}</div>
           <p className={cn(
             "mt-1 leading-6",
             !interaction.result?.rejectionReason && "text-rose-900/75",
@@ -508,8 +506,8 @@ function SuggestTasksCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>
                 {selectedCount === totalTasks
-                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
-                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`}
+                  ? `All ${totalTasks} draft ${totalTasks === 1 ? i18n.t("components.IssueThreadInteractionCard.conditional_6") : i18n.t("components.IssueThreadInteractionCard.conditional_7")} selected`
+                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? i18n.t("components.IssueThreadInteractionCard.conditional_8") : i18n.t("components.IssueThreadInteractionCard.conditional_9")} selected`}
               </span>
               {selectedCount < totalTasks ? (
                 <span>
@@ -530,7 +528,7 @@ function SuggestTasksCard({
                     Accepting...
                   </>
                 ) : (
-                  selectedCount === totalTasks ? "Accept drafts" : "Accept selected drafts"
+                  selectedCount === totalTasks ? i18n.t("components.IssueThreadInteractionCard.conditional_10") : i18n.t("components.IssueThreadInteractionCard.conditional_11")
                 )}
               </Button>
               <Button
@@ -559,7 +557,7 @@ function SuggestTasksCard({
               <Textarea
                 value={rejectReason}
                 onChange={(event) => setRejectReason(event.target.value)}
-                placeholder="Add a short reason for rejecting this suggestion"
+                placeholder={i18n.t("components.IssueThreadInteractionCard.placeholder")}
                 className="min-h-24 bg-background text-sm"
               />
               <div className="flex justify-end">
@@ -605,7 +603,7 @@ function QuestionOptionButton({
   return (
     <button
       type="button"
-      role={selectionMode === "single" ? "radio" : "checkbox"}
+      role={selectionMode === "single" ? i18n.t("components.IssueThreadInteractionCard.conditional_12") : i18n.t("components.IssueThreadInteractionCard.conditional_13")}
       aria-checked={selected}
       className={cn(
         "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
@@ -730,7 +728,7 @@ function AskUserQuestionsCard({
         </span>
         <span>
           {questions.length === 1
-            ? "1 question"
+            ? i18n.t("components.IssueThreadInteractionCard.conditional_14")
             : `${questions.length} questions`}
         </span>
       </div>
@@ -760,7 +758,7 @@ function AskUserQuestionsCard({
                   ) : null}
                 </div>
                 <TaskField
-                  label={question.selectionMode === "single" ? "Pick" : "Pick many"}
+                  label={question.selectionMode === "single" ? "Pick" : i18n.t("components.IssueThreadInteractionCard.conditional_15")}
                   value={question.required ? "Required" : "Optional"}
                   tone="subtle"
                 />
@@ -768,7 +766,7 @@ function AskUserQuestionsCard({
 
               <div
                 className="mt-3 grid gap-3"
-                role={question.selectionMode === "single" ? "radiogroup" : "group"}
+                role={question.selectionMode === "single" ? i18n.t("components.IssueThreadInteractionCard.conditional_16") : i18n.t("components.IssueThreadInteractionCard.conditional_17")}
                 aria-labelledby={`${interaction.id}-${question.id}-prompt`}
               >
                 {question.options.map((option) => (
@@ -789,8 +787,7 @@ function AskUserQuestionsCard({
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
             <div className="text-sm text-muted-foreground">
-              Submit once after you finish the full form.
-            </div>
+              {i18n.t("components.IssueThreadInteractionCard.div_3")}</div>
             <div className="flex flex-wrap items-center gap-2">
               {onCancelInteraction ? (
                 <Button
@@ -828,11 +825,11 @@ function AskUserQuestionsCard({
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
-          <div className="font-semibold">Question cancelled</div>
+          <div className="font-semibold">{i18n.t("components.IssueThreadInteractionCard.div_4")}</div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
           ) : (
-            <p className="mt-1">No answer was recorded.</p>
+            <p className="mt-1">{i18n.t("components.IssueThreadInteractionCard.p")}</p>
           )}
         </div>
       ) : (
@@ -856,7 +853,7 @@ function AskUserQuestionsCard({
                       <TaskField key={label} label="Answer" value={label} />
                     ))
                   ) : (
-                    <span className="text-sm text-muted-foreground">No answer recorded.</span>
+                    <span className="text-sm text-muted-foreground">{i18n.t("components.IssueThreadInteractionCard.span")}</span>
                   )}
                 </div>
               </div>
@@ -866,8 +863,7 @@ function AskUserQuestionsCard({
           {interaction.result?.summaryMarkdown ? (
             <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
-                Submitted summary
-              </div>
+                {i18n.t("components.IssueThreadInteractionCard.div_5")}</div>
               <MarkdownBody>{interaction.result.summaryMarkdown}</MarkdownBody>
             </div>
           ) : null}
@@ -982,16 +978,16 @@ function RequestConfirmationResolution({
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          {expiredByComment ? i18n.t("components.IssueThreadInteractionCard.conditional_18") : i18n.t("components.IssueThreadInteractionCard.conditional_19")}
         </div>
         <p className="leading-6">
           {expiredByComment
-            ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            ? i18n.t("components.IssueThreadInteractionCard.conditional_20")
+            : i18n.t("components.IssueThreadInteractionCard.conditional_21")}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
-            <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
+            <a href={`#comment-${interaction.result.commentId}`}>{i18n.t("components.IssueThreadInteractionCard.a")}</a>
           </Button>
         ) : null}
         {expiredByTargetChange ? (
@@ -1014,8 +1010,7 @@ function RequestConfirmationResolution({
   if (interaction.status === "failed") {
     return (
       <p className="text-sm leading-6 text-muted-foreground">
-        This request could not be resolved. Try again or create a new request.
-      </p>
+        {i18n.t("components.IssueThreadInteractionCard.p_1")}</p>
     );
   }
 
@@ -1049,8 +1044,8 @@ function RequestConfirmationCard({
   const declineReasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
     ?? (interaction.payload.acceptLabel === "Approve plan"
-      ? "Optional: what would you like revised?"
-      : "Optional: tell the agent what you'd change.");
+      ? i18n.t("components.IssueThreadInteractionCard.conditional_22")
+      : i18n.t("components.IssueThreadInteractionCard.conditional_23"));
 
   useEffect(() => {
     setRejectReason(interaction.result?.reason ?? "");
@@ -1158,7 +1153,7 @@ function RequestConfirmationCard({
                 )}
               />
               {rejectAttempted && declineReasonInvalid ? (
-                <p className="text-xs text-destructive">A decline reason is required.</p>
+                <p className="text-xs text-destructive">{i18n.t("components.IssueThreadInteractionCard.p_2")}</p>
               ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
@@ -1250,8 +1245,8 @@ export function IssueThreadInteractionCard({
               <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/70">
                 <ListChecks className="h-3.5 w-3.5" />
                 {interaction.continuationPolicy === "wake_assignee_on_accept"
-                  ? "Wakes on confirm"
-                  : "Wakes assignee"}
+                  ? i18n.t("components.IssueThreadInteractionCard.conditional_24")
+                  : i18n.t("components.IssueThreadInteractionCard.conditional_25")}
               </span>
             ) : null}
           </div>
@@ -1259,10 +1254,10 @@ export function IssueThreadInteractionCard({
           <div className="mt-3 text-lg font-bold text-foreground">
             {interaction.title
               ?? (interaction.kind === "suggest_tasks"
-                ? "Suggested task tree"
+                ? i18n.t("components.IssueThreadInteractionCard.conditional_26")
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
-                  : "Confirmation requested")}
+                  : i18n.t("components.IssueThreadInteractionCard.conditional_27"))}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">

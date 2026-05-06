@@ -1,4 +1,5 @@
 import type { IssueBlockerAttention, IssueRelationIssueSummary, SuccessfulRunHandoffState } from "@paperclipai/shared";
+import i18n from "@/i18n";
 import { AlertTriangle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
@@ -21,7 +22,7 @@ export function IssueBlockedNotice({
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
 
-  const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+  const blockerLabel = blockers.length === 1 ? i18n.t("components.IssueBlockedNotice.conditional") : i18n.t("components.IssueBlockedNotice.conditional_1");
   const terminalBlockers = blockers
     .flatMap((blocker) => blocker.terminalBlockers ?? [])
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
@@ -125,7 +126,7 @@ export function IssueBlockedNotice({
                     ? stalledLeafBlockers.length > 1
                       ? <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
                       : <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
+                    : <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? i18n.t("components.IssueBlockedNotice.conditional_2") : i18n.t("components.IssueBlockedNotice.conditional_3")} complete. Comments still wake the assignee for questions or triage.</>
                   : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
               </p>
               {blockers.length > 0 ? (
@@ -136,14 +137,14 @@ export function IssueBlockedNotice({
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Stalled in review
+                    {i18n.t("components.IssueBlockedNotice.span")}
                   </span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
               ) : terminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Ultimately waiting on
+                    {i18n.t("components.IssueBlockedNotice.span_1")}
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
                 </div>

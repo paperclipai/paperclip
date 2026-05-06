@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import i18n from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -143,28 +144,23 @@ export function IssueChatUxLab() {
               <FlaskConical className="h-3.5 w-3.5" />
               Chat UX Lab
             </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Issue chat review surface</h1>
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight">{i18n.t("pages.IssueChatUxLab.h1")}</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-              This page exercises the real assistant-ui issue chat with fixture-backed messages. Use it to review
-              spacing, chronology, running states, tool rendering, activity rows, queueing, and composer behavior
-              without needing a live issue in progress.
-            </p>
+              {i18n.t("pages.IssueChatUxLab.p")}</p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
                 /tests/ux/chat
               </Badge>
               <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
-                assistant-ui thread
-              </Badge>
+                {i18n.t("pages.IssueChatUxLab.badge")}</Badge>
               <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
-                fixture-backed live run
-              </Badge>
+                {i18n.t("pages.IssueChatUxLab.badge_1")}</Badge>
             </div>
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <Button variant="outline" size="sm" className="rounded-full" onClick={() => setShowComposer((value) => !value)}>
-                {showComposer ? "Hide composer in primary preview" : "Show composer in primary preview"}
+                {showComposer ? i18n.t("pages.IssueChatUxLab.conditional") : i18n.t("pages.IssueChatUxLab.conditional_1")}
               </Button>
               <a
                 href="#live-execution"
@@ -198,21 +194,19 @@ export function IssueChatUxLab() {
       <LabSection
         id="rotating-text"
         eyebrow="Animation demo"
-        title="Rotating reasoning text"
-        description="Isolated ticker that cycles sample reasoning lines on a timer. The outgoing line slides up and fades out while the incoming line slides up from below. Runs in a loop so you can tune timing and easing without needing a live stream."
+        title={i18n.t("pages.IssueChatUxLab.title")}
+        description={i18n.t("pages.IssueChatUxLab.description")}
         accentClassName="bg-[linear-gradient(180deg,rgba(168,85,247,0.06),transparent_28%),var(--background)]"
       >
         <div className="space-y-4">
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Default interval (2.2s)
-            </div>
+              {i18n.t("pages.IssueChatUxLab.div")}</div>
             <RotatingReasoningDemo />
           </div>
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Fast interval (1s) — stress test
-            </div>
+              {i18n.t("pages.IssueChatUxLab.div_1")}</div>
             <RotatingReasoningDemo intervalMs={1000} />
           </div>
         </div>
@@ -221,27 +215,25 @@ export function IssueChatUxLab() {
       <LabSection
         id="working-tokens"
         eyebrow="Status tokens"
-        title="Working / Worked header verb"
-        description='The "Working" token uses the shimmer-text gradient sweep to signal an active run. Once the run completes it becomes the static "Worked" token.'
+        title={i18n.t("pages.IssueChatUxLab.title_1")}
+        description={i18n.t("pages.IssueChatUxLab.description_1")}
         accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_28%),var(--background)]"
       >
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
             <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Active run — shimmer
-            </div>
+              {i18n.t("pages.IssueChatUxLab.div_2")}</div>
             <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
               <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
                 <span className="shimmer-text">Working</span>
               </span>
-              <span className="text-xs text-muted-foreground/60">for 12s</span>
+              <span className="text-xs text-muted-foreground/60">{i18n.t("pages.IssueChatUxLab.span")}</span>
             </div>
           </div>
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
             <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Completed run — static
-            </div>
+              {i18n.t("pages.IssueChatUxLab.div_3")}</div>
             <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
               <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center">
@@ -249,7 +241,7 @@ export function IssueChatUxLab() {
                 </span>
                 Worked
               </span>
-              <span className="text-xs text-muted-foreground/60">for 1 min 24s</span>
+              <span className="text-xs text-muted-foreground/60">{i18n.t("pages.IssueChatUxLab.span_1")}</span>
             </div>
           </div>
         </div>
@@ -258,8 +250,8 @@ export function IssueChatUxLab() {
       <LabSection
         id="live-execution"
         eyebrow="Primary preview"
-        title="Live execution thread"
-        description="Shows the fully active state: timeline events, historical run marker, a running assistant reply with reasoning and tools, and a queued follow-up from the user."
+        title={i18n.t("pages.IssueChatUxLab.title_2")}
+        description={i18n.t("pages.IssueChatUxLab.description_2")}
         accentClassName="bg-[linear-gradient(180deg,rgba(6,182,212,0.05),transparent_28%),var(--background)]"
       >
         <IssueChatThread
@@ -289,8 +281,8 @@ export function IssueChatUxLab() {
 
       <LabSection
         eyebrow="Submitting state"
-        title="Pending message bubble"
-        description='When a user sends a message, the bubble briefly shows a "Sending..." label at reduced opacity until the server confirms receipt. This preview renders that transient state.'
+        title={i18n.t("pages.IssueChatUxLab.title_3")}
+        description={i18n.t("pages.IssueChatUxLab.description_3")}
         accentClassName="bg-[linear-gradient(180deg,rgba(59,130,246,0.06),transparent_28%),var(--background)]"
       >
         <IssueChatThread
@@ -310,8 +302,8 @@ export function IssueChatUxLab() {
       <div className="grid gap-6 xl:grid-cols-2">
         <LabSection
           eyebrow="Settled review"
-          title="Durable comments and feedback"
-          description="Shows the post-run state: assistant comment feedback controls, historical run context, and timeline reassignment without any active stream."
+          title={i18n.t("pages.IssueChatUxLab.title_4")}
+          description={i18n.t("pages.IssueChatUxLab.description_4")}
           accentClassName="bg-[linear-gradient(180deg,rgba(168,85,247,0.05),transparent_26%),var(--background)]"
         >
           <IssueChatThread
@@ -334,8 +326,8 @@ export function IssueChatUxLab() {
         <div className="space-y-6">
           <LabSection
             eyebrow="Empty thread"
-            title="Empty state and disabled composer"
-            description="Keeps the message area visible even when there is no thread yet, and replaces the composer with an explicit warning when replies are blocked."
+            title={i18n.t("pages.IssueChatUxLab.title_5")}
+            description={i18n.t("pages.IssueChatUxLab.description_5")}
             accentClassName="bg-[linear-gradient(180deg,rgba(245,158,11,0.08),transparent_26%),var(--background)]"
           >
             <IssueChatThread
@@ -358,10 +350,9 @@ export function IssueChatUxLab() {
                 <MessagesSquare className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
                 Review checklist
               </div>
-              <CardTitle className="text-lg">What to evaluate on this page</CardTitle>
+              <CardTitle className="text-lg">{i18n.t("pages.IssueChatUxLab.cardtitle")}</CardTitle>
               <CardDescription>
-                This route should be the fastest way to inspect the chat system before or after tweaks.
-              </CardDescription>
+                {i18n.t("pages.IssueChatUxLab.carddescription")}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 px-5 pb-5 pt-0 text-sm text-muted-foreground">
               <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">

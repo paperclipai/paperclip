@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { DocumentRevision } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
@@ -101,7 +102,7 @@ export function DocumentDiffModal({
                 onValueChange={(value) => setLeftRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={i18n.t("components.DocumentDiffModal.placeholder")} />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
@@ -119,7 +120,7 @@ export function DocumentDiffModal({
                 onValueChange={(value) => setRightRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={i18n.t("components.DocumentDiffModal.placeholder_1")} />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
@@ -135,11 +136,11 @@ export function DocumentDiffModal({
 
         <div className="overflow-auto flex-1 rounded-md border border-border text-xs">
           {!revisions ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Loading revisions...</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{i18n.t("components.DocumentDiffModal.div")}</div>
           ) : !leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Select two revisions to compare.</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{i18n.t("components.DocumentDiffModal.div_1")}</div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Both sides are the same revision.</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{i18n.t("components.DocumentDiffModal.div_2")}</div>
           ) : (
             <div className="font-mono text-[12px] leading-6">
               <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">

@@ -1,4 +1,5 @@
 import * as React from "react";
+import i18n from "@/i18n";
 import { useMemo, useState } from "react";
 import * as RouterDom from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
@@ -55,9 +56,9 @@ export function IssueQuicklookCard({
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
-        <span>&middot;</span>
+        <span>{i18n.t("components.IssueLinkQuicklook.span")}</span>
         <span>{issue.status.replace(/_/g, " ")}</span>
-        <span>&middot;</span>
+        <span>{i18n.t("components.IssueLinkQuicklook.span_1")}</span>
         <span>{timeAgo(new Date(issue.updatedAt))}</span>
       </div>
       {description ? (
@@ -171,7 +172,7 @@ export const IssueLinkQuicklook = React.forwardRef<
             <div className="h-4 w-full rounded bg-accent/40" />
             <div className="h-4 w-3/4 rounded bg-accent/30" />
             {!isLoading ? (
-              <p className="text-xs text-muted-foreground">Unable to load issue preview.</p>
+              <p className="text-xs text-muted-foreground">{i18n.t("components.IssueLinkQuicklook.p")}</p>
             ) : null}
           </div>
         )}

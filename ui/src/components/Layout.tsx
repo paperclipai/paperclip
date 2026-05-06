@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
@@ -301,7 +302,7 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
-    document.body.style.overflow = isMobile ? "visible" : "hidden";
+    document.body.style.overflow = isMobile ? i18n.t("components.Layout.conditional") : "hidden";
 
     return () => {
       document.body.style.overflow = previousOverflow;
@@ -355,8 +356,7 @@ export function Layout() {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        Skip to Main Content
-      </a>
+        {i18n.t("components.Layout.a")}</a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
@@ -365,7 +365,7 @@ export function Layout() {
             type="button"
             className="fixed inset-0 z-40 bg-black/50"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
+            aria-label={i18n.t("components.Layout.ariaLabel")}
           />
         )}
 
@@ -373,7 +373,7 @@ export function Layout() {
           <div
             className={cn(
               "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
-              sidebarOpen ? "translate-x-0" : "-translate-x-full"
+              sidebarOpen ? "translate-x-0" : i18n.t("components.Layout.conditional_1")
             )}
           >
             <div className="flex flex-1 min-h-0 overflow-hidden">

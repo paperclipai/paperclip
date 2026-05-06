@@ -1,5 +1,6 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
 
+import i18n from "@/i18n";
 /* ---- Utilities ---- */
 
 export function getLast14Days(): string[] {
@@ -92,7 +93,7 @@ export function RunActivityChart(props: RunChartProps) {
   const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = activity.some(v => v.total > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{i18n.t("components.ActivityCharts.p")}</p>;
 
   return (
     <div>
@@ -144,7 +145,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{i18n.t("components.ActivityCharts.p_1")}</p>;
 
   return (
     <div>
@@ -211,7 +212,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{i18n.t("components.ActivityCharts.p_2")}</p>;
 
   return (
     <div>
@@ -247,7 +248,7 @@ export function SuccessRateChart(props: RunChartProps) {
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{i18n.t("components.ActivityCharts.p_3")}</p>;
 
   return (
     <div>
@@ -255,7 +256,7 @@ export function SuccessRateChart(props: RunChartProps) {
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
+          const color = entry.total === 0 ? undefined : rate >= 0.8 ? i18n.t("components.ActivityCharts.conditional") : rate >= 0.5 ? i18n.t("components.ActivityCharts.conditional_1") : i18n.t("components.ActivityCharts.conditional_2");
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
               {entry.total > 0 ? (

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
   Agent,
@@ -546,8 +547,7 @@ function ExportPreviewPane({
           </pre>
         ) : (
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
-          </div>
+            {i18n.t("pages.CompanyExport.div")}</div>
         )}
       </div>
     </div>
@@ -672,7 +672,7 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
+      { label: i18n.t("pages.CompanyExport.label"), href: "/org" },
       { label: "Export" },
     ]);
   }, [setBreadcrumbs]);
@@ -708,7 +708,7 @@ export function CompanyExport() {
       } else {
         // Default to README.md if present, otherwise fall back to first file
         const defaultFile = "README.md" in result.files
-          ? "README.md"
+          ? i18n.t("pages.CompanyExport.conditional")
           : Object.keys(result.files)[0];
         if (defaultFile) {
           selectFile(defaultFile, true);
@@ -719,8 +719,8 @@ export function CompanyExport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to load export data.",
+        title: i18n.t("pages.CompanyExport.title"),
+        body: err instanceof Error ? err.message : i18n.t("pages.CompanyExport.conditional_1"),
       });
     },
   });
@@ -737,15 +737,15 @@ export function CompanyExport() {
       downloadZip(result, resultCheckedFiles, result.files);
       pushToast({
         tone: "success",
-        title: "Export downloaded",
+        title: i18n.t("pages.CompanyExport.title_1"),
         body: `${resultCheckedFiles.size} file${resultCheckedFiles.size === 1 ? "" : "s"} exported as ${result.rootPath}.zip`,
       });
     },
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to build export package.",
+        title: i18n.t("pages.CompanyExport.title_2"),
+        body: err instanceof Error ? err.message : i18n.t("pages.CompanyExport.conditional_2"),
       });
     },
   });
@@ -953,7 +953,7 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
+              ? i18n.t("pages.CompanyExport.conditional_3")
               : `Export ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
           </Button>
         </div>
@@ -972,7 +972,7 @@ export function CompanyExport() {
       <div className="grid h-[calc(100vh-12rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
         <aside className="flex flex-col border-r border-border overflow-hidden">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-semibold">{i18n.t("pages.CompanyExport.h2")}</h2>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
@@ -981,7 +981,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder={i18n.t("pages.CompanyExport.placeholder")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 data-page-search-target="true"
               />

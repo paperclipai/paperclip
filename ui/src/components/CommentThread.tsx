@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import i18n from "@/i18n";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -274,7 +275,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
     }
   }, []);
 
-  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
+  const label = status === "copied" ? "Copied" : status === "failed" ? i18n.t("components.CommentThread.conditional") : "Copy";
 
   return (
     <button
@@ -288,7 +289,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
       )}
       title={label}
-      aria-label="Copy comment as markdown"
+      aria-label={i18n.t("components.CommentThread.ariaLabel")}
       onClick={() => {
         void copyTextWithFallback(text)
           .then(() => setStatus("copied"))
@@ -376,8 +377,7 @@ function CommentCard({
           ) : null}
           {followUpRequested ? (
             <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-              Follow-up
-            </Badge>
+              {i18n.t("components.CommentThread.badge")}</Badge>
           ) : null}
           {companyId && !isPending ? (
             <PluginSlotOutlet
@@ -396,7 +396,7 @@ function CommentCard({
             />
           ) : null}
           {isPending ? (
-            <span className="text-xs text-muted-foreground">{isQueued ? "Queueing..." : "Sending..."}</span>
+            <span className="text-xs text-muted-foreground">{isQueued ? i18n.t("components.CommentThread.conditional_1") : i18n.t("components.CommentThread.conditional_2")}</span>
           ) : (
             <a
               href={`#comment-${comment.id}`}
@@ -486,7 +486,7 @@ function TimelineEventCard({
   currentUserId?: string | null;
 }) {
   const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
-  const actionLabel = event.followUpRequested ? "requested follow-up" : "updated this task";
+  const actionLabel = event.followUpRequested ? i18n.t("components.CommentThread.conditional_3") : i18n.t("components.CommentThread.conditional_4");
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
@@ -594,7 +594,7 @@ const TimelineList = memo(function TimelineList({
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
+    return <p className="text-sm text-muted-foreground">{i18n.t("components.CommentThread.p")}</p>;
   }
 
   return (
@@ -643,7 +643,7 @@ const TimelineList = memo(function TimelineList({
                   <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
                     {actorName}
                   </Link>
-                  <span className="text-muted-foreground">run</span>
+                  <span className="text-muted-foreground">{i18n.t("components.CommentThread.span")}</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -978,7 +978,7 @@ export function CommentThread({
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? i18n.t("components.CommentThread.conditional_5") : "Interrupt"}
               </Button>
             ) : null}
           </div>
@@ -1008,7 +1008,7 @@ export function CommentThread({
             ref={editorRef}
             value={body}
             onChange={setBody}
-            placeholder="Leave a comment..."
+            placeholder={i18n.t("components.CommentThread.placeholder")}
             mentions={mentions}
             onSubmit={handleSubmit}
             imageUploadHandler={imageUploadHandler}
@@ -1029,7 +1029,7 @@ export function CommentThread({
                   size="icon-sm"
                   onClick={() => attachInputRef.current?.click()}
                   disabled={attaching}
-                  title="Attach image"
+                  title={i18n.t("components.CommentThread.title")}
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
@@ -1040,7 +1040,7 @@ export function CommentThread({
                 value={reassignTarget}
                 options={reassignOptions}
                 placeholder="Assignee"
-                noneLabel="No assignee"
+                noneLabel={i18n.t("components.CommentThread.nonelabel")}
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
                 onChange={setReassignTarget}
@@ -1074,7 +1074,7 @@ export function CommentThread({
               />
             )}
             <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-              {submitting ? "Posting..." : "Comment"}
+              {submitting ? i18n.t("components.CommentThread.conditional_6") : "Comment"}
             </Button>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import i18n from "@/i18n";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
 import { formatCents } from "../lib/utils";
@@ -70,15 +71,14 @@ export function BudgetIncidentCard({
           <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
             {incident.scopeType === "project"
-              ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-              : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+              ? i18n.t("components.BudgetIncidentCard.conditional")
+              : i18n.t("components.BudgetIncidentCard.conditional_1")}
           </div>
         </div>
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
           <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            New budget (USD)
-          </label>
+            {i18n.t("components.BudgetIncidentCard.label")}</label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Input
               value={draftAmount}
@@ -94,13 +94,12 @@ export function BudgetIncidentCard({
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? "Applying..." : "Raise budget & resume"}
+              {isMutating ? i18n.t("components.BudgetIncidentCard.conditional_2") : i18n.t("components.BudgetIncidentCard.conditional_3")}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (
             <p className="mt-2 text-xs text-red-200/80">
-              The new budget must exceed current observed spend.
-            </p>
+              {i18n.t("components.BudgetIncidentCard.p")}</p>
           ) : null}
         </div>
 

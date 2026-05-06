@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import i18n from "@/i18n";
 import { Link, useLocation } from "@/lib/router";
 import { AlertTriangle, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const { companies, selectedCompany } = useCompany();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Not Found" }]);
+    setBreadcrumbs([{ label: i18n.t("pages.NotFound.label") }]);
   }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
@@ -26,11 +27,11 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
-  const title = scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
+  const title = scope === "invalid_company_prefix" ? i18n.t("pages.NotFound.conditional") : i18n.t("pages.NotFound.conditional_1");
   const description =
     scope === "invalid_company_prefix"
       ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`
-      : "This route does not exist.";
+      : i18n.t("pages.NotFound.conditional_2");
 
   return (
     <div className="mx-auto max-w-2xl py-10">

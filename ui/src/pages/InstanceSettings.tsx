@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock3, ExternalLink, Settings } from "lucide-react";
 import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
@@ -33,7 +34,7 @@ export function InstanceSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: i18n.t("pages.InstanceSettings.label") },
       { label: "Heartbeats" },
     ]);
   }, [setBreadcrumbs]);
@@ -73,7 +74,7 @@ export function InstanceSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update heartbeat.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.InstanceSettings.conditional"));
     },
   });
 
@@ -103,7 +104,7 @@ export function InstanceSettings() {
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failures.length > 0) {
         const firstError = failures[0]?.reason;
-        const detail = firstError instanceof Error ? firstError.message : "Unknown error";
+        const detail = firstError instanceof Error ? firstError.message : i18n.t("pages.InstanceSettings.conditional_1");
         throw new Error(
           failures.length === 1
             ? `Failed to disable 1 timer heartbeat: ${detail}`
@@ -126,7 +127,7 @@ export function InstanceSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to disable all heartbeats.");
+      setActionError(error instanceof Error ? error.message : i18n.t("pages.InstanceSettings.conditional_2"));
     },
   });
 
@@ -150,7 +151,7 @@ export function InstanceSettings() {
   }, [agents]);
 
   if (heartbeatsQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading scheduler heartbeats...</div>;
+    return <div className="text-sm text-muted-foreground">{i18n.t("pages.InstanceSettings.div")}</div>;
   }
 
   if (heartbeatsQuery.error) {
@@ -158,7 +159,7 @@ export function InstanceSettings() {
       <div className="text-sm text-destructive">
         {heartbeatsQuery.error instanceof Error
           ? heartbeatsQuery.error.message
-          : "Failed to load scheduler heartbeats."}
+          : i18n.t("pages.InstanceSettings.conditional_3")}
       </div>
     );
   }
@@ -168,17 +169,16 @@ export function InstanceSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Scheduler Heartbeats</h1>
+          <h1 className="text-lg font-semibold">{i18n.t("pages.InstanceSettings.h1")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Agents with a timer heartbeat enabled across all of your companies.
-        </p>
+          {i18n.t("pages.InstanceSettings.p")}</p>
       </div>
 
       <div className="flex items-center gap-4 text-sm text-muted-foreground">
         <span><span className="font-semibold text-foreground">{activeCount}</span> active</span>
         <span><span className="font-semibold text-foreground">{disabledCount}</span> disabled</span>
-        <span><span className="font-semibold text-foreground">{grouped.length}</span> {grouped.length === 1 ? "company" : "companies"}</span>
+        <span><span className="font-semibold text-foreground">{grouped.length}</span> {grouped.length === 1 ? i18n.t("pages.InstanceSettings.conditional_4") : i18n.t("pages.InstanceSettings.conditional_5")}</span>
         {anyEnabled && (
           <Button
             variant="destructive"
@@ -186,14 +186,14 @@ export function InstanceSettings() {
             className="ml-auto h-7 text-xs"
             disabled={disableAllMutation.isPending}
             onClick={() => {
-              const noun = enabledCount === 1 ? "agent" : "agents";
+              const noun = enabledCount === 1 ? "agent" : i18n.t("pages.InstanceSettings.conditional_6");
               if (!window.confirm(`Disable timer heartbeats for all ${enabledCount} enabled ${noun}?`)) {
                 return;
               }
               disableAllMutation.mutate(agents);
             }}
           >
-            {disableAllMutation.isPending ? "Disabling..." : "Disable All"}
+            {disableAllMutation.isPending ? i18n.t("pages.InstanceSettings.conditional_7") : i18n.t("pages.InstanceSettings.conditional_8")}
           </Button>
         )}
       </div>
@@ -249,13 +249,13 @@ export function InstanceSettings() {
                         >
                           {agent.lastHeartbeatAt
                             ? relativeTime(agent.lastHeartbeatAt)
-                            : "never"}
+                            : i18n.t("pages.InstanceSettings.conditional_9")}
                         </span>
                         <span className="ml-auto flex items-center gap-1.5 shrink-0">
                           <Link
                             to={buildAgentHref(agent)}
                             className="text-muted-foreground hover:text-foreground"
-                            title="Full agent config"
+                            title={i18n.t("pages.InstanceSettings.title")}
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                           </Link>
@@ -266,7 +266,7 @@ export function InstanceSettings() {
                             disabled={saving}
                             onClick={() => toggleMutation.mutate(agent)}
                           >
-                            {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
+                            {saving ? "..." : agent.heartbeatEnabled ? i18n.t("pages.InstanceSettings.conditional_10") : i18n.t("pages.InstanceSettings.conditional_11")}
                           </Button>
                         </span>
                       </div>

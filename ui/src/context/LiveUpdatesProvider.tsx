@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import i18n from "@/i18n";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
@@ -423,7 +424,7 @@ function describeIssueUpdate(details: Record<string, unknown> | null): string | 
   }
   if (details.reopened === true) {
     const from = readString(details.reopenedFrom);
-    changes.push(from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened");
+    changes.push(from ? `reopened from ${from.replace(/_/g, " ")}` : i18n.t("context.LiveUpdatesProvider.conditional"));
   }
   if (typeof details.title === "string") changes.push("title changed");
   if (typeof details.description === "string") changes.push("description changed");
@@ -495,7 +496,7 @@ function buildActivityToast(
   const reopenedLabel = reopened
     ? reopenedFrom
       ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
-      : "reopened"
+      : i18n.t("context.LiveUpdatesProvider.conditional_1")
     : null;
   const title = reopened
     ? `${actor} reopened and commented on ${issue.ref}`
@@ -538,7 +539,7 @@ function buildJoinRequestToast(
     title: `${label} wants to join`,
     body: "A new join request is waiting for approval.",
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/mine" },
+    action: { label: i18n.t("context.LiveUpdatesProvider.label"), href: "/inbox/mine" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -568,7 +569,7 @@ function buildAgentStatusToast(
     title,
     body,
     tone,
-    action: { label: "View agent", href: `/agents/${agentId}` },
+    action: { label: i18n.t("context.LiveUpdatesProvider.label_1"), href: `/agents/${agentId}` },
     dedupeKey: `agent-status:${agentId}:${status}`,
   };
 }
@@ -587,9 +588,9 @@ function buildRunStatusToast(
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
   const tone = status === "succeeded" ? "success" : status === "cancelled" ? "warn" : "error";
   const statusLabel =
-    status === "succeeded" ? "succeeded"
-      : status === "failed" ? "failed"
-        : status === "timed_out" ? "timed out"
+    status === "succeeded" ? i18n.t("context.LiveUpdatesProvider.conditional_3")
+      : status === "failed" ? i18n.t("context.LiveUpdatesProvider.conditional_4")
+        : status === "timed_out" ? i18n.t("context.LiveUpdatesProvider.conditional_5")
           : "cancelled";
   const title = `${name} run ${statusLabel}`;
 
@@ -605,7 +606,7 @@ function buildRunStatusToast(
     body,
     tone,
     ttlMs: status === "succeeded" ? 5000 : 7000,
-    action: { label: "View run", href: `/agents/${agentId}/runs/${runId}` },
+    action: { label: i18n.t("context.LiveUpdatesProvider.label_2"), href: `/agents/${agentId}/runs/${runId}` },
     dedupeKey: `run-status:${runId}:${status}`,
   };
 }
@@ -805,7 +806,7 @@ function handleLiveEvent(
         toast &&
         !shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload)
       ) {
-        gatedPushToast(gate, pushToast, "run-status", toast);
+        gatedPushToast(gate, pushToast, i18n.t("context.LiveUpdatesProvider.gatedpushtoast"), toast);
       }
     }
     return;
@@ -826,7 +827,7 @@ function handleLiveEvent(
       toast &&
       !shouldSuppressAgentStatusToastForVisibleIssue(queryClient, pathname, payload)
     ) {
-      gatedPushToast(gate, pushToast, "agent-status", toast);
+      gatedPushToast(gate, pushToast, i18n.t("context.LiveUpdatesProvider.gatedpushtoast_1"), toast);
     }
     return;
   }

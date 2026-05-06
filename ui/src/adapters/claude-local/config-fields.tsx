@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import i18n from "@/i18n";
 import {
   Field,
   ToggleField,
@@ -30,7 +31,7 @@ export function ClaudeLocalConfigFields({
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={i18n.t("adapters.claude-local.config-fields.label_4")} hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -81,7 +82,7 @@ export function ClaudeLocalAdvancedFields({
   return (
     <>
       <ToggleField
-        label="Enable Chrome"
+        label={i18n.t("adapters.claude-local.config-fields.label_5")}
         hint={help.chrome}
         checked={
           isCreate
@@ -95,7 +96,7 @@ export function ClaudeLocalAdvancedFields({
         }
       />
       <ToggleField
-        label="Skip permissions"
+        label={i18n.t("adapters.claude-local.config-fields.label_6")}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate
@@ -112,7 +113,7 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
-      <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
+      <Field label={i18n.t("adapters.claude-local.config-fields.label_7")} hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input
             type="number"

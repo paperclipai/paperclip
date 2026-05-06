@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "@/i18n";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
 import { cn, formatCents } from "../lib/utils";
@@ -19,7 +20,7 @@ function parseDollarInput(value: string) {
 }
 
 function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
-  return windowKind === "lifetime" ? "Lifetime budget" : "Monthly UTC budget";
+  return windowKind === "lifetime" ? i18n.t("components.BudgetPolicyCard.conditional") : i18n.t("components.BudgetPolicyCard.conditional_1");
 }
 
 function statusTone(status: BudgetPolicySummary["status"]) {
@@ -59,7 +60,7 @@ export function BudgetPolicyCard({
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : i18n.t("components.BudgetPolicyCard.conditional_2")}
         </div>
       </div>
       <div>
@@ -78,7 +79,7 @@ export function BudgetPolicyCard({
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : i18n.t("components.BudgetPolicyCard.conditional_3")}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
@@ -120,8 +121,8 @@ export function BudgetPolicyCard({
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"
-          ? "Execution is paused for this project until the budget is raised or the incident is dismissed."
-          : "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed."}
+          ? i18n.t("components.BudgetPolicyCard.conditional_4")
+          : i18n.t("components.BudgetPolicyCard.conditional_5")}
       </div>
     </div>
   ) : null;
@@ -130,8 +131,7 @@ export function BudgetPolicyCard({
     <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3")}>
       <div className="min-w-0 flex-1">
         <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-          Budget (USD)
-        </label>
+          {i18n.t("components.BudgetPolicyCard.label")}</label>
         <Input
           value={draftBudget}
           onChange={(event) => setDraftBudget(event.target.value)}
@@ -146,7 +146,7 @@ export function BudgetPolicyCard({
         }}
         disabled={!canSave || isSaving || parsedDraft === null}
       >
-        {isSaving ? "Saving..." : summary.amount > 0 ? "Update budget" : "Set budget"}
+        {isSaving ? i18n.t("components.BudgetPolicyCard.conditional_6") : summary.amount > 0 ? i18n.t("components.BudgetPolicyCard.conditional_7") : i18n.t("components.BudgetPolicyCard.conditional_8")}
       </Button>
     </div>
   ) : null;
@@ -173,7 +173,7 @@ export function BudgetPolicyCard({
             )}
           >
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? i18n.t("components.BudgetPolicyCard.conditional_9") : "Healthy"}
           </div>
         </div>
 
@@ -182,7 +182,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{i18n.t("components.BudgetPolicyCard.p")}</p>
         ) : null}
       </div>
     );
@@ -201,7 +201,7 @@ export function BudgetPolicyCard({
           </div>
           <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em]", statusTone(summary.status))}>
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? i18n.t("components.BudgetPolicyCard.conditional_10") : "Healthy"}
           </div>
         </div>
       </CardHeader>
@@ -211,7 +211,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{i18n.t("components.BudgetPolicyCard.p_1")}</p>
         ) : null}
       </CardContent>
     </Card>

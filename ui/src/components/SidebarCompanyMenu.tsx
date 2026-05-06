@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -225,7 +226,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         <Button
           variant="ghost"
           className="h-9 flex-1 justify-start gap-2 px-2 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
+          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : i18n.t("components.SidebarCompanyMenu.conditional")}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
@@ -285,7 +286,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>Add company...</span>
+          <span>{i18n.t("components.SidebarCompanyMenu.span")}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>
@@ -301,7 +302,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           >
             <UserPlus className="size-4" />
             <span className="truncate">
-              {selectedCompany ? `Invite people to ${selectedCompany.name}` : "Invite people"}
+              {selectedCompany ? `Invite people to ${selectedCompany.name}` : i18n.t("components.SidebarCompanyMenu.conditional_1")}
             </span>
           </Link>
         </DropdownMenuItem>
@@ -317,7 +318,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             }}
           >
             <Settings className="size-4" />
-            <span>Company settings</span>
+            <span>{i18n.t("components.SidebarCompanyMenu.span_1")}</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (
@@ -329,7 +330,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder || signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span>{signOutMutation.isPending ? i18n.t("components.SidebarCompanyMenu.conditional_2") : i18n.t("components.SidebarCompanyMenu.conditional_3")}</span>
             </DropdownMenuItem>
           </>
         ) : null}

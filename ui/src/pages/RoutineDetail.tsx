@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import i18n from "@/i18n";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -109,7 +110,7 @@ function isRoutineTab(value: string | null): value is RoutineTab {
 
 function getRoutineTabFromSearch(search: string): RoutineTab {
   const tab = new URLSearchParams(search).get("tab");
-  return isRoutineTab(tab) ? tab : "triggers";
+  return isRoutineTab(tab) ? tab : "activity";
 }
 
 function formatActivityDetailValue(value: unknown): string {
@@ -435,7 +436,7 @@ export function RoutineDetail() {
     } catch (error) {
       pushToast({
         title: `Failed to copy ${label.toLowerCase()}`,
-        body: error instanceof Error ? error.message : "Clipboard access was denied.",
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_1"),
         tone: "error",
       });
     }
@@ -488,8 +489,8 @@ export function RoutineDetail() {
         return;
       }
       pushToast({
-        title: "Failed to save routine",
-        body: error instanceof Error ? error.message : "Paperclip could not save the routine.",
+        title: i18n.t("pages.RoutineDetail.title"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_2"),
         tone: "error",
       });
     },
@@ -510,7 +511,7 @@ export function RoutineDetail() {
           : {}),
       }),
     onSuccess: async () => {
-      pushToast({ title: "Routine run started", tone: "success" });
+      pushToast({ title: i18n.t("pages.RoutineDetail.title_1"), tone: "success" });
       setRunVariablesOpen(false);
       setActiveTab("runs");
       await Promise.all([
@@ -522,8 +523,8 @@ export function RoutineDetail() {
     },
     onError: (error) => {
       pushToast({
-        title: "Routine run failed",
-        body: error instanceof Error ? error.message : "Paperclip could not start the routine run.",
+        title: i18n.t("pages.RoutineDetail.title_2"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_3"),
         tone: "error",
       });
     },
@@ -533,8 +534,8 @@ export function RoutineDetail() {
     mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
     onSuccess: async (_data, status) => {
       pushToast({
-        title: "Routine saved",
-        body: status === "paused" ? "Automation paused." : "Automation enabled.",
+        title: i18n.t("pages.RoutineDetail.title_3"),
+        body: status === "paused" ? i18n.t("pages.RoutineDetail.conditional_4") : i18n.t("pages.RoutineDetail.conditional_5"),
         tone: "success",
       });
       await Promise.all([
@@ -544,8 +545,8 @@ export function RoutineDetail() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to update routine",
-        body: error instanceof Error ? error.message : "Paperclip could not update the routine.",
+        title: i18n.t("pages.RoutineDetail.title_4"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_6"),
         tone: "error",
       });
     },
@@ -572,7 +573,7 @@ export function RoutineDetail() {
     onSuccess: async (result) => {
       if (result.secretMaterial) {
         setSecretMessage({
-          title: "Webhook trigger created",
+          title: i18n.t("pages.RoutineDetail.title_5"),
           entries: [{
             webhookUrl: result.secretMaterial.webhookUrl,
             webhookSecret: result.secretMaterial.webhookSecret,
@@ -580,7 +581,7 @@ export function RoutineDetail() {
         });
       } else {
         pushToast({
-          title: "Trigger added",
+          title: i18n.t("pages.RoutineDetail.title_6"),
           body: "The routine schedule was saved.",
           tone: "success",
         });
@@ -593,8 +594,8 @@ export function RoutineDetail() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to add trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not create the trigger.",
+        title: i18n.t("pages.RoutineDetail.title_7"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_7"),
         tone: "error",
       });
     },
@@ -604,7 +605,7 @@ export function RoutineDetail() {
     mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
     onSuccess: async () => {
       pushToast({
-        title: "Trigger saved",
+        title: i18n.t("pages.RoutineDetail.title_8"),
         body: "The routine cadence update was saved.",
         tone: "success",
       });
@@ -616,8 +617,8 @@ export function RoutineDetail() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to update trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not update the trigger.",
+        title: i18n.t("pages.RoutineDetail.title_9"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_8"),
         tone: "error",
       });
     },
@@ -627,7 +628,7 @@ export function RoutineDetail() {
     mutationFn: (id: string) => routinesApi.deleteTrigger(id),
     onSuccess: async () => {
       pushToast({
-        title: "Trigger deleted",
+        title: i18n.t("pages.RoutineDetail.title_10"),
         tone: "success",
       });
       await Promise.all([
@@ -638,8 +639,8 @@ export function RoutineDetail() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to delete trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not delete the trigger.",
+        title: i18n.t("pages.RoutineDetail.title_11"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_9"),
         tone: "error",
       });
     },
@@ -649,7 +650,7 @@ export function RoutineDetail() {
     mutationFn: (id: string): Promise<RotateRoutineTriggerResponse> => routinesApi.rotateTriggerSecret(id),
     onSuccess: async (result) => {
       setSecretMessage({
-        title: "Webhook secret rotated",
+        title: i18n.t("pages.RoutineDetail.title_12"),
         entries: [{
           webhookUrl: result.secretMaterial.webhookUrl,
           webhookSecret: result.secretMaterial.webhookSecret,
@@ -662,8 +663,8 @@ export function RoutineDetail() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to rotate webhook secret",
-        body: error instanceof Error ? error.message : "Paperclip could not rotate the webhook secret.",
+        title: i18n.t("pages.RoutineDetail.title_13"),
+        body: error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_10"),
         tone: "error",
       });
     },
@@ -721,7 +722,7 @@ export function RoutineDetail() {
   if (error || !routine) {
     return (
       <p className="pt-6 text-sm text-destructive">
-        {error instanceof Error ? error.message : "Routine not found"}
+        {error instanceof Error ? error.message : i18n.t("pages.RoutineDetail.conditional_11")}
       </p>
     );
   }
@@ -750,7 +751,7 @@ export function RoutineDetail() {
           <textarea
             ref={titleInputRef}
             className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-            placeholder="Routine title"
+            placeholder={i18n.t("pages.RoutineDetail.placeholder")}
             rows={1}
             value={editDraft.title}
             onChange={(event) => {
@@ -797,7 +798,7 @@ export function RoutineDetail() {
             onCheckedChange={() => {
               if (!automationEnabled && !routine.assigneeAgentId) {
                 pushToast({
-                  title: "Default agent required",
+                  title: i18n.t("pages.RoutineDetail.title_14"),
                   body: "Set a default agent before enabling routine automation.",
                   tone: "warn",
                 });
@@ -806,7 +807,7 @@ export function RoutineDetail() {
               updateRoutineStatus.mutate(automationEnabled ? "paused" : "active");
             }}
             disabled={automationToggleDisabled}
-            aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+            aria-label={automationEnabled ? i18n.t("pages.RoutineDetail.conditional_12") : i18n.t("pages.RoutineDetail.conditional_13")}
           />
           <span className={`min-w-[3.75rem] text-sm font-medium ${automationLabelClassName}`}>
             {automationLabel}
@@ -819,7 +820,7 @@ export function RoutineDetail() {
         <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 space-y-3 text-sm">
           <div>
             <p className="font-medium">{secretMessage.title}</p>
-            <p className="text-xs text-muted-foreground">Save this now. Paperclip will not show the secret value again.</p>
+            <p className="text-xs text-muted-foreground">{i18n.t("pages.RoutineDetail.p")}</p>
           </div>
           <div className="space-y-3">
             {secretMessage.entries.map((entry, index) => (
@@ -881,8 +882,7 @@ export function RoutineDetail() {
 
       {!routine.assigneeAgentId ? (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
-          Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.
-        </div>
+          {i18n.t("pages.RoutineDetail.div")}</div>
       ) : null}
 
       {/* Assignment row */}
@@ -895,7 +895,7 @@ export function RoutineDetail() {
             options={assigneeOptions}
             recentOptionIds={recentAssigneeIds}
             placeholder="Assignee"
-            noneLabel="No assignee"
+            noneLabel={i18n.t("pages.RoutineDetail.nonelabel")}
             searchPlaceholder="Search assignees..."
             emptyMessage="No assignees found."
             onChange={(assigneeAgentId) => {
@@ -934,14 +934,14 @@ export function RoutineDetail() {
               );
             }}
           />
-          <span>in</span>
+          <span>{i18n.t("pages.RoutineDetail.span")}</span>
           <InlineEntitySelector
             ref={projectSelectorRef}
             value={editDraft.projectId}
             options={projectOptions}
             recentOptionIds={recentProjectIds}
             placeholder="Project"
-            noneLabel="No project"
+            noneLabel={i18n.t("pages.RoutineDetail.nonelabel_1")}
             searchPlaceholder="Search projects..."
             emptyMessage="No projects found."
             onChange={(projectId) => {
@@ -984,7 +984,7 @@ export function RoutineDetail() {
         ref={descriptionEditorRef}
         value={editDraft.description}
         onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-        placeholder="Add instructions..."
+        placeholder={i18n.t("pages.RoutineDetail.placeholder_1")}
         bordered={false}
         contentClassName="min-h-[120px] text-[15px] leading-7"
         mentions={mentionOptions}
@@ -1005,7 +1005,7 @@ export function RoutineDetail() {
       {/* Advanced delivery settings */}
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
         <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
-          <span className="text-sm font-medium">Advanced delivery settings</span>
+          <span className="text-sm font-medium">{i18n.t("pages.RoutineDetail.span_1")}</span>
           {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-3">
@@ -1028,7 +1028,7 @@ export function RoutineDetail() {
               <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[editDraft.concurrencyPolicy]}</p>
             </div>
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{i18n.t("pages.RoutineDetail.p_1")}</p>
               <Select
                 value={editDraft.catchUpPolicy}
                 onValueChange={(catchUpPolicy) => setEditDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -1051,7 +1051,7 @@ export function RoutineDetail() {
       {/* Save bar */}
       <div className="flex items-center justify-between">
         {isEditDirty ? (
-          <span className="text-xs text-amber-600">Unsaved changes</span>
+          <span className="text-xs text-amber-600">{i18n.t("pages.RoutineDetail.span_2")}</span>
         ) : (
           <span />
         )}
@@ -1091,7 +1091,7 @@ export function RoutineDetail() {
         <TabsContent value="triggers" className="space-y-4">
           {/* Add trigger form */}
           <div className="rounded-lg border border-border p-4 space-y-3">
-            <p className="text-sm font-medium">Add trigger</p>
+            <p className="text-sm font-medium">{i18n.t("pages.RoutineDetail.p_2")}</p>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label className="text-xs">Kind</Label>
@@ -1102,7 +1102,7 @@ export function RoutineDetail() {
                   <SelectContent>
                     {triggerKinds.map((kind) => (
                       <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
-                        {kind}{kind === "webhook" ? " — COMING SOON" : ""}
+                        {kind}{kind === "webhook" ? i18n.t("pages.RoutineDetail.conditional_14") : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1144,14 +1144,14 @@ export function RoutineDetail() {
             </div>
             <div className="flex items-center justify-end">
               <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
-                {createTrigger.isPending ? "Adding..." : "Add trigger"}
+                {createTrigger.isPending ? i18n.t("pages.RoutineDetail.conditional_15") : i18n.t("pages.RoutineDetail.conditional_16")}
               </Button>
             </div>
           </div>
 
           {/* Existing triggers */}
           {routine.triggers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No triggers configured yet.</p>
+            <p className="text-xs text-muted-foreground">{i18n.t("pages.RoutineDetail.p_3")}</p>
           ) : (
             <div className="space-y-3">
               {routine.triggers.map((trigger) => (
@@ -1172,7 +1172,7 @@ export function RoutineDetail() {
             <LiveRunWidget issueId={activeIssueId} companyId={routine.companyId} />
           )}
           {(routineRuns ?? []).length === 0 ? (
-            <p className="text-xs text-muted-foreground">No runs yet.</p>
+            <p className="text-xs text-muted-foreground">{i18n.t("pages.RoutineDetail.p_4")}</p>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {(routineRuns ?? []).map((run) => (
@@ -1200,7 +1200,7 @@ export function RoutineDetail() {
 
         <TabsContent value="activity">
           {(activity ?? []).length === 0 ? (
-            <p className="text-xs text-muted-foreground">No activity yet.</p>
+            <p className="text-xs text-muted-foreground">{i18n.t("pages.RoutineDetail.p_5")}</p>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {(activity ?? []).map((event) => (

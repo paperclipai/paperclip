@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import i18n from "@/i18n";
 import { getWorktreeUiBranding } from "../lib/worktree-branding";
 
 export function WorktreeBanner() {
@@ -32,10 +33,10 @@ export function WorktreeBanner() {
         <button
           type="button"
           onClick={handleCopyName}
-          title="Click to copy worktree name"
+          title={i18n.t("components.WorktreeBanner.title")}
           className="truncate font-semibold tracking-[0.12em] cursor-pointer hover:opacity-80 transition-opacity bg-transparent border-none p-0 text-current uppercase text-[11px]"
         >
-          {copied ? "Copied!" : branding.name}
+          {copied ? i18n.t("components.WorktreeBanner.conditional") : branding.name}
         </button>
       </div>
     </div>

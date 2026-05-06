@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import i18n from "@/i18n";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
@@ -9,7 +10,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
 
 function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"]) {
-  return kind === "execution_workspace" ? "Execution workspace" : "Project workspace";
+  return kind === "execution_workspace" ? i18n.t("components.ProjectWorkspaceSummaryCard.conditional") : i18n.t("components.ProjectWorkspaceSummaryCard.conditional_1");
 }
 
 function truncatePath(path: string) {
@@ -123,7 +124,7 @@ export function ProjectWorkspaceSummaryCard({
                 ) : (
                   <Play className="mr-2 h-3.5 w-3.5" />
                 )}
-                {hasRunningServices ? "Stop services" : "Start services"}
+                {hasRunningServices ? i18n.t("components.ProjectWorkspaceSummaryCard.conditional_4") : i18n.t("components.ProjectWorkspaceSummaryCard.conditional_5")}
               </Button>
             ) : null}
             {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
@@ -137,7 +138,7 @@ export function ProjectWorkspaceSummaryCard({
                   status: summary.executionWorkspaceStatus!,
                 })}
               >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close workspace"}
+                {summary.executionWorkspaceStatus === "cleanup_failed" ? i18n.t("components.ProjectWorkspaceSummaryCard.conditional_6") : i18n.t("components.ProjectWorkspaceSummaryCard.conditional_7")}
               </Button>
             ) : null}
           </div>
@@ -155,15 +156,15 @@ export function ProjectWorkspaceSummaryCard({
                       text={summary.branchName}
                       containerClassName="min-w-0"
                       className="min-w-0 break-all text-left font-mono text-xs text-foreground"
-                      copiedLabel="Branch copied"
+                      copiedLabel={i18n.t("components.ProjectWorkspaceSummaryCard.copiedlabel")}
                     >
                       {summary.branchName}
                     </CopyText>
                     <CopyText
                       text={summary.branchName}
-                      ariaLabel="Copy branch"
+                      ariaLabel={i18n.t("components.ProjectWorkspaceSummaryCard.arialabel")}
                       className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                      copiedLabel="Branch copied"
+                      copiedLabel={i18n.t("components.ProjectWorkspaceSummaryCard.copiedlabel_1")}
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
@@ -183,15 +184,15 @@ export function ProjectWorkspaceSummaryCard({
                       title={summary.cwd}
                       containerClassName="min-w-0"
                       className="min-w-0 break-all text-left font-mono text-xs text-foreground"
-                      copiedLabel="Path copied"
+                      copiedLabel={i18n.t("components.ProjectWorkspaceSummaryCard.copiedlabel_2")}
                     >
                       {truncatePath(summary.cwd)}
                     </CopyText>
                     <CopyText
                       text={summary.cwd}
-                      ariaLabel="Copy path"
+                      ariaLabel={i18n.t("components.ProjectWorkspaceSummaryCard.arialabel_1")}
                       className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                      copiedLabel="Path copied"
+                      copiedLabel={i18n.t("components.ProjectWorkspaceSummaryCard.copiedlabel_3")}
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
@@ -227,8 +228,7 @@ export function ProjectWorkspaceSummaryCard({
         {summary.issues.length > 0 ? (
           <div className="space-y-2">
             <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Linked issues
-            </div>
+              {i18n.t("components.ProjectWorkspaceSummaryCard.div")}</div>
             <div className="flex flex-wrap gap-2">
               {visibleIssues.map((issue) => (
                 <IssuePill key={issue.id} issue={issue} />

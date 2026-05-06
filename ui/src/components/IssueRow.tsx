@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import i18n from "@/i18n";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Eye, X } from "lucide-react";
@@ -72,7 +73,7 @@ export function IssueRow({
         selected ? "border-muted-foreground text-muted-foreground" : null,
       )}
       title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
-      aria-label="Productivity review open"
+      aria-label={i18n.t("components.IssueRow.ariaLabel")}
     >
       <Eye className="h-2.5 w-2.5" aria-hidden />
     </span>
@@ -143,8 +144,7 @@ export function IssueRow({
           {mobileMeta ? (
             <>
               <span className="text-xs text-muted-foreground sm:hidden" aria-hidden="true">
-                &middot;
-              </span>
+                {i18n.t("components.IssueRow.span")}</span>
               <span className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
             </>
           ) : null}
@@ -179,7 +179,7 @@ export function IssueRow({
                 "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                 selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
               )}
-              aria-label="Mark as read"
+              aria-label={i18n.t("components.IssueRow.ariaLabel_1")}
             >
               <span
                 className={cn(
@@ -205,7 +205,7 @@ export function IssueRow({
               }}
               disabled={archiveDisabled}
               className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Dismiss from inbox"
+              aria-label={i18n.t("components.IssueRow.ariaLabel_2")}
             >
               <X className="h-3.5 w-3.5" />
             </button>

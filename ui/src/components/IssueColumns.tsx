@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import i18n from "@/i18n";
 import type { Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
@@ -83,7 +84,7 @@ export function IssueColumnPicker({
           type="button"
           variant={iconOnly ? "outline" : "ghost"}
           size={iconOnly ? "icon" : "sm"}
-          className={iconOnly ? "h-8 w-8 shrink-0" : "hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"}
+          className={iconOnly ? "h-8 w-8 shrink-0" : i18n.t("components.IssueColumns.conditional")}
           title="Columns"
         >
           <Columns3 className={iconOnly ? "h-3.5 w-3.5" : "mr-1 h-3.5 w-3.5"} />
@@ -94,8 +95,7 @@ export function IssueColumnPicker({
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
-            </div>
+              {i18n.t("components.IssueColumns.div")}</div>
             <div className="text-sm font-medium text-foreground">
               {title}
             </div>
@@ -126,7 +126,7 @@ export function IssueColumnPicker({
           className="rounded-lg px-3 py-2 text-sm"
         >
           Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+          <span className="ml-auto text-xs text-muted-foreground">{i18n.t("components.IssueColumns.span")}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -292,8 +292,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
-            </span>
+              {i18n.t("components.IssueColumns.span_1")}</span>
           );
         }
 
@@ -349,8 +348,7 @@ export function InboxIssueTrailingColumns({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={6}>
-                    Filter by workspace
-                  </TooltipContent>
+                    {i18n.t("components.IssueColumns.tooltipcontent")}</TooltipContent>
                 </Tooltip>
               ) : (
                 workspaceName
@@ -369,7 +367,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">{i18n.t("components.IssueColumns.span_2")}</span>
               )}
             </span>
           );
