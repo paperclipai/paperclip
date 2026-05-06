@@ -24,6 +24,8 @@ export interface ApplierResult {
   entityId?: string | null;
   /** Optional richer payload (e.g. the created routine row). */
   details?: Record<string, unknown>;
+  /** Optional audit-safe payload persisted into activity log details. */
+  auditDetails?: Record<string, unknown>;
   /** Activity-log entity type (e.g. "routine", "goal"). */
   entityType?: string;
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { proposalService } from "../services/builder/proposal-service.js";
+import { logActivity } from "../services/activity-log.js";
 import {
   _resetBuilderToolExtensions,
   registerBuilderTool,
@@ -120,6 +121,62 @@ describe("proposalService", () => {
     expect((apply.mock.calls[0][0] as Record<string, unknown>).foo).toBe("bar");
     expect((result as { status: string } | null)?.status).toBe("applied");
     expect((result as { applyResult?: { details?: { surfaced?: boolean } } }).applyResult?.details?.surfaced).toBe(true);
+  });
+
+  it("persists only auditDetails to the activity log", async () => {
+    const apply = vi.fn(async () => ({
+      summary: "ran",
+      entityId: "ent-2",
+      entityType: "thing",
+      details: { surfaced: true, token: "raw-secret" },
+      auditDetails: { surfaced: true },
+    }));
+    const tool = defineMutationTool({
+      name: "do_safe_thing",
+      description: "x",
+      parametersSchema: { type: "object" },
+      capability: "test",
+      source: "test_extension",
+      buildPayload: () => ({}),
+      summarize: () => "do safe thing",
+      apply,
+    });
+    registerBuilderTool(tool);
+
+    seedProposal({
+      id: "p-safe",
+      companyId,
+      sessionId,
+      messageId: "m1",
+      kind: "do_safe_thing",
+      payload: {},
+      status: "pending",
+    });
+
+    const mockDb = {
+      transaction: vi.fn(async (fn) => fn(mockDb)),
+    } as unknown as Db;
+    const svc = proposalService(mockDb);
+    const result = await svc.apply(companyId, "p-safe", "user-1");
+
+    expect((result as { applyResult?: { details?: { token?: string } } }).applyResult?.details?.token).toBe("raw-secret");
+    expect(logActivity).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        details: expect.objectContaining({
+          proposalId: "p-safe",
+          surfaced: true,
+        }),
+      }),
+    );
+    expect(logActivity).not.toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        details: expect.objectContaining({
+          token: "raw-secret",
+        }),
+      }),
+    );
   });
 
   it("marks the proposal failed when no matching tool exists", async () => {

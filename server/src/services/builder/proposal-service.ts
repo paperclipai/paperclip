@@ -137,7 +137,7 @@ export function proposalService(db: Db) {
               kind: proposal.kind,
               sessionId: proposal.sessionId,
               summary: result.summary,
-              ...(result.details ?? {}),
+              ...(result.auditDetails ?? {}),
             },
           }).catch((logErr) =>
             logger.warn({ logErr, proposalId }, "builder apply: activity log failed"),

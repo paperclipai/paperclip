@@ -733,7 +733,7 @@ const updateProject = defineMutationTool({
 
 const updateAgent = defineMutationTool({
   name: "update_agent",
-  description: "Propose organizational and budget changes to an existing agent.",
+  description: "Propose organizational changes to an existing agent.",
   parametersSchema: {
     type: "object",
     properties: {
@@ -744,7 +744,6 @@ const updateAgent = defineMutationTool({
       icon: { type: "string" },
       reportsTo: { type: "string" },
       capabilities: { type: "string" },
-      budgetMonthlyCents: { type: "number" },
       metadata: { type: "object" },
     },
     required: ["agentId"],
@@ -753,6 +752,9 @@ const updateAgent = defineMutationTool({
   capability: "agents.write",
   buildPayload(params) {
     const agentId = nonEmptyString(params.agentId, "agentId");
+    if (params.budgetMonthlyCents !== undefined) {
+      throw new Error("Use set_budget instead of update_agent for budget changes");
+    }
     const parsed = updateAgentSchema.parse({
       name: params.name,
       role: params.role,
@@ -760,7 +762,6 @@ const updateAgent = defineMutationTool({
       icon: params.icon,
       reportsTo: params.reportsTo,
       capabilities: params.capabilities,
-      budgetMonthlyCents: params.budgetMonthlyCents,
       metadata: params.metadata,
     });
     if ((parsed as Record<string, unknown>).status !== undefined) {
@@ -942,6 +943,11 @@ const createRoutineTrigger = defineMutationTool({
         trigger: created.trigger,
         secretMaterial: (created.secretMaterial as Record<string, unknown> | null) ?? null,
       },
+      auditDetails: {
+        routineId: routine.id,
+        triggerId: created.trigger.id,
+        kind: created.trigger.kind,
+      },
     };
   },
 });
@@ -1040,6 +1046,11 @@ const rotateRoutineTriggerSecret = defineMutationTool({
       entityId: rotated.trigger.id,
       entityType: "routine_trigger",
       details: rotated.secretMaterial as unknown as Record<string, unknown>,
+      auditDetails: {
+        routineId: rotated.trigger.routineId,
+        triggerId: rotated.trigger.id,
+        kind: rotated.trigger.kind,
+      },
     };
   },
 });
@@ -1094,6 +1105,10 @@ const createInvite = defineMutationTool({
       details: {
         inviteId: created.invite.id,
         token: created.token,
+        invitePath: created.invitePath,
+      },
+      auditDetails: {
+        inviteId: created.invite.id,
         invitePath: created.invitePath,
       },
     };
