@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
-import { useLocation, useNavigate, useParams } from "@/lib/router";
+import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
@@ -689,6 +689,20 @@ export function OnboardingWizard() {
                       onChange={(e) => setCompanyGoal(e.target.value)}
                     />
                   </div>
+                  <p className="text-xs text-muted-foreground text-center pt-2">
+                    Want a conversation instead?{" "}
+                    <Link
+                      to="/onboarding"
+                      onClick={() => {
+                        setRouteDismissed(true);
+                        closeOnboarding();
+                      }}
+                      className="underline"
+                    >
+                      Switch to Coach onboarding
+                    </Link>
+                    .
+                  </p>
                 </div>
               )}
 
