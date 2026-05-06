@@ -1,4 +1,8 @@
 import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadataRowType,
+  IssueCommentPresentationKind,
+  IssueCommentPresentationTone,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -160,6 +164,18 @@ export interface IssueProductivityReview {
   noCommentStreak: number | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated";
+
+export interface SuccessfulRunHandoffState {
+  state: SuccessfulRunHandoffStateKind;
+  required: boolean;
+  sourceRunId: string | null;
+  correctiveRunId: string | null;
+  assigneeAgentId: string | null;
+  detectedProgressSummary: string | null;
+  createdAt: Date | string | null;
 }
 
 export interface IssueRelation {
@@ -324,6 +340,7 @@ export interface Issue {
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
   productivityReview?: IssueProductivityReview | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -346,12 +363,81 @@ export interface IssueComment {
   id: string;
   companyId: string;
   issueId: string;
+  authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
   body: string;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface IssueCommentMetadataRowBase {
+  type: IssueCommentMetadataRowType;
+  label?: string | null;
+}
+
+export interface IssueCommentMetadataTextRow extends IssueCommentMetadataRowBase {
+  type: "text";
+  text: string;
+}
+
+export interface IssueCommentMetadataCodeRow extends IssueCommentMetadataRowBase {
+  type: "code";
+  code: string;
+  language?: string | null;
+}
+
+export interface IssueCommentMetadataKeyValueRow extends IssueCommentMetadataRowBase {
+  type: "key_value";
+  label: string;
+  value: string;
+}
+
+export interface IssueCommentMetadataIssueLinkRow extends IssueCommentMetadataRowBase {
+  type: "issue_link";
+  issueId?: string | null;
+  identifier?: string | null;
+  title?: string | null;
+}
+
+export interface IssueCommentMetadataAgentLinkRow extends IssueCommentMetadataRowBase {
+  type: "agent_link";
+  agentId: string;
+  name?: string | null;
+}
+
+export interface IssueCommentMetadataRunLinkRow extends IssueCommentMetadataRowBase {
+  type: "run_link";
+  runId: string;
+  title?: string | null;
+}
+
+export type IssueCommentMetadataRow =
+  | IssueCommentMetadataTextRow
+  | IssueCommentMetadataCodeRow
+  | IssueCommentMetadataKeyValueRow
+  | IssueCommentMetadataIssueLinkRow
+  | IssueCommentMetadataAgentLinkRow
+  | IssueCommentMetadataRunLinkRow;
+
+export interface IssueCommentMetadataSection {
+  title?: string | null;
+  rows: IssueCommentMetadataRow[];
+}
+
+export interface IssueCommentMetadata {
+  version: 1;
+  sections: IssueCommentMetadataSection[];
+}
+
+export interface IssueCommentPresentation {
+  kind: IssueCommentPresentationKind;
+  tone: IssueCommentPresentationTone;
+  title?: string | null;
+  detailsDefaultOpen: boolean;
 }
 
 export interface IssueThreadInteractionActorFields {

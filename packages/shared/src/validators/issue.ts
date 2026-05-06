@@ -8,6 +8,10 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_COMMENT_AUTHOR_TYPES,
+  ISSUE_COMMENT_METADATA_ROW_TYPES,
+  ISSUE_COMMENT_PRESENTATION_KINDS,
+  ISSUE_COMMENT_PRESENTATION_TONES,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
   clampIssueRequestDepth,
@@ -233,8 +237,95 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
+const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
+
+export const issueCommentAuthorTypeSchema = z.enum(ISSUE_COMMENT_AUTHOR_TYPES);
+
+export const issueCommentPresentationSchema = z.object({
+  kind: z.enum(ISSUE_COMMENT_PRESENTATION_KINDS).default("message"),
+  tone: z.enum(ISSUE_COMMENT_PRESENTATION_TONES).default("neutral"),
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+  detailsDefaultOpen: z.boolean().optional().default(false),
+}).strict();
+
+export type IssueCommentPresentation = z.infer<typeof issueCommentPresentationSchema>;
+
+const issueCommentMetadataBaseRowSchema = z.object({
+  type: z.enum(ISSUE_COMMENT_METADATA_ROW_TYPES),
+  label: commentMetadataLabelSchema.nullable().optional(),
+});
+
+const issueCommentMetadataTextRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("text"),
+  text: commentMetadataTextSchema,
+}).strict();
+
+const issueCommentMetadataCodeRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("code"),
+  code: z.string().min(1).max(4000),
+  language: z.string().trim().min(1).max(40).nullable().optional(),
+}).strict();
+
+const issueCommentMetadataKeyValueRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("key_value"),
+  label: commentMetadataLabelSchema,
+  value: commentMetadataTextSchema,
+}).strict();
+
+const issueCommentMetadataIssueLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("issue_link"),
+  issueId: z.string().uuid().nullable().optional(),
+  identifier: z.string().trim().min(1).max(80).nullable().optional(),
+  title: z.string().trim().min(1).max(240).nullable().optional(),
+}).strict();
+
+const issueCommentMetadataAgentLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("agent_link"),
+  agentId: z.string().uuid(),
+  name: z.string().trim().min(1).max(160).nullable().optional(),
+}).strict();
+
+const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("run_link"),
+  runId: z.string().uuid(),
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+}).strict();
+
+export const issueCommentMetadataRowSchema = z.discriminatedUnion("type", [
+  issueCommentMetadataTextRowSchema,
+  issueCommentMetadataCodeRowSchema,
+  issueCommentMetadataKeyValueRowSchema,
+  issueCommentMetadataIssueLinkRowSchema,
+  issueCommentMetadataAgentLinkRowSchema,
+  issueCommentMetadataRunLinkRowSchema,
+]).superRefine((value, ctx) => {
+  if (value.type === "issue_link" && !value.issueId && !value.identifier) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Issue link rows require issueId or identifier",
+      path: ["issueId"],
+    });
+  }
+});
+
+export const issueCommentMetadataSectionSchema = z.object({
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+  rows: z.array(issueCommentMetadataRowSchema).min(1).max(50),
+}).strict();
+
+export const issueCommentMetadataSchema = z.object({
+  version: z.literal(1),
+  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
+}).strict();
+
+export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
+
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
+  authorType: issueCommentAuthorTypeSchema.optional(),
+  presentation: issueCommentPresentationSchema.nullable().optional(),
+  metadata: issueCommentMetadataSchema.nullable().optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

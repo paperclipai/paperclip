@@ -66,6 +66,7 @@ import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
+import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
@@ -1527,6 +1528,16 @@ export function IssuesList({
                                   {issueBadge}
                                 </span>
                               )
+                            ) : null}
+                            {isSuccessfulRunHandoffRequired(issue) ? (
+                              <span
+                                className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+                                aria-label="Needs next step"
+                                title="This issue needs a next step"
+                              >
+                                <CircleDot className="h-3 w-3" />
+                                Needs next step
+                              </span>
                             ) : null}
                           </>
                         )}
