@@ -62,7 +62,9 @@
     "routine_count_other": "{{count}} routines",
     "routine_created": "Routine created",
     "routine_created_body": "Add the first trigger to turn it into a live workflow.",
-    "failed_load": "Failed to load routines"
+    "failed_load": "Failed to load routines",
+    "routine_count_few": "{{count}} routines",
+    "routine_count_many": "{{count}} routines"
   },
   "trigger_kind": {
     "schedule": "Schedule",
