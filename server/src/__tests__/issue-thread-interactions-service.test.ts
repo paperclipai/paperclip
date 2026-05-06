@@ -861,6 +861,107 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("keeps blocked confirmations blocked when cancelled blocker relationships remain", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Confirm a cancelled blocker request",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Senior Product Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        goalId,
+        title: "Cancelled blocker",
+        status: "cancelled",
+        priority: "medium",
+      },
+      {
+        id: issueId,
+        companyId,
+        goalId,
+        title: "Review the blocked plan",
+        status: "blocked",
+        priority: "medium",
+        assigneeUserId: "local-board",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+      },
+    }, {
+      agentId,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(accepted.resolvedNow).toBe(true);
+    expect(accepted.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+
+    const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(updatedIssue).toMatchObject({
+      id: issueId,
+      status: "blocked",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    const transitionRows = (await db.select().from(activityLog)).filter((row) => row.action === "status_transition");
+    expect(transitionRows).toHaveLength(0);
+  });
+
   it("keeps blocked confirmations blocked when unresolved engineering blockers remain", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
