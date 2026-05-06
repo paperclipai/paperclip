@@ -1554,6 +1554,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         prefix,
       }),
       {},
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Automatic recovery stopped",
+          detailsDefaultOpen: false,
+        },
+      },
     );
 
     await logActivity(db, {
@@ -1689,7 +1698,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         metadata: notice.metadata,
       });
     } else {
-      await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {});
+      await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Recovery follow-up required",
+          detailsDefaultOpen: false,
+        },
+      });
     }
 
     await logActivity(db, {

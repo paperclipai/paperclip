@@ -334,7 +334,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     body: string,
     generatedAt: Date,
   ) {
-    const comment = await issuesSvc.addComment(reviewIssueId, body, {});
+    const comment = await issuesSvc.addComment(reviewIssueId, body, {}, {
+      authorType: "system",
+      presentation: {
+        kind: "system_notice",
+        tone: "neutral",
+        title: "Productivity review evidence refreshed",
+        detailsDefaultOpen: false,
+      },
+    });
     await db
       .update(issueComments)
       .set({ createdAt: generatedAt, updatedAt: generatedAt })

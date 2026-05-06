@@ -3050,6 +3050,33 @@ describeEmbeddedPostgres("issueService.addComment publish guardrails", () => {
     });
   });
 
+  it("allows machine-authored system notices without the structured status sections", async () => {
+    const { issueId } = await seedIssue();
+
+    const stored = await svc.addComment(
+      issueId,
+      "Paperclip needs a disposition before this issue can continue.",
+      {},
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Missing issue disposition",
+          detailsDefaultOpen: false,
+        },
+      },
+    );
+
+    expect(stored.body).toBe("Paperclip needs a disposition before this issue can continue.");
+    expect(stored.presentation).toEqual({
+      kind: "system_notice",
+      tone: "warning",
+      title: "Missing issue disposition",
+      detailsDefaultOpen: false,
+    });
+  });
+
   it("allows human troubleshooting comments that mention api keys and shell commands without raw bootstrap payloads", async () => {
     const { issueId } = await seedIssue();
     const stored = await svc.addComment(

@@ -1,3 +1,4 @@
+import type { IssueCommentPresentation } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { redactSensitiveText } from "../redaction.js";
 
@@ -134,6 +135,19 @@ function validateMachineAuthoredCommentStructure(input: string) {
   });
 }
 
+function requiresStructuredMachineStatusComment(options: {
+  machineAuthored?: boolean;
+  presentation?: IssueCommentPresentation | null;
+}) {
+  if (options.machineAuthored !== true) {
+    return false;
+  }
+  if (options.presentation?.kind === "system_notice") {
+    return false;
+  }
+  return true;
+}
+
 function sanitizeSecrets(input: string) {
   let sanitized = redactSensitiveText(input);
   sanitized = sanitized.replace(PEM_BLOCK_RE, "[REDACTED_PEM_BLOCK]");
@@ -147,7 +161,7 @@ function sanitizeSecrets(input: string) {
 
 export function sanitizeIssueCommentBody(
   input: string,
-  options: { machineAuthored?: boolean } = {},
+  options: { machineAuthored?: boolean; presentation?: IssueCommentPresentation | null } = {},
 ) {
   const trimmed = input.trim();
   const blockedReasons = collectBlockedReasons(trimmed, options);
@@ -157,7 +171,7 @@ export function sanitizeIssueCommentBody(
       machineAuthored: options.machineAuthored === true,
     });
   }
-  if (options.machineAuthored === true) {
+  if (requiresStructuredMachineStatusComment(options)) {
     validateMachineAuthoredCommentStructure(trimmed);
   }
   return sanitizeSecrets(trimmed);

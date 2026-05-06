@@ -3814,6 +3814,7 @@ export function issueService(db: Db) {
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       const guardedBody = sanitizeIssueCommentBody(body, {
         machineAuthored: authorType !== "user",
+        presentation,
       });
       const redactedBody = redactCurrentUserText(guardedBody, currentUserRedactionOptions);
       const [comment] = await db
