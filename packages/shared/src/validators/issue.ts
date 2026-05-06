@@ -48,6 +48,25 @@ export const issueExecutionWorkspaceSettingsSchema = z
   })
   .strict();
 
+export const PRODUCTIVITY_REVIEW_TRIGGERS = [
+  "no_comment_streak",
+  "long_active_duration",
+  "high_churn",
+] as const;
+
+export const productivityReviewTriggerSchema = z.enum(PRODUCTIVITY_REVIEW_TRIGGERS);
+
+export const productivityReviewSettingsSchema = z
+  .object({
+    disabledTriggers: z.array(z.string()).optional(),
+  })
+  .strict();
+
+export function isProductivityReviewTrigger(value: unknown): value is (typeof PRODUCTIVITY_REVIEW_TRIGGERS)[number] {
+  return typeof value === "string"
+    && (PRODUCTIVITY_REVIEW_TRIGGERS as readonly string[]).includes(value);
+}
+
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
@@ -188,6 +207,7 @@ export const createIssueSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  productivityReviewSettings: productivityReviewSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 

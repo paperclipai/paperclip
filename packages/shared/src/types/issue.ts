@@ -151,6 +151,12 @@ export type IssueProductivityReviewTrigger =
   | "long_active_duration"
   | "high_churn";
 
+export type ProductivityReviewTrigger = IssueProductivityReviewTrigger;
+
+export interface ProductivityReviewSettings {
+  disabledTriggers?: ProductivityReviewTrigger[];
+}
+
 export interface IssueProductivityReview {
   reviewIssueId: string;
   reviewIdentifier: string | null;
@@ -314,6 +320,7 @@ export interface Issue {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  productivityReviewSettings: ProductivityReviewSettings | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;

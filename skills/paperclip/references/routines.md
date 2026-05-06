@@ -185,3 +185,35 @@ GET /api/routines/{routineId}/runs?limit=50
 ```
 
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.
+
+---
+
+## Perpetual rolling monitors
+
+Some issues are intentional perpetual monitors — open-ended rolling work where new evidence keeps arriving and an `in_progress` status spanning days is the desired state, not a sign of stuck progress (for example, an InstanceOps host-health monitor). Productivity-review reconciliation will otherwise generate a `long_active_duration` review for these issues every reconciliation cycle, which is noise.
+
+To exempt a single issue from a specific productivity-review trigger, set its `productivityReviewSettings.disabledTriggers`:
+
+```
+PATCH /api/issues/{issueId}
+{
+  "productivityReviewSettings": {
+    "disabledTriggers": ["long_active_duration"]
+  }
+}
+```
+
+Allowed triggers (the `ProductivityReviewTrigger` union): `no_comment_streak`, `long_active_duration`, `high_churn`.
+
+When to use the exemption:
+
+- The issue is a deliberately perpetual monitor or rolling watcher; lifetime is unbounded by design.
+- The agent posts regular comments on each cycle, so `no_comment_streak` and `high_churn` still meaningfully flag pathologies (a cycle that stops commenting, or thrashes through many runs in an hour); only `long_active_duration` is a structural false positive.
+
+Which triggers to disable for rolling-monitor patterns:
+
+- **Disable `long_active_duration` only.** That trigger fires purely on elapsed `in_progress` time, so it cannot distinguish a rolling monitor from a stuck issue. The exemption removes the false-positive without weakening real coverage.
+- **Never disable `no_comment_streak`.** Even on rolling work, ten consecutive completed runs without a comment is a real signal that the agent has stopped narrating progress.
+- **Never disable `high_churn`.** Churn-rate triggers catch runaway loops regardless of the issue's lifetime; rolling monitors should still trip them if they thrash.
+
+To clear the exemption, PATCH `productivityReviewSettings: null` (or `{ "disabledTriggers": [] }`).

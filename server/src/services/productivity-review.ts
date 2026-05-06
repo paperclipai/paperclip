@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
+import type { ProductivityReviewSettings, ProductivityReviewTrigger } from "@paperclipai/shared";
 import {
   agents,
   companies,
@@ -37,7 +38,6 @@ export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review e
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
-type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
@@ -90,6 +90,27 @@ type EnqueueWakeup = (
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
+}
+
+const PRODUCTIVITY_REVIEW_TRIGGER_KEYS: readonly ProductivityReviewTrigger[] = [
+  "no_comment_streak",
+  "long_active_duration",
+  "high_churn",
+];
+
+export function readDisabledProductivityReviewTriggers(
+  settings: unknown,
+): Set<ProductivityReviewTrigger> {
+  const disabled = new Set<ProductivityReviewTrigger>();
+  if (!settings || typeof settings !== "object") return disabled;
+  const raw = (settings as ProductivityReviewSettings).disabledTriggers;
+  if (!Array.isArray(raw)) return disabled;
+  for (const value of raw) {
+    if (PRODUCTIVITY_REVIEW_TRIGGER_KEYS.includes(value as ProductivityReviewTrigger)) {
+      disabled.add(value as ProductivityReviewTrigger);
+    }
+  }
+  return disabled;
 }
 
 function issueRunScopeSql(issueId: string) {
@@ -471,13 +492,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
-    const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
-    const highChurn =
+    const disabledTriggers = readDisabledProductivityReviewTriggers(sourceIssue.productivityReviewSettings);
+    const noComment = !disabledTriggers.has("no_comment_streak")
+      && noCommentStreak >= thresholds.noCommentStreakRuns;
+    const longActive = !disabledTriggers.has("long_active_duration")
+      && elapsedMs !== null
+      && elapsedMs >= thresholds.longActiveMs;
+    const highChurn = !disabledTriggers.has("high_churn") && (
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
       runCountLastSixHours >= thresholds.highChurnSixHours ||
-      assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
+      assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours
+    );
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 

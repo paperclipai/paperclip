@@ -562,4 +562,86 @@ describeEmbeddedPostgres("productivity review service", () => {
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
+
+  it("respects productivityReviewSettings.disabledTriggers when only the disabled trigger would fire", async () => {
+    const now = new Date("2026-04-28T20:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      startedAt: new Date("2026-04-28T10:00:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({ productivityReviewSettings: { disabledTriggers: ["long_active_duration"] } })
+      .where(eq(issues.id, seeded.issueId));
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still fires no_comment_streak when only long_active_duration is disabled", async () => {
+    const now = new Date("2026-04-28T20:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      startedAt: new Date("2026-04-28T10:00:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({ productivityReviewSettings: { disabledTriggers: ["long_active_duration"] } })
+      .where(eq(issues.id, seeded.issueId));
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
+  it("creates no review when all triggers are disabled even if streak threshold is met", async () => {
+    const now = new Date("2026-04-28T20:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      startedAt: new Date("2026-04-28T10:00:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        productivityReviewSettings: {
+          disabledTriggers: ["no_comment_streak", "long_active_duration", "high_churn"],
+        },
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
 });

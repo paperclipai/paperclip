@@ -30,6 +30,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isProductivityReviewTrigger,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
@@ -91,6 +92,23 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function assertValidProductivityReviewSettings(value: unknown) {
+  if (value == null) return;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(422, "productivityReviewSettings must be an object");
+  }
+  const triggers = (value as { disabledTriggers?: unknown }).disabledTriggers;
+  if (triggers === undefined) return;
+  if (!Array.isArray(triggers)) {
+    throw new HttpError(422, "productivityReviewSettings.disabledTriggers must be an array");
+  }
+  for (const entry of triggers) {
+    if (!isProductivityReviewTrigger(entry)) {
+      throw new HttpError(422, `Unknown productivity review trigger: ${String(entry)}`);
+    }
+  }
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -1864,6 +1882,7 @@ export function issueRoutes(
       await assertCanAssignTasks(req, companyId);
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
+    assertValidProductivityReviewSettings(req.body.productivityReviewSettings);
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
@@ -1958,6 +1977,7 @@ export function issueRoutes(
       await assertCanAssignTasks(req, parent.companyId);
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
+    assertValidProductivityReviewSettings(req.body.productivityReviewSettings);
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
@@ -2094,6 +2114,9 @@ export function issueRoutes(
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
+    if (updateFields.productivityReviewSettings !== undefined) {
+      assertValidProductivityReviewSettings(updateFields.productivityReviewSettings);
+    }
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;

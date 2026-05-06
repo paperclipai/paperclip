@@ -140,6 +140,8 @@ export type {
   IssueBlockerAttentionState,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  ProductivityReviewSettings,
+  ProductivityReviewTrigger,
   IssueReferenceSource,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
