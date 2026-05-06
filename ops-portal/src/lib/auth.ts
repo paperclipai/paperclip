@@ -38,19 +38,12 @@ const authConfig: NextAuthConfig = {
   ],
 
   callbacks: {
-    async jwt({
-      token,
-      account,
-      profile,
-    }: {
-      token: JWT;
-      account: unknown;
-      profile?: Record<string, unknown>;
-    }) {
+    async jwt({ token, account, profile }) {
       if (account != null && profile != null) {
-        token['sub'] = (profile['sub'] as string | undefined) ?? token['sub'];
-        token['email'] = (profile['email'] as string | undefined) ?? token['email'];
-        token['roles'] = extractZitadelRoles(profile);
+        const p = profile as Record<string, unknown>;
+        token['sub'] = (p['sub'] as string | undefined) ?? token['sub'];
+        token['email'] = (p['email'] as string | undefined) ?? token['email'];
+        token['roles'] = extractZitadelRoles(p);
       }
       return token;
     },
@@ -58,7 +51,7 @@ const authConfig: NextAuthConfig = {
     async session({ session, token }: { session: Session; token: JWT }) {
       const s = session as Session & { roles: string[] };
       s.roles = (token['roles'] as string[] | undefined) ?? [];
-      if (typeof token['email'] === 'string') {
+      if (typeof token['email'] === 'string' && s.user != null) {
         s.user.email = token['email'];
       }
       return s;
