@@ -8,13 +8,19 @@ import {
   asString,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  maybeRunSandboxInstallCommand,
+  ensureAdapterExecutionTargetDirectory,
+  runAdapterExecutionTargetProcess,
+  describeAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -58,10 +64,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "opencode");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = target?.kind === "remote";
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `opencode-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "opencode_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: false,
+    });
     checks.push({
       code: "opencode_cwd_valid",
       level: "info",
@@ -94,7 +118,7 @@ export async function testEnvironment(
 
   // Prevent OpenCode from writing an opencode.json into the working directory.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config, targetIsRemote });
   if (asBoolean(config.dangerouslySkipPermissions, true)) {
     checks.push({
       code: "opencode_headless_permissions_enabled",
@@ -114,8 +138,17 @@ export async function testEnvironment(
         detail: command,
       });
     } else {
+      const installCheck = await maybeRunSandboxInstallCommand({
+        runId,
+        target,
+        adapterKey: "opencode",
+        installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+        env,
+      });
+      if (installCheck) checks.push(installCheck);
       try {
-        await ensureCommandResolvable(command, cwd, runtimeEnv);
+        await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
         checks.push({
           code: "opencode_command_resolvable",
           level: "info",
@@ -137,7 +170,19 @@ export async function testEnvironment(
     let modelValidationPassed = false;
     const configuredModel = asString(config.model, "").trim();
 
-    if (canRunProbe && configuredModel) {
+    // Model discovery and validation use local child processes against
+    // OpenCode's `models` subcommand and JSON config; these are not yet
+    // wired through the execution target. When probing a remote env, skip
+    // discovery/validation and rely on the remote hello probe to surface
+    // model/auth issues directly.
+    if (targetIsRemote && configuredModel) {
+      checks.push({
+        code: "opencode_model_validation_skipped_remote",
+        level: "info",
+        message: `Skipped local model validation; will be validated by the hello probe inside ${targetLabel}.`,
+      });
+      modelValidationPassed = true;
+    } else if (canRunProbe && configuredModel) {
       try {
         const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
         if (discovered.length > 0) {
@@ -173,7 +218,7 @@ export async function testEnvironment(
           });
         }
       }
-    } else if (canRunProbe && !configuredModel) {
+    } else if (!targetIsRemote && canRunProbe && !configuredModel) {
       try {
         const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
         if (discovered.length > 0) {
@@ -207,7 +252,7 @@ export async function testEnvironment(
     const modelUnavailable = checks.some((check) => check.code === "opencode_hello_probe_model_unavailable");
     if (!configuredModel && !modelUnavailable) {
       // No model configured – skip model requirement if no model-related checks exist
-    } else if (configuredModel && canRunProbe) {
+    } else if (!targetIsRemote && configuredModel && canRunProbe) {
       try {
         await ensureOpenCodeModelConfiguredAndAvailable({
           model: configuredModel,
@@ -245,14 +290,22 @@ export async function testEnvironment(
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
 
+      // For remote targets, do NOT spread the host process.env into the
+      // probe env: it leaks macOS-only paths (HOME=/Users/..., host
+      // XDG_CONFIG_HOME, TMPDIR, etc.) into the remote shell, which causes
+      // opencode on the remote box to try to mkdir host paths like /Users.
+      // Match the pattern used by claude_local / codex_local / gemini_local
+      // probes: send only the user-configured adapter env across SSH.
+      const probeEnv = targetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
       try {
-        const probe = await runChildProcess(
-          `opencode-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        const probe = await runAdapterExecutionTargetProcess(
+          runId,
+          target,
           command,
           args,
           {
             cwd,
-            env: runtimeEnv,
+            env: probeEnv,
             timeoutSec: 60,
             graceSec: 5,
             stdin: "Respond with hello.",
