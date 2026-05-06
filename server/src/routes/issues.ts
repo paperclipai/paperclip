@@ -65,7 +65,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -225,6 +225,36 @@ async function listSuccessfulRunHandoffStates(
     if (state) states.set(row.entityId, state);
   }
   return states;
+}
+
+const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
+
+const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
+  "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
+  "This request would leave the issue in_review without anyone or anything owning the next action. " +
+  "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
+  "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+
+function hasExecutionParticipant(value: unknown) {
+  const state = parseIssueExecutionState(value);
+  if (!state || state.status !== "pending") return false;
+  const participant = state.currentParticipant;
+  if (!participant) return false;
+  if (participant.type === "agent") return Boolean(participant.agentId);
+  if (participant.type === "user") return Boolean(participant.userId);
+  return false;
+}
+
+function hasScheduledMonitor(input: {
+  existingMonitorNextCheckAt?: Date | null;
+  patchMonitorNextCheckAt?: unknown;
+  executionPolicy?: unknown;
+}) {
+  if (input.patchMonitorNextCheckAt instanceof Date && !Number.isNaN(input.patchMonitorNextCheckAt.getTime())) return true;
+  if (input.patchMonitorNextCheckAt === undefined && input.existingMonitorNextCheckAt) return true;
+  const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
+  return Boolean(policy?.monitor?.nextCheckAt);
 }
 
 function executionPrincipalsEqual(
@@ -642,6 +672,59 @@ export function issueRoutes(
     );
   }
 
+  async function assertAgentInReviewReviewPath(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeUserId?: string | null;
+      executionState?: unknown;
+      monitorNextCheckAt?: Date | null;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
+
+    const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
+      ? input.existing.assigneeUserId
+      : input.updateFields.assigneeUserId;
+    if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+
+    const nextExecutionState = input.updateFields.executionState === undefined
+      ? input.existing.executionState
+      : input.updateFields.executionState;
+    if (hasExecutionParticipant(nextExecutionState)) return;
+
+    const nextExecutionPolicy = input.updateFields.executionPolicy;
+    if (hasScheduledMonitor({
+      existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
+      patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
+      executionPolicy: nextExecutionPolicy,
+    })) return;
+
+    const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
+    if (interactions.some((interaction) => interaction.status === "pending")) return;
+
+    const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
+    if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return;
+
+    throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
+      code: "invalid_issue_disposition",
+      missing: "review_path",
+      validReviewPaths: [
+        "pending_issue_thread_interaction",
+        "linked_pending_approval",
+        "human_assignee_user_id",
+        "typed_execution_state_current_participant",
+        "scheduled_issue_monitor",
+      ],
+    });
+  }
+
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
@@ -847,6 +930,23 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  function assertStructuredCommentFieldsAllowed(
+    req: Request,
+    res: Response,
+    input: { presentation?: unknown; metadata?: unknown },
+  ) {
+    const hasStructuredFields = input.presentation !== undefined || input.metadata !== undefined;
+    if (!hasStructuredFields) return true;
+    if (req.actor.type === "board") return true;
+    res.status(403).json({
+      error: "Only board users may set structured comment presentation or metadata",
+      details: {
+        securityPrinciples: ["Least Privilege", "Secure Defaults", "Complete Mediation"],
+      },
+    });
+    return false;
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -2403,6 +2503,12 @@ export function issueRoutes(
       }
     }
 
+    await assertAgentInReviewReviewPath({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+    });
+
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
@@ -3785,6 +3891,10 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!assertStructuredCommentFieldsAllowed(req, res, {
+      presentation: req.body.presentation,
+      metadata: req.body.metadata,
+    })) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);

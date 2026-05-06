@@ -66,6 +66,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "user",
         actorId: "local-board",
+        runId: null,
         statusChange: {
           from: "todo",
           to: "in_progress",
@@ -76,6 +77,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:02:00.000Z"),
         actorType: "user",
         actorId: "local-board",
+        runId: null,
         assigneeChange: {
           from: {
             agentId: "agent-1",
@@ -118,6 +120,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        runId: "run-1",
         statusChange: {
           from: "done",
           to: "todo",
@@ -157,6 +160,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        runId: "run-1",
         commentId: "comment-1",
         followUpRequested: true,
         statusChange: {
@@ -194,6 +198,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        runId: "run-1",
         commentId: "comment-1",
         followUpRequested: true,
       },

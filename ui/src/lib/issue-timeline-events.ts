@@ -10,6 +10,7 @@ export interface IssueTimelineEvent {
   createdAt: Date | string;
   actorType: ActivityEvent["actorType"];
   actorId: string;
+  runId?: string | null;
   statusChange?: {
     from: string | null;
     to: string | null;
@@ -67,6 +68,7 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
         createdAt: event.createdAt,
         actorType: event.actorType,
         actorId: event.actorId,
+        runId: event.runId ?? null,
         commentId,
         followUpRequested: true,
       });
@@ -81,6 +83,7 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
       createdAt: event.createdAt,
       actorType: event.actorType,
       actorId: event.actorId,
+      runId: event.runId ?? null,
     };
     if (details.followUpRequested === true || details.resumeIntent === true) {
       timelineEvent.followUpRequested = true;
