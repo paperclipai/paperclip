@@ -115,7 +115,10 @@ aws ecs run-task \
 | DATABASE_URL | `paperclip/production/database-url` |
 | BETTER_AUTH_SECRET | `paperclip/production/better-auth-secret` |
 | CLAUDE_CODE_OAUTH_TOKEN | `paperclip/production/claude-oauth-token` |
-| ANTHROPIC_API_KEY | `paperclip/production/anthropic-api-key` (not injected; kept for fallback) |
+| GITHUB_TOKEN | `paperclip/production/github-token` |
+| OPENAI_API_KEY | `paperclip/production/openai-api-key` |
+| ANTHROPIC_API_KEY | `paperclip/production/anthropic-api-key` |
+| GOOGLE_API_KEY | `paperclip/production/google-api-key` |
 
 ### Common issues
 

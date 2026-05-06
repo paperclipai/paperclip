@@ -62,6 +62,10 @@ resource "aws_secretsmanager_secret" "openai_api_key" {
   name = "paperclip/${var.environment}/openai-api-key"
 }
 
+resource "aws_secretsmanager_secret" "google_api_key" {
+  name = "paperclip/${var.environment}/google-api-key"
+}
+
 resource "aws_secretsmanager_secret_version" "better_auth" {
   secret_id     = aws_secretsmanager_secret.better_auth.id
   secret_string = random_password.better_auth.result
@@ -94,6 +98,8 @@ module "security" {
     aws_secretsmanager_secret.claude_oauth_token.arn,
     aws_secretsmanager_secret.github_token.arn,
     aws_secretsmanager_secret.openai_api_key.arn,
+    aws_secretsmanager_secret.anthropic_api_key.arn,
+    aws_secretsmanager_secret.google_api_key.arn,
   ]
 }
 
@@ -207,6 +213,8 @@ locals {
     { name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_oauth_token.arn },
     { name = "GITHUB_TOKEN", valueFrom = aws_secretsmanager_secret.github_token.arn },
     { name = "OPENAI_API_KEY", valueFrom = aws_secretsmanager_secret.openai_api_key.arn },
+    { name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic_api_key.arn },
+    { name = "GOOGLE_API_KEY", valueFrom = aws_secretsmanager_secret.google_api_key.arn },
   ]
 }
 
