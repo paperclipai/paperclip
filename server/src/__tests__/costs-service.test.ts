@@ -112,6 +112,7 @@ function registerModuleMocks() {
     financeService: () => mockFinanceService,
     companyService: () => mockCompanyService,
     agentService: () => mockAgentService,
+    documentService: () => ({}),
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,

@@ -42,6 +42,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/agents.js", () => ({
     agentService: () => mockAgentService,
+    documentService: () => ({}),
   }));
 
   vi.doMock("../services/company-skills.js", () => ({
@@ -51,6 +52,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    documentService: () => ({}),
     companySkillService: () => mockCompanySkillService,
     logActivity: mockLogActivity,
   }));

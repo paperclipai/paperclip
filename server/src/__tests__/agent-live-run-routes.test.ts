@@ -34,6 +34,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/agents.js", () => ({
     agentService: () => mockAgentService,
+    documentService: () => ({}),
   }));
 
   vi.doMock("../services/heartbeat.js", () => ({
@@ -50,6 +51,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    documentService: () => ({}),
     agentInstructionsService: () => ({}),
     accessService: () => ({}),
     approvalService: () => ({}),
