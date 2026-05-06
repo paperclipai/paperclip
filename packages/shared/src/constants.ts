@@ -293,6 +293,30 @@ export const APPROVAL_STATUSES = [
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
+/**
+ * Templated bodies for the auto-posted issue comment that records a human's
+ * inbox decision on an approval linked to an issue. The deciding human user
+ * is recorded as the comment author (authorUserId = decidedByUserId), and
+ * the body uses these prefixes so the issue thread reads naturally and the
+ * UI can give the comment a subtle visual treatment.
+ */
+export const APPROVAL_DECISION_COMMENT_PREFIXES = {
+  approved: "✅ Approved",
+  rejected: "❌ Rejected",
+  revision_requested: "🔁 Changes requested",
+} as const;
+
+export type ApprovalDecisionKind = keyof typeof APPROVAL_DECISION_COMMENT_PREFIXES;
+
+export function buildApprovalDecisionCommentBody(
+  decision: ApprovalDecisionKind,
+  note?: string | null,
+): string {
+  const prefix = APPROVAL_DECISION_COMMENT_PREFIXES[decision];
+  const trimmed = typeof note === "string" ? note.trim() : "";
+  return trimmed.length > 0 ? `${prefix}: ${trimmed}` : prefix;
+}
+
 export const SECRET_PROVIDERS = [
   "local_encrypted",
   "aws_secrets_manager",
