@@ -2,6 +2,15 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  EVIDENCE_RECORDS_DOCUMENT_KEY,
+  GATE_MANIFEST_DOCUMENT_KEY,
+  MISSION_CONTRACT_DOCUMENT_KEY,
+  READINESS_RECORDS_DOCUMENT_KEY,
+  RELIABILITY_SCORECARD_DOCUMENT_KEY,
+  formatEvidenceRecordsDocumentBody,
+  formatGateManifestDocumentBody,
+} from "@paperclipai/shared";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -41,6 +50,7 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 
 const mockDocumentService = vi.hoisted(() => ({
+  getIssueDocumentByKey: vi.fn(),
   upsertIssueDocument: vi.fn(),
 }));
 
@@ -264,6 +274,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockDocumentService.upsertIssueDocument.mockReset();
+    mockDocumentService.getIssueDocumentByKey.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
     mockStorageService.putFile.mockReset();
@@ -327,6 +338,7 @@ describe("agent issue mutation checkout ownership", () => {
         latestRevisionNumber: 2,
       },
     });
+    mockDocumentService.getIssueDocumentByKey.mockResolvedValue(null);
     mockWorkProductService.getById.mockResolvedValue({
       id: "product-1",
       issueId,
@@ -420,6 +432,163 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
+  });
+
+  it("rejects malformed mission contract documents before upsert", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/issues/${issueId}/documents/${MISSION_CONTRACT_DOCUMENT_KEY}`)
+      .send({ format: "markdown", body: "not json" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Invalid mission contract");
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed gate manifest documents before upsert", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/issues/${issueId}/documents/${GATE_MANIFEST_DOCUMENT_KEY}`)
+      .send({ format: "markdown", body: "not json" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Invalid gate manifest");
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed evidence record documents before upsert", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/issues/${issueId}/documents/${EVIDENCE_RECORDS_DOCUMENT_KEY}`)
+      .send({ format: "markdown", body: "not json" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Invalid evidence records");
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed readiness record documents before upsert", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/issues/${issueId}/documents/${READINESS_RECORDS_DOCUMENT_KEY}`)
+      .send({ format: "markdown", body: "not json" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Invalid readiness records");
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed reliability scorecards before upsert", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/issues/${issueId}/documents/${RELIABILITY_SCORECARD_DOCUMENT_KEY}`)
+      .send({ format: "markdown", body: "not json" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Invalid reliability scorecard");
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+  });
+
+  it("blocks done transitions while required gate manifest entries are incomplete", async () => {
+    mockDocumentService.getIssueDocumentByKey.mockImplementation(async (_issueId: string, key: string) => {
+      if (key !== GATE_MANIFEST_DOCUMENT_KEY) return null;
+      return {
+        key: GATE_MANIFEST_DOCUMENT_KEY,
+        title: "Gate Manifest",
+        body: formatGateManifestDocumentBody({
+          version: 1,
+          gates: [
+            {
+              id: "implementation",
+              type: "implementation",
+              title: "Implement",
+              status: "passed",
+            },
+            {
+              id: "production-smoke",
+              type: "production_smoke",
+              title: "Smoke production",
+              status: "pending",
+            },
+          ],
+        }),
+        latestRevisionId: "gate-revision-1",
+        latestRevisionNumber: 1,
+        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+      };
+    });
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Required gates are incomplete");
+    expect(res.body.details.incompleteGateIds).toEqual(["production-smoke"]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks done transitions when passed release and smoke gates lack required structured evidence", async () => {
+    mockDocumentService.getIssueDocumentByKey.mockImplementation(async (_issueId: string, key: string) => {
+      if (key === GATE_MANIFEST_DOCUMENT_KEY) {
+        return {
+          key: GATE_MANIFEST_DOCUMENT_KEY,
+          title: "Gate Manifest",
+          body: formatGateManifestDocumentBody({
+            version: 1,
+            gates: [
+              {
+                id: "release",
+                type: "release",
+                title: "Release",
+                status: "passed",
+                requiredEvidence: ["commit", "deploy_url"],
+              },
+              {
+                id: "production-smoke",
+                type: "production_smoke",
+                title: "Production smoke",
+                status: "passed",
+                requiredEvidence: ["production_url", "screenshot_or_artifact"],
+                blockedByGateIds: ["release"],
+              },
+            ],
+          }),
+          latestRevisionId: "gate-revision-1",
+          latestRevisionNumber: 1,
+          updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+        };
+      }
+      if (key === EVIDENCE_RECORDS_DOCUMENT_KEY) {
+        return {
+          key: EVIDENCE_RECORDS_DOCUMENT_KEY,
+          title: "Evidence Records",
+          body: formatEvidenceRecordsDocumentBody({ version: 1, records: [] }),
+          latestRevisionId: "evidence-revision-1",
+          latestRevisionNumber: 1,
+          updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+        };
+      }
+      return null;
+    });
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Required gate evidence is incomplete");
+    expect(res.body.details.incompleteGateIds).toEqual(["release", "production-smoke"]);
+    expect(res.body.details.gateEvidenceFailures).toEqual([
+      { gateId: "release", missingEvidence: ["commit", "deploy_url"] },
+      { gateId: "production-smoke", missingEvidence: ["production_url", "screenshot_or_artifact"] },
+    ]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {

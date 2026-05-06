@@ -222,6 +222,72 @@ const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS
 export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumentKey {
   return SYSTEM_ISSUE_DOCUMENT_KEY_SET.has(key);
 }
+
+export const MISSION_CONTRACT_DOCUMENT_KEY = "mission" as const;
+export const MISSION_CONTRACT_REQUIRED_GATES = [
+  "implementation",
+  "review",
+  "qa",
+  "release",
+  "production_smoke",
+] as const;
+export type MissionContractRequiredGate = (typeof MISSION_CONTRACT_REQUIRED_GATES)[number];
+
+export const MISSION_CONTRACT_DONE_POLICIES = ["all_required_gates_passed"] as const;
+export type MissionContractDonePolicy = (typeof MISSION_CONTRACT_DONE_POLICIES)[number];
+
+export const MISSION_CONTRACT_BOARD_DECISION_STATUSES = ["pending", "answered", "waived"] as const;
+export type MissionContractBoardDecisionStatus = (typeof MISSION_CONTRACT_BOARD_DECISION_STATUSES)[number];
+
+export const GATE_MANIFEST_DOCUMENT_KEY = "gate_manifest" as const;
+export const GATE_MANIFEST_GATE_TYPES = [
+  "implementation",
+  "review",
+  "independent_review",
+  "qa",
+  "qa_golden_path",
+  "security_privacy",
+  "release",
+  "production_smoke",
+  "cleanup",
+] as const;
+export type GateManifestGateType = (typeof GATE_MANIFEST_GATE_TYPES)[number];
+
+export const GATE_MANIFEST_GATE_STATUSES = [
+  "pending",
+  "in_progress",
+  "passed",
+  "failed",
+  "blocked",
+  "waived",
+] as const;
+export type GateManifestGateStatus = (typeof GATE_MANIFEST_GATE_STATUSES)[number];
+
+export const EVIDENCE_RECORDS_DOCUMENT_KEY = "evidence_records" as const;
+export const EVIDENCE_RECORD_STATUSES = ["passed", "failed", "blocked", "skipped"] as const;
+export type EvidenceRecordStatus = (typeof EVIDENCE_RECORD_STATUSES)[number];
+export const READINESS_RECORDS_DOCUMENT_KEY = "readiness_records" as const;
+export const READINESS_RECORD_STATUSES = ["passed", "failed", "blocked", "skipped"] as const;
+export type ReadinessRecordStatus = (typeof READINESS_RECORD_STATUSES)[number];
+export const READINESS_CHECK_TYPES = [
+  "adapter_executable",
+  "model_auth",
+  "cwd",
+  "api",
+  "api_key",
+  "issue_scoped_wake",
+  "issue_comment_update",
+  "project_workspace_policy",
+  "workspace_preflight",
+  "git_auth",
+  "github_auth",
+  "browser_harness",
+  "cleanup",
+] as const;
+export type ReadinessCheckType = (typeof READINESS_CHECK_TYPES)[number];
+export const RELIABILITY_SCORECARD_DOCUMENT_KEY = "reliability_scorecard" as const;
+export const RELIABILITY_SCORECARD_STATUSES = ["passing", "warning", "failing"] as const;
+export type ReliabilityScorecardStatus = (typeof RELIABILITY_SCORECARD_STATUSES)[number];
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
 

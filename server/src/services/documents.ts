@@ -1,7 +1,12 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import {
+  MISSION_CONTRACT_DOCUMENT_KEY,
+  isSystemIssueDocumentKey,
+  issueDocumentKeySchema,
+  parseMissionContractDocumentBody,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {
@@ -82,6 +87,48 @@ const issueDocumentSelect = {
   updatedAt: documents.updatedAt,
 };
 
+function missionContractPayloadFromRow(row: {
+  latestBody: string;
+  id: string;
+  companyId: string;
+  issueId: string;
+  key: string;
+  title: string | null;
+  format: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+} | null) {
+  if (!row) {
+    return {
+      missionDocument: null,
+      missionContract: null,
+      missionContractError: null,
+    };
+  }
+  try {
+    return {
+      missionDocument: mapIssueDocumentRow(row, true),
+      missionContract: parseMissionContractDocumentBody(row.latestBody),
+      missionContractError: null,
+    };
+  } catch (error) {
+    return {
+      missionDocument: mapIssueDocumentRow(row, true),
+      missionContract: null,
+      missionContractError: {
+        message: "Invalid mission contract",
+        details: error instanceof Error ? [{ message: error.message }] : undefined,
+      },
+    };
+  }
+}
+
 export function documentService(db: Db) {
   const filterSystemDocuments = <T extends { key: string }>(rows: T[], includeSystem: boolean) =>
     includeSystem ? rows : rows.filter((row) => !isSystemIssueDocumentKey(row.key));
@@ -91,12 +138,18 @@ export function documentService(db: Db) {
       issue: { id: string; description: string | null },
       options: { includeSystem?: boolean } = {},
     ) => {
-      const [planDocument, documentSummaries] = await Promise.all([
+      const [planDocument, missionDocument, documentSummaries] = await Promise.all([
         db
           .select(issueDocumentSelect)
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, "plan")))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select(issueDocumentSelect)
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, MISSION_CONTRACT_DOCUMENT_KEY)))
           .then((rows) => rows[0] ?? null),
         db
           .select(issueDocumentSelect)
@@ -110,6 +163,7 @@ export function documentService(db: Db) {
 
       return {
         planDocument: planDocument ? mapIssueDocumentRow(planDocument, true) : null,
+        ...missionContractPayloadFromRow(missionDocument),
         documentSummaries: filterSystemDocuments(documentSummaries, options.includeSystem ?? false)
           .map((row) => mapIssueDocumentRow(row, false)),
         legacyPlanDocument: legacyPlanBody

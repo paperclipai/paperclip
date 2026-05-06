@@ -80,7 +80,9 @@ vi.mock("../services/index.js", () => ({
     listApprovalsForIssue: vi.fn(),
     unlink: vi.fn(),
   }),
-  documentService: () => ({}),
+  documentService: () => ({
+    getIssueDocumentByKey: vi.fn(async () => null),
+  }),
   routineService: () => ({}),
   workProductService: () => ({}),
 }));

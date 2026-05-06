@@ -16,9 +16,22 @@ import {
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
+import {
+  buildAgentConfigSnapshot,
+  diffAgentConfigSnapshots,
+  renderAgentSnapshotDiff,
+  type AgentConfigSnapshot,
+} from "./agent-snapshot.js";
 
 interface AgentListOptions extends BaseClientOptions {
   companyId?: string;
+}
+
+interface AgentSnapshotOptions extends BaseClientOptions {
+  companyId?: string;
+  out?: string;
+  compare?: string;
+  failOnDrift?: boolean;
 }
 
 interface AgentLocalCliOptions extends BaseClientOptions {
@@ -201,6 +214,59 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("snapshot")
+      .description("Export or diff a redacted agent/org configuration snapshot for a company")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("--out <path>", "Write the live snapshot JSON to a file instead of stdout")
+      .option("--compare <path>", "Compare the live snapshot against an expected snapshot JSON file")
+      .option("--no-fail-on-drift", "When comparing, print drift but exit successfully")
+      .action(async (opts: AgentSnapshotOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const rows = (await ctx.api.get<Agent[]>(`/api/companies/${ctx.companyId}/agents`)) ?? [];
+          const snapshot = buildAgentConfigSnapshot({
+            companyId: ctx.companyId!,
+            agents: rows,
+          });
+
+          if (opts.compare?.trim()) {
+            const expected = await readAgentSnapshotFile(opts.compare);
+            const diff = diffAgentConfigSnapshots(expected, snapshot);
+            if (ctx.json) {
+              printOutput({ diff, snapshot }, { json: true });
+            } else {
+              console.log(renderAgentSnapshotDiff(diff));
+            }
+            if (diff.status === "drift" && opts.failOnDrift !== false) {
+              process.exitCode = 2;
+            }
+            return;
+          }
+
+          if (opts.out?.trim()) {
+            await fs.mkdir(path.dirname(path.resolve(opts.out)), { recursive: true });
+            await fs.writeFile(opts.out, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+            printOutput(
+              {
+                out: opts.out,
+                companyId: snapshot.companyId,
+                agents: snapshot.agents.length,
+              },
+              { json: ctx.json },
+            );
+            return;
+          }
+
+          printOutput(snapshot, { json: true });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
       .command("get")
       .description("Get one agent")
       .argument("<agentId>", "Agent ID")
@@ -312,4 +378,13 @@ export function registerAgentCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+}
+
+async function readAgentSnapshotFile(filePath: string): Promise<AgentConfigSnapshot> {
+  const raw = await fs.readFile(filePath, "utf8");
+  const parsed = JSON.parse(raw) as AgentConfigSnapshot;
+  if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.agents)) {
+    throw new Error(`Invalid agent snapshot file: ${filePath}`);
+  }
+  return parsed;
 }

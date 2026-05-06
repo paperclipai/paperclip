@@ -133,6 +133,35 @@ export type {
   IssueWorkProductReviewState,
 } from "./work-product.js";
 export type {
+  EvidenceCommandRecord,
+  EvidenceUrlRecord,
+  EvidenceArtifactRecord,
+  EvidenceScreenshotRecord,
+  EvidenceRecord,
+  EvidenceRecordsDocument,
+} from "./evidence-records.js";
+export type {
+  ReadinessCheckRecord,
+  ReadinessRecord,
+  ReadinessRecordsDocument,
+} from "./readiness-records.js";
+export type {
+  ReliabilityScorecardWindow,
+  ReliabilityScorecardSummary,
+  ReliabilityScorecardMetric,
+  ReliabilityScorecardBlocker,
+  ReliabilityScorecardDocument,
+} from "./reliability-scorecard.js";
+export type {
+  GateManifest,
+  GateManifestGate,
+} from "./gate-manifest.js";
+export type {
+  MissionContract,
+  MissionContractBoardDecision,
+  MissionContractBoardDecisionOption,
+} from "./mission.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
@@ -179,6 +208,7 @@ export type {
   IssueThreadInteractionResult,
   IssueDocument,
   IssueDocumentSummary,
+  IssueDocumentParseError,
   DocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,

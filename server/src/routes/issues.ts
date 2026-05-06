@@ -21,7 +21,17 @@ import {
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  EVIDENCE_RECORDS_DOCUMENT_KEY,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  GATE_MANIFEST_DOCUMENT_KEY,
+  MISSION_CONTRACT_DOCUMENT_KEY,
+  READINESS_RECORDS_DOCUMENT_KEY,
+  RELIABILITY_SCORECARD_DOCUMENT_KEY,
+  parseEvidenceRecordsDocumentBody,
+  parseGateManifestDocumentBody,
+  parseMissionContractDocumentBody,
+  parseReadinessRecordsDocumentBody,
+  parseReliabilityScorecardDocumentBody,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -33,6 +43,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
+import { evaluateGateManifestCompletion } from "@paperclipai/shared/validators/gate-manifest";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
@@ -253,6 +264,93 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+}
+
+function missionContractErrorDetails(error: unknown) {
+  if (error instanceof z.ZodError) return error.issues;
+  if (error instanceof SyntaxError) return [{ message: error.message }];
+  return undefined;
+}
+
+function issueDocumentContractErrorDetails(error: unknown) {
+  if (error instanceof z.ZodError) return error.issues;
+  if (error instanceof SyntaxError) return [{ message: error.message }];
+  if (error instanceof Error) return [{ message: error.message }];
+  return undefined;
+}
+
+function evaluateGateManifestDocuments(input: {
+  gateManifestBody: string;
+  evidenceRecordsBody?: string | null;
+}) {
+  const manifest = parseGateManifestDocumentBody(input.gateManifestBody);
+  const evidenceRecords = input.evidenceRecordsBody
+    ? parseEvidenceRecordsDocumentBody(input.evidenceRecordsBody)
+    : { version: 1 as const, records: [] };
+  return evaluateGateManifestCompletion(manifest, evidenceRecords);
+}
+
+function summarizeMissionDocument(
+  document: {
+    key: string;
+    title?: string | null;
+    body?: string;
+    latestRevisionId?: string | null;
+    latestRevisionNumber?: number | null;
+    updatedAt?: Date | string | null;
+  } | null,
+) {
+  if (!document) {
+    return {
+      missionDocument: null,
+      missionContract: null,
+      missionContractError: null,
+    };
+  }
+  if (typeof document.body !== "string") {
+    return {
+      missionDocument: {
+        key: document.key,
+        title: document.title ?? null,
+        latestRevisionId: document.latestRevisionId ?? null,
+        latestRevisionNumber: document.latestRevisionNumber ?? null,
+        updatedAt: document.updatedAt ?? null,
+      },
+      missionContract: null,
+      missionContractError: {
+        message: "Invalid mission contract",
+        details: [{ message: "Mission document body is missing" }],
+      },
+    };
+  }
+  try {
+    return {
+      missionDocument: {
+        key: document.key,
+        title: document.title ?? null,
+        latestRevisionId: document.latestRevisionId ?? null,
+        latestRevisionNumber: document.latestRevisionNumber ?? null,
+        updatedAt: document.updatedAt ?? null,
+      },
+      missionContract: parseMissionContractDocumentBody(document.body),
+      missionContractError: null,
+    };
+  } catch (error) {
+    return {
+      missionDocument: {
+        key: document.key,
+        title: document.title ?? null,
+        latestRevisionId: document.latestRevisionId ?? null,
+        latestRevisionNumber: document.latestRevisionNumber ?? null,
+        updatedAt: document.updatedAt ?? null,
+      },
+      missionContract: null,
+      missionContractError: {
+        message: "Invalid mission contract",
+        details: missionContractErrorDetails(error),
+      },
+    };
+  }
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -1117,6 +1215,7 @@ export function issueRoutes(
       productivityReview,
       attachments,
       continuationSummary,
+      missionDocument,
       currentExecutionWorkspace,
     ] =
       await Promise.all([
@@ -1129,8 +1228,10 @@ export function issueRoutes(
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+        documentsSvc.getIssueDocumentByKey(issue.id, MISSION_CONTRACT_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
       ]);
+    const mission = summarizeMissionDocument(missionDocument);
 
     res.json({
       issue: {
@@ -1200,6 +1301,7 @@ export function issueRoutes(
             updatedAt: continuationSummary.updatedAt,
           }
         : null,
+      ...mission,
       currentExecutionWorkspace,
     });
   });
@@ -1317,6 +1419,61 @@ export function issueRoutes(
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
+    }
+    if (keyParsed.data === MISSION_CONTRACT_DOCUMENT_KEY) {
+      try {
+        parseMissionContractDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid mission contract",
+          details: missionContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === GATE_MANIFEST_DOCUMENT_KEY) {
+      try {
+        parseGateManifestDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid gate manifest",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === EVIDENCE_RECORDS_DOCUMENT_KEY) {
+      try {
+        parseEvidenceRecordsDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid evidence records",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === READINESS_RECORDS_DOCUMENT_KEY) {
+      try {
+        parseReadinessRecordsDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid readiness records",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
+    }
+    if (keyParsed.data === RELIABILITY_SCORECARD_DOCUMENT_KEY) {
+      try {
+        parseReliabilityScorecardDocumentBody(req.body.body);
+      } catch (error) {
+        res.status(400).json({
+          error: "Invalid reliability scorecard",
+          details: issueDocumentContractErrorDetails(error),
+        });
+        return;
+      }
     }
 
     const actor = getActorInfo(req);
@@ -2177,6 +2334,56 @@ export function issueRoutes(
         normalizeIssueExecutionPolicy(req.body.executionPolicy),
         actor.actorType,
       );
+    }
+    if (updateFields.status === "done") {
+      const gateManifestDocument = await documentsSvc.getIssueDocumentByKey(existing.id, GATE_MANIFEST_DOCUMENT_KEY);
+      if (gateManifestDocument) {
+        if (typeof gateManifestDocument.body !== "string") {
+          res.status(409).json({
+            error: "Gate manifest is invalid",
+            details: { reason: "Gate manifest document body is missing" },
+          });
+          return;
+        }
+        const evidenceRecordsDocument = await documentsSvc.getIssueDocumentByKey(existing.id, EVIDENCE_RECORDS_DOCUMENT_KEY);
+        if (evidenceRecordsDocument && typeof evidenceRecordsDocument.body !== "string") {
+          res.status(409).json({
+            error: "Evidence records are invalid",
+            details: { reason: "Evidence records document body is missing" },
+          });
+          return;
+        }
+        let gateCompletion;
+        try {
+          gateCompletion = evaluateGateManifestDocuments({
+            gateManifestBody: gateManifestDocument.body,
+            evidenceRecordsBody: evidenceRecordsDocument?.body ?? null,
+          });
+        } catch (error) {
+          res.status(409).json({
+            error: "Gate manifest is invalid",
+            details: issueDocumentContractErrorDetails(error),
+          });
+          return;
+        }
+        if (gateCompletion.statusIncompleteGateIds.length > 0) {
+          res.status(409).json({
+            error: "Required gates are incomplete",
+            details: { incompleteGateIds: gateCompletion.incompleteGateIds },
+          });
+          return;
+        }
+        if (gateCompletion.gateEvidenceFailures.length > 0) {
+          res.status(409).json({
+            error: "Required gate evidence is incomplete",
+            details: {
+              incompleteGateIds: gateCompletion.incompleteGateIds,
+              gateEvidenceFailures: gateCompletion.gateEvidenceFailures,
+            },
+          });
+          return;
+        }
+      }
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =

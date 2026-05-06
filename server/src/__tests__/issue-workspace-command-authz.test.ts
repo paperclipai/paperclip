@@ -95,7 +95,9 @@ function registerRouteMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
-    documentService: () => ({}),
+    documentService: () => ({
+      getIssueDocumentByKey: vi.fn(async () => null),
+    }),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => mockFeedbackService,
     goalService: () => ({}),

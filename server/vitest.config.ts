@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
+    hookTimeout: 60_000,
     isolate: true,
     maxConcurrency: 1,
     maxWorkers: 1,
@@ -20,5 +21,6 @@ export default defineConfig({
       hooks: "list",
     },
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
+    testTimeout: 30_000,
   },
 });

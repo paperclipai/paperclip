@@ -113,7 +113,9 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
-  documentService: () => ({}),
+  documentService: () => ({
+    getIssueDocumentByKey: vi.fn(async () => null),
+  }),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
