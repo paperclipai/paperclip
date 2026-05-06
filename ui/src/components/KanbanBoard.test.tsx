@@ -35,6 +35,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     title: `Issue ${index}`,
     description: null,
     status,
+    workMode: "standard",
     priority: "medium",
     assigneeAgentId: index === 1 ? "agent-1" : null,
     assigneeUserId: null,
