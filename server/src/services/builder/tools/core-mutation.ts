@@ -222,6 +222,12 @@ const runRoutine: BuilderTool = {
       executionWorkspacePreference: params.executionWorkspacePreference,
       executionWorkspaceSettings: params.executionWorkspaceSettings,
     });
+    if (parsed.triggerId) {
+      const trigger = await routineService(ctx.db).getTrigger(parsed.triggerId);
+      if (!trigger || trigger.companyId !== ctx.companyId) {
+        return { ok: false, error: "Routine trigger not found" };
+      }
+    }
     await assertProjectBelongsToCompany(ctx.db, ctx.companyId, parsed.projectId ?? null);
     await assertAgentBelongsToCompany(
       ctx.db,

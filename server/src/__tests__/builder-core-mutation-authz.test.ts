@@ -6,6 +6,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
 const mockRoutineGet = vi.hoisted(() => vi.fn());
 const mockRunRoutine = vi.hoisted(() => vi.fn());
+const mockRoutineGetTrigger = vi.hoisted(() => vi.fn());
 const mockProjectGetById = vi.hoisted(() => vi.fn());
 const mockProjectCreate = vi.hoisted(() => vi.fn());
 const mockProjectUpdate = vi.hoisted(() => vi.fn());
@@ -29,6 +30,7 @@ vi.mock("../services/index.js", () => ({
   }),
   routineService: () => ({
     get: mockRoutineGet,
+    getTrigger: mockRoutineGetTrigger,
     runRoutine: mockRunRoutine,
   }),
 }));
@@ -63,6 +65,7 @@ describe("builder core mutation auth guards", () => {
       id: "routine-1",
       companyId,
     });
+    mockRoutineGetTrigger.mockResolvedValue(null);
     mockProjectGetById.mockResolvedValue({
       id: "project-foreign",
       companyId: otherCompanyId,
@@ -91,6 +94,7 @@ describe("builder core mutation auth guards", () => {
       id: "routine-1",
       companyId,
     });
+    mockRoutineGetTrigger.mockResolvedValue(null);
     mockProjectGetById.mockResolvedValue({
       id: "project-1",
       companyId,
@@ -115,6 +119,37 @@ describe("builder core mutation auth guards", () => {
         } as never,
       ),
     ).rejects.toThrow("Assignee agent not found");
+
+    expect(mockRunRoutine).not.toHaveBeenCalled();
+  });
+
+  it("returns tool error when triggerId belongs to another company", async () => {
+    mockRoutineGet.mockResolvedValue({
+      id: "routine-1",
+      companyId,
+    });
+    mockRoutineGetTrigger.mockResolvedValue({
+      id: "trigger-foreign",
+      companyId: otherCompanyId,
+    });
+
+    const tool = getTool("run_routine");
+    await expect(
+      tool.run(
+        {
+          routineId: "11111111-1111-4111-8111-111111111120",
+          triggerId: "11111111-1111-4111-8111-111111111121",
+        },
+        {
+          db: {} as never,
+          companyId,
+          actor: { type: "user", id: "user-1" },
+        } as never,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: "Routine trigger not found",
+    });
 
     expect(mockRunRoutine).not.toHaveBeenCalled();
   });
