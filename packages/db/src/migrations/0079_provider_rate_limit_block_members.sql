@@ -47,6 +47,9 @@ END $$;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "provider_rate_limit_block_members_block_agent_uq" ON "provider_rate_limit_block_members" USING btree ("block_id","agent_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "provider_rate_limit_block_members_block_idx" ON "provider_rate_limit_block_members" USING btree ("block_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "provider_rate_limit_block_members_company_agent_idx" ON "provider_rate_limit_block_members" USING btree ("company_id","agent_id");--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_wakeup_requests_idempotency_uq";
+--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "agent_wakeup_requests_idempotency_uq"
   ON "agent_wakeup_requests" USING btree ("company_id","agent_id","idempotency_key")
-  WHERE "idempotency_key" IS NOT NULL;
+  WHERE "idempotency_key" IS NOT NULL
+    AND "status" IN ('queued', 'deferred_issue_execution', 'claimed', 'completed');
