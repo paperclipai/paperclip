@@ -2141,9 +2141,60 @@ export function companySkillService(db: Db) {
     return skillDir;
   }
 
+  function computeRuntimeSkillFingerprint(skill: CompanySkill): string {
+    // Stable fingerprint of the skill content identity. Anything that changes
+    // here invalidates the on-disk materialization. We deliberately include
+    // sourceRef (commit sha for github skills, etc.), updatedAt, and the file
+    // inventory shape — which together cover ref-bumps, server-side edits,
+    // and inventory changes.
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          sourceType: skill.sourceType,
+          sourceRef: skill.sourceRef ?? null,
+          sourceLocator: skill.sourceLocator ?? null,
+          updatedAt: skill.updatedAt ?? null,
+          inventory: skill.fileInventory.map((e) => ({ path: e.path, kind: e.kind })),
+        }),
+      )
+      .digest("hex");
+  }
+
+  async function readRuntimeSkillFingerprint(skillDir: string): Promise<string | null> {
+    try {
+      const raw = await fs.readFile(path.join(skillDir, ".paperclip-materialized.json"), "utf8");
+      const parsed = JSON.parse(raw);
+      return typeof parsed?.fingerprint === "string" ? parsed.fingerprint : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function writeRuntimeSkillFingerprint(skillDir: string, fingerprint: string): Promise<void> {
+    const marker = { version: 1, fingerprint, writtenAt: new Date().toISOString() };
+    await fs.writeFile(
+      path.join(skillDir, ".paperclip-materialized.json"),
+      JSON.stringify(marker, null, 2),
+      "utf8",
+    );
+  }
+
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+
+    // Idempotency: if the on-disk materialization fingerprint already matches
+    // the current skill identity, skip the rm-rf + re-fetch cycle. This is
+    // critical for github-sourced skills where readFile() goes over the
+    // network — without this guard, a single GET /agents/:id/skills for an
+    // adapter with requiresMaterializedRuntimeSkills=true triggers one
+    // network round-trip per inventory entry, per company skill (hundreds).
+    const expectedFingerprint = computeRuntimeSkillFingerprint(skill);
+    const existingFingerprint = await readRuntimeSkillFingerprint(skillDir);
+    if (existingFingerprint === expectedFingerprint) {
+      return skillDir;
+    }
+
     await fs.rm(skillDir, { recursive: true, force: true });
     await fs.mkdir(skillDir, { recursive: true });
 
@@ -2155,6 +2206,7 @@ export function companySkillService(db: Db) {
       await fs.writeFile(targetPath, detail.content, "utf8");
     }
 
+    await writeRuntimeSkillFingerprint(skillDir, expectedFingerprint);
     return skillDir;
   }
 
