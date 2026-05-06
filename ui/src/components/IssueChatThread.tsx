@@ -36,6 +36,7 @@ import type {
   IssueAttachment,
   IssueBlockerAttention,
   IssueRelationIssueSummary,
+  SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -93,6 +94,16 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
+import {
+  isSuccessfulRunHandoffComment,
+  isSuccessfulRunHandoffEscalationComment,
+} from "../lib/successful-run-handoff";
+import { SystemNotice } from "./SystemNotice";
+import { buildSystemNoticeProps } from "../lib/system-notice-comment";
+import type {
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+} from "@paperclipai/shared";
 import {
   describeToolInput,
   displayToolName,
@@ -264,6 +275,7 @@ interface IssueChatThreadProps {
   activeRun?: ActiveRunForIssue | null;
   blockedBy?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -583,6 +595,9 @@ function commentDateLabel(date: Date | string | undefined): string {
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
+  if (isSuccessfulRunHandoffComment(text)) {
+    return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
+  }
   return (
     <MarkdownBody
       className="text-sm leading-6"
@@ -594,6 +609,41 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { 
     </MarkdownBody>
   );
 });
+
+export function SuccessfulRunHandoffCommentCallout({
+  text,
+  recessed,
+  onImageClick,
+}: {
+  text: string;
+  recessed?: boolean;
+  onImageClick?: (src: string) => void;
+}) {
+  const escalated = isSuccessfulRunHandoffEscalationComment(text);
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-3 py-2.5 text-sm shadow-sm",
+        escalated
+          ? "border-red-500/35 bg-red-500/10 text-red-950 dark:text-red-100"
+          : "border-amber-300/70 bg-amber-50/90 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+      )}
+      style={recessed ? { opacity: 0.55 } : undefined}
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle
+          className={cn(
+            "mt-1 h-4 w-4 shrink-0",
+            escalated ? "text-red-600 dark:text-red-300" : "text-amber-600 dark:text-amber-300",
+          )}
+        />
+        <MarkdownBody className="min-w-0 text-sm leading-6" softBreaks onImageClick={onImageClick}>
+          {text}
+        </MarkdownBody>
+      </div>
+    </div>
+  );
+}
 
 function humanizeValue(value: string | null) {
   if (!value) return "None";
@@ -1901,6 +1951,127 @@ function ExpiredRequestConfirmationActivity({
   );
 }
 
+function isIssueCommentPresentation(value: unknown): value is IssueCommentPresentation {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.kind === "system_notice" || v.kind === "message";
+}
+
+function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.version === 1 && Array.isArray(v.sections);
+}
+
+function SystemNoticeCommentRow({
+  message,
+  anchorId,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+}) {
+  const { onImageClick, agentMap } = useContext(IssueChatCtx);
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
+  const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
+  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runId = typeof custom.runId === "string" ? custom.runId : null;
+  const authorType = typeof custom.authorType === "string" ? custom.authorType : null;
+  const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
+  const bodyText = message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("\n\n");
+  const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const source = (() => {
+    const runAgentName = runAgentId ? agentMap?.get(runAgentId)?.name ?? null : null;
+    if (authorType === "system") {
+      const label = runAgentName ?? "Paperclip";
+      if (runAgentId && runId) return { label, href: `/agents/${runAgentId}/runs/${runId}` };
+      return { label };
+    }
+    if (runAgentId && runId) {
+      return { label: authorName ?? runAgentName ?? "Paperclip", href: `/agents/${runAgentId}/runs/${runId}` };
+    }
+    if (authorName) return { label: authorName };
+    return undefined;
+  })();
+
+  const props = buildSystemNoticeProps({
+    presentation,
+    metadata: commentMetadata,
+    body: (
+      <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
+        {bodyText}
+      </MarkdownBody>
+    ),
+    timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,
+    source,
+    runAgentId,
+  });
+
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(bodyText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleCopyLink = () => {
+    if (!anchorId || typeof window === "undefined") return;
+    const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
+    void navigator.clipboard.writeText(url).then(() => {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    });
+  };
+
+  return (
+    <div id={anchorId} className="group">
+      <div className="py-1">
+        <SystemNotice {...props} />
+        <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={anchorId ? `#${anchorId}` : undefined}
+                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+            </TooltipContent>
+          </Tooltip>
+          {anchorId ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy link"
+              aria-label="Copy link to system notice"
+              onClick={handleCopyLink}
+            >
+              {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Paperclip className="h-3.5 w-3.5" />}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+            title="Copy notice text"
+            aria-label="Copy system notice"
+            onClick={handleCopy}
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const {
     agentMap,
@@ -1932,6 +2103,15 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
+
+  if (custom.kind === "system_notice") {
+    return (
+      <SystemNoticeCommentRow
+        message={message}
+        anchorId={anchorId}
+      />
+    );
+  }
 
   if (custom.kind === "interaction" && interaction) {
     if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
@@ -3077,6 +3257,7 @@ export function IssueChatThread({
   activeRun = null,
   blockedBy = [],
   blockerAttention = null,
+  successfulRunHandoff = null,
   companyId,
   projectId,
   issueStatus,
@@ -3700,6 +3881,12 @@ export function IssueChatThread({
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
                     blockerAttention={blockerAttention}
+                    successfulRunHandoff={successfulRunHandoff}
+                    agentName={
+                      successfulRunHandoff?.assigneeAgentId
+                        ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
+                        : null
+                    }
                   />
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>

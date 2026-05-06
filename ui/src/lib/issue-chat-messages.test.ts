@@ -39,6 +39,7 @@ function createAgent(id: string, name: string): Agent {
 }
 
 function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComment {
+  const authorAgentId = overrides.authorAgentId ?? null;
   return {
     id: "comment-1",
     companyId: "company-1",
@@ -46,6 +47,9 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     authorAgentId: null,
     authorUserId: "user-1",
     body: "Hello",
+    authorType: authorAgentId ? "agent" : "user",
+    presentation: null,
+    metadata: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
