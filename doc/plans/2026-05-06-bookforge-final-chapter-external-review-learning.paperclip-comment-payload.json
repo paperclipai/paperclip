@@ -1,0 +1,15 @@
+{
+  "targetCompanyId": "2925a47a-961a-4212-8b36-ce711e2f6ec0",
+  "targetIssueIdentifier": "BOO-45",
+  "targetIssueTitle": "ROADMAP — Learning Ledger and model scorecard operating layer",
+  "createdAt": "2026-05-06T09:20:00+02:00",
+  "type": "paperclip_comment_payload_for_authenticated_write",
+  "safety": {
+    "requiresAuthorizationHeader": "Bearer $PAPERCLIP_API_KEY",
+    "requiresRunHeader": "$PAPERCLIP_RUN_ID",
+    "doNotWakeAgents": true,
+    "doNotResumeBookforge": true,
+    "doNotClearQualityHolds": true
+  },
+  "comment": "SELF-LEARNING UPDATE — Bookforge final-chapter external review repair workflow\n\nAdd this to the Bookforge Lab learning ledger / model-scorecard operating layer.\n\nFuture final-chapter external review repairs should follow this safe pattern:\n- back up promoted chapters and state first;\n- tighten surgically, not broad rewrite, when the chapter is usable but overlong;\n- remove repeated slogans/catchphrases across promoted chapters, not only the final chapter;\n- preserve evidence/custody/open-ending logic unless the review proves a real contradiction;\n- compress over-explained prop origins;\n- rename late minor-character name collisions;\n- add small injury/continuity reminders when an injury fades;\n- reassemble manuscript offline from promoted chapter files;\n- verify with no-token checks/searches;\n- do not clear unrelated Bookforge quality holds;\n- do not resume Bookforge generation without explicit approval.\n\nThe Last Safe Lie Chapter 14 example: external review asked for 15–20% tightening, DNR supervisor Aris rename, shorter cassette origin, repeated bait/hidden/real proof reduction, less culvert repetition, and removal of the repeated final-line slogan. Repair cut Chapter 14 about 18.8%, renamed Aris to Graham, compressed the cassette origin, removed the repeated final line from promoted Chapters 2, 3, 8, 10, 11, 13, and 14, reassembled the manuscript with 14 chapters/no missing chapters, left the separate quality_hold untouched, and did not resume spending.\n\nFuture prevention rule: review note -> verify in promoted text -> backup -> surgical edit -> whole-book repeated phrase search -> reassemble -> local no-token checks -> leave unrelated holds untouched -> Steward approval before any resume."
+}

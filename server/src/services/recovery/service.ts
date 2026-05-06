@@ -64,6 +64,18 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const BOOKFORGE_INCIDENT_ORIGIN_KIND = "bookforge_incident";
+
+function isBookforgeRepairGateIssue(issue: Pick<typeof issues.$inferSelect, "originKind" | "title">) {
+  const title = issue.title.toLowerCase();
+  return (
+    issue.originKind === BOOKFORGE_INCIDENT_ORIGIN_KIND ||
+    issue.originKind === "bookforge_runtime_control" ||
+    title.startsWith("bookforge repair gate") ||
+    title.includes("runtime governor") ||
+    title.includes("bookforge") && title.includes("resume gate")
+  );
+}
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -1769,6 +1781,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (isBookforgeRepairGateIssue(issue) && latestRun?.status === "succeeded") {
+        const updated = await issuesSvc.update(issue.id, { status: "in_review" });
+        if (updated) {
+          const prefix = await getCompanyIssuePrefix(issue.companyId);
+          await issuesSvc.addComment(
+            issue.id,
+            [
+              "Paperclip received successful Bookforge repair-gate output from the assigned agent.",
+              "",
+              `- Issue: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+              `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
+              "- Guard: Bookforge repair gates do not use generic stranded-issue continuation loops after evidence is produced.",
+              "- Next action: validate the Bookforge repair acceptance evidence, then let Runtime Governor clear/resume only if the gate passes.",
+            ].join("\n"),
+            {},
+          );
+          result.productiveContinuationObserved += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -1937,6 +1972,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      if ((isBookforgeRepairGateIssue(issue) || issue.title.toLowerCase().includes("general instructions")) && isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip found this assigned `in_progress` issue had ended in an unsuccessful terminal run " +
+            `and had no live execution path.${failureSummary ?? ""} ` +
+            "It will not be automatically continued; moving it to `blocked` for human/supervisor intervention.",
         });
         if (updated) {
           result.escalated += 1;

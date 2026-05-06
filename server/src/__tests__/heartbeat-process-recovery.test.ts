@@ -532,6 +532,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    issueOriginKind?: string;
+    issueTitle?: string;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -623,9 +625,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         parentId: input.activePauseHold ? rootIssueId : null,
-        title: "Recover stranded assigned work",
+        title: input.issueTitle ?? "Recover stranded assigned work",
         status: input.status,
         priority: "medium",
+        originKind: input.issueOriginKind ?? "manual",
         assigneeAgentId: input.assignToUser ? null : agentId,
         assigneeUserId: input.assignToUser ? "user-1" : null,
         checkoutRunId: input.status === "in_progress" ? runId : null,
@@ -1952,6 +1955,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("moves successful Bookforge repair gates to review instead of starting generic continuation/recovery loops", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      issueOriginKind: "bookforge_incident",
+      issueTitle: "Bookforge repair gate — Chapter 14 quality hold",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.productiveContinuationObserved).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
   });
 
   it.each([

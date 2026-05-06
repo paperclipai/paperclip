@@ -4531,7 +4531,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "satisfied" as const, queuedRun: null };
     }
 
-    if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
+    if (
+      run.status === "timed_out" ||
+      run.errorCode === "timeout" ||
+      readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment"
+    ) {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "retry_exhausted",
         issueCommentSatisfiedByCommentId: null,
@@ -4540,7 +4544,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+        message: run.status === "timed_out" || run.errorCode === "timeout"
+          ? "Run timed out without an issue comment; no automatic comment wake will be queued"
+          : "Run ended without an issue comment after one retry; no further comment wake will be queued",
       });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }

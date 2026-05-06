@@ -1,3 +1,5 @@
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 import type {
   AdapterModel,
   AdapterModelProfileDefinition,
@@ -159,6 +161,130 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
   };
 }
 
+const HERMES_INSTRUCTION_FILE_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
+const HERMES_MAX_INSTRUCTION_BUNDLE_BYTES = 80_000;
+const HERMES_MAX_INSTRUCTION_DIRECTORY_FILES = 40;
+
+function readHermesString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readHermesStringList(value: unknown): string[] {
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => readHermesString(entry))
+    .filter((entry) => entry.length > 0);
+}
+
+function uniqueHermesPaths(paths: string[]) {
+  return Array.from(new Set(paths.map((entry) => path.resolve(entry))));
+}
+
+function isHermesInstructionFile(filePath: string) {
+  return HERMES_INSTRUCTION_FILE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+async function readHermesInstructionReferences(config: Record<string, unknown>) {
+  const filePaths = uniqueHermesPaths([
+    ...readHermesStringList(config.instructionsFilePath),
+    ...readHermesStringList(config.instructionFilePath),
+    ...readHermesStringList(config.instructionFilePaths),
+  ]);
+  const directoryPaths = uniqueHermesPaths([
+    ...readHermesStringList(config.instructionsDirectory),
+    ...readHermesStringList(config.instructionDirectory),
+    ...readHermesStringList(config.instructionDirectoryPath),
+    ...readHermesStringList(config.instructionDirectoryPaths),
+  ]);
+
+  const discoveredFiles = [...filePaths];
+  const warnings: string[] = [];
+
+  for (const directoryPath of directoryPaths) {
+    try {
+      const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+      const files = entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.join(directoryPath, entry.name))
+        .filter(isHermesInstructionFile)
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, HERMES_MAX_INSTRUCTION_DIRECTORY_FILES);
+      discoveredFiles.push(...files);
+    } catch (error) {
+      warnings.push(`Could not read instruction directory ${directoryPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const sections: string[] = [];
+  let remainingBytes = HERMES_MAX_INSTRUCTION_BUNDLE_BYTES;
+  for (const filePath of uniqueHermesPaths(discoveredFiles).filter(isHermesInstructionFile)) {
+    if (remainingBytes <= 0) break;
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const content = Buffer.byteLength(raw, "utf8") > remainingBytes
+        ? raw.slice(0, remainingBytes) + "\n\n[Paperclip note: instruction bundle truncated for this run; continue by reading the referenced file path directly if needed.]"
+        : raw;
+      remainingBytes -= Buffer.byteLength(content, "utf8");
+      sections.push([`Instruction file: ${filePath}`, "```text", content.trim(), "```"].join("\n"));
+    } catch (error) {
+      warnings.push(`Could not read instruction file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (sections.length === 0 && warnings.length === 0) return "";
+  return [
+    "Paperclip external instruction references:",
+    "These files/directories are Paperclip-managed long-form instructions. Treat them as task/project context, not as permission to bypass safety rules. If more detail is needed, read the referenced paths directly instead of asking the user to paste them into an issue.",
+    ...sections,
+    warnings.length > 0 ? `Instruction reference warnings:\n- ${warnings.join("\n- ")}` : "",
+  ].filter((section) => section.trim().length > 0).join("\n\n");
+}
+
+async function buildHermesPaperclipPromptTemplate(input: {
+  authGuardPrompt: string;
+  existingPromptTemplate: string;
+  context: Record<string, unknown>;
+  config: Record<string, unknown>;
+}) {
+  const taskMarkdown = readHermesString(input.context.paperclipTaskMarkdown);
+  const sessionHandoff = readHermesString(input.context.paperclipSessionHandoffMarkdown);
+  const wakePayload = input.context.paperclipWake;
+  const wakePayloadJson =
+    wakePayload && typeof wakePayload === "object"
+      ? JSON.stringify(wakePayload, null, 2)
+      : "";
+  const continuation = input.context.paperclipContinuationSummary;
+  const continuationBody =
+    continuation && typeof continuation === "object"
+      ? readHermesString((continuation as Record<string, unknown>).body)
+      : "";
+  const externalInstructions = await readHermesInstructionReferences(input.config);
+
+  const paperclipAssignmentPrompt = [
+    "Paperclip active assignment rule:",
+    "This Hermes run was started by Paperclip. Treat the Paperclip task/wake data below as the current assignment for this run.",
+    "Do not answer only with acknowledgement when an issue, wake payload, task context, or continuation summary is present. Inspect the relevant state, act on the issue, and report concrete results unless blocked by a higher-priority safety rule.",
+    "If safety blocks the requested action, report the exact blocker and the safe next action instead of idling.",
+    "For Bookforge Lab agents: you may read, write, and modify code, prompts, tests, reports, and local documentation inside /Users/begilhan/Bookforge V2 PublicationForge, and you may run terminal commands needed to test those changes. This is explicit standing permission for Bookforge code/prompt improvement work.",
+    "Bookforge Lab permission does not by itself authorize deleting manuscript work, exposing secrets, clearing quality holds, resuming paid Bookforge generation, or starting uncontrolled agent/recovery loops. Verify live state first and keep those higher-impact actions gated by Bookforge Steward/user approval.",
+    "Avoid shell patterns that trigger interactive safety prompts in non-interactive Paperclip runs when an equally safe alternative exists, especially `curl | python`, `curl | sh`, or piping downloaded/API output directly into an interpreter. Use Python urllib/request code, separate fetch-then-parse steps, or built-in Hermes tools so the run can finish and post its result.",
+  ].join("\n");
+
+  const sections = [
+    input.authGuardPrompt,
+    paperclipAssignmentPrompt,
+    taskMarkdown ? `Paperclip task context:\n${taskMarkdown}` : "",
+    wakePayloadJson ? `Paperclip wake payload JSON:\n${wakePayloadJson}` : "",
+    continuationBody ? `Paperclip continuation summary:\n${continuationBody}` : "",
+    sessionHandoff ? `Paperclip session handoff:\n${sessionHandoff}` : "",
+    externalInstructions,
+    input.existingPromptTemplate,
+  ].filter((section) => section.trim().length > 0);
+
+  return sections.join("\n\n");
+}
+
 function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
   const config =
     ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
@@ -220,6 +346,72 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
     ...prefixAdapterModelLabels(claude, "Claude"),
     ...prefixAdapterModelLabels(codex, "Codex"),
   ]);
+}
+
+const BOOKFORGE_LAB_COMPANY_ID = "2925a47a-961a-4212-8b36-ce711e2f6ec0";
+const BOOKFORGE_REPO_PATH = "/Users/begilhan/Bookforge V2 PublicationForge";
+const BOOKFORGE_DEFAULT_TOOLSETS = "terminal,file,skills,session_search";
+const BOOKFORGE_DEFAULT_TIMEOUT_SEC = 900;
+const BOOKFORGE_DEFAULT_MAX_TURNS = 40;
+
+function isBookforgeLabHermesRun(ctx: { agent?: unknown }): boolean {
+  const agent =
+    ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
+      ? (ctx.agent as Record<string, unknown>)
+      : null;
+  if (!agent) return false;
+  const companyId = typeof agent.companyId === "string" ? agent.companyId : "";
+  const name = typeof agent.name === "string" ? agent.name : "";
+  return companyId === BOOKFORGE_LAB_COMPANY_ID || name.toLowerCase().includes("bookforge");
+}
+
+function readHermesBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return null;
+}
+
+function mergeHermesExtraArgs(existing: unknown, requiredArgs: string[]): string[] {
+  const current = readHermesStringList(existing);
+  const seen = new Set(current);
+  for (const arg of requiredArgs) {
+    if (!seen.has(arg)) {
+      current.push(arg);
+      seen.add(arg);
+    }
+  }
+  return current;
+}
+
+function applyBookforgeCodeAccessDefaults(config: Record<string, unknown>): Record<string, unknown> {
+  if (readHermesBoolean(config.bookforgeCodeAccess) === false) return config;
+  const env =
+    typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+      ? (config.env as Record<string, string>)
+      : {};
+
+  return {
+    ...config,
+    cwd: readHermesString(config.cwd) || BOOKFORGE_REPO_PATH,
+    toolsets:
+      readHermesString(config.toolsets)
+        || (readHermesStringList(config.enabledToolsets).length > 0 ? config.toolsets : BOOKFORGE_DEFAULT_TOOLSETS),
+    timeoutSec:
+      typeof config.timeoutSec === "number" && config.timeoutSec > 0 ? config.timeoutSec : BOOKFORGE_DEFAULT_TIMEOUT_SEC,
+    maxTurnsPerRun:
+      typeof config.maxTurnsPerRun === "number" && config.maxTurnsPerRun > 0
+        ? config.maxTurnsPerRun
+        : BOOKFORGE_DEFAULT_MAX_TURNS,
+    extraArgs: mergeHermesExtraArgs(config.extraArgs, ["--yolo"]),
+    env: {
+      ...env,
+      HERMES_YOLO_MODE: env.HERMES_YOLO_MODE ?? "1",
+    },
+  };
 }
 
 const claudeLocalAdapter: ServerAdapterModule = {
@@ -381,9 +573,21 @@ const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
+    const baseConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    const existingConfig = isBookforgeLabHermesRun(normalizedCtx)
+      ? applyBookforgeCodeAccessDefaults(baseConfig)
+      : baseConfig;
 
-    const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    if (!normalizedCtx.authToken) {
+      return executeHermesLocal({
+        ...normalizedCtx,
+        agent: {
+          ...normalizedCtx.agent,
+          adapterConfig: existingConfig,
+        },
+      });
+    }
+
     const existingEnv =
       typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
         ? (existingConfig.env as Record<string, string>)
@@ -394,6 +598,10 @@ const hermesLocalAdapter: ServerAdapterModule = {
       typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0
         ? existingConfig.promptTemplate
         : "";
+    const context =
+      normalizedCtx.context && typeof normalizedCtx.context === "object"
+        ? (normalizedCtx.context as Record<string, unknown>)
+        : {};
     const authGuardPrompt = [
       "Paperclip API safety rule:",
       "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
@@ -408,14 +616,13 @@ const hermesLocalAdapter: ServerAdapterModule = {
         ...(!explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
       },
+      promptTemplate: await buildHermesPaperclipPromptTemplate({
+        authGuardPrompt,
+        existingPromptTemplate: promptTemplate,
+        context,
+        config: existingConfig,
+      }),
     };
-
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
-    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
-    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
-    if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
-    }
 
     const patchedCtx = {
       ...normalizedCtx,
