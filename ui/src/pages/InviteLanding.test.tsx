@@ -41,6 +41,17 @@ vi.mock("../api/companies", () => ({
   companiesApi: {
     list: () => listCompaniesMock(),
   },
+  fetchCompanyListWithAuth: async () => {
+    try {
+      return { companies: await listCompaniesMock(), unauthorized: false };
+    } catch (err) {
+      const status = (err as { status?: unknown })?.status;
+      if (status === 401) {
+        return { companies: [], unauthorized: true };
+      }
+      throw err;
+    }
+  },
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -558,7 +569,7 @@ describe("InviteLandingPage", () => {
     });
   });
 
-  it("accepts signed-in human invites when the companies response uses the wrapped shape", async () => {
+  it("accepts signed-in human invites without colliding with the shared CompanyContext cache shape", async () => {
     getSessionMock.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: {
@@ -568,7 +579,7 @@ describe("InviteLandingPage", () => {
         image: null,
       },
     });
-    listCompaniesMock.mockResolvedValue({ companies: [] });
+    listCompaniesMock.mockResolvedValue([]);
     acceptInviteMock.mockResolvedValue({
       id: "join-1",
       companyId: "company-1",
@@ -598,6 +609,8 @@ describe("InviteLandingPage", () => {
 
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(container.textContent).toContain("Request to join Acme Robotics");
+    const cached = queryClient.getQueryData(["companies"]);
+    expect(cached).toEqual({ companies: [], unauthorized: false });
 
     await act(async () => {
       root.unmount();

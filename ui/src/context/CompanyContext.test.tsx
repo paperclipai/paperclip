@@ -20,6 +20,10 @@ const mockCompaniesApi = vi.hoisted(() => ({
 
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
+  fetchCompanyListWithAuth: async () => ({
+    companies: await mockCompaniesApi.list(),
+    unauthorized: false,
+  }),
 }));
 
 const activeCompany = { id: "company-1" };

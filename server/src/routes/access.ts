@@ -3497,7 +3497,11 @@ export function accessRoutes(
       }
 
       let autoApprovedJoinRequest = false;
-      const requestingUserId = created.requestingUserId;
+      const requestingUserId =
+        req.actor.userId &&
+        created.requestingUserId === req.actor.userId
+          ? req.actor.userId
+          : null;
 
       if (
         requestType === "human" &&

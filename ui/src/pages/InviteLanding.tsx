@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
-import type { AgentAdapterType, Company, JoinRequest } from "@paperclipai/shared";
+import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { companiesApi } from "../api/companies";
+import {
+  fetchCompanyListWithAuth,
+  type CompanyListResult,
+} from "../api/companies";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
@@ -35,13 +38,6 @@ function readNestedString(value: unknown, path: string[]): string | null {
     current = (current as Record<string, unknown>)[segment];
   }
   return typeof current === "string" && current.trim().length > 0 ? current : null;
-}
-
-function normalizeCompaniesResponse(value: unknown): Company[] {
-  if (Array.isArray(value)) return value as Company[];
-  if (!value || typeof value !== "object") return [];
-  const companies = (value as { companies?: unknown }).companies;
-  return Array.isArray(companies) ? (companies as Company[]) : [];
 }
 
 const fieldClassName =
@@ -254,15 +250,15 @@ export function InviteLandingPage() {
     retry: false,
   });
 
-  const companiesQuery = useQuery({
+  const companiesQuery = useQuery<CompanyListResult>({
     queryKey: queryKeys.companies.all,
-    queryFn: () => companiesApi.list(),
+    queryFn: fetchCompanyListWithAuth,
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
     retry: false,
   });
 
   const companies = useMemo(
-    () => normalizeCompaniesResponse(companiesQuery.data),
+    () => companiesQuery.data?.companies ?? [],
     [companiesQuery.data],
   );
 
@@ -385,13 +381,12 @@ export function InviteLandingPage() {
       setAuthFeedback(null);
       rememberPendingInviteToken(token);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      const fetchedCompanies = normalizeCompaniesResponse(
-        await queryClient.fetchQuery({
-          queryKey: queryKeys.companies.all,
-          queryFn: () => companiesApi.list(),
-          retry: false,
-        }),
-      );
+      const fetchedResult = await queryClient.fetchQuery<CompanyListResult>({
+        queryKey: queryKeys.companies.all,
+        queryFn: fetchCompanyListWithAuth,
+        retry: false,
+      });
+      const fetchedCompanies = fetchedResult.companies;
 
       if (invite?.companyId && fetchedCompanies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);

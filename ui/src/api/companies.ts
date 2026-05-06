@@ -9,9 +9,11 @@ import type {
   CompanyPortabilityPreviewResult,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { ApiError, api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
+
+export type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
@@ -59,3 +61,14 @@ export const companiesApi = {
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
 };
+
+export async function fetchCompanyListWithAuth(): Promise<CompanyListResult> {
+  try {
+    return { companies: await companiesApi.list(), unauthorized: false };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      return { companies: [], unauthorized: true };
+    }
+    throw err;
+  }
+}
