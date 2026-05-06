@@ -96,3 +96,32 @@ export function trackErrorHandlerCrash(
 ): void {
   client.track("error.handler_crash", { error_code: dims.errorCode });
 }
+
+export function trackAdapterFailureCount(
+  client: TelemetryClient,
+  dims: { agentId: string; count: number },
+): void {
+  client.track("agent.adapter_failure.consecutive_count", {
+    agent_id: dims.agentId,
+    count: dims.count,
+  });
+}
+
+export function trackAdapterFailureAutoIssueCreated(
+  client: TelemetryClient,
+  dims: { agentId: string; provider: string },
+): void {
+  client.track("agent.adapter_failure.auto_issue_created", {
+    agent_id: dims.agentId,
+    provider: dims.provider,
+  });
+}
+
+export function trackAdapterFailureAutoIssueClosed(
+  client: TelemetryClient,
+  dims: { agentId: string },
+): void {
+  client.track("agent.adapter_failure.auto_issue_closed", {
+    agent_id: dims.agentId,
+  });
+}

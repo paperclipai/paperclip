@@ -65,6 +65,7 @@ export const issues = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
+    idempotencyKey: text("idempotency_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -135,6 +136,17 @@ export const issues = pgTable(
       .on(table.companyId, table.originKind, table.originId)
       .where(
         sql`${table.originKind} = 'stranded_issue_recovery'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    adapterFailureIdempotencyIdx: uniqueIndex("issues_adapter_failure_idempotency_uq")
+      .on(table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'auto-adapter-failure:%'`),
+    activeAdapterFailureIdx: uniqueIndex("issues_active_adapter_failure_uq")
+      .on(table.companyId, table.originKind, table.originId, table.originFingerprint)
+      .where(
+        sql`${table.originKind} = 'adapter_failure'
           and ${table.originId} is not null
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,

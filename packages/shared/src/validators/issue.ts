@@ -517,10 +517,11 @@ export const requestConfirmationPayloadSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "agent_expired"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  note: z.string().trim().max(4000).nullable().optional(),
 });
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
@@ -585,6 +586,11 @@ export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
+
+export const expireIssueThreadInteractionSchema = z.object({
+  note: z.string().trim().max(4000).optional(),
+});
+export type ExpireIssueThreadInteraction = z.infer<typeof expireIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
