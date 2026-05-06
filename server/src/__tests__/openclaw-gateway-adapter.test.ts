@@ -412,6 +412,7 @@ describe("openclaw gateway adapter execute", () => {
               message: "wake now",
             },
             waitTimeoutMs: 2000,
+            includePaperclipPayload: true,
           },
           {
             onLog: async (_stream, chunk) => {

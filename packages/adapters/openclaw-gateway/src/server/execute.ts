@@ -1139,13 +1139,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  // paperclipPayload is used internally for logging and adapter context,
-  // but must not be sent in agentParams — OpenClaw's AgentParamsSchema
-  // enforces additionalProperties: false and rejects unknown fields.
-
-  if (parseBoolean(ctx.config.includePaperclipPayload, false)) {
-    agentParams.paperclip = paperclipPayload;
-  }
+  agentParams.paperclip = paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
@@ -1319,7 +1313,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
+      // When a gateway enforces strict schema validation (e.g., OpenClaw's
+      // additionalProperties: false), the adapter-internal `paperclip` field on
+      // agentParams causes immediate rejection.  Strip it from the wire payload
+      // unless the operator has opted in via `includePaperclipPayload`.
+      // The wake context is already embedded in the message text for LLM
+      // consumption, so no information is lost on the wire.
+      const wireParams = { ...agentParams };
+      if (!parseBoolean(ctx.config.includePaperclipPayload, false)) {
+        delete wireParams.paperclip;
+      }
+      const acceptedPayload = await client.request<Record<string, unknown>>("agent", wireParams, {
         timeoutMs: connectTimeoutMs,
       });
 
