@@ -1141,10 +1141,11 @@ TIKTOK_OPEN_ID=${openId}
   });
 
   // ── Fix trading agent scripts in DiscontrolsBags ────────────────────────────
-  // Usage: GET /api/internal/fix-trading-scripts?secret=<ADMIN_SECRET>
+  // Usage: GET /api/internal/fix-trading-scripts?secret=<first-16-chars-BETTER_AUTH_SECRET>
   app.get("/api/internal/fix-trading-scripts", async (req, res) => {
     const secret = (req.query.secret as string) ?? "";
-    if (!secret || secret !== (process.env.ADMIN_SECRET ?? "")) {
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
       res.status(403).json({ error: "forbidden" }); return;
     }
     const TRADING_COMPANY_ID = "866b74e7-79a7-4166-9f9f-025faa751aa1";
