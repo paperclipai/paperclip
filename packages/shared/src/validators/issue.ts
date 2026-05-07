@@ -173,7 +173,48 @@ const issueRequestDepthInputSchema = z
   .nonnegative()
   .transform((value) => clampIssueRequestDepth(value));
 
-export const createIssueSchema = z.object({
+type IssueCreateStatusDefaultInput = {
+  status?: unknown;
+  assigneeAgentId?: unknown;
+  assigneeUserId?: unknown;
+};
+
+export function resolveCreateIssueStatusDefault(input: IssueCreateStatusDefaultInput): {
+  status: (typeof ISSUE_STATUSES)[number];
+  defaulted: boolean;
+  reason: "explicit" | "assigned_omitted_status" | "unassigned_omitted_status";
+} {
+  if (typeof input.status === "string") {
+    return {
+      status: input.status as (typeof ISSUE_STATUSES)[number],
+      defaulted: false,
+      reason: "explicit",
+    };
+  }
+
+  const hasAssignee =
+    (typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0)
+    || (typeof input.assigneeUserId === "string" && input.assigneeUserId.length > 0);
+  return {
+    status: hasAssignee ? "todo" : "backlog",
+    defaulted: true,
+    reason: hasAssignee ? "assigned_omitted_status" : "unassigned_omitted_status",
+  };
+}
+
+function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
+  return z.preprocess((input) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const raw = input as Record<string, unknown>;
+    if (raw.status !== undefined) return input;
+    return {
+      ...raw,
+      status: resolveCreateIssueStatusDefault(raw).status,
+    };
+  }, schema);
+}
+
+const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -182,7 +223,7 @@ export const createIssueSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
@@ -197,9 +238,15 @@ export const createIssueSchema = z.object({
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
+export const createIssueInputSchema = createIssueBaseSchema.extend({
+  status: createIssueBaseSchema.shape.status.optional(),
+});
+
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
-export const createChildIssueSchema = createIssueSchema
+export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
   .omit({
     parentId: true,
     inheritExecutionWorkspaceFromIssueId: true,
@@ -207,7 +254,7 @@ export const createChildIssueSchema = createIssueSchema
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  });
+  }));
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -218,7 +265,7 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
