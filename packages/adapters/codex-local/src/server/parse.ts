@@ -10,6 +10,8 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+const CODEX_REFRESH_TOKEN_REUSE_RE =
+  /(?:access\s+token\s+could\s+not\s+be\s+refreshed[^.\n]*refresh\s+token[^.\n]*already\s+used|refresh\s+token\s+(?:was|has\s+been)?\s*already\s+used)/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -258,4 +260,13 @@ export function isCodexTransientUpstreamError(input: {
   // failure shape, plus explicit usage-limit windows that tell us when retrying
   // becomes safe again.
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
+}
+
+export function isCodexRefreshTokenReuseError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildCodexErrorHaystack(input);
+  return CODEX_REFRESH_TOKEN_REUSE_RE.test(haystack);
 }

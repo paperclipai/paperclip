@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexRetryNotBefore,
+  isCodexRefreshTokenReuseError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -134,6 +135,47 @@ describe("isCodexTransientUpstreamError", () => {
           "  }",
           "}",
         ].join("\n"),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isCodexRefreshTokenReuseError", () => {
+  it("matches the canonical Codex CLI refresh-reuse error", () => {
+    expect(
+      isCodexRefreshTokenReuseError({
+        errorMessage:
+          "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+      }),
+    ).toBe(true);
+  });
+
+  it("matches when the error appears in stderr", () => {
+    expect(
+      isCodexRefreshTokenReuseError({
+        stderr:
+          "stream error: Your access token could not be refreshed because your refresh token was already used.",
+      }),
+    ).toBe(true);
+  });
+
+  it("matches looser wordings that still indicate reuse", () => {
+    expect(
+      isCodexRefreshTokenReuseError({
+        errorMessage: "refresh token already used",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify unrelated auth errors as reuse", () => {
+    expect(
+      isCodexRefreshTokenReuseError({
+        errorMessage: "401 Unauthorized: invalid signature",
+      }),
+    ).toBe(false);
+    expect(
+      isCodexRefreshTokenReuseError({
+        errorMessage: "Please log out and sign in again",
       }),
     ).toBe(false);
   });
