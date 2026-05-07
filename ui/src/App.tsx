@@ -45,6 +45,9 @@ import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
+import { SandboxLanding } from "./pages/SandboxLanding";
+import { SandboxSpinup } from "./pages/SandboxSpinup";
+import { SandboxLiveView } from "./pages/SandboxLiveView";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -315,6 +318,9 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route path="sandbox" element={<SandboxLanding />} />
+        <Route path="sandbox/spinup" element={<SandboxSpinup />} />
+        <Route path="sandbox/live" element={<SandboxLiveView />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
