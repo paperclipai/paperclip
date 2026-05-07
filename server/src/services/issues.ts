@@ -264,7 +264,7 @@ function stripJsonUnsafeAscii(value: string): string {
 function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
   if (value == null) return null;
   const decoded = Buffer.from(value, "base64").toString("utf8");
-  return stripJsonUnsafeAscii(truncateByCodePoint(decoded, maxChars));
+  return truncateByCodePoint(stripJsonUnsafeAscii(decoded), maxChars);
 }
 
 function appendAcceptanceCriteriaToDescription(description: string | null | undefined, acceptanceCriteria: string[] | undefined) {

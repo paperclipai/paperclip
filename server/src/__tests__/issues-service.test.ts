@@ -1249,6 +1249,36 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(() => JSON.parse(serialized)).not.toThrow();
     expect(serialized).not.toMatch(/[\x00-\x1F]/);
   });
+
+  it("strips control bytes before truncation so the preview fills the visible budget", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    // 400 stripped control bytes followed by 1300 visible chars. With strip-then-truncate
+    // the preview is the first 1200 visible chars; with truncate-then-strip it would be
+    // ~800 visible chars (control bytes wasted budget).
+    const description = "\x07".repeat(400) + "v".repeat(1300);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Budget-fill issue",
+      description,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId);
+
+    expect(result?.description).toHaveLength(1200);
+    expect(result?.description).toBe("v".repeat(1200));
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
