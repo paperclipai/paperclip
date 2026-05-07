@@ -26,6 +26,8 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { EmbeddedPostgres } from "./embedded-postgres.js";
+import { prepareEmbeddedPostgresDataDir } from "./embedded-postgres-dir.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
