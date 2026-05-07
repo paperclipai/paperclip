@@ -262,8 +262,20 @@ const providerWindowRows: Record<string, CostWindowSpendRow[]> = {
 
 const claudeQuotaWindows: QuotaWindow[] = [
   { label: "Current session", usedPercent: 46, resetsAt: at(-180).toISOString(), valueLabel: null, detail: "Healthy session headroom for review tasks." },
-  { label: "Current week all models", usedPercent: 74, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Warning threshold after the release documentation run." },
-  { label: "Current week Opus only", usedPercent: 92, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Critical model-specific budget: route default work to Sonnet." },
+  { label: "Weekly (all models)", usedPercent: 74, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Warning threshold after the release documentation run." },
+  { label: "Weekly (Sonnet)", usedPercent: 58, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Sonnet-only weekly utilization, separate from the all-models meter." },
+  { label: "Weekly (Opus)", usedPercent: 92, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Critical model-specific budget: route default work to Sonnet." },
+  { label: "Extra usage", usedPercent: null, resetsAt: null, valueLabel: "$18.40 overage", detail: "Overage billing is enabled for board-approved release checks." },
+];
+
+// Mirrors the live payload when Anthropic's `/usage` response omits
+// `seven_day_sonnet` (e.g. plan tier without Sonnet utilization metering).
+// The Sonnet row is intentionally absent — verifies the panel degrades cleanly
+// rather than synthesizing a 0%/empty row. See TES-82 punch list item #4.
+const claudeQuotaWindowsNoSonnet: QuotaWindow[] = [
+  { label: "Current session", usedPercent: 46, resetsAt: at(-180).toISOString(), valueLabel: null, detail: "Healthy session headroom for review tasks." },
+  { label: "Weekly (all models)", usedPercent: 74, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Warning threshold after the release documentation run." },
+  { label: "Weekly (Opus)", usedPercent: 92, resetsAt: at(-5_300).toISOString(), valueLabel: null, detail: "Critical model-specific budget: route default work to Sonnet." },
   { label: "Extra usage", usedPercent: null, resetsAt: null, valueLabel: "$18.40 overage", detail: "Overage billing is enabled for board-approved release checks." },
 ];
 
@@ -747,6 +759,11 @@ function BudgetFinanceMatrix() {
               source="codex-wham"
               error="Codex app server is unavailable, so live subscription windows cannot be refreshed."
             />
+          </div>
+          {/* Plan tier without Sonnet metering — the Sonnet row should not render
+              when `seven_day_sonnet` is absent from the upstream payload. */}
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
+            <ClaudeSubscriptionPanel windows={claudeQuotaWindowsNoSonnet} source="anthropic-oauth" />
           </div>
         </Section>
       </main>
