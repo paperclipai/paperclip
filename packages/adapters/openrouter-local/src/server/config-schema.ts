@@ -82,7 +82,7 @@ export async function getConfigSchema(): Promise<AdapterConfigSchema> {
       {
         key: "autoApprove",
         label: "Auto-approve",
-        type: "boolean",
+        type: "toggle",
         default: false,
         hint: "Skip approval for governed operations.",
       },

@@ -17,6 +17,7 @@ import {
 
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
+export { listModels, refreshModels, detectModel } from "./models.js";
 export { getConfigSchema } from "./config-schema.js";
 export {
   loadInstructionFragments,
