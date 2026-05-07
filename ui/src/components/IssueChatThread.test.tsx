@@ -295,16 +295,19 @@ function createFileDragEvent(type: string, files: File[]) {
 
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
+  const originalDocumentElementScrollIntoView = document.documentElement.scrollIntoView;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     window.scrollTo = vi.fn();
+    document.documentElement.scrollIntoView = vi.fn() as unknown as typeof document.documentElement.scrollIntoView;
     localStorage.clear();
   });
 
   afterEach(() => {
     container.remove();
+    document.documentElement.scrollIntoView = originalDocumentElementScrollIntoView;
     vi.useRealTimers();
     appendMock.mockReset();
     markdownEditorFocusMock.mockReset();
@@ -327,6 +330,7 @@ describe("IssueChatThread", () => {
             liveRuns={[]}
             onAdd={async () => {}}
             showComposer={false}
+            newestFirst
             enableLiveTranscriptPolling={false}
           />
         </MemoryRouter>,
@@ -350,6 +354,71 @@ describe("IssueChatThread", () => {
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
     expect(viewport?.className).not.toContain("max-h-[70vh]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("defaults to oldest-first rendering and jump placement", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-older",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Older comment",
+                authorType: "agent",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-newer",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Newer comment",
+                authorType: "agent",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const rows = Array.from(container.querySelectorAll('[data-testid="issue-chat-message-row"]'));
+    expect(rows[0]?.textContent).toContain("Older comment");
+    expect(rows[1]?.textContent).toContain("Newer comment");
+
+    const threadRoot = container.querySelector('[data-testid="thread-root"]');
+    const jumpButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    );
+    expect(threadRoot).not.toBeNull();
+    expect(jumpButton).toBeDefined();
+    expect(
+      threadRoot?.compareDocumentPosition(jumpButton!),
+    ).toBe(Node.DOCUMENT_POSITION_PRECEDING);
 
     act(() => {
       root.unmount();
@@ -1004,6 +1073,7 @@ describe("IssueChatThread", () => {
           agentMap={issueChatLongThreadAgentMap}
           currentUserId="user-board"
           onAdd={async () => {}}
+          newestFirst
           enableLiveTranscriptPolling={false}
           onRefreshLatestComments={async () => {
             setComments([olderComment, latestComment]);
@@ -1803,6 +1873,7 @@ describe("IssueChatThread", () => {
             liveRuns={[]}
             onAdd={async () => {}}
             showComposer={false}
+            newestFirst
             enableLiveTranscriptPolling={false}
           />
         </MemoryRouter>,

@@ -2668,6 +2668,20 @@ function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: st
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
 
+function findLatestMessageByRole(
+  messages: readonly ThreadMessage[],
+  role: ThreadMessage["role"],
+  newestFirst: boolean,
+): ThreadMessage | undefined {
+  if (newestFirst) {
+    return messages.find((message) => message.role === role);
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === role) return messages[index];
+  }
+  return undefined;
+}
+
 export function findLatestCommentMessageIndex(
   messages: readonly ThreadMessage[],
   newestFirst = true,
@@ -2952,8 +2966,8 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     },
     scrollToLatest: (options) => {
       if (messages.length === 0) return;
-      virtualizer.scrollToIndex(0, {
-        align: "start",
+      virtualizer.scrollToIndex(messages.length - 1, {
+        align: "end",
         behavior: options?.behavior ?? "smooth",
       });
     },
@@ -3675,7 +3689,7 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
-  newestFirst = true,
+  newestFirst = false,
   emptyMessage,
   variant = "full",
   enableLiveTranscriptPolling = true,
@@ -3888,7 +3902,7 @@ export function IssueChatThread({
   });
 
   useEffect(() => {
-    const latestUserMessage = messages.find((m) => m.role === "user");
+    const latestUserMessage = findLatestMessageByRole(messages, "user", newestFirst);
     const latestUserId = latestUserMessage?.id ?? null;
 
     if (
@@ -3907,7 +3921,7 @@ export function IssueChatThread({
     }
 
     lastUserMessageIdRef.current = latestUserId;
-  }, [messageAnchorIndex, messages, useVirtualizedThread]);
+  }, [messageAnchorIndex, messages, newestFirst, useVirtualizedThread]);
   useLayoutEffect(() => {
     const composerElement = composerViewportAnchorRef.current;
     if (preserveComposerViewportRef.current) {
