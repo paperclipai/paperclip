@@ -794,7 +794,11 @@
     "stop_reason_process_lost": "process lost",
     "stop_reason_adapter_failed": "adapter failed",
     "stop_reason_completed": "completed",
-    "stop_reason_completed_with_duration": "completed ({{duration}})"
+    "stop_reason_completed_with_duration": "completed ({{duration}})",
+    "model_profile_requested": "Requested: {{model}}",
+    "model_profile_applied": "Applied: {{model}}",
+    "model_profile_source": "Source: {{source}}",
+    "model_profile_fallback": "Fallback: {{reason}}"
   },
   "interaction": {
     "unknown": "Unknown",

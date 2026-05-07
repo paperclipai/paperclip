@@ -203,11 +203,11 @@ function modelProfileBadgeTone(summary: ModelProfileSummary) {
   return "border-border bg-background text-muted-foreground";
 }
 
-function modelProfileTitle(summary: ModelProfileSummary) {
-  const lines = [`Requested: ${summary.requested}`];
-  if (summary.applied) lines.push(`Applied: ${summary.applied}`);
-  if (summary.configSource) lines.push(`Source: ${summary.configSource}`);
-  if (summary.fallbackReason) lines.push(`Fallback: ${summary.fallbackReason}`);
+function modelProfileTitle(summary: ModelProfileSummary, t: TFunc) {
+  const lines = [t("ledger.model_profile_requested", { model: summary.requested })];
+  if (summary.applied) lines.push(t("ledger.model_profile_applied", { model: summary.applied }));
+  if (summary.configSource) lines.push(t("ledger.model_profile_source", { source: summary.configSource }));
+  if (summary.fallbackReason) lines.push(t("ledger.model_profile_fallback", { reason: summary.fallbackReason }));
   return lines.join("\n");
 }
 
@@ -319,7 +319,7 @@ function stopReasonLabel(run: RunForIssue, t: TFunc) {
   const timeoutFired = result?.timeoutFired === true;
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);
   const timeoutText =
-    effectiveTimeoutSec && effectiveTimeoutSec > 0 ? `${effectiveTimeoutSec}s timeout` : null;
+    effectiveTimeoutSec && effectiveTimeoutSec > 0 ? `${effectiveTimeoutSec}s` : null;
 
   if (timeoutFired || stopReason === "timeout") {
     return timeoutText
@@ -785,7 +785,7 @@ export function IssueRunLedgerContent({
                           "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
                           modelProfileBadgeTone(profile),
                         )}
-                        title={modelProfileTitle(profile)}
+                        title={modelProfileTitle(profile, t)}
                       >
                         {label}
                       </span>

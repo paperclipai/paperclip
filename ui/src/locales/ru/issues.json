@@ -812,7 +812,11 @@
     "stop_reason_process_lost": "процесс потерян",
     "stop_reason_adapter_failed": "ошибка адаптера",
     "stop_reason_completed": "завершено",
-    "stop_reason_completed_with_duration": "завершено ({{duration}})"
+    "stop_reason_completed_with_duration": "завершено ({{duration}})",
+    "model_profile_requested": "Запрошено: {{model}}",
+    "model_profile_applied": "Применено: {{model}}",
+    "model_profile_source": "Источник: {{source}}",
+    "model_profile_fallback": "Откат: {{reason}}"
   },
   "interaction": {
     "unknown": "Неизвестно",
