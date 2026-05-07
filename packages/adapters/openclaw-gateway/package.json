@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "workspace:*",
+    "google-auth-library": "^9.0.0",
     "picocolors": "^1.1.1",
     "ws": "^8.19.0"
   },
