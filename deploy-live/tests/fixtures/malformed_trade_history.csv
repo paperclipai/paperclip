@@ -1,0 +1,3 @@
+symbol,exchange_a,exchange_b,side_a,side_b,size_usd_a,size_usd_b,entry_spread_pct,exit_spread_pct,opened_at_ms,closed_at_ms,realized_pnl_usd
+BAD,MEXC,BLOFIN,buy,sell,not-a-number,25.0,0.01,0.001,1,2,0.0
+GOOD,OKX,MEXC,buy,sell,25.0,25.0,0.01,0.001,3,4,0.30
