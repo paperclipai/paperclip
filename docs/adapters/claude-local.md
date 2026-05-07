@@ -22,6 +22,45 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `mcpServers` | object | No | Per-agent MCP server definitions; mirrors Claude Code's `.claude.json` shape (see below) |
+
+## `mcpServers`
+
+Per-agent MCP server definitions, mirroring the `mcpServers` shape from Claude Code's `.claude.json`. Three transports are supported: `stdio`, `sse`, `http`. Both `env` (stdio) and `headers` (sse/http) accept the same binding shapes as top-level `env`: a plain string, `{ "type": "plain", "value": "…" }`, or `{ "type": "secret_ref", "secretId": "…", "version": "latest" | <number> }`.
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "type": "stdio",
+      "command": "mcp-linear",
+      "args": [],
+      "env": {
+        "LINEAR_API_KEY": {
+          "type": "secret_ref",
+          "secretId": "<uuid>",
+          "version": "latest"
+        }
+      }
+    },
+    "remote-search": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": {
+          "type": "secret_ref",
+          "secretId": "<uuid>",
+          "version": "latest"
+        }
+      }
+    }
+  }
+}
+```
+
+At spawn time the adapter resolves any `secret_ref` bindings via `secretService.resolveAdapterConfigForRuntime`, writes the fully-resolved config to `<runDir>/mcp-config.json` (mode `0600`), and passes `--mcp-config <path>` to the `claude` CLI. Per-run cleanup removes the file along with the rest of the run dir.
+
+Remote execution targets currently log a warning and skip MCP propagation: stdio MCP binaries (e.g. `mcp-linear`) would need to exist on the remote host. Use HTTP/SSE transports if you need remote MCPs in the future.
 
 ## Prompt Templates
 
