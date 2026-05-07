@@ -107,6 +107,7 @@ export {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  agentRuntimeConfigSchema,
   agentInstructionsBundleModeSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
@@ -156,6 +157,11 @@ export {
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
+  issueCommentAuthorTypeSchema,
+  issueCommentPresentationSchema,
+  issueCommentMetadataRowSchema,
+  issueCommentMetadataSectionSchema,
+  issueCommentMetadataSchema,
   addIssueCommentSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
@@ -177,6 +183,7 @@ export {
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
+  cancelIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   linkIssueApprovalSchema,
   createIssueAttachmentMetadataSchema,
@@ -194,6 +201,7 @@ export {
   type CreateIssueThreadInteraction,
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
+  type CancelIssueThreadInteraction,
   type RespondIssueThreadInteraction,
   type LinkIssueApproval,
   type CreateIssueAttachmentMetadata,
@@ -201,6 +209,16 @@ export {
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
 } from "./issue.js";
+
+export {
+  COMPANY_SEARCH_DEFAULT_LIMIT,
+  COMPANY_SEARCH_MAX_LIMIT,
+  COMPANY_SEARCH_MAX_OFFSET,
+  COMPANY_SEARCH_MAX_QUERY_LENGTH,
+  COMPANY_SEARCH_MAX_TOKENS,
+  companySearchQuerySchema,
+  type CompanySearchQuery,
+} from "./search.js";
 
 export {
   createIssueTreeHoldSchema,
@@ -275,6 +293,10 @@ export {
   createRoutineTriggerSchema,
   updateRoutineTriggerSchema,
   routineVariableSchema,
+  routineRevisionSnapshotRoutineV1Schema,
+  routineRevisionSnapshotTriggerV1Schema,
+  routineRevisionSnapshotV1Schema,
+  routineRevisionSnapshotSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   type CreateRoutine,

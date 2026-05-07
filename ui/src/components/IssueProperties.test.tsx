@@ -162,6 +162,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:05:00.000Z"),
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -476,6 +477,59 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("removes a blocked-by issue from the chip remove action after confirmation", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        blockedBy: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "Existing blocker",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+          {
+            id: "issue-4",
+            identifier: "PAP-4",
+            title: "Keep blocker",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const removeButton = container.querySelector('button[aria-label="Remove PAP-2 as blocker"]');
+    expect(removeButton).not.toBeNull();
+
+    await act(async () => {
+      removeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this issue.");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Remove blocker"));
+    expect(confirmButton).not.toBeUndefined();
+
+    await act(async () => {
+      confirmButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-4"] });
+
+    act(() => root.unmount());
+  });
+
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
@@ -505,6 +559,25 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows full date and time for issue metadata timestamps", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdAt: new Date(2026, 3, 6, 12, 34),
+        startedAt: new Date(2026, 3, 6, 12, 35),
+        completedAt: new Date(2026, 3, 6, 12, 36),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toMatch(/CreatedApr 6, 2026, \d{1,2}:34 (AM|PM)/);
+    expect(container.textContent).toMatch(/StartedApr 6, 2026, \d{1,2}:35 (AM|PM)/);
+    expect(container.textContent).toMatch(/CompletedApr 6, 2026, \d{1,2}:36 (AM|PM)/);
+
+    act(() => root.unmount());
+  });
+
   it("shows a workspace tasks link for non-default workspaces when isolated workspaces are enabled", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
@@ -530,7 +603,7 @@ describe("IssueProperties", () => {
       (link) => link.textContent?.trim() === "View workspace",
     );
     expect(tasksLink).not.toBeUndefined();
-    expect(tasksLink?.getAttribute("href")).toBe("/issues?workspace=workspace-1");
+    expect(tasksLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1/issues");
     expect(workspaceLink).not.toBeUndefined();
     expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
 
@@ -966,6 +1039,86 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("Run review now");
     expect(container.textContent).not.toContain("Run approval now");
+
+    act(() => root.unmount());
+  });
+
+  it("renders monitor controls and clears an existing monitor", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+        executionPolicy: createExecutionPolicy({
+          monitor: {
+            nextCheckAt: "2026-04-11T12:30:00.000Z",
+            notes: "Check deployment",
+            scheduledBy: "board",
+          },
+        }),
+        executionState: createExecutionState({
+          status: "idle",
+          currentStageId: null,
+          currentStageIndex: null,
+          currentStageType: null,
+          currentParticipant: null,
+          returnAssignee: null,
+          lastDecisionOutcome: null,
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: "2026-04-11T12:30:00.000Z",
+            lastTriggeredAt: null,
+            attemptCount: 0,
+            notes: "Check deployment",
+            scheduledBy: "board",
+            clearedAt: null,
+            clearReason: null,
+          },
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Monitor");
+    expect(container.textContent).toContain("Next check");
+    expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="What should the agent re-check?"]')).toBeNull();
+
+    const monitorTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Next check"));
+    expect(monitorTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const inputs = Array.from(container.querySelectorAll("input"));
+    const datetimeInput = inputs.find((input) => input.getAttribute("type") === "datetime-local");
+    const textInput = inputs.find((input) => input.getAttribute("placeholder") === "What should the agent re-check?");
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clear"));
+
+    expect(datetimeInput).toBeTruthy();
+    expect(textInput).toBeTruthy();
+    expect(clearButton).toBeTruthy();
+    expect(datetimeInput!.value).toBeTruthy();
+    expect(textInput!.value).toBe("Check deployment");
+
+    act(() => {
+      clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+      },
+    });
 
     act(() => root.unmount());
   });
