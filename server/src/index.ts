@@ -632,6 +632,7 @@ export async function startServer(): Promise<StartedServer> {
   
   const runtimeListenHost = config.host;
   const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+    serverPublicBaseUrl: config.serverPublicBaseUrl ?? null,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
@@ -640,6 +641,7 @@ export async function startServer(): Promise<StartedServer> {
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
+    serverPublicBaseUrl: config.serverPublicBaseUrl ?? null,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
