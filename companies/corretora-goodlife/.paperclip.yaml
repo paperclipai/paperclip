@@ -1,0 +1,29 @@
+schema: paperclip/v1
+agents:
+  cto:
+    inputs:
+      env: {}
+  dev-fullstack:
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: optional
+  pentester:
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: optional
+  designer-ux-ui:
+    inputs:
+      env: {}
+  qa:
+    inputs:
+      env: {}
+  devops:
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: optional

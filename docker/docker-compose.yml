@@ -12,6 +12,8 @@ services:
       retries: 30
     ports:
       - "5432:5432"
+    networks:
+      - ai-ecosystem
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -29,11 +31,22 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      # Definição do diretório de trabalho para o Paperclip processar seu código
+      PROJECT_ROOT: "/src/site-goodlife"
     volumes:
       - paperclip-data:/paperclip
+      # Mapeamento do seu repositório local para dentro do contêiner
+      - D:/TestesIA/site-goodlife:/src/site-goodlife
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - ai-ecosystem
+
+networks:
+  # Rede compartilhada com o compose do site-goodlife
+  ai-ecosystem:
+    external: true
 
 volumes:
   pgdata:
