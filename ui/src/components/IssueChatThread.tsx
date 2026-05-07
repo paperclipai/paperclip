@@ -614,6 +614,33 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
+function IssueChatTimestampLink({
+  anchorId,
+  createdAt,
+  className,
+}: {
+  anchorId?: string;
+  createdAt?: Date | string;
+  className?: string;
+}) {
+  if (!createdAt) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <a
+          href={anchorId ? `#${anchorId}` : undefined}
+          className={cn("text-[11px] text-muted-foreground hover:text-foreground hover:underline", className)}
+        >
+          {commentDateLabel(createdAt)}
+        </a>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="text-xs">
+        {formatDateTime(createdAt)}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
@@ -1285,13 +1312,18 @@ function IssueChatUserMessage({
   );
   const messageBody = (
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
-      <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
+      <div className={cn("mb-1 flex w-full items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
             Follow-up
           </Badge>
         ) : null}
+        <IssueChatTimestampLink
+          anchorId={anchorId}
+          createdAt={message.createdAt}
+          className="shrink-0"
+        />
       </div>
       <div
         className={cn(
@@ -1346,19 +1378,6 @@ function IssueChatUserMessage({
             isCurrentUser ? "justify-end" : "justify-start",
           )}
         >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <a
-                href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-              >
-                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-              </a>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              {message.createdAt ? formatDateTime(message.createdAt) : ""}
-            </TooltipContent>
-          </Tooltip>
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
@@ -1508,19 +1527,26 @@ function IssueChatAssistantMessage({
               </span>
             </button>
           ) : (
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
-              {followUpRequested ? (
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-                  Follow-up
-                </Badge>
-              ) : null}
-              {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
-                </span>
-              ) : null}
+            <div className="mb-1.5 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="text-sm font-medium text-foreground">{authorName}</span>
+                {followUpRequested ? (
+                  <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                    Follow-up
+                  </Badge>
+                ) : null}
+                {isRunning ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Running
+                  </span>
+                ) : null}
+              </div>
+              <IssueChatTimestampLink
+                anchorId={anchorId}
+                createdAt={message.createdAt}
+                className="shrink-0"
+              />
             </div>
           )}
 
@@ -1577,19 +1603,6 @@ function IssueChatAssistantMessage({
                     onVote={handleVote}
                   />
                 ) : null}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <a
-                      href={anchorId ? `#${anchorId}` : undefined}
-                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                    </a>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="text-xs">
-                    {message.createdAt ? formatDateTime(message.createdAt) : ""}
-                  </TooltipContent>
-                </Tooltip>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button

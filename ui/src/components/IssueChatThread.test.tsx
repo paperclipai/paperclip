@@ -1730,6 +1730,49 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders the comment timestamp above the comment body", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-08T12:00:00.000Z"));
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              body: "Agent summary",
+              authorType: "agent",
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    const timestampIndex = text.indexOf("2d ago");
+    expect(timestampIndex).toBeGreaterThanOrEqual(0);
+    expect(timestampIndex).toBeLessThan(text.indexOf("Agent summary"));
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows deferred wake badge only for hold-deferred queued comments", () => {
     const root = createRoot(container);
 
