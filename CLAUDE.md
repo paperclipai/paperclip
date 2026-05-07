@@ -96,3 +96,77 @@ Fix: CSS movido al bloque `<style>`.
 Columnas: `id, created_at, tema, guion, audio_url, video_url, image_urls[], hashtags[], duration_sec, status, platform, issue_id, director_run`
 
 El proxy en `/api/content/videos` expone estos datos sin revelar `SUPABASE_KEY`.
+
+---
+
+## DiscontrolsBags — Pipeline TradingView (rama: feat/bags-chido)
+
+> Trabajo realizado por chido1203 + Claude. PR #2 mergeado a master.
+
+### Qué se hizo
+
+Se eliminó el pipeline de Polymarket y se reemplazó por un sistema de 5 agentes que genera **estrategias de trading algorítmico en Pine Script v5** para TradingView, orientadas a acciones (stocks). El pipeline completo se activa creando un issue en DiscontrolsBags con body `{"ticker": "AAPL", "style": "momentum"}`.
+
+### Archivos del pipeline
+
+```
+agents/trading/
+  ceo.py               ← Orchestrator: crea 5 sub-issues en secuencia
+  stock_analyzer.py    ← Yahoo Finance OHLCV + SMA 20/50/200, ATR 14, volatilidad
+  strategy_designer.py ← LLM (claude-sonnet-4-6) genera Pine Script v5 completo
+  strategy_critic.py   ← LLM (claude-haiku-4-5) revisa lógica, bias, overfitting
+  strategy_optimizer.py← LLM (claude-sonnet-4-6) refina el script con las correcciones
+  reporter.py          ← Formatea output final con guía de uso para TradingView
+  setup.py             ← Crea/actualiza agentes en Paperclip (ejecutar una sola vez)
+```
+
+### IDs de agentes en DiscontrolsBags
+
+```python
+CEO_AGENT_ID             = "41df12d7-71c4-494e-a503-d02ef88fb1d8"  # CEO Strategy Factory
+STOCK_ANALYZER_ID        = "6f75364c-0ab2-48ac-9144-f40578435d67"  # ex Market Scanner
+STRATEGY_DESIGNER_ID     = "ff3e3f5f-118f-451d-b042-91ec19d0cf11"  # ex Probability Estimator
+STRATEGY_CRITIC_ID       = "149be654-dccb-4da3-a6c6-091c5b5fe1e6"  # ex Risk Manager
+STRATEGY_OPTIMIZER_ID    = "61ced466-af5b-43be-a049-e94cf895274a"  # ex Executor
+REPORTER_ID              = "74bc12a4-6928-4450-b472-2962c3516627"  # Reporter
+TRADING_COMPANY          = "866b74e7-79a7-4166-9f9f-025faa751aa1"
+```
+
+Los UUIDs son los mismos agentes Polymarket reutilizados — solo cambia el script que ejecutan (adapterConfig actualizado por Alejandro en la UI).
+
+### Estilos de estrategia soportados
+
+`momentum` · `breakout` · `mean_reversion` · `reversal` · `trend_following` · `scalping`
+
+### Bugs resueltos en esta sesión
+
+| Bug | Causa | Fix |
+|---|---|---|
+| CEO HTTP 500 al crear sub-issues | `run_id` ficticio en JWT violaba FK constraint de `activity_log` | Usar `os.environ["PAPERCLIP_RUN_ID"]` |
+| Sub-issues nunca se despertaban | `status: "backlog"` no lanza agentes | Cambiar a `status: "todo"` |
+| Strategy Optimizer exit code 1 | Description del sub-issue truncada a 4000 chars — el bloque JSON del Critic quedaba cortado | Aumentar límite a 8000 en `ceo.py` + parsing multicapa en `strategy_optimizer.py` |
+| Popcorn Auto creado en Bags | `seed-agents` buscaba agente con `.includes("director")` — matcheaba "Director ejecutivo" de Bags | Cambiar a `.toLowerCase() === "director"` en `app.ts` línea 519 |
+
+### Patrón JWT para agentes Python
+
+```python
+# CRÍTICO: usar PAPERCLIP_RUN_ID del env var (nunca inventar un run_id)
+# activity_log.run_id tiene FK → heartbeat_runs.id
+payload = {
+    "sub":          agent_id,
+    "company_id":   company_id,
+    "adapter_type": "process",
+    "run_id":       os.environ["PAPERCLIP_RUN_ID"],  # real, no ficticio
+    "iat":          now,
+    "exp":          now + 172800,
+    "iss":          "paperclip",
+    "aud":          "paperclip-api",
+}
+```
+
+### Notas de operación
+
+- El CEO usa PATCH 500 que aplica el cambio aunque devuelva error (bug de activity_log con run_id externo). En producción el run_id es real y no hay 500.
+- Para crear un issue de prueba sin permisos de UI: usar la API directamente con JWT del CEO.
+- `POST /api/agents/{agentId}/wakeup` despierta un agente manualmente (requiere JWT del propio agente).
+- El endpoint `seed-agents` es para Studio solamente — para Bags usar `seed-trading-agents`.
