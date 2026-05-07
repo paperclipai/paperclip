@@ -51,6 +51,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
+  agentBrainService: () => ({ getManifest: vi.fn(), readFile: vi.fn() }),
     accessService: () => ({}),
     approvalService: () => ({}),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),

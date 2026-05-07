@@ -4,6 +4,8 @@ export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export { agentBrainService, AGENT_BRAIN_SECTIONS } from "./agent-brain.js";
+export { projectMemoryService } from "./project-memory.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export {

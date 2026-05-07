@@ -40,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
+  projectMemoryService: () => ({ getManifest: vi.fn(), readFile: vi.fn() }),
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
@@ -66,6 +67,7 @@ function registerWorkspaceRouteMocks() {
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
+    projectMemoryService: () => ({ getManifest: vi.fn(), readFile: vi.fn() }),
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
   }));

@@ -13,7 +13,12 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import {
+  projectService,
+  projectMemoryService,
+  logActivity,
+  workspaceOperationService,
+} from "../services/index.js";
 import { conflict, forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
@@ -41,6 +46,7 @@ const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const memory = projectMemoryService();
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
@@ -113,6 +119,29 @@ export function projectRoutes(db: Db) {
     }
     assertCompanyAccess(req, project.companyId);
     res.json(project);
+  });
+
+  router.get("/projects/:id/memory", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    res.json(await memory.getManifest(project));
+  });
+
+  router.get("/projects/:id/memory/file", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    const requestedPath = typeof req.query.path === "string" ? req.query.path : "";
+    res.json(await memory.readFile(project, requestedPath));
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {

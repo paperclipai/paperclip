@@ -38,6 +38,7 @@ vi.mock("../services/index.js", () => ({
   goalService: () => mockGoalService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
+  projectMemoryService: () => ({ getManifest: vi.fn(), readFile: vi.fn() }),
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
@@ -57,6 +58,7 @@ function registerModuleMocks() {
     goalService: () => mockGoalService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
+    projectMemoryService: () => ({ getManifest: vi.fn(), readFile: vi.fn() }),
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
   }));

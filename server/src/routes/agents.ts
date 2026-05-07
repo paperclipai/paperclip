@@ -34,6 +34,7 @@ import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentBrainService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -174,6 +175,7 @@ export function agentRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
+  const brain = agentBrainService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -2384,6 +2386,29 @@ export function agentRoutes(
     }
     await assertCanReadAgent(req, existing);
     res.json(await instructions.getBundle(existing));
+  });
+
+  router.get("/agents/:id/brain", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, existing);
+    res.json(await brain.getManifest(existing));
+  });
+
+  router.get("/agents/:id/brain/file", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, existing);
+    const requestedPath = typeof req.query.path === "string" ? req.query.path : "";
+    res.json(await brain.readFile(existing, requestedPath));
   });
 
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {
