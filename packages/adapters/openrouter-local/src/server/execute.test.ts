@@ -30,6 +30,80 @@ interface ScriptedClient {
   apiKey: string | undefined;
 }
 
+// Builds a client whose create() resolves normally for `firstReplies`, then
+// hangs indefinitely until the AbortSignal fires (throwing AbortError).
+function buildHangingClient(firstReplies: ScriptedReply[]): {
+  factory: NonNullable<Parameters<typeof execute>[1]>["openAiFactory"];
+  capturedRequests: CapturedRequest[];
+} {
+  const capturedRequests: CapturedRequest[] = [];
+  let cursor = 0;
+
+  const factory: NonNullable<Parameters<typeof execute>[1]>["openAiFactory"] = () => {
+    return {
+      chat: {
+        completions: {
+          create: vi.fn(async (req: CapturedRequest & { signal?: AbortSignal }) => {
+            capturedRequests.push(req);
+            const reply = firstReplies[cursor];
+            cursor++;
+            if (reply !== undefined) {
+              const usage = reply.usage
+                ? {
+                    prompt_tokens: reply.usage.prompt_tokens ?? 0,
+                    completion_tokens: reply.usage.completion_tokens ?? 0,
+                    total_tokens:
+                      (reply.usage.prompt_tokens ?? 0) + (reply.usage.completion_tokens ?? 0),
+                    prompt_tokens_details: reply.usage.cached
+                      ? { cached_tokens: reply.usage.cached }
+                      : undefined,
+                  }
+                : undefined;
+              const tool_calls = (reply.toolCalls ?? []).map((tc) => ({
+                id: tc.id,
+                type: "function" as const,
+                function: { name: tc.name, arguments: tc.arguments },
+              }));
+              return {
+                id: `cmpl-${cursor}`,
+                choices: [
+                  {
+                    index: 0,
+                    message: {
+                      role: "assistant" as const,
+                      content: reply.content ?? null,
+                      tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+                    },
+                    finish_reason: tool_calls.length > 0 ? "tool_calls" : "stop",
+                  },
+                ],
+                usage,
+                ...(reply.provider ? { provider: reply.provider } : {}),
+              };
+            }
+            // No more scripted replies — hang until signal fires.
+            return new Promise<never>((_, reject) => {
+              const onAbort = () => {
+                const err = Object.assign(new Error("The operation was aborted."), {
+                  name: "AbortError",
+                });
+                reject(err);
+              };
+              if (req.signal?.aborted) {
+                onAbort();
+              } else {
+                req.signal?.addEventListener("abort", onAbort, { once: true });
+              }
+            });
+          }),
+        },
+      },
+    } as unknown as ReturnType<NonNullable<Parameters<typeof execute>[1]>["openAiFactory"]>;
+  };
+
+  return { factory, capturedRequests };
+}
+
 function buildClient(replies: ScriptedReply[]): {
   factory: NonNullable<Parameters<typeof execute>[1]>["openAiFactory"];
   state: ScriptedClient;
@@ -293,6 +367,78 @@ describe("execute", () => {
       content: string;
     }>).find((m) => m.role === "system");
     expect(systemMessage?.content).toContain("follow the rules");
+  });
+
+  describe("wall-clock timeout (timeoutSec)", () => {
+    it("completes normally when no timeoutSec is configured", async () => {
+      const { factory } = buildClient([
+        { content: "done", usage: { prompt_tokens: 5, completion_tokens: 2 } },
+      ]);
+      const result = await execute(buildCtx(), { openAiFactory: factory });
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect((result as { errorCode?: string }).errorCode).toBeUndefined();
+    });
+
+    it("returns timedOut when timeout fires during OpenAI call", async () => {
+      const { factory } = buildHangingClient([]);
+      const result = await execute(
+        buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 1 } }),
+        { openAiFactory: factory },
+      );
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("timeout");
+    });
+
+    it("returns timedOut when timeout fires between tool-call iterations", async () => {
+      await fs.writeFile(path.join(tmp, "note.txt"), "data");
+      const { factory } = buildHangingClient([
+        {
+          toolCalls: [
+            { id: "c1", name: "read_file", arguments: JSON.stringify({ path: "note.txt" }) },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 3 },
+        },
+      ]);
+      const result = await execute(
+        buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 1 } }),
+        { openAiFactory: factory },
+      );
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("timeout");
+    });
+
+    it("includes partial usage accumulated before the timeout", async () => {
+      await fs.writeFile(path.join(tmp, "note.txt"), "data");
+      const { factory } = buildHangingClient([
+        {
+          toolCalls: [
+            { id: "c1", name: "read_file", arguments: JSON.stringify({ path: "note.txt" }) },
+          ],
+          usage: { prompt_tokens: 50, completion_tokens: 12 },
+        },
+      ]);
+      const result = await execute(
+        buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 1 } }),
+        { openAiFactory: factory },
+      );
+      expect(result.timedOut).toBe(true);
+      expect(result.usage?.inputTokens).toBe(50);
+      expect(result.usage?.outputTokens).toBe(12);
+    });
+
+    it("does not fire timeout when run completes before timeoutSec elapses", async () => {
+      const { factory } = buildClient([
+        { content: "done fast", usage: { prompt_tokens: 5, completion_tokens: 2 } },
+      ]);
+      const result = await execute(
+        buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 60 } }),
+        { openAiFactory: factory },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(result.summary).toBe("done fast");
+    });
   });
 
   it("stops after maxIterations even if model keeps requesting tools", async () => {

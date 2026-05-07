@@ -68,6 +68,9 @@ Optional config:
   { agentId, agentName, companyId, runId, taskId, taskTitle }
 - maxIterations (number): cap on tool-call rounds per run (default 25)
 - maxRunCommandTimeoutSec (number): per-call timeout for run_command (default 120)
+- timeoutSec (number): wall-clock timeout for the entire run; execute() returns
+  timedOut: true after this many seconds. Aborts in-flight OpenAI requests and
+  SIGTERMs any running run_command subprocess. Absent or 0 means no limit.
 - extraHeaders (object): additional HTTP headers to send with each request
 - disabledTools (string[]): tool names to omit from the request
 

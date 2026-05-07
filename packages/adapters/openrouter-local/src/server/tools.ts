@@ -7,6 +7,7 @@ export interface ToolContext {
   cwd: string;
   runCommandTimeoutSec: number;
   env?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
 export interface ToolHandler {
@@ -62,6 +63,7 @@ export function runShellCommand(
   cwd: string,
   timeoutSec: number,
   extraEnv?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("bash", ["-lc", command], {
@@ -88,6 +90,15 @@ export function runShellCommand(
       }
     }, Math.max(1, Math.floor(timeoutSec * 1000)));
 
+    const onAbort = () => {
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    };
+    if (signal?.aborted) {
+      onAbort();
+    } else {
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }
+
     child.stdout?.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes <= MAX_OUTPUT_BYTES) stdout += chunk.toString("utf-8");
@@ -98,13 +109,15 @@ export function runShellCommand(
     });
     child.on("error", (err) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       reject(err);
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code, childSignal) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       resolve({
         exitCode: code,
-        signal,
+        signal: childSignal,
         stdout: truncateForModel(stdout),
         stderr: truncateForModel(stderr),
         timedOut,
@@ -209,7 +222,7 @@ export const RUN_COMMAND_TOOL: ToolHandler = {
     const command = asString(args.command, "command");
     const requested = asPositiveNumber(args.timeoutSec, ctx.runCommandTimeoutSec);
     const effective = Math.min(requested, ctx.runCommandTimeoutSec);
-    const result = await runShellCommand(command, ctx.cwd, effective, ctx.env);
+    const result = await runShellCommand(command, ctx.cwd, effective, ctx.env, ctx.signal);
     const header = result.timedOut
       ? `[timed out after ${effective}s, signal=${result.signal ?? "SIGTERM"}]`
       : `[exitCode=${result.exitCode}${result.signal ? ` signal=${result.signal}` : ""}]`;

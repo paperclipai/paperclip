@@ -95,6 +95,10 @@ function asInt(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
+}
+
 export async function execute(
   ctx: AdapterExecutionContext,
   options: ExecuteOptions = {},
@@ -184,7 +188,13 @@ export async function execute(
   }
   messages.push({ role: "user", content: prompt });
 
-  const toolCtx: ToolContext = { cwd, runCommandTimeoutSec, env: paperclipEnv };
+  const timeoutSec = asInt(config.timeoutSec, 0);
+  const controller = timeoutSec > 0 ? new AbortController() : null;
+  const timeoutHandle = controller
+    ? setTimeout(() => controller.abort(), timeoutSec * 1000)
+    : null;
+
+  const toolCtx: ToolContext = { cwd, runCommandTimeoutSec, env: paperclipEnv, signal: controller?.signal };
   const state: RunState = {
     inputTokens: 0,
     outputTokens: 0,
@@ -215,6 +225,7 @@ export async function execute(
         messages,
         tools: tools.length > 0 ? toOpenAiTools(tools) : undefined,
         tool_choice: tools.length > 0 ? "auto" : undefined,
+        ...(controller ? { signal: controller.signal } : {}),
       });
 
       const usage = (completion as unknown as { usage?: OpenAI.Completions.CompletionUsage })
@@ -319,6 +330,18 @@ export async function execute(
       summary: state.finalAssistantText || null,
     };
   } catch (err) {
+    if (isAbortError(err) || controller?.signal.aborted) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        model: state.model,
+        provider: state.provider,
+        usage: { inputTokens: state.inputTokens, outputTokens: state.outputTokens },
+        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: "timeout",
+      };
+    }
     const message = err instanceof Error ? err.message : String(err);
     await onLog("stderr", `${ADAPTER_TYPE}: ${message}\n`);
     return {
@@ -337,5 +360,7 @@ export async function execute(
       errorMessage: message,
       errorCode: "openrouter_local_call_failed",
     };
+  } finally {
+    if (timeoutHandle !== null) clearTimeout(timeoutHandle);
   }
 }

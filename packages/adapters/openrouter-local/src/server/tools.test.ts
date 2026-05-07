@@ -9,6 +9,7 @@ import {
   parseToolArguments,
   READ_FILE_TOOL,
   RUN_COMMAND_TOOL,
+  runShellCommand,
   toOpenAiTools,
   WRITE_FILE_TOOL,
   LIST_DIRECTORY_TOOL,
@@ -104,6 +105,32 @@ describe("run_command tool", () => {
     );
     expect(result).toContain("timed out");
   }, 10000);
+});
+
+describe("runShellCommand with AbortSignal", () => {
+  it("sends SIGTERM when signal is already aborted before spawn", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runShellCommand("sleep 30", tmp, 30, undefined, controller.signal);
+    // Process must exit well within the 30s per-tool timeout
+    expect(result.timedOut).toBe(false);
+    expect(result.signal !== null || (result.exitCode !== null && result.exitCode !== 0)).toBe(true);
+  }, 5000);
+
+  it("sends SIGTERM to child when signal fires mid-execution", async () => {
+    const controller = new AbortController();
+    const resultPromise = runShellCommand("sleep 30", tmp, 30, undefined, controller.signal);
+    setTimeout(() => controller.abort(), 100);
+    const result = await resultPromise;
+    expect(result.timedOut).toBe(false);
+    expect(result.signal !== null || (result.exitCode !== null && result.exitCode !== 0)).toBe(true);
+  }, 5000);
+
+  it("behaves identically when no signal is provided", async () => {
+    const result = await runShellCommand("echo hello", tmp, 10);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello");
+  });
 });
 
 describe("dispatchToolCall", () => {
