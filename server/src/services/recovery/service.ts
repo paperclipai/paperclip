@@ -2089,19 +2089,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           companyId: issues.companyId,
           id: issues.id,
           status: issues.status,
+          originKind: issues.originKind,
           originId: issues.originId,
         })
         .from(issues)
         .where(
           and(
             isNull(issues.hiddenAt),
-            eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+            inArray(issues.originKind, [
+              STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+              RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+            ]),
             notInArray(issues.status, ["done", "cancelled"]),
           ),
         ),
     ]);
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
+      if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
+        const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
+        if (!parsed || parsed.companyId !== row.companyId) return [];
+        if (parsed.state !== "blocked_by_assigned_backlog_issue") return [];
+        return [
+          {
+            companyId: row.companyId,
+            issueId: parsed.issueId,
+            status: row.status,
+          },
+          {
+            companyId: row.companyId,
+            issueId: parsed.leafIssueId,
+            status: row.status,
+          },
+        ];
+      }
+
       const issueId = readNonEmptyString(row.originId);
       if (!issueId) return [];
       return [{
