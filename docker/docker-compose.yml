@@ -21,6 +21,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3100:3100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
       PORT: "3100"
@@ -29,6 +31,7 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PLAYWRIGHT_PROXY_SERVER: "socks5://host.docker.internal:18081"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
