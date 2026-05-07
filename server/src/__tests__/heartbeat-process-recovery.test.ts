@@ -939,6 +939,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("reconciles a stale in-memory handle against a dead pid and reaps the run", async () => {
+    // Regression: an upstream stdio leak (grandchild keeps the parent's
+    // stdout/stderr fds open) can cause runChildProcess to never see
+    // 'close' fire, leaving runningProcesses populated even after the
+    // parent has exited. Without reconciliation the reaper's
+    // !runningProcesses.has(runId) gate skips these runs forever; with
+    // reconciliation the dead-pid signal drops the stale handle and we
+    // fall through into the normal reap path.
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    runningProcesses.set(runId, {
+      child: { pid: 999_999_999 } as never,
+      graceSec: 1,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(runningProcesses.has(runId)).toBe(false);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,

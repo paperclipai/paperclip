@@ -352,7 +352,13 @@ describe("runChildProcess", () => {
     expect(result.stdout).toContain('"type":"result"');
   });
 
-  it.skipIf(process.platform === "win32")("does not clean up noisy runs that have no terminal output", async () => {
+  it.skipIf(process.platform === "win32")("resolves the run after parent exit even when a descendant keeps stdio open", async () => {
+    // Regression: previously the orchestrator waited indefinitely for
+    // 'close' to fire, but a grandchild that inherited the parent's
+    // stdout fds could keep them open forever. That left
+    // runningProcesses populated, blocked the orphan reaper, and
+    // surfaced as duplicate "Review silent active run" alerts when
+    // the silence-detector fired (~1h after lastOutputAt).
     const runId = randomUUID();
     let observed = "";
     const resultPromise = runChildProcess(
@@ -375,10 +381,57 @@ describe("runChildProcess", () => {
         onLog: async (_stream, chunk) => {
           observed += chunk;
         },
-        terminalResultCleanup: {
-          graceMs: 50,
-          hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
+        // Use a tight drain so the test runs quickly. Production
+        // defaults to the full POST_EXIT_STDIO_DRAIN_MS (5s).
+        postExitStdioDrainMs: 200,
+      },
+    );
+
+    const pidMatch = await waitForTextMatch(() => observed, /descendant:(\d+)/);
+    const descendantPid = Number.parseInt(pidMatch?.[1] ?? "", 10);
+    expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
+
+    try {
+      const result = await resultPromise;
+      expect(result.exitCode).toBe(0);
+      expect(result.postExitDrainTimedOut).toBe(true);
+      expect(runningProcesses.has(runId)).toBe(false);
+    } finally {
+      if (isPidAlive(descendantPid)) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          // Ignore cleanup races.
+        }
+      }
+      runningProcesses.delete(runId);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("preserves legacy wait-for-close behavior when postExitStdioDrainMs is 0", async () => {
+    const runId = randomUUID();
+    let observed = "";
+    const resultPromise = runChildProcess(
+      runId,
+      process.execPath,
+      [
+        "-e",
+        [
+          "const { spawn } = require('node:child_process');",
+          "const child = spawn(process.execPath, ['-e', \"setInterval(() => process.stdout.write('noise\\\\n'), 50)\"], { stdio: ['ignore', 'inherit', 'ignore'] });",
+          "process.stdout.write(`descendant:${child.pid}\\n`);",
+          "setTimeout(() => process.exit(0), 25);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          observed += chunk;
         },
+        postExitStdioDrainMs: 0,
       },
     );
 
@@ -393,25 +446,13 @@ describe("runChildProcess", () => {
     expect(race).toBe("pending");
     expect(isPidAlive(descendantPid)).toBe(true);
 
-    const running = runningProcesses.get(runId) as
-      | { child: { kill(signal: NodeJS.Signals): boolean }; processGroupId: number | null }
-      | undefined;
     try {
-      if (running?.processGroupId) {
-        process.kill(-running.processGroupId, "SIGKILL");
-      } else {
-        running?.child.kill("SIGKILL");
+      if (isPidAlive(descendantPid)) {
+        process.kill(descendantPid, "SIGKILL");
       }
       await resultPromise;
     } finally {
       runningProcesses.delete(runId);
-      if (isPidAlive(descendantPid)) {
-        try {
-          process.kill(descendantPid, "SIGKILL");
-        } catch {
-          // Ignore cleanup races.
-        }
-      }
     }
   });
 });

@@ -6394,7 +6394,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const hasInMemoryHandle = runningProcesses.has(run.id);
+      const hasActiveExecution = activeRunExecutions.has(run.id);
+
+      // Reconcile the in-memory handle against OS PID liveness for tracked
+      // local child-process adapters. A dead PID with a surviving handle is
+      // a leak (e.g. a grandchild kept stdio fds open and 'close' never
+      // fired), so we drop the stale handle and fall through into the reap
+      // path instead of letting the gate below skip the run forever.
+      const recordedPid = typeof run.processPid === "number" ? run.processPid : null;
+      const handleIsStale =
+        hasInMemoryHandle &&
+        tracksLocalChild &&
+        recordedPid !== null &&
+        !isProcessAlive(recordedPid);
+      if (handleIsStale) {
+        runningProcesses.delete(run.id);
+        logger.warn(
+          { runId: run.id, agentId: run.agentId, processPid: recordedPid },
+          "dropping stale in-memory run handle: child pid is no longer alive",
+        );
+      }
+
+      if ((hasInMemoryHandle && !handleIsStale) || hasActiveExecution) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -6402,8 +6425,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      const processPidAlive = tracksLocalChild && run.processPid && !handleIsStale && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {

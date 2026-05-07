@@ -18,6 +18,11 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  // Set when the child emitted 'exit' but stdio streams were still open
+  // after POST_EXIT_STDIO_DRAIN_MS, so the orchestrator resolved without
+  // waiting for 'close'. Indicates a grandchild leaked stdio fds; the
+  // recorded exitCode/signal still come from the parent's exit event.
+  postExitDrainTimedOut?: boolean;
 }
 
 export interface TerminalResultCleanupOptions {
@@ -78,6 +83,14 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
+// After the child process emits 'exit', wait at most this long for stdio
+// streams to flush before resolving the run anyway. Without this drain
+// fallback, a grandchild that inherited the child's stdio can keep
+// stdout/stderr open indefinitely, preventing 'close' from firing and
+// leaking the in-memory run handle (see issue: silent active-run alerts
+// when an empty-inbox heartbeat exits cleanly but a tool grandchild
+// outlives the parent).
+const POST_EXIT_STDIO_DRAIN_MS = 5_000;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
@@ -1888,6 +1901,11 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    // Override how long we wait for stdio streams to drain after the
+    // child emits 'exit'. Defaults to POST_EXIT_STDIO_DRAIN_MS (5s).
+    // Set to 0 to disable the drain fallback (legacy behavior: wait
+    // indefinitely for 'close' to fire).
+    postExitStdioDrainMs?: number;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -2043,9 +2061,20 @@ export async function runChildProcess(
           });
         }
 
+        let finalized = false;
+        let postExitDrainTimer: NodeJS.Timeout | null = null;
+        let postExitDrainFinalized = false;
+        let exitCode: number | null = null;
+        let exitSignal: NodeJS.Signals | null = null;
+
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          if (postExitDrainTimer) {
+            clearTimeout(postExitDrainTimer);
+            postExitDrainTimer = null;
+          }
+          finalized = true;
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -2057,29 +2086,64 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
-          maybeArmTerminalResultCleanup();
-        });
-
-        child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        const finalizeRun = (source: "close" | "post-exit-drain") => {
+          if (finalized) return;
+          finalized = true;
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          if (postExitDrainTimer) {
+            clearTimeout(postExitDrainTimer);
+            postExitDrainTimer = null;
+          }
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
               .finally(() => {
               resolve({
-                exitCode: code,
-                signal,
+                exitCode,
+                signal: exitSignal,
                 timedOut,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,
                 startedAt,
+                ...(source === "post-exit-drain" ? { postExitDrainTimedOut: true } : {}),
               });
               });
           });
+        };
+
+        child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+          maybeArmTerminalResultCleanup();
+          if (postExitDrainFinalized) return;
+          postExitDrainFinalized = true;
+          // Capture the exit metadata now. If 'close' fires we'll use the
+          // values it reports (which match these), otherwise the drain timer
+          // resolves with what we captured here.
+          exitCode = code;
+          exitSignal = signal;
+          const drainMs = opts.postExitStdioDrainMs ?? POST_EXIT_STDIO_DRAIN_MS;
+          if (drainMs <= 0) return;
+          if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
+          postExitDrainTimer = setTimeout(() => {
+            postExitDrainTimer = null;
+            if (finalized) return;
+            // 'close' never fired within the drain window. A descendant
+            // process is keeping the parent's stdio file descriptors open.
+            // Detach our own stream listeners so they cannot keep the run
+            // hanging on logChain after the next chunk arrives, then
+            // resolve so the orchestrator can clear the in-memory handle.
+            try { child.stdout?.removeAllListeners("data"); } catch { /* noop */ }
+            try { child.stderr?.removeAllListeners("data"); } catch { /* noop */ }
+            finalizeRun("post-exit-drain");
+          }, drainMs);
+        });
+
+        child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+          exitCode = code;
+          exitSignal = signal;
+          finalizeRun("close");
         });
       })
       .catch(reject);
