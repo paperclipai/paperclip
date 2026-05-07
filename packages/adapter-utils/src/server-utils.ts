@@ -77,6 +77,17 @@ function signalRunningProcess(
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+// Strip Claude Code nesting-guard env vars so spawned `claude` processes
+// don't refuse to start with "cannot be launched inside another session".
+// These vars leak in when the Paperclip server itself is started from
+// within a Claude Code session (e.g. `npx paperclipai run` in a terminal
+// owned by Claude Code) or when cron inherits a contaminated shell env.
+export const CLAUDE_CODE_NESTING_VARS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SESSION",
+  "CLAUDE_CODE_PARENT_SESSION",
+] as const;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
@@ -1799,17 +1810,6 @@ export async function runChildProcess(
       ...opts.env,
     };
 
-    // Strip Claude Code nesting-guard env vars so spawned `claude` processes
-    // don't refuse to start with "cannot be launched inside another session".
-    // These vars leak in when the Paperclip server itself is started from
-    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
-    // owned by Claude Code) or when cron inherits a contaminated shell env.
-    const CLAUDE_CODE_NESTING_VARS = [
-      "CLAUDECODE",
-      "CLAUDE_CODE_ENTRYPOINT",
-      "CLAUDE_CODE_SESSION",
-      "CLAUDE_CODE_PARENT_SESSION",
-    ] as const;
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
     }

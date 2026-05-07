@@ -304,10 +304,10 @@ function extractUsageError(text: string): string | null {
   const lower = text.toLowerCase();
   const compact = lower.replace(/\s+/g, "");
   if (lower.includes("token_expired") || lower.includes("token has expired")) {
-    return "Claude CLI token expired. Run `claude login` to refresh.";
+    return "Claude CLI token expired. Run `claude auth login` to refresh.";
   }
   if (lower.includes("authentication_error")) {
-    return "Claude CLI authentication error. Run `claude login`.";
+    return "Claude CLI authentication error. Run `claude auth login`.";
   }
   if (lower.includes("rate_limit_error") || lower.includes("rate limited") || compact.includes("ratelimited")) {
     return "Claude CLI usage endpoint is rate limited right now. Please try again later.";

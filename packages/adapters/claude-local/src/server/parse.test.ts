@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
+  extractClaudeLoginUrl,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
@@ -119,5 +121,46 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("extractClaudeLoginUrl", () => {
+  it("preserves OAuth query parameters", () => {
+    const text =
+      "Opening browser to sign in...\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=test-client&response_type=code&state=test-state\n";
+
+    expect(extractClaudeLoginUrl(text)).toBe(
+      "https://claude.com/cai/oauth/authorize?code=true&client_id=test-client&response_type=code&state=test-state",
+    );
+  });
+});
+
+describe("detectClaudeLoginRequired", () => {
+  it("flags `please run claude auth login` as auth-required", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Error: please run `claude auth login` to continue.",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("still flags the legacy `claude login` form", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Please run `claude login` first.",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("returns false for unrelated output", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "Hello from claude!\n",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(false);
+    expect(result.loginUrl).toBeNull();
   });
 });
