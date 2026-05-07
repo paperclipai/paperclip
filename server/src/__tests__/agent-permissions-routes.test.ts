@@ -56,6 +56,7 @@ const mockAccessService = vi.hoisted(() => ({
   ensureMembership: vi.fn(),
   listPrincipalGrants: vi.fn(),
   setPrincipalPermission: vi.fn(),
+  setPrincipalGrants: vi.fn(),
 }));
 
 const mockApprovalService = vi.hoisted(() => ({
@@ -307,6 +308,7 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.ensureMembership.mockReset();
     mockAccessService.listPrincipalGrants.mockReset();
     mockAccessService.setPrincipalPermission.mockReset();
+    mockAccessService.setPrincipalGrants.mockReset();
     mockApprovalService.create.mockReset();
     mockApprovalService.getById.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
@@ -356,6 +358,7 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockAccessService.setPrincipalGrants.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
@@ -1432,5 +1435,108 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("allows instance admins to replace agent permission grants", async () => {
+    const server = await createApp({
+      type: "board",
+      source: "cli",
+      userId: "user-instance-admin",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const res = await request(server)
+      .patch(`/api/agents/${agentId}/grants`)
+      .send({
+        grants: [
+          { permissionKey: "tasks:manage_active_checkouts" },
+          { permissionKey: "tasks:assign" },
+        ],
+      });
+    expect(res.status).toBe(200);
+    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "member",
+      "active",
+    );
+    expect(mockAccessService.setPrincipalGrants).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      [
+        { permissionKey: "tasks:manage_active_checkouts" },
+        { permissionKey: "tasks:assign" },
+      ],
+      "user-instance-admin",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "agent.grants_updated" }),
+    );
+  });
+
+  it("allows board users with users:manage_permissions to replace agent permission grants", async () => {
+    mockAccessService.canUser.mockImplementation(async (_companyId, _userId, key) => {
+      return key === "users:manage_permissions";
+    });
+    const server = await createApp({
+      type: "board",
+      source: "cli",
+      userId: "user-with-grant",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+    const res = await request(server)
+      .patch(`/api/agents/${agentId}/grants`)
+      .send({ grants: [{ permissionKey: "tasks:manage_active_checkouts" }] });
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalGrants).toHaveBeenCalled();
+  });
+
+  it("rejects agent permission grant updates from board users without users:manage_permissions", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+    const server = await createApp({
+      type: "board",
+      source: "cli",
+      userId: "user-no-grant",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+    const res = await request(server)
+      .patch(`/api/agents/${agentId}/grants`)
+      .send({ grants: [{ permissionKey: "tasks:manage_active_checkouts" }] });
+    expect(res.status).toBe(403);
+    expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent permission grant updates from agent-authenticated callers", async () => {
+    const server = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+    });
+    const res = await request(server)
+      .patch(`/api/agents/${agentId}/grants`)
+      .send({ grants: [{ permissionKey: "tasks:manage_active_checkouts" }] });
+    expect(res.status).toBe(403);
+    expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown permission keys via schema validation", async () => {
+    const server = await createApp({
+      type: "board",
+      source: "cli",
+      userId: "user-instance-admin",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const res = await request(server)
+      .patch(`/api/agents/${agentId}/grants`)
+      .send({ grants: [{ permissionKey: "not:a:real:key" }] });
+    expect(res.status).toBe(400);
+    expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
   });
 });

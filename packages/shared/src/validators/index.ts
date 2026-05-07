@@ -119,6 +119,8 @@ export {
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  setAgentGrantsSchema,
+  type SetAgentGrants,
   type CreateAgent,
   type CreateAgentHire,
   type UpdateAgent,

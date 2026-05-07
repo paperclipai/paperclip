@@ -21,6 +21,7 @@ import {
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
+  setAgentGrantsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
@@ -2303,6 +2304,64 @@ export function agentRoutes(
     });
 
     res.json(await buildAgentDetail(agent));
+  });
+
+  // Replace the full set of arbitrary permission grants for an agent.
+  // Mirrors the user-side /companies/:companyId/members/:memberId/role-and-grants
+  // surface, scoped to a single agent principal. Board-only; instance admin or
+  // explicit `users:manage_permissions` grant required.
+  router.patch("/agents/:id/grants", validate(setAgentGrantsSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = await access.canUser(
+        existing.companyId,
+        req.actor.userId,
+        "users:manage_permissions",
+      );
+      if (!allowed) {
+        throw forbidden("Missing permission: users:manage_permissions");
+      }
+    }
+
+    await access.ensureMembership(existing.companyId, "agent", existing.id, "member", "active");
+    await access.setPrincipalGrants(
+      existing.companyId,
+      "agent",
+      existing.id,
+      req.body.grants,
+      req.actor.userId ?? null,
+    );
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.grants_updated",
+      entityType: "agent",
+      entityId: existing.id,
+      details: {
+        grantKeys: req.body.grants.map((g: { permissionKey: string }) => g.permissionKey).sort(),
+        grantCount: req.body.grants.length,
+      },
+    });
+
+    const refreshed = await svc.getById(existing.id);
+    if (!refreshed) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    res.json(await buildAgentDetail(refreshed));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
