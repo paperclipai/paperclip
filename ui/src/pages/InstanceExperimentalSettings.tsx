@@ -205,6 +205,7 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableNewestFirstIssueThread = experimentalQuery.data?.enableNewestFirstIssueThread === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -294,6 +295,25 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle isolated workspaces experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Enable Newest-First Issue Thread</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show issue comments and messages with the newest activity first, move the jump control to the bottom of
+              the page, and surface plain comment timestamps in the header area.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableNewestFirstIssueThread}
+            onCheckedChange={() =>
+              toggleMutation.mutate({ enableNewestFirstIssueThread: !enableNewestFirstIssueThread })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle newest-first issue thread experimental setting"
           />
         </div>
       </section>

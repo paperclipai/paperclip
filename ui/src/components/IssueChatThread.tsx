@@ -138,6 +138,7 @@ import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   feedbackTermsUrl: string | null;
+  newestFirst: boolean;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
@@ -176,6 +177,7 @@ interface IssueChatMessageContext {
 const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  newestFirst: true,
   issueStatus: undefined,
   successfulRunHandoff: null,
 });
@@ -331,6 +333,7 @@ interface IssueChatThreadProps {
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
+  newestFirst?: boolean;
   emptyMessage?: string;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
@@ -530,7 +533,6 @@ function IssueChatFallbackThread({
 
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
-const SUBMIT_SCROLL_RESERVE_VH = 0.4;
 
 type ComposerAttachmentItem = {
   id: string;
@@ -617,6 +619,33 @@ function commentDateLabel(date: Date | string | undefined): string {
   const then = new Date(date).getTime();
   if (Date.now() - then < WEEK_MS) return timeAgo(date);
   return formatShortDate(date);
+}
+
+function IssueChatTimestampLink({
+  anchorId,
+  createdAt,
+  className,
+}: {
+  anchorId?: string;
+  createdAt?: Date | string;
+  className?: string;
+}) {
+  if (!createdAt) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <a
+          href={anchorId ? `#${anchorId}` : undefined}
+          className={cn("text-[11px] text-muted-foreground hover:text-foreground hover:underline", className)}
+        >
+          {commentDateLabel(createdAt)}
+        </a>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="text-xs">
+        {formatDateTime(createdAt)}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
@@ -1259,6 +1288,7 @@ function IssueChatUserMessage({
     onCancelQueued,
     currentUserId,
     userProfileMap,
+    newestFirst,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1290,12 +1320,19 @@ function IssueChatUserMessage({
   );
   const messageBody = (
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
-      <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
+      <div className={cn("mb-1 flex w-full items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
             Follow-up
           </Badge>
+        ) : null}
+        {newestFirst ? (
+          <IssueChatTimestampLink
+            anchorId={anchorId}
+            createdAt={message.createdAt}
+            className="shrink-0"
+          />
         ) : null}
       </div>
       <div
@@ -1351,19 +1388,12 @@ function IssueChatUserMessage({
             isCurrentUser ? "justify-end" : "justify-start",
           )}
         >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <a
-                href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-              >
-                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-              </a>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              {message.createdAt ? formatDateTime(message.createdAt) : ""}
-            </TooltipContent>
-          </Tooltip>
+          {!newestFirst ? (
+            <IssueChatTimestampLink
+              anchorId={anchorId}
+              createdAt={message.createdAt}
+            />
+          ) : null}
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
@@ -1423,6 +1453,7 @@ function IssueChatAssistantMessage({
     onVote,
     agentMap,
     onStopRun,
+    newestFirst,
     stopRunLabel = "Stop run",
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
@@ -1513,18 +1544,27 @@ function IssueChatAssistantMessage({
               </span>
             </button>
           ) : (
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
-              {followUpRequested ? (
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-                  Follow-up
-                </Badge>
-              ) : null}
-              {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
-                </span>
+            <div className="mb-1.5 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="text-sm font-medium text-foreground">{authorName}</span>
+                {followUpRequested ? (
+                  <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                    Follow-up
+                  </Badge>
+                ) : null}
+                {isRunning ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Running
+                  </span>
+                ) : null}
+              </div>
+              {newestFirst ? (
+                <IssueChatTimestampLink
+                  anchorId={anchorId}
+                  createdAt={message.createdAt}
+                  className="shrink-0"
+                />
               ) : null}
             </div>
           )}
@@ -1582,19 +1622,12 @@ function IssueChatAssistantMessage({
                     onVote={handleVote}
                   />
                 ) : null}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <a
-                      href={anchorId ? `#${anchorId}` : undefined}
-                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                    </a>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="text-xs">
-                    {message.createdAt ? formatDateTime(message.createdAt) : ""}
-                  </TooltipContent>
-                </Tooltip>
+                {!newestFirst ? (
+                  <IssueChatTimestampLink
+                    anchorId={anchorId}
+                    createdAt={message.createdAt}
+                  />
+                ) : null}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -2639,7 +2672,32 @@ function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: st
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
 
-export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+function findLatestMessageByRole(
+  messages: readonly ThreadMessage[],
+  role: ThreadMessage["role"],
+  newestFirst: boolean,
+): ThreadMessage | undefined {
+  if (newestFirst) {
+    return messages.find((message) => message.role === role);
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === role) return messages[index];
+  }
+  return undefined;
+}
+
+export function findLatestCommentMessageIndex(
+  messages: readonly ThreadMessage[],
+  newestFirst = true,
+): number {
+  if (newestFirst) {
+    for (let index = 0; index < messages.length; index += 1) {
+      const anchorId = issueChatMessageAnchorId(messages[index]);
+      if (anchorId && anchorId.startsWith("comment-")) return index;
+    }
+    return -1;
+  }
+
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const anchorId = issueChatMessageAnchorId(messages[index]);
     if (anchorId && anchorId.startsWith("comment-")) return index;
@@ -3635,6 +3693,7 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
+  newestFirst = false,
   emptyMessage,
   variant = "full",
   enableLiveTranscriptPolling = true,
@@ -3661,17 +3720,14 @@ export function IssueChatThread({
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
-  const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const topAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
   const pendingSubmitScrollRef = useRef(false);
   const lastUserMessageIdRef = useRef<string | null>(null);
-  const spacerBaselineAnchorRef = useRef<string | null>(null);
-  const spacerInitialReserveRef = useRef(0);
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
-  const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -3765,7 +3821,7 @@ export function IssueChatThread({
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
   const stableMessageCacheRef = useRef<Map<string, StableThreadMessageCacheEntry>>(new Map());
-  const messages = useMemo(() => {
+  const ascendingMessages = useMemo(() => {
     const stabilized = stabilizeThreadMessages(
       rawMessages,
       stableMessagesRef.current,
@@ -3775,6 +3831,10 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const messages = useMemo(
+    () => newestFirst ? [...ascendingMessages].reverse() : ascendingMessages,
+    [ascendingMessages, newestFirst],
+  );
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
 
@@ -3849,48 +3909,26 @@ export function IssueChatThread({
   });
 
   useEffect(() => {
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
-    const lastUserId = lastUserMessage?.id ?? null;
+    const latestUserMessage = findLatestMessageByRole(messages, "user", newestFirst);
+    const latestUserId = latestUserMessage?.id ?? null;
 
     if (
       pendingSubmitScrollRef.current
-      && lastUserId
-      && lastUserId !== lastUserMessageIdRef.current
+      && latestUserId
+      && latestUserId !== lastUserMessageIdRef.current
     ) {
       pendingSubmitScrollRef.current = false;
-      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+      const custom = latestUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
       const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
       if (anchorId) {
-        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
-        spacerBaselineAnchorRef.current = anchorId;
-        spacerInitialReserveRef.current = reserve;
-        setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
           scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
         });
       }
     }
 
-    lastUserMessageIdRef.current = lastUserId;
-  }, [messageAnchorIndex, messages, useVirtualizedThread]);
-
-  useLayoutEffect(() => {
-    const anchorId = spacerBaselineAnchorRef.current;
-    if (!anchorId || spacerInitialReserveRef.current <= 0) return;
-    const userEl = document.getElementById(anchorId);
-    const bottomEl = bottomAnchorRef.current;
-    if (!userEl || !bottomEl) return;
-    const contentBelow = Math.max(
-      0,
-      bottomEl.getBoundingClientRect().top - userEl.getBoundingClientRect().bottom,
-    );
-    const next = Math.max(0, spacerInitialReserveRef.current - contentBelow);
-    setBottomSpacerHeight((prev) => (prev === next ? prev : next));
-    if (next === 0) {
-      spacerBaselineAnchorRef.current = null;
-      spacerInitialReserveRef.current = 0;
-    }
-  }, [messages]);
+    lastUserMessageIdRef.current = latestUserId;
+  }, [messageAnchorIndex, messages, newestFirst, useVirtualizedThread]);
   useLayoutEffect(() => {
     const composerElement = composerViewportAnchorRef.current;
     if (preserveComposerViewportRef.current) {
@@ -3938,26 +3976,33 @@ export function IssueChatThread({
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
-      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      if (newestFirst) {
+        virtualizedThreadRef.current?.scrollToIndex(0, { align: "start", behavior: "smooth" });
+      } else {
+        virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      }
       return;
     }
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (newestFirst) {
+      topAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    document.documentElement.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
-  // Lands on the latest `comment-*` row and then drives the scroll the rest
-  // of the way home as the virtualizer's per-row measurements arrive.
+  // Lands on the latest `comment-*` row and then keeps nudging the scroll
+  // until that newest comment is pinned to the top edge as row measurements
+  // settle in the virtualizer.
   //
   // The virtualizer estimates 220px for unmeasured rows. On long threads
   // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
-  // underestimated until rows render and get measured. A single scroll
-  // lands above the actual bottom; rendered rows then expand, the layout
-  // grows, and the user has to keep clicking Jump-to-latest to walk closer
-  // to the real bottom. The convergence loop below issues `scrollIntoView`
-  // on the latest comment element on every tick until the DOM bottom of
-  // that element is at the scroll container's bottom (or scroll position
-  // and content height stop changing).
+  // underestimated until rows render and get measured. A single scroll can
+  // land below the true newest row; rendered rows then expand and shift. The
+  // convergence loop below keeps issuing `scrollIntoView` until the newest
+  // comment element is at the scroll container's top edge (or the layout
+  // stops changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
-    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot, newestFirst);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
@@ -3970,7 +4015,7 @@ export function IssueChatThread({
 
     const initial = scrollToThreadAnchor(
       latestCommentAnchor,
-      { align: "end", behavior: "smooth" },
+      { align: "start", behavior: "smooth" },
       messageSnapshot,
     );
     if (!initial) {
@@ -4042,7 +4087,7 @@ export function IssueChatThread({
         // Row hasn't been rendered into the virtualizer's buffer yet — nudge
         // the offset (instant) so it gets mounted, then keep settling.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
-          align: "end",
+          align: "start",
           behavior: "auto",
         });
         scheduleTick(TICK_MS);
@@ -4050,22 +4095,22 @@ export function IssueChatThread({
       }
 
       const container = resolveScrollContainer();
-      const containerBottom = container
-        ? container.getBoundingClientRect().bottom
-        : window.innerHeight;
-      const elBottom = el.getBoundingClientRect().bottom;
-      const offBottom = elBottom - containerBottom;
+      const containerTop = container
+        ? container.getBoundingClientRect().top
+        : 0;
+      const elTop = el.getBoundingClientRect().top;
+      const offTop = elTop - containerTop;
 
-      if (Math.abs(offBottom) > TOLERANCE_PX) {
-        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      if (Math.abs(offTop) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
 
       const currentScrollTop = container?.scrollTop ?? window.scrollY;
       const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
       const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
       const heightStable = currentScrollHeight === lastScrollHeight;
-      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
-      if (scrollStable && heightStable && atBottom) {
+      const atTop = Math.abs(offTop) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atTop) {
         stableTicks += 1;
         if (stableTicks >= 3) {
           finish();
@@ -4118,6 +4163,7 @@ export function IssueChatThread({
     () => ({
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      newestFirst,
       agentMap,
       currentUserId,
       userLabelMap,
@@ -4140,6 +4186,7 @@ export function IssueChatThread({
     [
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      newestFirst,
       agentMap,
       currentUserId,
       userLabelMap,
@@ -4178,7 +4225,7 @@ export function IssueChatThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
-        {resolvedShowJumpToLatest ? (
+        {resolvedShowJumpToLatest && !newestFirst ? (
           <div className="flex justify-end">
             <button
               type="button"
@@ -4189,7 +4236,6 @@ export function IssueChatThread({
             </button>
           </div>
         ) : null}
-
         <IssueChatErrorBoundary
           resetKey={errorBoundaryResetKey}
           messages={messages}
@@ -4201,6 +4247,7 @@ export function IssueChatThread({
               data-testid="thread-viewport"
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
+              <div ref={topAnchorRef} />
               {messages.length === 0 ? (
                 <div className={cn(
                   "text-center text-sm text-muted-foreground",
@@ -4233,8 +4280,8 @@ export function IssueChatThread({
                     stoppingRunId={stoppingRunId}
                     interruptingQueuedRunId={interruptingQueuedRunId}
                   />
-              ))
-            )}
+                ))
+              )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
                   <IssueAssignedBacklogNotice
@@ -4258,17 +4305,28 @@ export function IssueChatThread({
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
-              <div ref={bottomAnchorRef} />
               {showComposer ? (
                 <div
                   aria-hidden
                   data-testid="issue-chat-bottom-spacer"
-                  style={{ height: bottomSpacerHeight }}
+                  style={{ height: 0 }}
                 />
               ) : null}
             </div>
           </div>
         </IssueChatErrorBoundary>
+
+        {resolvedShowJumpToLatest && newestFirst ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Jump to latest
+            </button>
+          </div>
+        ) : null}
 
         {showComposer ? (
           <div

@@ -592,6 +592,7 @@ type IssueDetailChatTabProps = {
   issueId: string;
   companyId: string;
   projectId: string | null;
+  newestFirstIssueThreadEnabled: boolean;
   issueStatus: Issue["status"];
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
@@ -655,6 +656,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueId,
   companyId,
   projectId,
+  newestFirstIssueThreadEnabled,
   issueWorkMode,
   issueStatus,
   executionRunId,
@@ -855,6 +857,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ) : null}
       <IssueChatThread
         composerRef={composerRef}
+        newestFirst={newestFirstIssueThreadEnabled}
         comments={commentsWithRunMeta}
         interactions={interactions}
         feedbackVotes={feedbackVotes}
@@ -1315,6 +1318,12 @@ export function IssueDetail() {
   });
   const resolvedHasActiveRun = issue ? shouldTrackIssueActiveRun(issue) && hasActiveRun : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    placeholderData: keepPreviousDataForSameQueryTail(issueId ?? "pending"),
+  });
+  const newestFirstIssueThreadEnabled = experimentalSettings?.enableNewestFirstIssueThread === true;
   useEffect(() => {
     if (!hasLiveRuns && locallyQueuedCommentRunIds.size > 0) {
       setLocallyQueuedCommentRunIds(new Map());
@@ -3781,6 +3790,7 @@ export function IssueDetail() {
               issueId={issue.id}
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}
+              newestFirstIssueThreadEnabled={newestFirstIssueThreadEnabled}
               issueStatus={issue.status}
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}

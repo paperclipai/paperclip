@@ -295,16 +295,19 @@ function createFileDragEvent(type: string, files: File[]) {
 
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
+  const originalDocumentElementScrollIntoView = document.documentElement.scrollIntoView;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     window.scrollTo = vi.fn();
+    document.documentElement.scrollIntoView = vi.fn() as unknown as typeof document.documentElement.scrollIntoView;
     localStorage.clear();
   });
 
   afterEach(() => {
     container.remove();
+    document.documentElement.scrollIntoView = originalDocumentElementScrollIntoView;
     vi.useRealTimers();
     appendMock.mockReset();
     markdownEditorFocusMock.mockReset();
@@ -327,6 +330,7 @@ describe("IssueChatThread", () => {
             liveRuns={[]}
             onAdd={async () => {}}
             showComposer={false}
+            newestFirst
             enableLiveTranscriptPolling={false}
           />
         </MemoryRouter>,
@@ -336,10 +340,120 @@ describe("IssueChatThread", () => {
     expect(container.textContent).toContain("Jump to latest");
     expect(container.textContent).not.toContain("Chat (");
 
+    const threadRoot = container.querySelector('[data-testid="thread-root"]');
+    const jumpButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    );
+    expect(threadRoot).not.toBeNull();
+    expect(jumpButton).toBeDefined();
+    expect(
+      threadRoot?.compareDocumentPosition(jumpButton!),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
     expect(viewport?.className).not.toContain("max-h-[70vh]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("defaults to oldest-first rendering and jump placement", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-older",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Older comment",
+                authorType: "agent",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-newer",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Newer comment",
+                authorType: "agent",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const rows = Array.from(container.querySelectorAll('[data-testid="issue-chat-message-row"]'));
+    expect(rows[0]?.textContent).toContain("Older comment");
+    expect(rows[1]?.textContent).toContain("Newer comment");
+
+    const threadRoot = container.querySelector('[data-testid="thread-root"]');
+    const jumpButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    );
+    expect(threadRoot).not.toBeNull();
+    expect(jumpButton).toBeDefined();
+    expect(
+      threadRoot?.compareDocumentPosition(jumpButton!),
+    ).toBe(Node.DOCUMENT_POSITION_PRECEDING);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the jump control above the thread when newest-first mode is disabled", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            newestFirst={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const threadRoot = container.querySelector('[data-testid="thread-root"]');
+    const jumpButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    );
+    expect(threadRoot).not.toBeNull();
+    expect(jumpButton).toBeDefined();
+    expect(
+      threadRoot?.compareDocumentPosition(jumpButton!),
+    ).toBe(Node.DOCUMENT_POSITION_PRECEDING);
 
     act(() => {
       root.unmount();
@@ -959,6 +1073,7 @@ describe("IssueChatThread", () => {
           agentMap={issueChatLongThreadAgentMap}
           currentUserId="user-board"
           onAdd={async () => {}}
+          newestFirst
           enableLiveTranscriptPolling={false}
           onRefreshLatestComments={async () => {
             setComments([olderComment, latestComment]);
@@ -995,7 +1110,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("findLatestCommentMessageIndex prefers the last comment-anchored row (PAP-2672)", () => {
+  it("findLatestCommentMessageIndex prefers the first comment-anchored row when newest renders first", () => {
     const messages = [
       { metadata: { custom: { anchorId: "comment-a" } } },
       { metadata: { custom: { anchorId: "run-1" } } },
@@ -1003,13 +1118,24 @@ describe("IssueChatThread", () => {
       { metadata: { custom: { anchorId: "run-2" } } },
       { metadata: { custom: { anchorId: "activity-3" } } },
     ];
-    expect(findLatestCommentMessageIndex(messages as never)).toBe(2);
+    expect(findLatestCommentMessageIndex(messages as never)).toBe(0);
     expect(
       findLatestCommentMessageIndex([
         { metadata: { custom: { anchorId: "run-only" } } },
       ] as never),
     ).toBe(-1);
     expect(findLatestCommentMessageIndex([] as never)).toBe(-1);
+  });
+
+  it("findLatestCommentMessageIndex prefers the last comment-anchored row when newest-first mode is disabled", () => {
+    const messages = [
+      { metadata: { custom: { anchorId: "comment-a" } } },
+      { metadata: { custom: { anchorId: "run-1" } } },
+      { metadata: { custom: { anchorId: "comment-b" } } },
+      { metadata: { custom: { anchorId: "run-2" } } },
+      { metadata: { custom: { anchorId: "activity-3" } } },
+    ];
+    expect(findLatestCommentMessageIndex(messages as never, false)).toBe(2);
   });
 
   it("keeps the direct render path for short threads under the virtualization threshold", () => {
@@ -1714,6 +1840,50 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Agent summary");
     expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the comment timestamp above the comment body", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-08T12:00:00.000Z"));
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              body: "Agent summary",
+              authorType: "agent",
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            newestFirst
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    const timestampIndex = text.indexOf("2d ago");
+    expect(timestampIndex).toBeGreaterThanOrEqual(0);
+    expect(timestampIndex).toBeLessThan(text.indexOf("Agent summary"));
 
     act(() => {
       root.unmount();
