@@ -450,7 +450,7 @@ agents:
     adapter:
       type: claude_local
       config:
-        model: claude-opus-4-6
+        model: claude-opus-4-7
     inputs:
       env:
         ANTHROPIC_API_KEY:

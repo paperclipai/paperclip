@@ -46,7 +46,7 @@
   Required. Specify which AI model was used to produce or assist with
   this change. Be as descriptive as possible — include:
     • Provider and model name (e.g., Claude, GPT, Gemini, Codex)
-    • Exact model ID or version (e.g., claude-opus-4-6, gpt-4-turbo-2024-04-09)
+    • Exact model ID or version (e.g., claude-opus-4-7, gpt-4-turbo-2024-04-09)
     • Context window size if relevant (e.g., 1M context)
     • Reasoning/thinking mode if applicable (e.g., extended thinking, chain-of-thought)
     • Any other relevant capability details (e.g., tool use, code execution)
