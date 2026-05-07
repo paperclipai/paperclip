@@ -566,7 +566,7 @@ export async function createApp(
         .from(agentsTable)
         .limit(300);
 
-      const director = allAgentsGlobal.find((a) => a.name.toLowerCase().includes("director"));
+      const director = allAgentsGlobal.find((a) => a.name.toLowerCase() === "director");
       const targetCompanyId = director?.companyId;
 
       // Fallback: primera compañía en la tabla
