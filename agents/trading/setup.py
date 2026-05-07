@@ -1,13 +1,13 @@
 """
-Setup: Crea todos los agentes de trading de Polymarket en la empresa DiscontrolsBags.
+Setup: Crea los agentes de trading algorítmico (TradingView) en DiscontrolsBags.
 Ejecutar una sola vez desde Railway o localmente con las env vars correctas.
 
 Uso:
   python agents/trading/setup.py
 
-Variables requeridas en Railway:
-  BETTER_AUTH_SECRET          (ya existe)
-  PAPERCLIP_AGENT_ID          (ya existe — usa el director como actor temporal)
+Variables requeridas:
+  BETTER_AUTH_SECRET
+  PAPERCLIP_AGENT_ID          (usa el director como actor temporal)
   PAPERCLIP_API_URL           (ej: http://localhost:3100 o la URL de Railway)
   PAPERCLIP_TRADING_COMPANY_ID=866b74e7-79a7-4166-9f9f-025faa751aa1
 """
@@ -38,44 +38,44 @@ API_URL = os.environ.get(
 # (name, script_path, title, role, budget_cents)
 TRADING_AGENTS = [
     (
-        "CEO",
+        "CEO Strategy Factory",
         "agents/trading/ceo.py",
-        "Trading Orchestrator — Polymarket",
-        "manager",
+        "Trading Strategy Orchestrator — TradingView",
+        "ceo",
         10000,
     ),
     (
-        "Market Scanner",
-        "agents/trading/market_scanner.py",
-        "Polymarket Opportunity Scanner",
+        "Stock Analyzer",
+        "agents/trading/stock_analyzer.py",
+        "Yahoo Finance OHLCV + Technical Metrics",
+        "engineer",
+        2000,
+    ),
+    (
+        "Strategy Designer",
+        "agents/trading/strategy_designer.py",
+        "LLM Pine Script Strategy Generator",
+        "engineer",
+        8000,
+    ),
+    (
+        "Strategy Critic",
+        "agents/trading/strategy_critic.py",
+        "Pine Script Logic Reviewer",
         "engineer",
         4000,
     ),
     (
-        "Probability Estimator",
-        "agents/trading/probability_estimator.py",
-        "LLM-based Probability Analyst",
+        "Strategy Optimizer",
+        "agents/trading/strategy_optimizer.py",
+        "LLM Pine Script Refiner",
         "engineer",
-        6000,
-    ),
-    (
-        "Risk Manager",
-        "agents/trading/risk_manager.py",
-        "Position Sizing & Risk Control",
-        "engineer",
-        2000,
-    ),
-    (
-        "Executor",
-        "agents/trading/executor.py",
-        "Polymarket Order Executor",
-        "engineer",
-        2000,
+        8000,
     ),
     (
         "Reporter",
         "agents/trading/reporter.py",
-        "Trade Reporter — Telegram & Logs",
+        "Strategy Report & TradingView Export",
         "engineer",
         2000,
     ),
@@ -177,7 +177,7 @@ def main():
         print("ERROR: PAPERCLIP_AGENT_ID no configurado", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🤖 SETUP TRADING AGENTS — DiscontrolsBags", flush=True)
+    print(f"🤖 SETUP TRADING AGENTS (TradingView) — DiscontrolsBags", flush=True)
     print(f"   Company:  {TRADING_COMPANY_ID}", flush=True)
     print(f"   API URL:  {API_URL}", flush=True)
     print(f"   Actor:    {agent_id}", flush=True)
