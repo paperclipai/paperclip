@@ -6,6 +6,7 @@ import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
+import { Cpu } from "lucide-react";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -47,19 +48,34 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const isSystem = event.actorType === "system";
+  const actorName = actor?.name ?? (isSystem ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
   const actorAvatarUrl = userProfile?.image ?? null;
+  const systemSubsystem = isSystem && event.actorId.startsWith("system.")
+    ? event.actorId.slice("system.".length)
+    : (isSystem ? event.actorId : null);
 
   const inner = (
     <div className="space-y-2">
       <div className="flex gap-3">
         <p className="flex-1 min-w-0 truncate">
-          <Identity
-            name={actorName}
-            avatarUrl={actorAvatarUrl}
-            size="xs"
-            className="align-middle"
-          />
+          {isSystem ? (
+            <span
+              className="inline-flex gap-1 items-center text-muted-foreground align-middle"
+              title={systemSubsystem ? `System — ${systemSubsystem}` : "System"}
+              aria-label={systemSubsystem ? `System — ${systemSubsystem}` : "System"}
+            >
+              <Cpu className="size-3.5 shrink-0" aria-hidden />
+              <span className="text-sm">System</span>
+            </span>
+          ) : (
+            <Identity
+              name={actorName}
+              avatarUrl={actorAvatarUrl}
+              size="xs"
+              className="align-middle"
+            />
+          )}
           <span className="text-muted-foreground ml-1">{verb} </span>
           {name && <span className="font-medium">{name}</span>}
           {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}

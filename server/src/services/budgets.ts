@@ -23,6 +23,7 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { systemActorFragment } from "./system-actor.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -609,8 +610,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: actorUserId ?? "board",
+        ...(actorUserId ? { actorType: "user" as const, actorId: actorUserId } : systemActorFragment("budget")),
         action: "budget.policy_upserted",
         entityType: "budget_policy",
         entityId: row.id,

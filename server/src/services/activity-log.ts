@@ -52,6 +52,14 @@ export function publishPluginDomainEvent(event: PluginEvent): void {
 
 export interface LogActivityInput {
   companyId: string;
+  /**
+   * actorType values:
+   *   "user"   — human operator via board session or API key
+   *   "agent"  — autonomous agent via agent JWT or API key
+   *   "system" — internal subsystem (heartbeat, budget, routine, hire-hook, etc.)
+   *              actorId convention: "system.<subsystem>" (use withSystemActor() helper)
+   *   "plugin" — third-party plugin via plugin host
+   */
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
   action: string;
