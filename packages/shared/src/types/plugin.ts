@@ -78,6 +78,19 @@ export interface PluginWebhookDeclaration {
  *
  * @see PLUGIN_SPEC.md §11 — Agent Tools
  */
+/**
+ * Surfaces a plugin tool can be exposed on. Defaults to `["agent"]`.
+ *
+ * - `"agent"` — available to agents at runtime via the existing tool dispatcher.
+ * - `"builder"` — also surfaced in the Company AI Builder tool catalog so the
+ *   board operator can ask the Builder to invoke it.
+ *
+ * @see PLUGIN_SPEC.md §11 — Agent Tools
+ * @see doc/plans/2026-05-04-company-ai-builder.md §6.3 — Extension hook
+ */
+export const PLUGIN_TOOL_SURFACES = ["agent", "builder"] as const;
+export type PluginToolSurface = (typeof PLUGIN_TOOL_SURFACES)[number];
+
 export interface PluginToolDeclaration {
   /** Tool name, unique within the plugin. Namespaced by plugin ID at runtime. */
   name: string;
@@ -87,6 +100,23 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  /**
+   * Surfaces the tool is exposed on. Omit (or set to `["agent"]`) for the
+   * default agent-only behaviour.
+   */
+  surfaces?: PluginToolSurface[];
+  /**
+   * Hint that this tool performs side effects on Bizbox state (or external
+   * state the operator is responsible for). Used by the Builder UI to badge
+   * the tool as "approval-gated" so operators know to scrutinise it.
+   *
+   * In v1 plugin tools cannot create native `builder_proposals` — they are
+   * dispatched directly into the plugin worker. Plugins that need governed
+   * mutations should expose them on the agent surface where the existing
+   * Approvals flow can mediate, and only put pure compute / read-only
+   * helpers on the `"builder"` surface.
+   */
+  requiresApproval?: boolean;
 }
 
 /**

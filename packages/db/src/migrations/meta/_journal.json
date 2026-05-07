@@ -484,6 +484,13 @@
       "when": 1777962530110,
       "tag": "0068_lame_goliath",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1777942795455,
+      "tag": "0069_company_ai_builder",
+      "breakpoints": true
     }
   ]
 }

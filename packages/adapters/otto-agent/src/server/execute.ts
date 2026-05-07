@@ -103,6 +103,7 @@ function buildPrompt(ctx: AdapterExecutionContext): string {
   const c = parseObject(ctx.context);
 
   if (c.prompt) parts.push(String(c.prompt));
+  if (parts.length === 0 && c.builderPrompt) parts.push(String(c.builderPrompt));
   if (c.instructions) parts.push(String(c.instructions));
   if (c.wakeText) parts.push(String(c.wakeText));
   if (parts.length === 0) parts.push(JSON.stringify(ctx.context, null, 2));

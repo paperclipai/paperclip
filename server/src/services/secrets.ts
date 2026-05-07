@@ -373,20 +373,44 @@ export function secretService(db: Db) {
     resolveAdapterConfigForRuntime: async (companyId: string, adapterConfig: Record<string, unknown>): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
-      if (
-        Object.prototype.hasOwnProperty.call(adapterConfig, "authTokenRef")
-        && typeof adapterConfig.authToken !== "string"
-        && typeof adapterConfig.token !== "string"
-      ) {
+
+      const materializeSecretRefKey = async (input: {
+        refKey: "authTokenRef" | "apiKeyRef";
+        targetKey: "authToken" | "apiKey";
+        skipWhenPresent: string[];
+      }) => {
+        if (!Object.prototype.hasOwnProperty.call(adapterConfig, input.refKey)) return;
+        if (
+          input.skipWhenPresent.some((key) => typeof adapterConfig[key] === "string")
+        ) {
+          return;
+        }
+
         const binding = await normalizeSecretRefBinding(
           companyId,
-          adapterConfig.authTokenRef,
-          "adapterConfig.authTokenRef",
+          adapterConfig[input.refKey],
+          `adapterConfig.${input.refKey}`,
         );
-        resolved.authToken = await resolveSecretValue(companyId, binding.secretId, binding.version);
-        secretKeys.add("authToken");
-        delete resolved.authTokenRef;
-      }
+        resolved[input.targetKey] = await resolveSecretValue(
+          companyId,
+          binding.secretId,
+          binding.version,
+        );
+        secretKeys.add(input.targetKey);
+        delete resolved[input.refKey];
+      };
+
+      await materializeSecretRefKey({
+        refKey: "authTokenRef",
+        targetKey: "authToken",
+        skipWhenPresent: ["authToken", "token"],
+      });
+      await materializeSecretRefKey({
+        refKey: "apiKeyRef",
+        targetKey: "apiKey",
+        skipWhenPresent: ["apiKey"],
+      });
+
       if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
         return { config: resolved, secretKeys };
       }

@@ -5,6 +5,10 @@ describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
     const input = {
       apiKey: "abc123",
+      apiKeyRef: {
+        type: "secret_ref",
+        secretId: "22222222-2222-2222-2222-222222222222",
+      },
       nested: {
         AUTH_TOKEN: "token-value",
         safe: "ok",
@@ -26,6 +30,10 @@ describe("redaction", () => {
     const result = sanitizeRecord(input);
 
     expect(result.apiKey).toBe(REDACTED_EVENT_VALUE);
+    expect(result.apiKeyRef).toEqual({
+      type: "secret_ref",
+      secretId: "22222222-2222-2222-2222-222222222222",
+    });
     expect(result.nested).toEqual({
       AUTH_TOKEN: REDACTED_EVENT_VALUE,
       safe: "ok",

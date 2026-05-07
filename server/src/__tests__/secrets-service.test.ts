@@ -96,4 +96,45 @@ describe("secretService.resolveAdapterConfigForRuntime", () => {
     expect(db.select).not.toHaveBeenCalled();
     expect(mockResolveVersion).not.toHaveBeenCalled();
   });
+
+  it("materializes apiKeyRef into apiKey and removes the ref from runtime config", async () => {
+    const db = createDb([
+      [
+        {
+          id: secretId,
+          companyId: "company-1",
+          latestVersion: 7,
+          provider: "local_encrypted",
+          externalRef: null,
+        },
+      ],
+      [
+        {
+          id: secretId,
+          companyId: "company-1",
+          latestVersion: 7,
+          provider: "local_encrypted",
+          externalRef: null,
+        },
+      ],
+      [
+        {
+          secretId,
+          version: 7,
+          material: { encrypted: "ciphertext" },
+        },
+      ],
+    ]);
+    const secrets = secretService(db);
+
+    const result = await secrets.resolveAdapterConfigForRuntime("company-1", {
+      apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
+    });
+
+    expect(result.config).toEqual({
+      apiKey: "resolved-token",
+    });
+    expect(result.config).not.toHaveProperty("apiKeyRef");
+    expect(Array.from(result.secretKeys)).toEqual(["apiKey"]);
+  });
 });

@@ -5,12 +5,14 @@ import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
+import { companyService } from "./companies.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
+  const companies = companyService(db);
   const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
@@ -162,6 +164,60 @@ export function approvalService(db: Db) {
             sourceId: id,
             approvedAt: now,
           }).catch(() => {});
+        }
+      }
+
+      if (applied && updated.type === "update_company") {
+        const payload = updated.payload as Record<string, unknown>;
+        const rawPatch =
+          typeof payload.patch === "object" && payload.patch !== null
+            ? (payload.patch as Record<string, unknown>)
+            : null;
+
+        if (!rawPatch) {
+          throw unprocessable("update_company approval payload missing patch");
+        }
+
+        const companyPatch: {
+          name?: string;
+          description?: string | null;
+          budgetMonthlyCents?: number;
+        } = {};
+
+        if (typeof rawPatch.name === "string" && rawPatch.name.trim()) {
+          companyPatch.name = rawPatch.name.trim();
+        }
+        if (typeof rawPatch.description === "string" || rawPatch.description === null) {
+          companyPatch.description = rawPatch.description;
+        }
+        if (
+          typeof rawPatch.budgetMonthlyCents === "number"
+          && Number.isFinite(rawPatch.budgetMonthlyCents)
+          && rawPatch.budgetMonthlyCents >= 0
+        ) {
+          companyPatch.budgetMonthlyCents = Math.floor(rawPatch.budgetMonthlyCents);
+        }
+
+        if (Object.keys(companyPatch).length === 0) {
+          throw unprocessable("update_company approval patch is empty");
+        }
+
+        const company = await companies.update(updated.companyId, companyPatch);
+        if (!company) {
+          throw notFound("Company not found");
+        }
+
+        if (typeof companyPatch.budgetMonthlyCents === "number") {
+          await budgets.upsertPolicy(
+            updated.companyId,
+            {
+              scopeType: "company",
+              scopeId: updated.companyId,
+              amount: companyPatch.budgetMonthlyCents,
+              windowKind: "calendar_month_utc",
+            },
+            decidedByUserId,
+          );
         }
       }
 

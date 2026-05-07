@@ -11,6 +11,7 @@ import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
   approvalService,
+  builderProposalStore,
   heartbeatService,
   issueApprovalService,
   logActivity,
@@ -29,6 +30,7 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
 export function approvalRoutes(db: Db) {
   const router = Router();
   const svc = approvalService(db);
+  const builderProposals = builderProposalStore(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
@@ -41,6 +43,38 @@ export function approvalRoutes(db: Db) {
     }
     assertCompanyAccess(req, approval.companyId);
     return approval;
+  }
+
+  async function syncBuilderProposalFromApprovalResolution(input: {
+    approvalId: string;
+    companyId: string;
+    status: "approved" | "applied" | "rejected";
+    decidedByUserId: string;
+  }) {
+    try {
+      const builderProposal = await builderProposals.getByApprovalId(
+        input.companyId,
+        input.approvalId,
+      );
+      if (!builderProposal) {
+        return;
+      }
+      await builderProposals.updateStatusFromApproval(
+        builderProposal.id,
+        input.status,
+        input.decidedByUserId,
+      );
+    } catch (err) {
+      logger.warn(
+        {
+          err,
+          approvalId: input.approvalId,
+          companyId: input.companyId,
+          status: input.status,
+        },
+        "failed to sync builder proposal after approval resolution",
+      );
+    }
   }
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
@@ -136,6 +170,12 @@ export function approvalRoutes(db: Db) {
     }
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+    await syncBuilderProposalFromApprovalResolution({
+      approvalId: approval.id,
+      companyId: approval.companyId,
+      status: applied ? "applied" : "approved",
+      decidedByUserId,
+    });
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
@@ -232,6 +272,12 @@ export function approvalRoutes(db: Db) {
     }
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
+    await syncBuilderProposalFromApprovalResolution({
+      approvalId: approval.id,
+      companyId: approval.companyId,
+      status: "rejected",
+      decidedByUserId,
+    });
 
     if (applied) {
       await logActivity(db, {

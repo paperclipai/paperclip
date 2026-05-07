@@ -922,3 +922,45 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+export {
+  calculateModelCostCents,
+  hasModelPricing,
+  getModelPricing,
+  type ModelPricing,
+} from "./model-pricing.js";
+
+export type {
+  BuilderSessionState,
+  BuilderMessageRole,
+  BuilderProposalStatus,
+  BuilderRuntimeConfigSummary,
+  BuilderHandoffTarget,
+  BuilderToolCall,
+  BuilderToolResult,
+  BuilderMessageContent,
+  BuilderMessage,
+  BuilderSession,
+  BuilderSessionDetail,
+  BuilderProviderSettings,
+  BuilderToolDescriptor,
+  BuilderToolCatalog,
+  BuilderProposal,
+} from "./types/builder.js";
+export {
+  BUILDER_SESSION_STATES,
+  BUILDER_MESSAGE_ROLES,
+  BUILDER_PROPOSAL_STATUSES,
+} from "./types/builder.js";
+export {
+  createBuilderSessionSchema,
+  sendBuilderMessageSchema,
+  updateBuilderProviderSettingsSchema,
+  applyBuilderProposalSchema,
+  rejectBuilderProposalSchema,
+  type CreateBuilderSession,
+  type SendBuilderMessage,
+  type UpdateBuilderProviderSettings,
+  type ApplyBuilderProposal,
+  type RejectBuilderProposal,
+} from "./validators/builder.js";

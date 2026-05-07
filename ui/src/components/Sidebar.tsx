@@ -12,6 +12,7 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  Sparkles,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -44,6 +45,7 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const showBuilderLink = experimentalSettings?.builderEnabled === true;
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -103,6 +105,9 @@ export function Sidebar() {
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+          ) : null}
+          {showBuilderLink ? (
+            <SidebarNavItem to="/builder" label="AI Builder" icon={Sparkles} />
           ) : null}
         </SidebarSection>
 

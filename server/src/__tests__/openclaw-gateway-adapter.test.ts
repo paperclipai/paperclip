@@ -629,6 +629,95 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("uses the Builder prompt as the outbound gateway message in Builder mode", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            authToken: "gateway-token",
+            payloadTemplate: {
+              message: "Builder preface",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              executionMode: "builder",
+              builderInvocationId: "builder-turn-123",
+              prompt: "Return strict JSON only.",
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(gateway.getAgentPayload()).toEqual(
+        expect.objectContaining({
+          sessionKey: "paperclip:builder:builder-turn-123",
+          message: "Builder preface\n\nReturn strict JSON only.",
+        }),
+      );
+      expect(extractStructuredWakePayload(gateway.getAgentPayload()?.message)).toBeNull();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("isolates OpenClaw Builder turns with per-turn session keys", async () => {
+    const firstGateway = await createMockGatewayServer();
+    const secondGateway = await createMockGatewayServer();
+
+    try {
+      await execute(
+        buildContext(
+          {
+            url: firstGateway.url,
+            authToken: "gateway-token",
+            agentId: "meridian",
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              executionMode: "builder",
+              builderInvocationId: "turn-1",
+              prompt: "First prompt",
+            },
+          },
+        ),
+      );
+      await execute(
+        buildContext(
+          {
+            url: secondGateway.url,
+            authToken: "gateway-token",
+            agentId: "meridian",
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              executionMode: "builder",
+              builderInvocationId: "turn-2",
+              prompt: "Second prompt",
+            },
+          },
+        ),
+      );
+
+      expect(firstGateway.getAgentPayload()?.sessionKey).toBe(
+        "agent:meridian:paperclip:builder:turn-1",
+      );
+      expect(secondGateway.getAgentPayload()?.sessionKey).toBe(
+        "agent:meridian:paperclip:builder:turn-2",
+      );
+    } finally {
+      await firstGateway.close();
+      await secondGateway.close();
+    }
+  });
+
   it("preserves explicit gateway scopes", async () => {
     const gateway = await createMockGatewayServer();
 

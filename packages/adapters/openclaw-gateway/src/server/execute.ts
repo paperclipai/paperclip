@@ -1224,6 +1224,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const payloadTemplate = parseObject(parsedConfig.payloadTemplate);
   const artifactOutputs = parseArtifactOutputsConfig(parsedConfig.artifactOutputs);
   const transportHint = nonEmpty(parsedConfig.streamTransport) ?? nonEmpty(parsedConfig.transport);
+  const configuredAgentId = nonEmpty(parsedConfig.agentId);
+  const isBuilderExecution = nonEmpty(ctx.context.executionMode) === "builder";
+  const builderInvocationId = nonEmpty(ctx.context.builderInvocationId);
+  const builderPrompt =
+    nonEmpty(ctx.context.prompt) ?? nonEmpty(ctx.context.builderPrompt);
 
   const headers = toStringRecord(parsedConfig.headers);
   const authToken = resolveAuthToken(parsedConfig, headers);
@@ -1242,30 +1247,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const deviceFamily = nonEmpty(parsedConfig.deviceFamily);
   const disableDeviceAuth = resolveDisableDeviceAuth(parsedConfig);
 
-  const wakePayload = buildWakePayload(ctx);
-  const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
-  const wakeText = buildWakeText(
-    wakePayload,
-    paperclipEnv,
-    structuredWakeJson
-      ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
-      : structuredWakePrompt,
-  );
-
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(parsedConfig.sessionKeyStrategy);
-  const configuredSessionKey = nonEmpty(parsedConfig.sessionKey);
-  const sessionKey = resolveSessionKey({
-    strategy: sessionKeyStrategy,
-    configuredSessionKey,
-    agentId: nonEmpty(parsedConfig.agentId),
-    runId: ctx.runId,
-    issueId: wakePayload.issueId,
-  });
-
+  let sessionKey: string;
+  let message: string;
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+
+  if (isBuilderExecution) {
+    const builderMessage = builderPrompt ?? JSON.stringify(ctx.context, null, 2);
+    const isolatedSessionKey = `paperclip:builder:${builderInvocationId ?? ctx.runId}`;
+    sessionKey = prefixSessionKeyForAgent(isolatedSessionKey, configuredAgentId);
+    message = templateMessage ? appendWakeText(templateMessage, builderMessage) : builderMessage;
+  } else {
+    const wakePayload = buildWakePayload(ctx);
+    const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+    const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
+    const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+    const wakeText = buildWakeText(
+      wakePayload,
+      paperclipEnv,
+      structuredWakeJson
+        ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
+        : structuredWakePrompt,
+    );
+
+    const sessionKeyStrategy = normalizeSessionKeyStrategy(parsedConfig.sessionKeyStrategy);
+    const configuredSessionKey = nonEmpty(parsedConfig.sessionKey);
+    sessionKey = resolveSessionKey({
+      strategy: sessionKeyStrategy,
+      configuredSessionKey,
+      agentId: configuredAgentId,
+      runId: ctx.runId,
+      issueId: wakePayload.issueId,
+    });
+    message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  }
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
@@ -1276,7 +1290,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   delete agentParams.text;
   delete agentParams.paperclip;
 
-  const configuredAgentId = nonEmpty(parsedConfig.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }

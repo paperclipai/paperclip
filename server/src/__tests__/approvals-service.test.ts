@@ -7,10 +7,26 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
 }));
 
+const mockBudgetService = vi.hoisted(() => ({
+  upsertPolicy: vi.fn(),
+}));
+
+const mockCompanyService = vi.hoisted(() => ({
+  update: vi.fn(),
+}));
+
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
+}));
+
+vi.mock("../services/budgets.js", () => ({
+  budgetService: vi.fn(() => mockBudgetService),
+}));
+
+vi.mock("../services/companies.js", () => ({
+  companyService: vi.fn(() => mockCompanyService),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({
@@ -61,6 +77,8 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
+    mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockCompanyService.update.mockResolvedValue({ id: "company-1" });
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -103,5 +121,25 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies approved update_company patches to the company record", async () => {
+    const pending = {
+      id: "approval-company-1",
+      companyId: "company-1",
+      type: "update_company",
+      status: "pending",
+      payload: { patch: { name: "Citro X" } },
+      requestedByAgentId: null,
+    };
+    const approved = { ...pending, status: "approved" };
+    const dbStub = createDbStub([[pending]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-company-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", { name: "Citro X" });
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
   });
 });
