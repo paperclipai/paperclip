@@ -245,12 +245,15 @@ export function approvalService(db: Db) {
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
+      if (existing.status === "revision_requested") {
+        return { approval: existing, applied: false };
+      }
       if (existing.status !== "pending") {
         throw unprocessable("Only pending approvals can request revision");
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -259,9 +262,20 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        return { approval: updated, applied: true };
+      }
+
+      const latest = await getExistingApproval(id);
+      if (latest.status === "revision_requested") {
+        return { approval: latest, applied: false };
+      }
+
+      throw unprocessable("Only pending approvals can request revision");
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {

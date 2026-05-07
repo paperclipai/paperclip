@@ -57,24 +57,12 @@ export function approvalRoutes(db: Db) {
     if (linkedIssueIds.length === 0) return;
     const body = buildApprovalDecisionCommentBody(decision, decisionNote);
     for (const issueId of linkedIssueIds) {
+      let commentId: string;
       try {
         const comment = await issuesSvc.addComment(issueId, body, {
           userId: decidedByUserId,
         });
-        await logActivity(db, {
-          companyId: approval.companyId,
-          actorType: "user",
-          actorId: decidedByUserId,
-          action: "approval.decision_comment_posted",
-          entityType: "issue",
-          entityId: issueId,
-          details: {
-            approvalId: approval.id,
-            approvalType: approval.type,
-            decision,
-            commentId: comment.id,
-          },
-        });
+        commentId = comment.id;
       } catch (err) {
         logger.warn(
           {
@@ -110,7 +98,34 @@ export function approvalRoutes(db: Db) {
             "failed to record approval decision comment failure in activity log",
           );
         });
+        continue;
       }
+
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: decidedByUserId,
+        action: "approval.decision_comment_posted",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          approvalId: approval.id,
+          approvalType: approval.type,
+          decision,
+          commentId,
+        },
+      }).catch((err) => {
+        logger.warn(
+          {
+            err,
+            approvalId: approval.id,
+            issueId,
+            decision,
+            commentId,
+          },
+          "failed to record approval decision comment success in activity log",
+        );
+      });
     }
   }
 
@@ -402,28 +417,34 @@ export function approvalRoutes(db: Db) {
         return;
       }
       const decidedByUserId = req.actor.userId ?? "board";
-      const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
-
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
-
-      await postDecisionCommentsForApproval(
-        approval,
-        linkedIssueIds,
-        "revision_requested",
+      const { approval, applied } = await svc.requestRevision(
+        id,
         decidedByUserId,
         req.body.decisionNote,
       );
 
-      await logActivity(db, {
-        companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "approval.revision_requested",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type, linkedIssueIds },
-      });
+      if (applied) {
+        const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+        const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+
+        await postDecisionCommentsForApproval(
+          approval,
+          linkedIssueIds,
+          "revision_requested",
+          decidedByUserId,
+          req.body.decisionNote,
+        );
+
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "approval.revision_requested",
+          entityType: "approval",
+          entityId: approval.id,
+          details: { type: approval.type, linkedIssueIds },
+        });
+      }
 
       res.json(redactApprovalPayload(approval));
     },

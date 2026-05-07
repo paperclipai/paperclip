@@ -497,11 +497,14 @@ describe("approval routes idempotent retries", () => {
       payload: {},
     });
     mockApprovalService.requestRevision.mockResolvedValue({
-      id: "approval-6",
-      companyId: "company-1",
-      type: "hire_agent",
-      status: "revision_requested",
-      payload: {},
+      approval: {
+        id: "approval-6",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "revision_requested",
+        payload: {},
+      },
+      applied: true,
     });
 
     const res = await request(await createApp())
@@ -519,6 +522,35 @@ describe("approval routes idempotent retries", () => {
       "🔁 Changes requested: Need changes",
       { userId: "user-1" },
     );
+  });
+
+  it("does not emit duplicate revision side effects when request revision is already resolved", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-6b",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: {},
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      approval: {
+        id: "approval-6b",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "revision_requested",
+        payload: {},
+      },
+      applied: false,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-6b/request-revision")
+      .send({ decisionNote: "Need changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
@@ -720,6 +752,47 @@ describe("approval routes idempotent retries", () => {
         entityType: "issue",
         entityId: "issue-d",
       }),
+    );
+  });
+
+  it("keeps comment classification correct when success activity logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-10b",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-10b",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-d2" }]);
+    mockIssueService.addComment.mockResolvedValueOnce({ id: "comment-d2" });
+    // First logActivity call (approval.decision_comment_posted) rejects;
+    // second call (approval.approved) should still succeed.
+    mockLogActivity.mockImplementationOnce(() => Promise.reject(new Error("activity log down")));
+    mockLogActivity.mockResolvedValue(undefined);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-10b/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.approved" }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.decision_comment_failed" }),
     );
   });
 
