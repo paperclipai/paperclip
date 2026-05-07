@@ -551,7 +551,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
-  let instructionsChars = 0;
   if (instructionsFilePath) {
     try {
       const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
@@ -559,7 +558,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      instructionsChars = instructionsPrefix.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -580,14 +578,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedBootstrapPrompt =
-    !sessionId && bootstrapPromptTemplate.trim().length > 0
+  const baseRenderedBootstrapPrompt =
+    bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
-  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
-  instructionsChars = promptInstructionsPrefix.length;
+  const baseRenderedPrompt = renderTemplate(promptTemplate, templateData);
+  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const continuationSummary = parseObject(context.paperclipContinuationSummary);
   const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
   const codexFallbackHandoffNote =
@@ -598,22 +594,51 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           continuationSummaryBody,
         })
       : "";
-  const commandNotes = (() => {
-    if (!instructionsFilePath) {
-      const notes = [repoAgentsNote];
-      if (forceSaferInvocation) {
-        notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+
+  const buildAttemptPrompt = (resumeSessionId: string | null) => {
+    const resumedSession = Boolean(resumeSessionId);
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
+    const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
+    const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
+    const renderedBootstrapPrompt = resumedSession ? "" : baseRenderedBootstrapPrompt;
+    const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : baseRenderedPrompt;
+    const prompt = joinPromptSections([
+      promptInstructionsPrefix,
+      renderedBootstrapPrompt,
+      wakePrompt,
+      codexFallbackHandoffNote,
+      sessionHandoffNote,
+      renderedPrompt,
+    ]);
+    const commandNotes = (() => {
+      if (!instructionsFilePath) {
+        const notes = [repoAgentsNote];
+        if (forceSaferInvocation) {
+          notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+        }
+        if (forceFreshSession) {
+          notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+        }
+        return notes;
       }
-      if (forceFreshSession) {
-        notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-      }
-      return notes;
-    }
-    if (instructionsPrefix.length > 0) {
-      if (shouldUseResumeDeltaPrompt) {
+      if (instructionsPrefix.length > 0) {
+        if (shouldUseResumeDeltaPrompt) {
+          const notes = [
+            `Loaded agent instructions from ${instructionsFilePath}`,
+            "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+            repoAgentsNote,
+          ];
+          if (forceSaferInvocation) {
+            notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+          }
+          if (forceFreshSession) {
+            notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+          }
+          return notes;
+        }
         const notes = [
           `Loaded agent instructions from ${instructionsFilePath}`,
-          "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
           repoAgentsNote,
         ];
         if (forceSaferInvocation) {
@@ -625,8 +650,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return notes;
       }
       const notes = [
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
         repoAgentsNote,
       ];
       if (forceSaferInvocation) {
@@ -636,48 +660,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
       }
       return notes;
-    }
-    const notes = [
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-      repoAgentsNote,
-    ];
-    if (forceSaferInvocation) {
-      notes.push("Codex transient fallback requested safer invocation settings for this retry.");
-    }
-    if (forceFreshSession) {
-      notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-    }
-    return notes;
-  })();
-  const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    promptInstructionsPrefix,
-    renderedBootstrapPrompt,
-    wakePrompt,
-    codexFallbackHandoffNote,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    instructionsChars,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
+    })();
+    return {
+      prompt,
+      commandNotes,
+      promptMetrics: {
+        promptChars: prompt.length,
+        instructionsChars: promptInstructionsPrefix.length,
+        bootstrapPromptChars: renderedBootstrapPrompt.length,
+        wakePromptChars: wakePrompt.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        heartbeatPromptChars: renderedPrompt.length,
+      },
+    };
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const attemptPrompt = buildAttemptPrompt(resumeSessionId);
     const execArgs = buildCodexExecArgs(
       forceSaferInvocation ? { ...config, fastMode: false } : config,
       { resumeSessionId },
     );
     const args = execArgs.args;
-    const commandNotesWithFastMode =
-      execArgs.fastModeIgnoredReason == null
-        ? commandNotes
-        : [...commandNotes, execArgs.fastModeIgnoredReason];
+    const commandNotesWithFastMode = [
+      ...attemptPrompt.commandNotes,
+      ...(execArgs.reasoningEffortNormalizedReason
+        ? [execArgs.reasoningEffortNormalizedReason]
+        : []),
+      ...(execArgs.reasoningEffortIgnoredReason
+        ? [execArgs.reasoningEffortIgnoredReason]
+        : []),
+      ...(execArgs.fastModeIgnoredReason ? [execArgs.fastModeIgnoredReason] : []),
+    ];
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
@@ -685,12 +699,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd: effectiveExecutionCwd,
         commandNotes: commandNotesWithFastMode,
         commandArgs: args.map((value, idx) => {
-          if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
+          if (idx === args.length - 1 && value !== "-")
+            return `<prompt ${attemptPrompt.prompt.length} chars>`;
           return value;
         }),
         env: loggedEnv,
-        prompt,
-        promptMetrics,
+        prompt: attemptPrompt.prompt,
+        promptMetrics: attemptPrompt.promptMetrics,
         context,
       });
     }
@@ -698,7 +713,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
-      stdin: prompt,
+      stdin: attemptPrompt.prompt,
       timeoutSec,
       graceSec,
       onSpawn,
