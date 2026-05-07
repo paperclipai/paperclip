@@ -313,7 +313,7 @@ function livenessCopyForRun(run: LedgerRun, t: TFunc) {
   return isActiveRun(run) ? getPendingLivenessCopy(t) : getMissingLivenessCopy(t);
 }
 
-function stopReasonLabel(run: RunForIssue) {
+function stopReasonLabel(run: RunForIssue, t: TFunc) {
   const result = asRecord(run.resultJson);
   const stopReason = readString(result?.stopReason);
   const timeoutFired = result?.timeoutFired === true;
@@ -322,15 +322,19 @@ function stopReasonLabel(run: RunForIssue) {
     effectiveTimeoutSec && effectiveTimeoutSec > 0 ? `${effectiveTimeoutSec}s timeout` : null;
 
   if (timeoutFired || stopReason === "timeout") {
-    return timeoutText ? `timeout (${timeoutText})` : "timeout";
+    return timeoutText
+      ? t("ledger.stop_reason_timeout_with_duration", { duration: timeoutText })
+      : t("ledger.stop_reason_timeout");
   }
-  if (stopReason === "max_turns_exhausted" || stopReason === "turn_limit_exhausted") return "max turns exhausted";
-  if (stopReason === "budget_paused") return "budget paused";
-  if (stopReason === "cancelled") return "cancelled";
-  if (stopReason === "paused") return "paused by board";
-  if (stopReason === "process_lost") return "process lost";
-  if (stopReason === "adapter_failed") return "adapter failed";
-  if (stopReason === "completed") return timeoutText ? `completed (${timeoutText})` : "completed";
+  if (stopReason === "max_turns_exhausted" || stopReason === "turn_limit_exhausted") return t("ledger.stop_reason_max_turns");
+  if (stopReason === "budget_paused") return t("ledger.stop_reason_budget_paused");
+  if (stopReason === "cancelled") return t("ledger.stop_reason_cancelled");
+  if (stopReason === "paused") return t("ledger.stop_reason_paused");
+  if (stopReason === "process_lost") return t("ledger.stop_reason_process_lost");
+  if (stopReason === "adapter_failed") return t("ledger.stop_reason_adapter_failed");
+  if (stopReason === "completed") return timeoutText
+    ? t("ledger.stop_reason_completed_with_duration", { duration: timeoutText })
+    : t("ledger.stop_reason_completed");
   return timeoutText;
 }
 
@@ -701,7 +705,7 @@ export function IssueRunLedgerContent({
             }
             const run = item.run;
             const liveness = livenessCopyForRun(run, t);
-            const stopReason = stopReasonLabel(run);
+            const stopReason = stopReasonLabel(run, t);
             const duration = formatDuration(run.startedAt, run.finishedAt);
             const exhausted = hasExhaustedContinuation(run);
             const continuation = continuationLabel(run, t);

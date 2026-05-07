@@ -1717,19 +1717,19 @@ export function IssueDetail() {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
         title: result.kind === "release"
-          ? treeControlScope === "leaf" ? "Work resumed" : "Subtree resumed"
+          ? treeControlScope === "leaf" ? t("detail.toast.tree_control_resumed_leaf") : t("detail.toast.tree_control_resumed_subtree")
           : result.hold.mode === "pause"
-            ? treeControlScope === "leaf" ? "Work paused" : "Subtree paused"
-            : `${modeLabel} applied`,
+            ? treeControlScope === "leaf" ? t("detail.toast.tree_control_paused_leaf") : t("detail.toast.tree_control_paused_subtree")
+            : t("detail.toast.tree_control_applied", { label: modeLabel }),
         body: result.kind === "release"
-          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? "Active issue pause released." : "Active subtree pause released."))
+          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? t("detail.toast.tree_control_release_leaf_body") : t("detail.toast.tree_control_release_subtree_body")))
           : result.hold.mode === "pause"
             ? treeControlScope === "leaf"
-              ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-              : `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+              ? t("detail.toast.tree_control_pause_leaf_body", { count: cancelCount })
+              : t("detail.toast.tree_control_pause_subtree_body", { count: cancelCount })
             : result.hold.reason?.trim()
               ? result.hold.reason
-              : "Subtree control applied.",
+              : t("detail.toast.tree_control_applied_body"),
       });
       setTreeControlOpen(false);
       setTreeControlReason("");
@@ -1759,8 +1759,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to apply subtree control",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("detail.toast.tree_control_error"),
+        body: err instanceof Error ? err.message : t("detail.toast.try_again"),
         tone: "error",
       });
     },
@@ -1778,10 +1778,10 @@ export function IssueDetail() {
     onSuccess: async (result) => {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
-        title: "Work paused",
+        title: t("detail.toast.pause_work_title"),
         body: cancelCount > 0
-          ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-          : "Work paused. This issue is held until resume.",
+          ? t("detail.toast.pause_work_body", { count: cancelCount })
+          : t("detail.toast.pause_work_body_held"),
         tone: "success",
       });
       await Promise.all([
@@ -1798,8 +1798,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to pause work",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("detail.toast.pause_work_error"),
+        body: err instanceof Error ? err.message : t("detail.toast.try_again"),
         tone: "error",
       });
     },
@@ -1835,14 +1835,14 @@ export function IssueDetail() {
       invalidateIssueRunState();
       invalidateIssueCollections();
       pushToast({
-        title: "Monitor check queued",
+        title: t("detail.toast.monitor_queued"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Monitor check failed",
-        body: err instanceof Error ? err.message : "Unable to trigger the monitor right now",
+        title: t("detail.toast.monitor_failed"),
+        body: err instanceof Error ? err.message : t("detail.toast.monitor_failed_body"),
         tone: "error",
       });
     },
@@ -2007,17 +2007,17 @@ export function IssueDetail() {
         : 0;
       pushToast({
         title: interaction.kind === "request_confirmation"
-          ? "Request confirmed"
+          ? t("detail.toast.request_confirmed")
           : skippedCount > 0
-          ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
-          : "Suggested tasks accepted",
+          ? t("detail.toast.accept_drafts_skipped", { count: createdCount, skipped: skippedCount })
+          : t("detail.toast.accept_drafts_accepted"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Accept failed",
-        body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
+        title: t("detail.toast.accept_failed"),
+        body: err instanceof Error ? err.message : t("detail.toast.accept_failed_body"),
         tone: "error",
       });
     },
@@ -2030,14 +2030,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: interaction.kind === "request_confirmation" ? "Request declined" : "Suggestion rejected",
+        title: interaction.kind === "request_confirmation" ? t("detail.toast.request_declined") : t("detail.toast.suggestion_rejected"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Reject failed",
-        body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
+        title: t("detail.toast.reject_failed"),
+        body: err instanceof Error ? err.message : t("detail.toast.reject_failed_body"),
         tone: "error",
       });
     },
@@ -2055,14 +2055,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Answers submitted",
+        title: t("detail.toast.answers_submitted"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Submit failed",
-        body: err instanceof Error ? err.message : "Unable to submit answers",
+        title: t("detail.toast.submit_failed"),
+        body: err instanceof Error ? err.message : t("detail.toast.submit_failed_body"),
         tone: "error",
       });
     },
@@ -2076,14 +2076,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Question cancelled",
+        title: t("detail.toast.question_cancelled"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
         title: t("detail.toast.cancel_failed"),
-        body: err instanceof Error ? err.message : "Unable to cancel the question",
+        body: err instanceof Error ? err.message : t("detail.toast.cancel_question_failed_body"),
         tone: "error",
       });
     },

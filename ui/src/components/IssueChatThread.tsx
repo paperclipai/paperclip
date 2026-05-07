@@ -718,13 +718,11 @@ export function resolveIssueChatHumanAuthor(args: {
   };
 }
 
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
+function formatRunStatusLabel(status: string, t: TFunc) {
+  const key = `chat.run_status.${status}`;
+  const translated = t(key);
+  if (translated !== key) return translated;
+  return status.replace(/_/g, " ");
 }
 
 function runStatusClass(status: string) {
@@ -2256,7 +2254,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
                 {runId.slice(0, 8)}
               </Link>
               <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
+                {formatRunStatusLabel(runStatus, t)}
               </span>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
