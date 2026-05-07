@@ -158,7 +158,9 @@ For each linked issue, either:
 
 ### 10. Verify the instructions bundle was persisted (REQUIRED)
 
-`POST /api/companies/:companyId/agent-hires` with `instructionsBundle.files` only persists the bundle **config** (`mode`, `entryFile`). It does **not** write the file content to disk. Skipping this step ships agents as empty shells (`files: []`, `resolvedEntryPath: null`), and any heartbeat then runs with no prompt.
+`POST /api/companies/:companyId/agent-hires` normally materializes `instructionsBundle.files` to disk — the standard Step 8 case (where `adapterConfig` is just `cwd` and `model`) writes the files successfully. **But there is a silent-failure path:** if `adapterConfig` already contains any of `instructionsBundleMode`, `instructionsRootPath`, `instructionsEntryFile`, `instructionsFilePath`, or `agentsMdPath`, the materialization is skipped (the early-return at `server/src/routes/agents.ts:1090-1107` short-circuits). The bundle config is still persisted, the hire still returns `200`, the approval flows normally — but `instructionsBundle.files` is dropped, the agent ships as an empty shell (`files: []`, `resolvedEntryPath: null`), and any heartbeat then runs with no prompt.
+
+Those conflict keys can show up in `adapterConfig` without the caller noticing — adapter defaults, template fragments, runtime-config merges, or a human-edited config can all introduce them. The hire response gives no signal either way. Treat post-hire verification as mandatory rather than optional: do not assume materialization ran.
 
 Run this verification after the hire is approved (or immediately, if the company does not require approval) — and before marking any hire/source issue `done`.
 
