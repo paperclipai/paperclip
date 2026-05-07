@@ -8,6 +8,8 @@ import { defineConfig } from "@playwright/test";
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
+// Opt-in: roteia Chromium pelo br-proxy via PLAYWRIGHT_PROXY_SERVER.
+const PROXY_SERVER = process.env.PLAYWRIGHT_PROXY_SERVER;
 
 export default defineConfig({
   testDir: ".",
@@ -22,6 +24,7 @@ export default defineConfig({
     headless: true,
     screenshot: "only-on-failure",
     trace: "on-first-retry",
+    ...(PROXY_SERVER ? { proxy: { server: PROXY_SERVER, bypass: "localhost,127.0.0.1" } } : {}),
   },
   projects: [
     {

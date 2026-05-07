@@ -52,10 +52,23 @@ WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
+  && apt-get install -y --no-install-recommends \
+       openssh-client jq \
+       libnss3 libnspr4 libasound2t64 libpango-1.0-0 \
+       libgbm1 libxss1 libwoff1 libxshmfence1 \
+       libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
+       libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
+       libxtst6 libcups2 libdbus-1-3 libdrm2 libatk1.0-0 libatk-bridge2.0-0 \
+       libatspi2.0-0 fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && mkdir -p /paperclip /opt/playwright \
+  && chown node:node /paperclip /opt/playwright
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+RUN cd /app \
+  && PLAYWRIGHT_BROWSERS_PATH=/opt/playwright npx playwright install chromium \
+  && chown -R node:node /opt/playwright
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
