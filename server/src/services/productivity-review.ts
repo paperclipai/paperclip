@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { isAutoRecoveryIssuesEnabled } from "./auto-recovery-flag.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import {
@@ -637,6 +638,28 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     evidence: ProductivityReviewEvidence,
     opts: { prefix: string; thresholds: ProductivityReviewThresholds },
   ) {
+    if (!(await isAutoRecoveryIssuesEnabled(db))) {
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_suppressed",
+        entityType: "issue",
+        entityId: evidence.sourceIssue.id,
+        agentId: evidence.sourceIssue.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          trigger: evidence.trigger,
+          triggerReasons: evidence.triggerReasons,
+          noCommentStreak: evidence.noCommentStreak,
+          runCountLastHour: evidence.runCountLastHour,
+          commentCountLastHour: evidence.commentCountLastHour,
+        },
+      });
+      return { kind: "suppressed" as const, reviewIssueId: null };
+    }
+
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
@@ -788,6 +811,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
+      suppressed: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
@@ -828,6 +852,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;
+        else if (outcome.kind === "suppressed") result.suppressed += 1;
         else result.existing += 1;
         if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
       } catch (err) {

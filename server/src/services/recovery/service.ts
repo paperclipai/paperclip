@@ -27,6 +27,7 @@ import { logger } from "../../middleware/logger.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
+import { isAutoRecoveryIssuesEnabled } from "../auto-recovery-flag.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
@@ -1429,6 +1430,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+
+    if (!(await isAutoRecoveryIssuesEnabled(db))) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.issue.assigneeAgentId,
+        runId: input.latestRun?.id ?? null,
+        action: "issue.stranded_recovery_suppressed",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          source: "recovery.ensure_stranded_issue_recovery_issue",
+          identifier: input.issue.identifier,
+          previousStatus: input.previousStatus,
+          recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        },
+      });
+      return null;
+    }
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
