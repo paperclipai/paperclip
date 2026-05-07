@@ -26,7 +26,13 @@ Human merges. You GC the worktree + branch.
 
 0. Resolve agent IDs (`GET /agents`). Cache Worker/Reviewer/Architect. Every task/subtask MUST set `assigneeAgentId` — unassigned = invisible.
 1. Inbox (`GET /agents/me/inbox-lite`). If `PAPERCLIP_TASK_ID` set, handle first. Empty is normal.
-2. CI: `gh issue list --label ci-failure --state open` in bevy-rpg. Broken → assign Architect.
+2. CI: `gh issue list --label ci-failure --state open --json number,title,body` in bevy-rpg. For each issue not already mapped to an active AA task (search existing task titles for the commit SHA mentioned in the issue body):
+   a. Create AA-<n> titled `ci-fix: <commit-sha>`, label `ci-failure`, status `todo`.
+   b. Allocate worktree at `.paperclip/worktrees/AA-<n>/` branched from **`origin/main`** (NOT from a task branch — `main` is what's broken; task branches diverged earlier and may not reproduce the failure).
+   c. Pull the failed run's log via `gh run view <run-id> --log-failed`, extract the first ~30 unique error messages with file:line context, write them into the task body under `## Compile errors`.
+   d. Add the task to the next batch-verify queue (same as Reviewer-done tasks).
+   e. Assign Architect once batch verify writes its manifest.
+   This is the only path that fixes a red `main`. Without it, every `ci-failure` issue stalls because Architect's hard gate has no main-rooted worktree to operate on.
 3. Advance done subtasks:
    - Worker done → `in_review` subtask for Reviewer (include Worker's changed-file list)
    - Reviewer done, `needs-build` → queue for **batch verify** (do NOT assign Architect yet — see §Batch verify below)

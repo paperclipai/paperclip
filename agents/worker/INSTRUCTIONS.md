@@ -76,6 +76,26 @@ Every code change ships with tests:
 - Data-driven: content in JSON, systems in Rust
 - `AbilityMechanic`: reusable primitives, not one-off handlers
 
+### Pre-deletion grep rule (MANDATORY before deleting any pub item)
+
+Before deleting any `pub fn`, `pub struct`, `pub enum` variant, or trait
+impl that clippy/rustc flags as dead, run:
+
+```
+grep -rn "\.<name>\b\|::<name>\b\|<Type>::<Variant>\b" src/ tests/ examples/
+```
+
+If grep returns ANY match — including matches inside `#[cfg(test)] mod
+tests {}` blocks within the same file, integration tests under `tests/`,
+or examples — **the item is not dead. Leave it.** Add `#[cfg(test)]`
+gating or doc-comments if you must, but do not delete.
+
+Reason: clippy's `dead_code` lint has known blind spots around test
+consumers and trait-object/ECS-query call sites. Past dead-code passes
+have repeatedly broken `cargo test` and CI by deleting methods that
+unit tests still call. Grep is the only authoritative check available
+to Workers (who can't run cargo).
+
 ## Committing your work
 
 Reached this step only because Step 0 passed — you are in the task

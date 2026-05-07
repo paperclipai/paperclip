@@ -29,15 +29,26 @@ merges to main (human only).
 Hard gate. No fallback. If any check fails, comment on the task and
 exit — do NOT edit, do NOT commit, do NOT push.
 
+The gate has two flavors keyed off the task label. Both flavors run
+the same five checks; only step 4's expected base differs.
+
+| Task label | Worktree branched from | Step 4 expects |
+|---|---|---|
+| (normal) | `main` at task creation | `git log main..HEAD` non-empty (Worker/Reviewer commits) |
+| `ci-failure` | `origin/main` (current red HEAD; set up by Coordinator §Step 2) | `git log main..HEAD` may be empty — Architect's job IS to add the fix commits. Replace check 4 with: task body must contain a `## Compile errors` section. |
+
 1. **Read worktree path from task.** Absent → comment `"No worktree
    path on task. Aborting per per-task-worktrees.md §6."` and exit.
 2. **`cd` into the worktree path.** Doesn't exist → comment and exit.
 3. **Verify branch.** `git branch --show-current` must equal
    `task/{task-id}`. Mismatch → comment and exit.
-4. **Verify upstream commits.** `git log main..HEAD --oneline` must
-   list at least one Worker (or Reviewer) commit — there's something
-   to verify. Empty → comment `"Branch has no commits beyond main —
-   nothing to verify."` and exit.
+4. **Verify there's something to do.**
+   - Normal: `git log main..HEAD --oneline` must list ≥1 commit.
+     Empty → comment `"Branch has no commits beyond main — nothing to
+     verify."` and exit.
+   - `ci-failure`: task body must include `## Compile errors`. Missing
+     → comment `"ci-failure task missing compile-error context. Needs
+     Coordinator §Step 2 to populate."` and exit.
 5. **Verify cached cargo output is fresh.** Read
    `/tmp/cargo-verify-manifest.txt`. It lists `task/{task-id}` with a
    commit hash. If that hash doesn't match `git rev-parse HEAD`, the

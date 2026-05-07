@@ -89,6 +89,21 @@ SystemParam extraction, function extraction, struct splits — these are the hig
 - **Never push.** Architect opens the PR. Pushing mid-pipeline races with their work.
 - **Never merge to main.** Only the human merges, via the PR.
 
+### Pre-deletion grep rule (MANDATORY before deleting any pub item)
+
+Before deleting any `pub fn`, `pub struct`, `pub enum` variant, or trait
+impl as part of a "dead code" cleanup, run:
+
+```
+grep -rn "\.<name>\b\|::<name>\b\|<Type>::<Variant>\b" src/ tests/ examples/
+```
+
+If grep returns ANY match — including `#[cfg(test)] mod tests {}` within
+the same file, integration tests under `tests/`, or examples — **the
+item is not dead. Leave it.** Reason: clippy's `dead_code` lint has
+blind spots around test-only consumers; past Reviewer cleanups have
+broken `cargo test` and CI by deleting methods that unit tests call.
+
 ## Committing your polish
 
 Reached this step only because Step 0 passed — you are in the task
