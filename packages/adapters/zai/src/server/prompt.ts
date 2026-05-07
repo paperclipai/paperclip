@@ -16,18 +16,31 @@ function nonEmpty(value: unknown): string | null {
  * Build the messages array that will be sent to Z.AI.
  *
  * Order:
- *   1. config.systemPrompt (if present) as role=system.
+ *   1. config.systemPrompt (if present) plus any skill markdown addendum,
+ *      merged into a single role=system message.
  *   2. config.messages[] (pre-seeded conversation, e.g. tool_result history).
  *   3. A final user message that combines:
  *      - any configured promptTemplate / message,
  *      - the Paperclip wake text (task context, issueId, wakeReason, etc),
  *      - the structured wake payload as JSON when available.
  */
-export function buildMessages(ctx: AdapterExecutionContext, config: ResolvedZaiConfig): ZaiMessage[] {
+export function buildMessages(
+  ctx: AdapterExecutionContext,
+  config: ResolvedZaiConfig,
+  options: { skillsAddendum?: string } = {},
+): ZaiMessage[] {
   const messages: ZaiMessage[] = [];
 
-  if (config.systemPrompt) {
-    messages.push({ role: "system", content: config.systemPrompt });
+  const skillsAddendum = options.skillsAddendum?.trim() ?? "";
+  const systemParts: string[] = [];
+  if (config.systemPrompt && config.systemPrompt.trim().length > 0) {
+    systemParts.push(config.systemPrompt.trim());
+  }
+  if (skillsAddendum.length > 0) {
+    systemParts.push(skillsAddendum);
+  }
+  if (systemParts.length > 0) {
+    messages.push({ role: "system", content: systemParts.join("\n\n") });
   }
 
   for (const extra of config.extraMessages) {

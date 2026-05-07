@@ -94,6 +94,8 @@ import {
   testEnvironment as zaiTestEnvironment,
   listZaiModels,
   getConfigSchema as zaiGetConfigSchema,
+  listZaiSkills,
+  syncZaiSkills,
 } from "@paperclipai/adapter-zai/server";
 import {
   agentConfigurationDoc as zaiAgentConfigurationDoc,
@@ -354,6 +356,8 @@ const zaiAdapter: ServerAdapterModule = {
   models: zaiModels,
   listModels: listZaiModels,
   getConfigSchema: zaiGetConfigSchema,
+  listSkills: listZaiSkills,
+  syncSkills: syncZaiSkills,
   sessionManagement: {
     supportsSessionResume: false,
     nativeContextManagement: "none",
@@ -364,12 +368,14 @@ const zaiAdapter: ServerAdapterModule = {
       maxSessionAgeHours: 72,
     },
   },
-  // Declared true so the UI's isLocal capability check in AgentConfigForm
-  // renders the model dropdown and adapter-config section for zai agents.
-  // The zai adapter itself ignores the injected JWT (it talks directly to
-  // api.z.ai, not back to Paperclip), so this is purely a UI-visibility knob.
+  // True so the UI's isLocal capability check in AgentConfigForm renders the
+  // model dropdown and adapter-config section, AND so heartbeat mints an
+  // agent JWT into ctx.authToken — which the adapter now USES for tool calls
+  // back into Paperclip's API (paperclipAddComment, paperclipUpdateIssue, etc).
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: false,
+  // Skills are injected as markdown into the system prompt at run time, not
+  // materialized to disk (Z.AI is HTTP-only with no FS). See skills-content.ts.
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: zaiAgentConfigurationDoc,
 };

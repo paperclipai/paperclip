@@ -1,13 +1,46 @@
 import type { AdapterBillingType, AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { resolveZaiConfig } from "../shared/config.js";
-import type { ZaiChatRequest, ZaiChatResponse, ZaiStdoutEvent } from "../shared/types.js";
+import type {
+  ZaiChatRequest,
+  ZaiChatResponse,
+  ZaiMessage,
+  ZaiStdoutEvent,
+  ZaiToolDefinition,
+} from "../shared/types.js";
 import { computeZaiCostUsd, isCodingPlanEndpoint } from "../shared/pricing.js";
-import { encodeEvent, consumeSseStream } from "./streaming.js";
+import { encodeEvent } from "./streaming.js";
 import { buildMessages } from "./prompt.js";
+import { buildPaperclipToolsCatalog } from "./tools-catalog.js";
+import { buildZaiSkillInjection } from "./skills-content.js";
+import { runZaiToolLoop, ZaiHttpError } from "./tool-loop.js";
+
+const DEFAULT_MAX_TOOL_TURNS = 16;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function readMaxToolTurns(config: Record<string, unknown>): number {
+  const raw = config.maxToolTurns;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1 && raw <= 64) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_MAX_TOOL_TURNS;
+}
+
+function readPaperclipApiUrl(): string | null {
+  const candidates = [process.env.PAPERCLIP_RUNTIME_API_URL, process.env.PAPERCLIP_API_URL];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      const trimmed = candidate.trim().replace(/\/+$/, "");
+      return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
+    }
+  }
+  const host = process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost";
+  const port = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  const normalizedHost = host && host !== "0.0.0.0" && host !== "::" ? host : "localhost";
+  return `http://${normalizedHost}:${port}/api`;
 }
 
 function redactBody(body: ZaiChatRequest): Record<string, unknown> {
@@ -32,18 +65,25 @@ function extractResultText(response: ZaiChatResponse): string | null {
   return null;
 }
 
-function buildUsage(response: ZaiChatResponse): AdapterExecutionResult["usage"] | undefined {
-  const usage = response.usage;
-  if (!usage) return undefined;
-  const inputTokens = usage.prompt_tokens ?? 0;
-  const outputTokens = usage.completion_tokens ?? 0;
-  const cachedInputTokens = usage.prompt_tokens_details?.cached_tokens;
-  if (inputTokens <= 0 && outputTokens <= 0 && !cachedInputTokens) return undefined;
+function buildUsageFromAccumulator(usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number }) {
+  if (usage.inputTokens <= 0 && usage.outputTokens <= 0 && usage.cachedInputTokens <= 0) return undefined;
   return {
-    inputTokens,
-    outputTokens,
-    ...(cachedInputTokens ? { cachedInputTokens } : {}),
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    ...(usage.cachedInputTokens > 0 ? { cachedInputTokens: usage.cachedInputTokens } : {}),
   };
+}
+
+function readDesiredToolNames(config: Record<string, unknown>): Set<string> | null {
+  const raw = config.tools;
+  if (!Array.isArray(raw)) return null;
+  const names = new Set<string>();
+  for (const entry of raw) {
+    const fn = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>).function : null;
+    const name = fn && typeof fn === "object" ? (fn as Record<string, unknown>).name : null;
+    if (typeof name === "string" && name.length > 0) names.add(name);
+  }
+  return names.size > 0 ? names : null;
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -60,20 +100,73 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const messages = buildMessages(ctx, resolved);
-
-  const request: ZaiChatRequest = {
-    model: resolved.model,
-    messages,
-    stream: resolved.stream,
-  };
-  if (resolved.temperature !== null) request.temperature = resolved.temperature;
-  if (resolved.maxTokens !== null) request.max_tokens = resolved.maxTokens;
-  if (resolved.tools.length > 0) {
-    request.tools = resolved.tools;
-    request.tool_choice = "auto";
+  // Resolve and load any "desired" Paperclip skills as a system-prompt addendum.
+  // This gives the model the SKILL.md content at run time (Z.AI has no FS to
+  // materialize skills onto, so we inject the markdown directly).
+  const skillInjection = await buildZaiSkillInjection(ctx.config);
+  if (skillInjection.injectedKeys.length > 0) {
+    await ctx.onLog(
+      "stdout",
+      `[zai/skills] injected=${skillInjection.injectedKeys.length} keys=${JSON.stringify(skillInjection.injectedKeys)}\n`,
+    );
   }
-  if (resolved.responseFormat) request.response_format = { type: resolved.responseFormat };
+  for (const warning of skillInjection.warnings) {
+    await ctx.onLog("stderr", `[zai/skills] ${warning}\n`);
+  }
+
+  const messages = buildMessages(ctx, resolved, { skillsAddendum: skillInjection.systemPromptAddendum });
+  const onEvent = async (event: ZaiStdoutEvent) => {
+    await ctx.onLog("stdout", encodeEvent(event));
+  };
+
+  // -----------------------------------------------------------------
+  // Tool catalog: connect to the Paperclip API via the agent's JWT.
+  // Without ctx.authToken we still proceed, but with no tools — the
+  // agent runs as a pure chat completion (back-compat with prior runs).
+  // -----------------------------------------------------------------
+  const apiUrl = readPaperclipApiUrl();
+  const agentJwt = typeof ctx.authToken === "string" && ctx.authToken.length > 0 ? ctx.authToken : null;
+
+  let zaiToolDefinitions: ZaiToolDefinition[] = resolved.tools;
+  let toolsByName: Awaited<ReturnType<typeof buildPaperclipToolsCatalog>>["toolsByName"] | null = null;
+  if (agentJwt && apiUrl) {
+    try {
+      const allowed = readDesiredToolNames(ctx.config);
+      const catalog = buildPaperclipToolsCatalog({
+        apiUrl,
+        agentJwt,
+        companyId: ctx.agent.companyId ?? null,
+        agentId: ctx.agent.id ?? null,
+        runId: ctx.runId,
+        allowedToolNames: allowed ?? undefined,
+      });
+      // If the user already provided explicit tools, honor that and skip Paperclip.
+      // Otherwise inject the full Paperclip MCP catalog so the agent can post
+      // comments, update issues, etc.
+      if (resolved.tools.length === 0) {
+        zaiToolDefinitions = catalog.zaiToolDefinitions;
+        toolsByName = catalog.toolsByName;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.onLog("stderr", `[zai] failed to build Paperclip tools catalog: ${message}\n`);
+    }
+  } else if (!agentJwt) {
+    await ctx.onLog(
+      "stderr",
+      "[zai] no agent JWT (ctx.authToken) — Paperclip tool catalog disabled; agent will run without API tools\n",
+    );
+  }
+
+  const baseRequest: Omit<ZaiChatRequest, "stream" | "messages"> = {
+    model: resolved.model,
+    ...(resolved.temperature !== null ? { temperature: resolved.temperature } : {}),
+    ...(resolved.maxTokens !== null ? { max_tokens: resolved.maxTokens } : {}),
+    ...(zaiToolDefinitions.length > 0
+      ? { tools: zaiToolDefinitions, tool_choice: "auto" as const }
+      : {}),
+    ...(resolved.responseFormat ? { response_format: { type: resolved.responseFormat } } : {}),
+  };
 
   if (ctx.onMeta) {
     await ctx.onMeta({
@@ -86,67 +179,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   await ctx.onLog(
     "stdout",
-    `[zai] request ${resolved.model} stream=${resolved.stream} tools=${resolved.tools.length} response_format=${resolved.responseFormat ?? "text"}\n`,
+    `[zai] request ${resolved.model} stream=${resolved.stream} tools=${zaiToolDefinitions.length} response_format=${resolved.responseFormat ?? "text"}\n`,
   );
-  await ctx.onLog("stdout", `[zai] payload ${JSON.stringify(redactBody(request))}\n`);
+  await ctx.onLog(
+    "stdout",
+    `[zai] payload ${JSON.stringify(redactBody({ ...baseRequest, stream: resolved.stream, messages }))}\n`,
+  );
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), resolved.timeoutMs);
-  const onEvent = async (event: ZaiStdoutEvent) => {
-    await ctx.onLog("stdout", encodeEvent(event));
-  };
+  const maxTurns = toolsByName ? readMaxToolTurns(ctx.config) : 1;
 
-  let response: ZaiChatResponse;
+  // Run the agentic loop. Even when no Paperclip tools are wired (toolsByName
+  // is null), we still go through runZaiToolLoop with maxTurns=1; the loop
+  // simply does one HTTP call and returns the response — equivalent to the
+  // prior single-shot path but with consistent error handling.
+  let loopResult: Awaited<ReturnType<typeof runZaiToolLoop>>;
   try {
-    const res = await fetch(`${resolved.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${resolved.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: resolved.stream ? "text/event-stream" : "application/json",
-      },
-      body: JSON.stringify(request),
-      signal: controller.signal,
+    loopResult = await runZaiToolLoop({
+      baseUrl: resolved.baseUrl,
+      apiKey: resolved.apiKey,
+      baseRequest,
+      initialMessages: messages,
+      maxTurns,
+      timeoutMs: resolved.timeoutMs,
+      toolsByName: toolsByName ?? new Map(),
+      streamFinalTurn: resolved.stream,
+      onEvent,
+      onLog: ctx.onLog,
     });
-
-    if (!res.ok) {
-      const errorText = await res.text().catch(() => "");
-      const message = `Z.AI HTTP ${res.status}: ${errorText.slice(0, 500)}`;
-      await ctx.onLog("stderr", `[zai] ${message}\n`);
-      await onEvent({ kind: "error", message });
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: message,
-        errorCode: `zai_http_${res.status}`,
-      };
-    }
-
-    if (resolved.stream && res.body) {
-      response = await consumeSseStream(res.body, onEvent);
-    } else {
-      const json = (await res.json()) as ZaiChatResponse;
-      response = json;
-      // Non-streaming: emit deltas/tool_calls as a single batch so UI can render.
-      const content = extractResultText(json);
-      if (content) await onEvent({ kind: "assistant_delta", text: content });
-      const choice = json.choices?.[0];
-      const toolCalls = choice?.message?.tool_calls ?? [];
-      for (const tc of toolCalls) {
-        let input: unknown = {};
-        if (tc.function.arguments && tc.function.arguments.length > 0) {
-          try {
-            input = JSON.parse(tc.function.arguments);
-          } catch {
-            input = { _raw: tc.function.arguments };
-          }
-        }
-        await onEvent({ kind: "tool_call", id: tc.id, name: tc.function.name, input });
-      }
-    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const status = err instanceof ZaiHttpError ? err.status : null;
     const aborted = message.toLowerCase().includes("abort");
     await ctx.onLog("stderr", `[zai] request failed: ${message}\n`);
     await onEvent({ kind: "error", message });
@@ -155,15 +217,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: null,
       timedOut: aborted,
       errorMessage: aborted ? `Z.AI request timed out after ${resolved.timeoutMs}ms` : message,
-      errorCode: aborted ? "zai_timeout" : "zai_request_failed",
+      errorCode: status !== null ? `zai_http_${status}` : aborted ? "zai_timeout" : "zai_request_failed",
     };
-  } finally {
-    clearTimeout(timer);
   }
 
-  const summary = extractResultText(response);
-  const usage = buildUsage(response);
-  const model = response.model ?? resolved.model;
+  const finalResponse = loopResult.finalResponse;
+  const summary = extractResultText(finalResponse);
+  const usage = buildUsageFromAccumulator(loopResult.totalUsage);
+  const model = finalResponse.model ?? resolved.model;
 
   // Cost reference — always computed at Z.AI pay-as-you-go rates so that
   // management reporting has a consistent USD figure regardless of whether
@@ -172,10 +233,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually paid for this run.
   const codingPlan = isCodingPlanEndpoint(resolved.baseUrl);
   const billingType: AdapterBillingType = codingPlan ? "subscription_included" : "api";
-  const costUsd = usage ? computeZaiCostUsd(model, usage) : null;
+  const costUsd = usage ? computeZaiCostUsd(model, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens }) : null;
 
-  if (response.id) {
-    await onEvent({ kind: "model", model, sessionId: response.id });
+  if (finalResponse.id) {
+    await onEvent({ kind: "model", model, sessionId: finalResponse.id });
   }
   if (usage) {
     await onEvent({
@@ -187,13 +248,49 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType,
     });
   }
+
+  // Only emit the final assistant text if the loop terminated cleanly.
+  // If exhausted (out of tool turns), emit an error so the run doesn't show
+  // a partial-looking final message.
+  if (loopResult.exhausted) {
+    const message = `Z.AI tool loop exhausted ${maxTurns} turns without producing a final response (still emitting tool_calls).`;
+    await ctx.onLog("stderr", `[zai] ${message}\n`);
+    await onEvent({ kind: "error", message });
+    if (summary) await onEvent({ kind: "assistant_delta", text: summary });
+    await ctx.onLog(
+      "stdout",
+      `[zai] done model=${model} billing=${billingType} turns=${loopResult.turns} exhausted=true\n`,
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      provider: "z.ai",
+      biller: "z.ai",
+      model,
+      billingType,
+      ...(usage ? { usage } : {}),
+      ...(costUsd !== null ? { costUsd } : {}),
+      errorMessage: message,
+      errorCode: "zai_tool_loop_exhausted",
+      resultJson: asRecord(finalResponse as unknown),
+    };
+  }
+
+  // Stream the final assistant text as deltas so the UI sees incremental output
+  // even though the loop itself ran non-streamed. (We could also stream the
+  // last turn directly, but doing it post-hoc keeps the loop logic simple and
+  // the user-visible result identical.)
   if (summary) {
+    if (resolved.stream) {
+      await onEvent({ kind: "assistant_delta", text: summary });
+    }
     await onEvent({ kind: "assistant_final", text: summary });
   }
 
   await ctx.onLog(
     "stdout",
-    `[zai] done model=${model} billing=${billingType}${costUsd !== null ? ` cost_usd_ref=${costUsd}` : ""}\n`,
+    `[zai] done model=${model} billing=${billingType} turns=${loopResult.turns}${costUsd !== null ? ` cost_usd_ref=${costUsd}` : ""}\n`,
   );
 
   return {
@@ -207,6 +304,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     ...(summary ? { summary } : {}),
-    resultJson: asRecord(response as unknown),
+    resultJson: asRecord(finalResponse as unknown),
   };
 }
