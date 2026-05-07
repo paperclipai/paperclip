@@ -1,0 +1,23 @@
+{
+  "title": "Should fail",
+  "sections": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trying to sneak in a CDN link",
+      "anchor": true
+    },
+    {
+      "type": "text",
+      "spans": [
+        { "kind": "text", "text": "Click " },
+        {
+          "kind": "link",
+          "text": "here",
+          "href": "http://fonts.googleapis.com/css?family=Roboto"
+        },
+        { "kind": "text", "text": " for nothing." }
+      ]
+    }
+  ]
+}
