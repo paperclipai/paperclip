@@ -29,6 +29,8 @@ import {
   resolveEffectiveAdapterCommand,
 } from "./AdapterStepFields";
 import { OnboardingChrome } from "./OnboardingChrome";
+import { OnboardingStepTabs } from "./OnboardingStepTabs";
+import { COACH_STEP_TABS } from "./onboarding-coach-steps";
 
 const COACH_ISSUE_TITLE = "Welcome — let's figure out what your company should do";
 const COACH_ISSUE_DESCRIPTION =
@@ -290,6 +292,12 @@ export function CoachOnboardingPage() {
   return (
     <OnboardingChrome showAnimation={true}>
       <div className="w-full max-w-md mx-auto my-auto px-8 py-12 space-y-4">
+        <OnboardingStepTabs
+          items={COACH_STEP_TABS.map((item) =>
+            item.id === "chat" ? { ...item, disabled: true } : item,
+          )}
+          activeId="configure"
+        />
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-xl font-semibold">Talk to a Coach</h1>
           <p className="mt-2 text-sm text-muted-foreground">

@@ -17,6 +17,8 @@ import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { Loader2 } from "lucide-react";
 import { OnboardingChrome } from "./OnboardingChrome";
+import { OnboardingStepTabs } from "./OnboardingStepTabs";
+import { COACH_STEP_TABS } from "./onboarding-coach-steps";
 
 const POLL_INTERVAL_MS = 4000;
 const COACH_RESPONSE_GRACE_MS = 1500;
@@ -279,6 +281,13 @@ export function OnboardingChat() {
   return (
     <OnboardingChrome showAnimation={false}>
     <div className="mx-auto flex h-full max-w-2xl flex-col px-4 py-6">
+      <OnboardingStepTabs
+        items={COACH_STEP_TABS}
+        activeId="chat"
+        onSelect={(id) => {
+          if (id === "configure") navigate("/onboarding");
+        }}
+      />
       <div className="mb-4">
         <h1 className="text-base font-medium">{heading}</h1>
         <p className="text-[11px] text-muted-foreground">

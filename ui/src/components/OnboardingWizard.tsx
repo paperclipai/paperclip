@@ -37,6 +37,7 @@ import {
   AdapterStepFields,
   resolveEffectiveAdapterCommand,
 } from "./AdapterStepFields";
+import { OnboardingStepTabs, type OnboardingStepTabItem } from "./OnboardingStepTabs";
 import {
   Building2,
   Bot,
@@ -52,6 +53,13 @@ import {
 
 type Step = 1 | 2 | 3 | 4;
 type AdapterType = string;
+
+const WIZARD_STEP_TABS: ReadonlyArray<OnboardingStepTabItem> = [
+  { id: "1", label: "Company", icon: Building2 },
+  { id: "2", label: "Agent", icon: Bot },
+  { id: "3", label: "Task", icon: ListTodo },
+  { id: "4", label: "Launch", icon: Rocket },
+];
 
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
@@ -569,32 +577,12 @@ export function OnboardingWizard() {
             )}
           >
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
-              {/* Progress tabs */}
-              <div className="flex items-center gap-0 mb-8 border-b border-border">
-                {(
-                  [
-                    { step: 1 as Step, label: "Company", icon: Building2 },
-                    { step: 2 as Step, label: "Agent", icon: Bot },
-                    { step: 3 as Step, label: "Task", icon: ListTodo },
-                    { step: 4 as Step, label: "Launch", icon: Rocket }
-                  ] as const
-                ).map(({ step: s, label, icon: Icon }) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setStep(s)}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer",
-                      s === step
-                        ? "border-foreground text-foreground"
-                        : "border-transparent text-muted-foreground hover:text-foreground/70 hover:border-border"
-                    )}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <OnboardingStepTabs
+                items={WIZARD_STEP_TABS}
+                activeId={String(step)}
+                onSelect={(id) => setStep(Number(id) as Step)}
+              />
+
 
               {/* Step content */}
               {step === 1 && (
