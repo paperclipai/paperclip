@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
+  Laptop,
   LogOut,
   type LucideIcon,
   Moon,
@@ -111,7 +112,11 @@ export function SidebarAccountMenu({
   const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen } = useSidebar();
-  const { theme, toggleTheme } = useTheme();
+  const { preference, toggleTheme } = useTheme();
+  const nextThemeLabel =
+    preference === "dark" ? "light" : preference === "light" ? "system" : "dark";
+  const themeToggleIcon =
+    preference === "dark" ? Sun : preference === "light" ? Laptop : Moon;
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
@@ -216,9 +221,9 @@ export function SidebarAccountMenu({
                 onClick={() => setOpen(false)}
               />
               <MenuAction
-                label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                description="Toggle the app appearance."
-                icon={theme === "dark" ? Sun : Moon}
+                label={`Switch to ${nextThemeLabel} mode`}
+                description="Toggle the app appearance: dark → light → system."
+                icon={themeToggleIcon}
                 onClick={() => {
                   toggleTheme();
                   setOpen(false);

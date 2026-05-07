@@ -8,11 +8,15 @@ import {
   type ReactNode,
 } from "react";
 
-type Theme = "light" | "dark";
+type ThemePreference = "light" | "dark" | "system";
+type ResolvedTheme = "light" | "dark";
 
 interface ThemeContextValue {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
+  /** The user's preference: light, dark, or system. */
+  preference: ThemePreference;
+  /** The resolved theme actually applied to the document. */
+  theme: ResolvedTheme;
+  setTheme: (theme: ThemePreference) => void;
   toggleTheme: () => void;
 }
 
@@ -21,12 +25,33 @@ const DARK_THEME_COLOR = "#18181b";
 const LIGHT_THEME_COLOR = "#ffffff";
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-function resolveThemeFromDocument(): Theme {
-  if (typeof document === "undefined") return "dark";
-  return document.documentElement.classList.contains("dark") ? "dark" : "light";
+function getSystemTheme(): ResolvedTheme {
+  if (typeof window === "undefined") return "dark";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyTheme(theme: Theme) {
+function resolveTheme(preference: ThemePreference): ResolvedTheme {
+  return preference === "system" ? getSystemTheme() : preference;
+}
+
+function getSavedPreference(): ThemePreference {
+  if (typeof window === "undefined") return "dark";
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      return stored;
+    }
+  } catch {
+    // Ignore — restricted storage environments fall back to dark.
+  }
+  // No saved preference: default to existing applied theme so first paint stays consistent.
+  if (typeof document !== "undefined") {
+    return document.documentElement.classList.contains("dark") ? "dark" : "light";
+  }
+  return "dark";
+}
+
+function applyTheme(theme: ResolvedTheme) {
   if (typeof document === "undefined") return;
   const isDark = theme === "dark";
   const root = document.documentElement;
@@ -39,32 +64,54 @@ function applyTheme(theme: Theme) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => resolveThemeFromDocument());
+  const initialPreference = getSavedPreference();
+  const [preference, setPreferenceState] = useState<ThemePreference>(initialPreference);
+  const [resolved, setResolved] = useState<ResolvedTheme>(() => resolveTheme(initialPreference));
 
-  const setTheme = useCallback((nextTheme: Theme) => {
-    setThemeState(nextTheme);
+  const setTheme = useCallback((nextPreference: ThemePreference) => {
+    setPreferenceState(nextPreference);
   }, []);
 
   const toggleTheme = useCallback(() => {
-    setThemeState((current) => (current === "dark" ? "light" : "dark"));
+    setPreferenceState((current) =>
+      current === "dark" ? "light" : current === "light" ? "system" : "dark",
+    );
   }, []);
 
+  // Persist preference and recompute resolved theme on change.
   useEffect(() => {
-    applyTheme(theme);
+    setResolved(resolveTheme(preference));
     try {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
+      localStorage.setItem(THEME_STORAGE_KEY, preference);
     } catch {
       // Ignore local storage write failures in restricted environments.
     }
-  }, [theme]);
+  }, [preference]);
+
+  // Apply resolved theme to the document.
+  useEffect(() => {
+    applyTheme(resolved);
+  }, [resolved]);
+
+  // Listen for system theme changes when preference is "system".
+  useEffect(() => {
+    if (preference !== "system" || typeof window === "undefined") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (event: MediaQueryListEvent) => {
+      setResolved(event.matches ? "dark" : "light");
+    };
+    media.addEventListener("change", handler);
+    return () => media.removeEventListener("change", handler);
+  }, [preference]);
 
   const value = useMemo(
     () => ({
-      theme,
+      preference,
+      theme: resolved,
       setTheme,
       toggleTheme,
     }),
-    [theme, setTheme, toggleTheme],
+    [preference, resolved, setTheme, toggleTheme],
   );
 
   return (
