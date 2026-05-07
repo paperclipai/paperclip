@@ -218,7 +218,9 @@
     "tree_control_err_unknown": "Unable to load preview.",
     "wake_assignee_for_triage": "Sending this comment will wake {{name}} for triage while the subtree remains paused.",
     "assign_agent_for_triage": "Assign an agent to wake them for triage while the subtree remains paused.",
-    "tab_related_work": "Related work"
+    "tab_related_work": "Related work",
+    "productivity_review_tooltip": "This task is a productivity review.",
+    "productivity_review": "Productivity review"
   },
   "status_labels": {
     "in_progress": "In Progress",
@@ -365,7 +367,18 @@
     "paused_budget_stop": "It was paused by a budget hard stop.",
     "paused_system": "It was paused by the system.",
     "paused_manual": "It was paused manually.",
-    "paused_agent": "{{name}} is paused. New runs will not start until the agent is resumed. {{detail}}"
+    "paused_agent": "{{name}} is paused. New runs will not start until the agent is resumed. {{detail}}",
+    "copy_link": "Copy link",
+    "copy_link_aria": "Copy link to system notice",
+    "copy_notice": "Copy notice text",
+    "copy_notice_aria": "Copy system notice",
+    "drop_to_upload": "Drop to upload",
+    "drop_upload_hint": "Images insert into the reply. Other files are added to this issue.",
+    "attach_file": "Attach file",
+    "attachment_uploading": "Uploading to issue",
+    "attachment_upload_failed": "Upload failed",
+    "attachment_inline": "Inserted inline",
+    "attachment_attached": "Attached to issue"
   },
   "columns": {
     "button": "Columns",
@@ -816,6 +829,9 @@
     "confirmation_requested": "Confirmation requested",
     "proposed_by": "proposed by {{name}}",
     "resolved_by": "Resolved by {{name}}",
-    "resolved_by_on": "Resolved by {{name}} on {{date}}"
+    "resolved_by_on": "Resolved by {{name}} on {{date}}",
+    "include_task": "Include {{title}}",
+    "confirm": "Confirm",
+    "decline": "Decline"
   }
 }

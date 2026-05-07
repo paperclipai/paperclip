@@ -228,7 +228,7 @@ function TaskTreeNode({
                 <Checkbox
                   checked={isSelected}
                   onCheckedChange={(checked) => onToggleSelection?.(node, checked === true)}
-                  aria-label={`Include ${node.task.title}`}
+                  aria-label={t("interaction.include_task", { title: node.task.title })}
                   className="mt-0.5"
                 />
               ) : null}
@@ -488,7 +488,7 @@ function SuggestTasksCard({
             "mt-1 leading-6",
             !interaction.result?.rejectionReason && "text-rose-900/75",
           )}>
-            {interaction.result?.rejectionReason || "No reason provided."}
+            {interaction.result?.rejectionReason || t("interaction.no_reason")}
           </p>
         </div>
       ) : null}
@@ -1116,7 +1116,7 @@ function RequestConfirmationCard({
                   {t("interaction.confirming")}
                 </>
               ) : (
-                interaction.payload.acceptLabel ?? "Confirm"
+                interaction.payload.acceptLabel ?? t("interaction.confirm")
               )}
             </Button>
             <Button
@@ -1132,7 +1132,7 @@ function RequestConfirmationCard({
                 setRejecting((current) => !current);
               }}
             >
-              {interaction.payload.rejectLabel ?? "Decline"}
+              {interaction.payload.rejectLabel ?? t("interaction.decline")}
             </Button>
           </div>
 
