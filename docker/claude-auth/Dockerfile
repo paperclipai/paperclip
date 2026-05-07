@@ -1,30 +1,73 @@
 # syntax=docker/dockerfile:1.20
 FROM node:lts-alpine
 RUN npm install -g @anthropic-ai/claude-code@latest
+RUN apk add --no-cache expect
 
-COPY <<'EOF' /run.sh
+COPY <<'ENTRYPOINT' /run.sh
 #!/bin/sh
 node -e "require('http').createServer((_,r)=>r.end('ok')).listen(process.env.PORT||3000)" &
+exec expect /auth.exp
+ENTRYPOINT
 
-echo "=== claude version ==="
-claude --version 2>&1
-echo ""
+COPY <<'EXPECTSCRIPT' /auth.exp
+#!/usr/bin/expect -f
+set timeout 300
 
-echo "=== attempting claude login (will print auth URL) ==="
-# Use script(1) to allocate a pseudo-TTY so claude doesn't bail in headless
-script -q -c "claude login" /dev/null 2>&1
-echo "exit: $?"
-echo ""
+log_user 1
 
-echo "=== attempting claude setup-token ==="
-script -q -c "claude setup-token" /dev/null 2>&1
-echo "exit: $?"
+spawn claude login
 
-echo "=== Done. Copy token above then delete this service ==="
-sleep infinity
-EOF
+# Step through the first-run theme wizard
+expect {
+    -re {[1-9]\.\s*(Auto|Dark|Light)} {
+        send "2\r"
+        exp_continue
+    }
+    -re {https://[^\r\n]+} {
+        set url $expect_out(0,string)
+        puts "\n\n=========================================="
+        puts "OPEN THIS URL IN YOUR BROWSER:"
+        puts $url
+        puts "==========================================\n"
+        exp_continue
+    }
+    "Logged in" {
+        puts "\n\n=== LOGIN SUCCESSFUL - now running setup-token ==="
+    }
+    "successfully" {
+        puts "\n\n=== LOGIN SUCCESSFUL - now running setup-token ==="
+    }
+    timeout {
+        puts "TIMED OUT"
+        exit 1
+    }
+    eof {
+        puts "Process ended - check above for URL"
+    }
+}
 
-RUN chmod +x /run.sh
-RUN apk add --no-cache util-linux
+# Now mint the long-lived token
+spawn claude setup-token
+
+expect {
+    -re {sk-ant-[^\r\n]+} {
+        set token $expect_out(0,string)
+        puts "\n\n=========================================="
+        puts "YOUR CLAUDE_CODE_OAUTH_TOKEN:"
+        puts $token
+        puts "Set this in Railway as CLAUDE_CODE_OAUTH_TOKEN"
+        puts "==========================================\n"
+        exp_continue
+    }
+    timeout {
+        puts "setup-token timed out"
+    }
+    eof {}
+}
+
+puts "=== Done. Delete this Railway service now. ==="
+EXPECTSCRIPT
+
+RUN chmod +x /run.sh /auth.exp
 ENV NODE_NO_WARNINGS=1 TERM=xterm-256color
 CMD ["/run.sh"]
