@@ -78,6 +78,9 @@ Optional config:
   true as shorthand for { enabled: true }). Has no effect on models that ignore
   it. Do not set for models that use the :thinking variant suffix — those enable
   reasoning via the model ID.
+- autoApprove (boolean, optional, default false): skip approval workflow for
+  hire_agent and other governed operations. Only set true in trusted,
+  fully-automated company configurations.
 
 Built-in tools exposed to the model:
 - read_file({ path }) -> file contents

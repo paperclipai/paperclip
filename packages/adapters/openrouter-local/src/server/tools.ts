@@ -2,12 +2,19 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type OpenAI from "openai";
+import type { PaperclipApi } from "./paperclip-api.js";
 
 export interface ToolContext {
   cwd: string;
   runCommandTimeoutSec: number;
   env?: Record<string, string>;
   signal?: AbortSignal;
+  // Populated only when Paperclip API tools are enabled:
+  paperclipApi?: PaperclipApi;
+  agentId?: string;
+  companyId?: string;
+  currentIssueId?: string | null;
+  autoApprove?: boolean;
 }
 
 export interface ToolHandler {

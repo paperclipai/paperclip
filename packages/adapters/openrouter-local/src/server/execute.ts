@@ -27,6 +27,8 @@ import {
   type ToolContext,
   type ToolHandler,
 } from "./tools.js";
+import { PaperclipApi, PaperclipApiError } from "./paperclip-api.js";
+import { buildPaperclipTools } from "./paperclip-tools.js";
 
 export interface ExecuteOptions {
   /** Override the OpenAI SDK constructor — used for tests. */
@@ -152,6 +154,13 @@ async function fetchGenerationCost(
   }
 }
 
+function resolveCurrentIssueId(context: Record<string, unknown>): string | null {
+  const wake = context.paperclipWake as { issue?: { id?: string } } | null | undefined;
+  if (wake?.issue?.id) return wake.issue.id;
+  if (typeof context.taskId === "string" && context.taskId.trim().length > 0) return context.taskId;
+  return null;
+}
+
 export async function execute(
   ctx: AdapterExecutionContext,
   options: ExecuteOptions = {},
@@ -217,10 +226,6 @@ export async function execute(
   const systemPrompt = joinInstructionFragments(fragments);
 
   const disabledTools = resolveDisabledTools(config.disabledTools);
-  const tools = (options.tools ?? DEFAULT_TOOLS).filter(
-    (t) => !disabledTools.has(t.name),
-  );
-  const toolMap = buildToolMap(tools);
 
   const extraHeaders = resolveExtraHeaders(config.extraHeaders);
   const headers: Record<string, string> = {
@@ -248,7 +253,40 @@ export async function execute(
     : null;
 
   const reasoningParam = resolveReasoningParam(config.reasoning);
-  const toolCtx: ToolContext = { cwd, runCommandTimeoutSec, env: paperclipEnv, signal: controller?.signal };
+  const autoApprove = config.autoApprove === true;
+  const apiClient = ctx.authToken ? new PaperclipApi({ authToken: ctx.authToken }) : null;
+  const currentIssueId = resolveCurrentIssueId(context);
+
+  if (currentIssueId && apiClient) {
+    try {
+      await apiClient.checkoutIssue(currentIssueId, agent.id);
+    } catch (err) {
+      if (err instanceof PaperclipApiError && err.status === 409) {
+        await onLog("stdout", `[paperclip] Issue ${currentIssueId} is locked by another run. Aborting.\n`);
+        return { exitCode: 1, signal: null, timedOut: false, errorMessage: "Issue run ownership conflict", errorCode: "issue_locked" };
+      }
+      await onLog("stderr", `[paperclip] Issue checkout warning: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
+  const toolCtx: ToolContext = {
+    cwd,
+    runCommandTimeoutSec,
+    env: paperclipEnv,
+    signal: controller?.signal,
+    paperclipApi: apiClient ?? undefined,
+    agentId: agent.id,
+    companyId: agent.companyId,
+    currentIssueId,
+    autoApprove,
+  };
+
+  const paperclipTools = buildPaperclipTools(toolCtx);
+  const tools = [...(options.tools ?? DEFAULT_TOOLS), ...paperclipTools].filter(
+    (t) => !disabledTools.has(t.name),
+  );
+  const toolMap = buildToolMap(tools);
+
   const state: RunState = {
     inputTokens: 0,
     outputTokens: 0,

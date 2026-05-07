@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
+import { PaperclipApiError } from "./paperclip-api.js";
 
 // Wrapper that zeroes out the generation fetch delay so tests run fast.
 function exec(
@@ -671,6 +672,98 @@ describe("execute", () => {
       const events = readJsonlEvents();
       const result = events.find((e) => e.kind === "result");
       expect(result?.costUsd).toBe(0);
+    });
+  });
+
+  describe("Paperclip API tools and checkout lifecycle", () => {
+    function buildCheckoutCtx(checkoutIssue: () => Promise<unknown>) {
+      const mockApiInstance = {
+        checkoutIssue,
+        getIssue: vi.fn().mockResolvedValue({}),
+        updateIssue: vi.fn().mockResolvedValue({}),
+        listCompanyIssues: vi.fn().mockResolvedValue([]),
+        createIssue: vi.fn().mockResolvedValue({}),
+        listIssueComments: vi.fn().mockResolvedValue([]),
+        addIssueComment: vi.fn().mockResolvedValue({}),
+        listCompanyAgents: vi.fn().mockResolvedValue([]),
+        hireAgent: vi.fn().mockResolvedValue({}),
+        createApproval: vi.fn().mockResolvedValue({}),
+      };
+
+      // Inject the mock via the module factory override isn't straightforward,
+      // so we provide authToken and mock the PaperclipApi constructor via vi.mock.
+      // Instead, we test via a real checkout call with a stubbed global fetch.
+      return mockApiInstance;
+    }
+
+    it("checkout success — run proceeds normally", async () => {
+      // Mock fetch: first call = checkout (POST issues/checkout) succeeds,
+      // subsequent fetch calls = generation endpoint (non-2xx, don't care).
+      let fetchCallCount = 0;
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+        fetchCallCount++;
+        if (String(url).includes("/checkout")) {
+          return { ok: true, json: async () => ({ ok: true }) };
+        }
+        return { ok: false, json: async () => ({}) };
+      }));
+
+      const { factory } = buildClient([{ content: "done" }]);
+      const ctx = buildCtx({
+        authToken: "tok-123",
+        context: { paperclipWake: { issue: { id: "issue-42", title: "Work" } } },
+      });
+      const result = await exec(ctx, { openAiFactory: factory });
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("checkout 409 — execute returns issue_locked without entering tool loop", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes("/checkout")) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ error: "locked" }),
+          };
+        }
+        return { ok: false, json: async () => ({}) };
+      }));
+
+      const { factory, state } = buildClient([{ content: "done" }]);
+      const ctx = buildCtx({
+        authToken: "tok-123",
+        context: { paperclipWake: { issue: { id: "issue-locked", title: "Locked" } } },
+      });
+      const result = await exec(ctx, { openAiFactory: factory });
+      expect(result.exitCode).toBe(1);
+      expect((result as { errorCode?: string }).errorCode).toBe("issue_locked");
+      // The model's completions.create should never have been called
+      expect(state.capturedRequests).toHaveLength(0);
+    });
+
+    it("no authToken — no checkout attempted, Paperclip tools absent from tool list", async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { factory, state } = buildClient([{ content: "done" }]);
+      const ctx = buildCtx({
+        // no authToken
+        context: { paperclipWake: { issue: { id: "issue-1", title: "Work" } } },
+      });
+      const result = await exec(ctx, { openAiFactory: factory });
+      expect(result.exitCode).toBe(0);
+
+      const checkoutCalls = fetchSpy.mock.calls.filter(([url]: [string]) =>
+        String(url).includes("/checkout"),
+      );
+      expect(checkoutCalls).toHaveLength(0);
+
+      // Tool list should contain only filesystem tools, not Paperclip API tools
+      const sentTools = state.capturedRequests[0].tools as Array<{ function: { name: string } }>;
+      const names = sentTools.map((t) => t.function.name);
+      expect(names).not.toContain("get_issue");
+      expect(names).not.toContain("hire_agent");
+      expect(names).toContain("read_file");
     });
   });
 });
