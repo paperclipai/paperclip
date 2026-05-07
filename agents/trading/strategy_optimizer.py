@@ -45,21 +45,44 @@ Devuelve SOLO el código Pine Script v5 mejorado, sin texto adicional fuera del 
 
 def extract_critique(raw: str) -> dict:
     """Extrae el JSON de critique del Strategy Critic."""
+    # 1. Buscar bloque ```json
     if "```json" in raw:
         json_str = raw.split("```json")[1].split("```")[0].strip()
-    else:
-        m = re.search(r'\{[\s\S]*?"overall_quality"[\s\S]*?\}', raw)
-        json_str = m.group(0) if m else ""
-    try:
-        return json.loads(json_str)
-    except Exception:
-        pass
-    # Fallback: intentar extraer el Pine Script directamente
+        try:
+            data = json.loads(json_str)
+            if data.get("original_script"):
+                return data
+        except Exception:
+            pass
+
+    # 2. Buscar JSON inline con overall_quality
+    m = re.search(r'\{[\s\S]*?"overall_quality"[\s\S]*?\}', raw)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            if data.get("original_script"):
+                return data
+        except Exception:
+            pass
+
+    # 3. Buscar Pine Script directamente en el texto (el Critic lo incluye en el JSON)
+    # Intentar extraer original_script del JSON aunque esté truncado
+    m2 = re.search(r'"original_script"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)', raw)
+    if m2:
+        pine = m2.group(1).replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+        if len(pine) >= 50:
+            return {"original_script": pine, "overall_quality": "needs_improvement"}
+
+    # 4. Fallback: bloque ```pine o primer bloque de código
     pine = ""
     if "```pine" in raw:
         pine = raw.split("```pine")[1].split("```")[0].strip()
     elif "```" in raw:
-        pine = raw.split("```")[1].split("```")[0].strip()
+        for block in raw.split("```")[1::2]:
+            candidate = block.strip()
+            if len(candidate) >= 50 and "//@version" in candidate:
+                pine = candidate
+                break
     return {"original_script": pine, "overall_quality": "needs_improvement"}
 
 

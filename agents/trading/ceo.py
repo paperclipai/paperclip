@@ -98,7 +98,7 @@ def create_sub_issue(title: str, description: str, agent_key: str,
     agent_id = AGENT_IDS.get(agent_key, "")
     payload  = {
         "title":       title,
-        "description": description[:4000],
+        "description": description[:8000],
         "status":      "todo",
         "parentId":    parent_id,
     }
