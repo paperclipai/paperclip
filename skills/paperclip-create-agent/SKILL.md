@@ -178,7 +178,7 @@ If any assertion fails, upload each missing file explicitly. The PUT body carrie
 
 ```sh
 # Repeat per file you sent in instructionsBundle.files
-jq -nR --rawfile body /tmp/AGENTS.md \
+jq -n --rawfile body /tmp/AGENTS.md \
   '{path: "AGENTS.md", content: $body, clearLegacyPromptTemplate: true}' \
   | curl -sS -X PUT "$PAPERCLIP_API_URL/api/agents/<new-agent-id>/instructions-bundle/file" \
       -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
