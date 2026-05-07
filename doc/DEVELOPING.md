@@ -498,11 +498,14 @@ Bizbox emits metrics via the OpenTelemetry SDK. The SDK is a no-op unless
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set — existing deployments require no
 configuration changes.
 
+Bizbox also emits traces via OpenTelemetry when OTel is enabled.
+
 ### Environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | No | unset | Signal-specific OTLP/HTTP endpoint for metrics, e.g. `http://localhost:4318/v1/metrics`. Takes priority over `OTEL_EXPORTER_OTLP_ENDPOINT` when both are set. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | No | unset | Signal-specific OTLP/HTTP endpoint for traces, e.g. `http://localhost:4318/v1/traces`. Takes priority over `OTEL_EXPORTER_OTLP_ENDPOINT` when both are set. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | unset (disabled) | Generic OTLP/HTTP base URL, e.g. `http://localhost:4318`. Used as a fallback when `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is not set. The SDK appends `/v1/metrics` automatically. Setting either this or the signal-specific var above enables the SDK; when neither is set the SDK does not start and no metrics are emitted. |
 | `OTEL_EXPORT_INTERVAL_MS` | No | `60000` | How often (in milliseconds) the SDK flushes metrics to the collector. Lower values (e.g. `10000`) are useful during local testing to get faster feedback. |
 
@@ -510,7 +513,16 @@ configuration changes.
 
 | Metric name | Type | Attributes | Description |
 |---|---|---|---|
-| `bizbox.issues.human_comments_total` | Counter | `company_id`, `issue_id` | Incremented each time a board user (human) posts a comment on an issue. A rising value relative to agent comment volume signals human steering / intervention. |
+| `bizbox.issues.comments` | Counter | `company_id`, `project_id`, `issue_status`, `actor_type`, `commenter_id`, `assignee_agent_id`, `assignee_user_id` | Incremented each time a user (human) or agent posts a comment on an issue. A rising user comments value relative to agent comment volume signals human steering / intervention. |
+| `bizbox.issues.human_intervened.count` | Counter | `company_id`, `project_id`, `issue_status`, `intervention_kind`, `intervener_id`, `assignee_agent_id` | Incremented once per issue (first human intervention only). Human intervention currently includes posting a comment as a user or assigning an agent as a user. |
+| `bizbox.issues.status_changed` | Counter | `company_id`, `project_id`, `from_status`, `to_status`, `actor_type`, `actor_id` | Incremented each time an existing issue transitions from one status to another. Creation is not counted. |
+| `bizbox.issues.count` | Gauge | `company_id`, `project_id`, `issue_status` | Current number of non-hidden issues per status for each company+project slice. Status values are sourced from `ISSUE_STATUSES` in `@paperclipai/shared` (not hardcoded in OTel instrumentation). Reconciled at server startup and then every 60 seconds. |
+
+### Traces emitted
+
+| Span name | When emitted | Attributes |
+|---|---|---|
+| `issue.comment.human_posted` | After a human (board user) comment is successfully persisted on an issue | `company.id`, `project.id`, `issue.id`, `issue.identifier`, `issue.status`, `comment.id`, `comment.actor_type`, `comment.actor_id`, `issue.assignee_agent_id`, `issue.assignee_user_id`, `comment.body_length` |
 
 ## CLI Client Operations
 

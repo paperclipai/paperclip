@@ -32,6 +32,7 @@ import {
   feedbackService,
   heartbeatService,
   instanceSettingsService,
+  issueService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -764,7 +765,19 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  {
+    const issues = issueService(db as any);
+    const reconcileIssueStatusGauge = () => {
+      void issues.reconcileIssueStatusGauge().catch((err) => {
+        logger.error({ err }, "periodic issue status gauge reconciliation failed");
+      });
+    };
+
+    reconcileIssueStatusGauge();
+    setInterval(reconcileIssueStatusGauge, 60_000);
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.

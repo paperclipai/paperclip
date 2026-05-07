@@ -24,8 +24,14 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import { ISSUE_STATUSES, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  clearIssueStatusCountsForCompany,
+  recordHumanIntervened,
+  recordIssueStatusChanged,
+  recordIssueStatusCounts,
+} from "../otel.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -728,6 +734,7 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  humanIntervenedAt: issues.humanIntervenedAt,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -1320,6 +1327,91 @@ export function issueService(db: Db) {
 
       return Boolean(updated);
     });
+  }
+
+  async function reconcileIssueStatusGauge(dbOrTx: Pick<Db, "select"> = db): Promise<void> {
+    const companyRows = await dbOrTx
+      .select({ id: companies.id })
+      .from(companies);
+
+    const rows = await dbOrTx
+      .select({
+        companyId: issues.companyId,
+        projectId: issues.projectId,
+        status: issues.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(issues)
+      .where(isNull(issues.hiddenAt))
+      .groupBy(issues.companyId, issues.projectId, issues.status);
+
+    const countsByCompanyAndProjectId = new Map<string, Map<string, Record<string, number>>>();
+    for (const company of companyRows) {
+      countsByCompanyAndProjectId.set(company.id, new Map<string, Record<string, number>>());
+    }
+
+    for (const row of rows) {
+      const byProject = countsByCompanyAndProjectId.get(row.companyId) ?? new Map<string, Record<string, number>>();
+      const projectKey = row.projectId ?? "__none__";
+      const countsByStatus = byProject.get(projectKey) ?? Object.fromEntries(ISSUE_STATUSES.map((status) => [status, 0]));
+      countsByStatus[row.status] = Number(row.count ?? 0);
+      byProject.set(projectKey, countsByStatus);
+      countsByCompanyAndProjectId.set(row.companyId, byProject);
+    }
+
+    for (const [companyId, byProject] of countsByCompanyAndProjectId.entries()) {
+      clearIssueStatusCountsForCompany(companyId);
+
+      if (byProject.size === 0) {
+        recordIssueStatusCounts({
+          company_id: companyId,
+          project_id: undefined,
+          counts_by_status: Object.fromEntries(ISSUE_STATUSES.map((status) => [status, 0])),
+        });
+        continue;
+      }
+
+      for (const [projectKey, countsByStatus] of byProject.entries()) {
+        recordIssueStatusCounts({
+          company_id: companyId,
+          project_id: projectKey === "__none__" ? undefined : projectKey,
+          counts_by_status: countsByStatus,
+        });
+      }
+    }
+  }
+
+  async function markHumanIntervened(input: {
+    issueId: string;
+    companyId: string;
+    projectId: string | null;
+    issueStatus: string;
+    assigneeAgentId: string | null;
+    interventionKind: "comment" | "agent_assignment";
+    intervenerId: string;
+    dbOrTx?: any;
+  }): Promise<boolean> {
+    const tx = input.dbOrTx ?? db;
+    const updated = await tx
+      .update(issues)
+      .set({
+        humanIntervenedAt: new Date(),
+      })
+      .where(and(eq(issues.id, input.issueId), isNull(issues.humanIntervenedAt)))
+      .returning({ id: issues.id })
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+    if (!updated) return false;
+
+    recordHumanIntervened({
+      company_id: input.companyId,
+      project_id: input.projectId ?? undefined,
+      issue_status: input.issueStatus,
+      intervention_kind: input.interventionKind,
+      intervener_id: input.intervenerId,
+      assignee_agent_id: input.assigneeAgentId ?? undefined,
+    });
+    return true;
   }
 
   return {
@@ -1977,6 +2069,18 @@ export function issueService(db: Db) {
         }
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.createdByUserId && issue.assigneeAgentId) {
+          await markHumanIntervened({
+            issueId: issue.id,
+            companyId,
+            projectId: issue.projectId,
+            issueStatus: issue.status,
+            assigneeAgentId: issue.assigneeAgentId,
+            interventionKind: "agent_assignment",
+            intervenerId: issue.createdByUserId,
+            dbOrTx: tx,
+          });
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -2143,6 +2247,33 @@ export function issueService(db: Db) {
           );
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+        if (existing.status !== updated.status) {
+          recordIssueStatusChanged({
+            company_id: updated.companyId,
+            project_id: updated.projectId ?? undefined,
+            from_status: existing.status,
+            to_status: updated.status,
+            actor_type: actorUserId ? "user" : actorAgentId ? "agent" : "system",
+            actor_id: actorUserId ?? actorAgentId ?? "system",
+          });
+        }
+        const humanAssignedAgent =
+          Boolean(actorUserId) &&
+          issueData.assigneeAgentId !== undefined &&
+          issueData.assigneeAgentId !== null &&
+          issueData.assigneeAgentId !== existing.assigneeAgentId;
+        if (humanAssignedAgent) {
+          await markHumanIntervened({
+            issueId: updated.id,
+            companyId: updated.companyId,
+            projectId: updated.projectId,
+            issueStatus: updated.status,
+            assigneeAgentId: updated.assigneeAgentId,
+            interventionKind: "agent_assignment",
+            intervenerId: actorUserId!,
+            dbOrTx: tx,
+          });
+        }
         return enriched;
       };
 
@@ -2644,7 +2775,13 @@ export function issueService(db: Db) {
       actor: { agentId?: string; userId?: string; runId?: string | null },
     ) => {
       const issue = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
@@ -2672,6 +2809,23 @@ export function issueService(db: Db) {
         .update(issues)
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
+
+      if (actor.userId) {
+        // Track human intervention only for agent-managed issues.
+        if (!issue.assigneeAgentId) {
+          return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        }
+
+        await markHumanIntervened({
+          issueId,
+          companyId: issue.companyId,
+          projectId: issue.projectId,
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          interventionKind: "comment",
+          intervenerId: actor.userId,
+        });
+      }
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
@@ -2853,6 +3007,8 @@ export function issueService(db: Db) {
       }
       return [...resolved];
     },
+
+    reconcileIssueStatusGauge,
 
     findMentionedProjectIds: async (
       issueId: string,

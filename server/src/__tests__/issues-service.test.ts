@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -22,8 +22,17 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+vi.mock("../otel.js", () => ({
+  recordHumanIntervened: vi.fn(),
+  recordIssueStatusChanged: vi.fn(),
+  recordIssueStatusCounts: vi.fn(),
+  clearIssueStatusCountsForCompany: vi.fn(),
+  traceHumanCommentPosted: vi.fn(),
+}));
+
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { clampIssueListLimit, ISSUE_LIST_MAX_LIMIT, issueService } from "../services/issues.ts";
+import { recordHumanIntervened } from "../otel.js";
 import { buildProjectMentionHref } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -72,6 +81,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.clearAllMocks();
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -206,6 +216,49 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       activityIssueId,
     ]));
     expect(resultIds.has(excludedIssueId)).toBe(false);
+  });
+
+  it("increments human intervention metric only once when a user comments then assigns an agent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const userId = "user-1";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "AssignedAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Needs work",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: userId,
+    });
+
+    await svc.addComment(created.id, "human comment", { userId });
+    await svc.update(created.id, {
+      assigneeAgentId: agentId,
+      actorUserId: userId,
+    });
+
+    expect(recordHumanIntervened).toHaveBeenCalledTimes(1);
+
+    const reloaded = await svc.getById(created.id);
+    expect(reloaded?.humanIntervenedAt).not.toBeNull();
   });
 
   it("combines participation filtering with search", async () => {

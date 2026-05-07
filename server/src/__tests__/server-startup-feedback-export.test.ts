@@ -143,6 +143,9 @@ vi.mock("../services/index.js", () => ({
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   })),
+  issueService: vi.fn(() => ({
+    reconcileIssueStatusGauge: vi.fn(async () => undefined),
+  })),
 }));
 
 vi.mock("../storage/index.js", () => ({
