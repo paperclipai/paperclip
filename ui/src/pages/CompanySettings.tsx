@@ -76,6 +76,11 @@ export function CompanySettings() {
     },
     onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to remove member", tone: "error" }),
   });
+  const grantMemberMutation = useMutation({
+    mutationFn: (userId: string) => companiesApi.grantMember(selectedCompanyId!, userId),
+    onSuccess: () => pushToast({ title: "Issue access granted", tone: "success" }),
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to grant access", tone: "error" }),
+  });
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -524,6 +529,16 @@ export function CompanySettings() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className="text-xs text-muted-foreground capitalize">{m.role ?? "member"}</span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => grantMemberMutation.mutate(m.userId)}
+                      disabled={grantMemberMutation.isPending}
+                      title="Grant permission to assign and run issues"
+                    >
+                      Grant access
+                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"

@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships, authUsers } from "@paperclipai/db";
+import { companyMemberships, authUsers, principalPermissionGrants } from "@paperclipai/db";
 import { eq, and } from "drizzle-orm";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
@@ -461,7 +461,41 @@ export function companyRoutes(db: Db, storage?: StorageService) {
           membershipRole: role || "member",
         })
         .onConflictDoNothing();
+      await (db as any)
+        .insert(principalPermissionGrants)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: user.id,
+          permissionKey: "tasks:assign",
+          scope: null,
+          grantedByUserId: null,
+        })
+        .onConflictDoNothing();
       res.json({ ok: true, user: { id: user.id, name: user.name, email: user.email } });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // POST /api/companies/:companyId/members/:userId/grant — grant tasks:assign to existing member
+  router.post("/:companyId/members/:userId/grant", async (req, res) => {
+    assertBoard(req);
+    const { companyId, userId } = req.params as { companyId: string; userId: string };
+    assertCompanyAccess(req, companyId);
+    try {
+      await (db as any)
+        .insert(principalPermissionGrants)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: userId,
+          permissionKey: "tasks:assign",
+          scope: null,
+          grantedByUserId: null,
+        })
+        .onConflictDoNothing();
+      res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: String(e) });
     }

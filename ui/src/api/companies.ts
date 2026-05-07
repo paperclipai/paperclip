@@ -68,6 +68,8 @@ export const companiesApi = {
     api.post<{ ok: boolean; user: { id: string; name: string; email: string } }>(`/companies/${companyId}/members`, { email }),
   removeMember: (companyId: string, userId: string) =>
     api.delete<{ ok: boolean }>(`/companies/${companyId}/members/${userId}`),
+  grantMember: (companyId: string, userId: string) =>
+    api.post<{ ok: boolean }>(`/companies/${companyId}/members/${userId}/grant`, {}),
 };
 
 export type CompanyMember = {
