@@ -583,7 +583,11 @@ export function Costs() {
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={
+                (spendData?.summary.referenceSpendCents ?? 0) > (spendData?.summary.spendCents ?? 0)
+                  ? `ref (pay-as-you-go): ${formatCents(spendData?.summary.referenceSpendCents ?? 0)} · ${formatTokens(inferenceTokenTotal)} tokens`
+                  : `${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`
+              }
               icon={DollarSign}
             />
             <MetricTile

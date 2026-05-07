@@ -25,6 +25,14 @@ export const costEvents = pgTable(
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
     costCents: integer("cost_cents").notNull(),
+    /**
+     * Pay-as-you-go reference cost in cents. For "api" billing it equals
+     * costCents (actual == reference). For "subscription_included" billing
+     * it carries the hypothetical pay-as-you-go cost while costCents stays
+     * 0 — so management views can show "what this would have cost on the
+     * metered plan" without double-counting the subscription flat rate.
+     */
+    referenceCostCents: integer("reference_cost_cents").notNull().default(0),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -1270,6 +1270,20 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+/**
+ * Compute the reference cost (pay-as-you-go equivalent) in cents for a run.
+ *
+ * Unlike normalizeBilledCostCents, this does NOT zero-out subscription_included
+ * runs — adapters that report costUsd on subscription billing (e.g. the Z.AI
+ * adapter, which computes a pay-as-you-go reference via its internal pricing
+ * table) want that number surfaced in management dashboards so operators can
+ * reason about plan value and compare against metered billing.
+ */
+function normalizeReferenceCostCents(costUsd: number | null | undefined): number {
+  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
+  return Math.max(0, Math.round(costUsd * 100));
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -6578,6 +6592,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const additionalReferenceCostCents = normalizeReferenceCostCents(result.costUsd);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -6595,11 +6610,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
         totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
+        totalReferenceCostCents: sql`${agentRuntimeState.totalReferenceCostCents} + ${additionalReferenceCostCents}`,
         updatedAt: new Date(),
       })
       .where(eq(agentRuntimeState.agentId, agent.id));
 
-    if (additionalCostCents > 0 || hasTokenUsage) {
+    if (additionalCostCents > 0 || additionalReferenceCostCents > 0 || hasTokenUsage) {
       const costs = costService(db, budgetHooks);
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
@@ -6614,6 +6630,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
+        referenceCostCents: additionalReferenceCostCents,
         occurredAt: new Date(),
       });
     }

@@ -151,6 +151,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       billingType: "subscription_included",
       model: "claude-sonnet-4.5",
       costCents: 0,
+      referenceCostCents: 42_600,
       inputTokens: 1_420_000,
       cachedInputTokens: 210_000,
       outputTokens: 385_000,
@@ -166,6 +167,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       billingType: "metered_api",
       model: "claude-opus-4.5",
       costCents: 11_240,
+      referenceCostCents: 11_240,
       inputTokens: 280_000,
       cachedInputTokens: 35_000,
       outputTokens: 92_000,
@@ -183,6 +185,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       billingType: "subscription_included",
       model: "gpt-5.4-codex",
       costCents: 0,
+      referenceCostCents: 31_500,
       inputTokens: 1_050_000,
       cachedInputTokens: 164_000,
       outputTokens: 318_000,
@@ -198,6 +201,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       billingType: "subscription_overage",
       model: "gpt-5.3-codex-spark",
       costCents: 18_900,
+      referenceCostCents: 31_400,
       inputTokens: 620_000,
       cachedInputTokens: 91_000,
       outputTokens: 250_000,
@@ -215,6 +219,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       billingType: "credits",
       model: "anthropic/claude-sonnet-4.5",
       costCents: 22_640,
+      referenceCostCents: 22_640,
       inputTokens: 760_000,
       cachedInputTokens: 120_000,
       outputTokens: 220_000,
@@ -230,6 +235,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       billingType: "credits",
       model: "google/gemini-3-pro",
       costCents: 8_920,
+      referenceCostCents: 8_920,
       inputTokens: 430_000,
       cachedInputTokens: 44_000,
       outputTokens: 118_000,
@@ -244,19 +250,19 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
 
 const providerWindowRows: Record<string, CostWindowSpendRow[]> = {
   anthropic: [
-    { provider: "anthropic", biller: "anthropic", window: "5h", windowHours: 5, costCents: 1_240, inputTokens: 82_000, cachedInputTokens: 11_000, outputTokens: 19_000 },
-    { provider: "anthropic", biller: "anthropic", window: "24h", windowHours: 24, costCents: 3_870, inputTokens: 218_000, cachedInputTokens: 32_000, outputTokens: 64_000 },
-    { provider: "anthropic", biller: "anthropic", window: "7d", windowHours: 168, costCents: 11_240, inputTokens: 1_700_000, cachedInputTokens: 245_000, outputTokens: 477_000 },
+    { provider: "anthropic", biller: "anthropic", window: "5h", windowHours: 5, costCents: 1_240, referenceCostCents: 6_040, inputTokens: 82_000, cachedInputTokens: 11_000, outputTokens: 19_000 },
+    { provider: "anthropic", biller: "anthropic", window: "24h", windowHours: 24, costCents: 3_870, referenceCostCents: 19_200, inputTokens: 218_000, cachedInputTokens: 32_000, outputTokens: 64_000 },
+    { provider: "anthropic", biller: "anthropic", window: "7d", windowHours: 168, costCents: 11_240, referenceCostCents: 53_840, inputTokens: 1_700_000, cachedInputTokens: 245_000, outputTokens: 477_000 },
   ],
   openai: [
-    { provider: "openai", biller: "openai", window: "5h", windowHours: 5, costCents: 4_920, inputTokens: 148_000, cachedInputTokens: 18_000, outputTokens: 56_000 },
-    { provider: "openai", biller: "openai", window: "24h", windowHours: 24, costCents: 10_430, inputTokens: 398_000, cachedInputTokens: 52_000, outputTokens: 130_000 },
-    { provider: "openai", biller: "openai", window: "7d", windowHours: 168, costCents: 18_900, inputTokens: 1_670_000, cachedInputTokens: 255_000, outputTokens: 568_000 },
+    { provider: "openai", biller: "openai", window: "5h", windowHours: 5, costCents: 4_920, referenceCostCents: 9_800, inputTokens: 148_000, cachedInputTokens: 18_000, outputTokens: 56_000 },
+    { provider: "openai", biller: "openai", window: "24h", windowHours: 24, costCents: 10_430, referenceCostCents: 26_000, inputTokens: 398_000, cachedInputTokens: 52_000, outputTokens: 130_000 },
+    { provider: "openai", biller: "openai", window: "7d", windowHours: 168, costCents: 18_900, referenceCostCents: 50_400, inputTokens: 1_670_000, cachedInputTokens: 255_000, outputTokens: 568_000 },
   ],
   openrouter: [
-    { provider: "openrouter", biller: "openrouter", window: "5h", windowHours: 5, costCents: 7_880, inputTokens: 210_000, cachedInputTokens: 20_000, outputTokens: 73_000 },
-    { provider: "openrouter", biller: "openrouter", window: "24h", windowHours: 24, costCents: 14_630, inputTokens: 506_000, cachedInputTokens: 51_000, outputTokens: 150_000 },
-    { provider: "openrouter", biller: "openrouter", window: "7d", windowHours: 168, costCents: 31_560, inputTokens: 1_190_000, cachedInputTokens: 164_000, outputTokens: 338_000 },
+    { provider: "openrouter", biller: "openrouter", window: "5h", windowHours: 5, costCents: 7_880, referenceCostCents: 7_880, inputTokens: 210_000, cachedInputTokens: 20_000, outputTokens: 73_000 },
+    { provider: "openrouter", biller: "openrouter", window: "24h", windowHours: 24, costCents: 14_630, referenceCostCents: 14_630, inputTokens: 506_000, cachedInputTokens: 51_000, outputTokens: 150_000 },
+    { provider: "openrouter", biller: "openrouter", window: "7d", windowHours: 168, costCents: 31_560, referenceCostCents: 31_560, inputTokens: 1_190_000, cachedInputTokens: 164_000, outputTokens: 338_000 },
   ],
 };
 
@@ -286,6 +292,7 @@ const billerSpendRows: Array<{
     row: {
       biller: "anthropic",
       costCents: 11_240,
+      referenceCostCents: 53_840,
       inputTokens: 1_700_000,
       cachedInputTokens: 245_000,
       outputTokens: 477_000,
@@ -306,6 +313,7 @@ const billerSpendRows: Array<{
     row: {
       biller: "openai",
       costCents: 18_900,
+      referenceCostCents: 50_400,
       inputTokens: 1_670_000,
       cachedInputTokens: 255_000,
       outputTokens: 568_000,
@@ -326,6 +334,7 @@ const billerSpendRows: Array<{
     row: {
       biller: "openrouter",
       costCents: 31_560,
+      referenceCostCents: 31_560,
       inputTokens: 1_190_000,
       cachedInputTokens: 164_000,
       outputTokens: 338_000,
