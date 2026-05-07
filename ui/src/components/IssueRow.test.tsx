@@ -68,6 +68,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastExternalCommentAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -196,6 +197,47 @@ describe("IssueRow", () => {
     expect(titleEl?.textContent).toContain("Parent task");
     expect(titleEl?.textContent).toContain("(3 sub-tasks)");
     expect(container.querySelector('[data-testid="suffix"]')).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders checklist step numbers beside the issue identifier", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42" })}
+          checklistStepNumber="2.1"
+          mobileMeta="updated now"
+        />,
+      );
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    const metaRow = Array.from(link?.querySelectorAll("span.flex.items-center.gap-2") ?? [])
+      .find((element) => element.textContent?.includes("PAP-42"));
+
+    expect(metaRow).not.toBeUndefined();
+    expect(metaRow?.textContent?.replace(/\s+/g, "")).toContain("2.1.PAP-42");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders planning mode marker for planning work mode issues", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ workMode: "planning" })} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.textContent).toContain("Planning");
 
     act(() => {
       root.unmount();

@@ -53,6 +53,8 @@ describe("shouldSilenceHttpSuccessLog", () => {
   });
 
   it("silences successful static asset requests", () => {
+    expect(shouldSilenceHttpSuccessLog("GET", "/", 200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET", "/index.html", 200)).toBe(true);
     expect(shouldSilenceHttpSuccessLog("GET", "/@fs/Users/dotta/paperclip/ui/src/main.tsx", 200)).toBe(true);
     expect(shouldSilenceHttpSuccessLog("GET", "/src/App.tsx?t=123", 200)).toBe(true);
     expect(shouldSilenceHttpSuccessLog("GET", "/site.webmanifest", 200)).toBe(true);

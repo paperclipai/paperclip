@@ -317,9 +317,9 @@ export function ProjectWorkspaceDetail() {
         request.action === "run"
           ? "Workspace job completed."
           : request.action === "stop"
-            ? "Workspace service stopped."
+            ? "Workspace service stopped. Issue execution is not paused."
             : request.action === "restart"
-              ? "Workspace service restarted."
+              ? "Workspace service restarted. Issue execution is not paused."
               : "Workspace service started.",
       );
     },
@@ -545,7 +545,7 @@ export function ProjectWorkspaceDetail() {
                 </Field>
               </div>
 
-              <details className="rounded-xl border border-dashed border-border/70 bg-muted/20 px-3 py-3">
+              <details className="rounded-xl border border-dashed border-border/70 bg-background px-3 py-3">
                 <summary className="cursor-pointer text-sm font-medium">Advanced runtime JSON</summary>
                 <p className="mt-2 text-sm text-muted-foreground">
                   Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.

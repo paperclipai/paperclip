@@ -8,6 +8,7 @@ import type {
   Issue,
   IssueDocument,
 } from "@paperclipai/shared";
+import { isSystemIssueDocumentKey } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -15,6 +16,7 @@ import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
+import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
@@ -69,8 +71,12 @@ function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
   window.localStorage.setItem(getFoldedDocumentsStorageKey(issueId), JSON.stringify(keys));
 }
 
-function renderBody(body: string, className?: string) {
-  return <MarkdownBody className={className} softBreaks={false}>{body}</MarkdownBody>;
+function renderFoldableBody(body: string, className?: string) {
+  return (
+    <FoldCurtain>
+      <MarkdownBody className={className} softBreaks={false}>{body}</MarkdownBody>
+    </FoldCurtain>
+  );
 }
 
 function isPlanKey(key: string) {
@@ -204,6 +210,7 @@ export function IssueDocumentsSection({
   }, [issue.id, queryClient]);
 
   const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    if (isSystemIssueDocumentKey(document.key)) return;
     queryClient.setQueryData<IssueDocument[] | undefined>(
       queryKeys.issues.documents(issue.id),
       (current) => {
@@ -273,7 +280,7 @@ export function IssueDocumentsSection({
   });
 
   const sortedDocuments = useMemo(() => {
-    return [...(documents ?? [])].sort((a, b) => {
+    return (documents ?? []).filter((doc) => !isSystemIssueDocumentKey(doc.key)).sort((a, b) => {
       if (a.key === "plan" && b.key !== "plan") return -1;
       if (a.key !== "plan" && b.key === "plan") return 1;
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
@@ -670,8 +677,7 @@ export function IssueDocumentsSection({
     };
   }, [autosaveState, commitDraft, documentConflict, draft, markDocumentDirty, resetAutosaveState, sortedDocuments]);
 
-  const documentBodyShellClassName = "mt-3 overflow-hidden rounded-md";
-  const documentBodyPaddingClassName = "";
+  const documentBodyShellClassName = "mt-3";
   const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7";
   const toggleFoldedDocument = (key: string) => {
     setFoldedDocumentKeys((current) =>
@@ -777,9 +783,7 @@ export function IssueDocumentsSection({
               PLAN
             </span>
           </div>
-          <div className={documentBodyPaddingClassName}>
-            {renderBody(issue.legacyPlanDocument.body, documentBodyContentClassName)}
-          </div>
+          {renderFoldableBody(issue.legacyPlanDocument.body, documentBodyContentClassName)}
         </div>
       ) : null}
 
@@ -1065,7 +1069,7 @@ export function IssueDocumentsSection({
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
                           ) : null}
-                          {renderBody(activeConflict.serverDocument.body, "text-[14px] leading-7")}
+                          {renderFoldableBody(activeConflict.serverDocument.body, "text-[14px] leading-7")}
                         </div>
                       )}
                     </div>
@@ -1081,14 +1085,12 @@ export function IssueDocumentsSection({
                     />
                   )}
                   <div
-                    className={`${documentBodyShellClassName} ${documentBodyPaddingClassName} ${
-                      activeDraft || isHistoricalPreview ? "" : "hover:bg-accent/10"
+                    className={`${documentBodyShellClassName} ${
+                      activeDraft || isHistoricalPreview ? "" : "rounded-md hover:bg-accent/10"
                     }`}
                   >
                     {isHistoricalPreview ? (
-                      <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
-                        {renderBody(displayedBody, documentBodyContentClassName)}
-                      </div>
+                      renderFoldableBody(displayedBody, documentBodyContentClassName)
                     ) : activeDraft ? (
                       <MarkdownEditor
                         value={displayedBody}
@@ -1110,9 +1112,7 @@ export function IssueDocumentsSection({
                         onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
                       />
                     ) : (
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        {renderBody(displayedBody, documentBodyContentClassName)}
-                      </div>
+                      renderFoldableBody(displayedBody, documentBodyContentClassName)
                     )}
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">

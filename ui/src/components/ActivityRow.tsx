@@ -1,9 +1,11 @@
 import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
+import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
+import type { CompanyUserProfile } from "../lib/company-members";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -19,13 +21,14 @@ function entityLink(entityType: string, entityId: string, name?: string | null):
 interface ActivityRowProps {
   event: ActivityEvent;
   agentMap: Map<string, Agent>;
+  userProfileMap?: Map<string, CompanyUserProfile>;
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
   className?: string;
 }
 
-export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap });
+export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
+  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -43,21 +46,27 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
     : entityLink(event.entityType, event.entityId, name);
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : event.actorType === "user" ? "Board" : event.actorId || "Unknown");
+  const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
+  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
-    <div className="flex gap-3">
-      <p className="flex-1 min-w-0 truncate">
-        <Identity
-          name={actorName}
-          size="xs"
-          className="align-baseline"
-        />
-        <span className="text-muted-foreground ml-1">{verb} </span>
-        {name && <span className="font-medium">{name}</span>}
-        {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
-      </p>
-      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+    <div className="space-y-2">
+      <div className="flex gap-3">
+        <p className="flex-1 min-w-0 truncate">
+          <Identity
+            name={actorName}
+            avatarUrl={actorAvatarUrl}
+            size="xs"
+            className="align-middle"
+          />
+          <span className="text-muted-foreground ml-1">{verb} </span>
+          {name && <span className="font-medium">{name}</span>}
+          {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
+        </p>
+        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+      </div>
+      <IssueReferenceActivitySummary event={event} />
     </div>
   );
 

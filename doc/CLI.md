@@ -2,7 +2,7 @@
 
 Paperclip CLI now supports both:
 
-- instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`)
+- instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`, `env-lab`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
 
 ## Base Usage
@@ -43,6 +43,15 @@ Allow an authenticated/private hostname (for example custom Tailscale DNS):
 
 ```sh
 pnpm paperclipai allowed-hostname dotta-macbook-pro
+```
+
+Bring up the default local SSH fixture for environment testing:
+
+```sh
+pnpm paperclipai env-lab up
+pnpm paperclipai env-lab doctor
+pnpm paperclipai env-lab status --json
+pnpm paperclipai env-lab down
 ```
 
 All client commands support:

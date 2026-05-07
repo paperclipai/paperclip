@@ -139,18 +139,25 @@ export function InboxIssueMetaLeading({
   showStatus = true,
   showIdentifier = true,
   statusSlot,
+  checklistStepNumber = null,
 }: {
   issue: Issue;
   isLive: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
+  checklistStepNumber?: number | string | null;
 }) {
   return (
     <>
       {showStatus ? (
         <span className="hidden shrink-0 sm:inline-flex">
-          {statusSlot ?? <StatusIcon status={issue.status} />}
+          {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
+        </span>
+      ) : null}
+      {checklistStepNumber !== null ? (
+        <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
+          {checklistStepNumber}.
         </span>
       ) : null}
       {showIdentifier ? (
@@ -196,6 +203,8 @@ export function InboxIssueTrailingColumns({
   workspaceId,
   workspaceName,
   assigneeName,
+  assigneeUserName,
+  assigneeUserAvatarUrl,
   currentUserId,
   parentIdentifier,
   parentTitle,
@@ -209,6 +218,8 @@ export function InboxIssueTrailingColumns({
   workspaceId?: string | null;
   workspaceName: string | null;
   assigneeName: string | null;
+  assigneeUserName?: string | null;
+  assigneeUserAvatarUrl?: string | null;
   currentUserId: string | null;
   parentIdentifier: string | null;
   parentTitle: string | null;
@@ -216,7 +227,7 @@ export function InboxIssueTrailingColumns({
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
 
   return (
     <span
@@ -243,8 +254,13 @@ export function InboxIssueTrailingColumns({
 
           if (issue.assigneeUserId) {
             return (
-              <span key={column} className="min-w-0 truncate text-xs font-medium text-muted-foreground">
-                {userLabel}
+              <span key={column} className="min-w-0 text-xs text-foreground">
+                <Identity
+                  name={userLabel}
+                  avatarUrl={assigneeUserAvatarUrl}
+                  size="sm"
+                  className="min-w-0"
+                />
               </span>
             );
           }

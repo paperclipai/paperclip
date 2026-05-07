@@ -57,6 +57,7 @@ type WorkspaceRuntimeControlsProps = {
   disabledHint?: string | null;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
   className?: string;
+  square?: boolean;
 } | {
   sections?: never;
   items: LegacyWorkspaceRuntimeControlItem[];
@@ -68,6 +69,7 @@ type WorkspaceRuntimeControlsProps = {
   disabledHint?: string | null;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
   className?: string;
+  square?: boolean;
 };
 
 export function hasRunningRuntimeServices(
@@ -149,7 +151,9 @@ export function buildWorkspaceRuntimeControlSections(input: {
   }
 
   const otherServices = runtimeServices
-    .filter((runtimeService) => !matchedRuntimeServiceIds.has(runtimeService.id))
+    .filter((runtimeService) =>
+      !matchedRuntimeServiceIds.has(runtimeService.id)
+      && (runtimeService.status === "starting" || runtimeService.status === "running"))
     .map((runtimeService) => ({
       key: `runtime:${runtimeService.id}`,
       title: runtimeService.serviceName,
@@ -188,6 +192,15 @@ export function buildWorkspaceRuntimeControlItems(input: {
   }));
 }
 
+export function getRunningRuntimeServiceUrl(
+  sections: WorkspaceRuntimeControlSections,
+) {
+  const runningService = [...sections.services, ...sections.otherServices].find(
+    (item) => (item.statusLabel === "running" || item.statusLabel === "starting") && item.url,
+  );
+  return runningService?.url ?? null;
+}
+
 function requestMatchesPending(
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined,
   nextRequest: WorkspaceRuntimeControlRequest,
@@ -212,11 +225,13 @@ function CommandActionButtons({
   isPending,
   pendingRequest,
   onAction,
+  square,
 }: {
   item: WorkspaceRuntimeControlItem;
   isPending: boolean;
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  square?: boolean;
 }) {
   const actions: WorkspaceRuntimeAction[] =
     item.kind === "job"
@@ -249,8 +264,8 @@ function CommandActionButtons({
             variant={action === "stop" ? "destructive" : action === "restart" ? "outline" : "default"}
             size="sm"
             className={cn(
-              "h-9 w-full justify-start rounded-xl px-3 shadow-none sm:w-auto",
-              action === "restart" ? "bg-background" : null,
+              "w-full justify-start sm:w-auto",
+              square ? "rounded-none" : null,
             )}
             disabled={disabled}
             onClick={() => onAction(request)}
@@ -273,6 +288,7 @@ function CommandSection({
   isPending,
   pendingRequest,
   onAction,
+  square,
 }: {
   title: string;
   description: string;
@@ -282,6 +298,7 @@ function CommandSection({
   isPending: boolean;
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  square?: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -290,14 +307,14 @@ function CommandSection({
         <p className="text-xs text-muted-foreground">{description}</p>
       </div>
       {items.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border/80 bg-background/50 px-3 py-4 text-sm text-muted-foreground">
+        <div className={cn("border border-dashed border-border/80 bg-background px-3 py-4 text-sm text-muted-foreground", square ? "rounded-none" : "rounded-xl")}>
           {emptyMessage}
           {disabledHint ? <p className="mt-2 text-xs">{disabledHint}</p> : null}
         </div>
       ) : (
         <div className="space-y-3">
           {items.map((item) => (
-            <div key={item.key} className="rounded-xl border border-border/80 bg-background px-3 py-3">
+            <div key={item.key} className={cn("border border-border/80 bg-background px-3 py-3", square ? "rounded-none" : "rounded-xl")}>
               <div className="flex flex-col gap-3">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="space-y-1">
@@ -312,6 +329,7 @@ function CommandSection({
                     isPending={isPending}
                     pendingRequest={pendingRequest}
                     onAction={onAction}
+                    square={square}
                   />
                 </div>
                 <div className="space-y-1 text-xs text-muted-foreground">
@@ -360,6 +378,7 @@ export function WorkspaceRuntimeControls({
   disabledHint = null,
   onAction,
   className,
+  square,
 }: WorkspaceRuntimeControlsProps) {
   const resolvedSections = sections ?? {
     services: (items ?? []).map((item) => ({
@@ -370,14 +389,14 @@ export function WorkspaceRuntimeControls({
     otherServices: [],
   };
   const resolvedServiceEmptyMessage = emptyMessage ?? serviceEmptyMessage;
-  const runningCount = resolvedSections.services.filter(
+  const runningCount = [...resolvedSections.services, ...resolvedSections.otherServices].filter(
     (item) => item.statusLabel === "running" || item.statusLabel === "starting",
   ).length;
   const visibleDisabledHint = runningCount > 0 || disabledHint === null ? null : disabledHint;
 
   return (
     <div className={cn("space-y-4", className)}>
-      <div className="rounded-xl border border-border/70 bg-background/60 p-3">
+      <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
           <div className="flex flex-wrap items-center gap-2">
@@ -411,6 +430,7 @@ export function WorkspaceRuntimeControls({
         isPending={isPending}
         pendingRequest={pendingRequest}
         onAction={onAction}
+        square={square}
       />
 
       <CommandSection
@@ -421,6 +441,7 @@ export function WorkspaceRuntimeControls({
         isPending={isPending}
         pendingRequest={pendingRequest}
         onAction={onAction}
+        square={square}
       />
 
       {resolvedSections.otherServices.length > 0 ? (
@@ -432,7 +453,61 @@ export function WorkspaceRuntimeControls({
           isPending={isPending}
           pendingRequest={pendingRequest}
           onAction={onAction}
+          square={square}
         />
+      ) : null}
+    </div>
+  );
+}
+
+export function WorkspaceRuntimeQuickControls({
+  sections,
+  isPending = false,
+  pendingRequest = null,
+  onAction,
+  square,
+}: {
+  sections: WorkspaceRuntimeControlSections;
+  isPending?: boolean;
+  pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  square?: boolean;
+}) {
+  const controlItems = sections.services.length > 0 ? sections.services : sections.otherServices;
+  const serviceUrl = getRunningRuntimeServiceUrl(sections);
+
+  if (controlItems.length === 0 && !serviceUrl) return null;
+
+  return (
+    <div className="flex min-w-0 flex-col items-stretch gap-2 sm:items-end">
+      {controlItems.length > 0 ? (
+        <div className="flex max-w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+          {controlItems.map((item) => (
+            <div key={item.key} className="flex min-w-0 flex-col gap-1 sm:items-end">
+              {controlItems.length > 1 ? (
+                <span className="truncate text-xs text-muted-foreground">{item.title}</span>
+              ) : null}
+              <CommandActionButtons
+                item={item}
+                isPending={isPending}
+                pendingRequest={pendingRequest}
+                onAction={onAction}
+                square={square}
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {serviceUrl ? (
+        <a
+          href={serviceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex min-w-0 items-center gap-1 self-start break-all text-xs text-muted-foreground hover:text-foreground hover:underline sm:self-end"
+        >
+          {serviceUrl}
+          <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+        </a>
       ) : null}
     </div>
   );

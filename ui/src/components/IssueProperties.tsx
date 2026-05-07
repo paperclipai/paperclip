@@ -1,26 +1,49 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import {
+  getRecentAssigneeIds,
+  getRecentAssigneeSelectionIds,
+  sortAgentsByRecency,
+  trackRecentAssignee,
+  trackRecentAssigneeUser,
+} from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { formatMonitorOffset } from "../lib/issue-monitor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
-import { formatDate, cn, projectUrl } from "../lib/utils";
+import { IssueReferencePill } from "./IssueReferencePill";
+import { formatDate, formatDateTime, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -70,6 +93,47 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   return "shared_workspace";
 }
 
+function primaryWorkspaceIdForProject(project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined) {
+  return project?.primaryWorkspace?.id
+    ?? project?.workspaces.find((workspace) => workspace.isPrimary)?.id
+    ?? project?.workspaces[0]?.id
+    ?? null;
+}
+
+function isMainIssueWorkspace(input: {
+  issue: Pick<Issue, "projectWorkspaceId" | "currentExecutionWorkspace">;
+  project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined;
+}) {
+  const workspace = input.issue.currentExecutionWorkspace ?? null;
+  const primaryWorkspaceId = primaryWorkspaceIdForProject(input.project);
+  const linkedProjectWorkspaceId = workspace?.projectWorkspaceId ?? input.issue.projectWorkspaceId ?? null;
+  if (workspace) {
+    if (workspace.mode !== "shared_workspace") return false;
+    if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
+    return workspace.mode === "shared_workspace" && linkedProjectWorkspaceId === primaryWorkspaceId;
+  }
+  if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
+  return linkedProjectWorkspaceId === primaryWorkspaceId;
+}
+
+function runningRuntimeServiceWithUrl(
+  runtimeServices: WorkspaceRuntimeService[] | null | undefined,
+) {
+  return runtimeServices?.find((service) => service.status === "running" && service.url?.trim()) ?? null;
+}
+
+function executionWorkspaceIssuesHref(workspaceId: string) {
+  return `/execution-workspaces/${workspaceId}/issues`;
+}
+
+function toDateTimeLocalValue(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
 interface IssuePropertiesProps {
   issue: Issue;
   childIssues?: Issue[];
@@ -84,6 +148,87 @@ function PropertyRow({ label, children }: { label: string; children: React.React
       <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
       <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
+  );
+}
+
+function RemovableIssueReferencePill({
+  issue,
+  onRemove,
+}: {
+  issue: NonNullable<Issue["blockedBy"]>[number];
+  onRemove: (issueId: string) => void;
+}) {
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  const issueLabel = issue.identifier ?? issue.title;
+  const confirmLabel = issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title;
+  const content = (
+    <>
+      <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" />
+      <span className="truncate">{issueLabel}</span>
+    </>
+  );
+  const removeLabel = `Remove ${issueLabel} as blocker`;
+  const handleRemove = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsConfirmOpen(true);
+  };
+  const confirmRemove = () => {
+    onRemove(issue.id);
+    setIsConfirmOpen(false);
+  };
+
+  return (
+    <>
+      <span
+        data-mention-kind="issue"
+        className={cn(
+          "paperclip-mention-chip paperclip-mention-chip--issue group",
+          "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
+        )}
+        title={issue.title}
+        aria-label={`Issue ${issueLabel}: ${issue.title}`}
+      >
+        <button
+          type="button"
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-colors transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring group-hover:opacity-100"
+          aria-label={removeLabel}
+          title={removeLabel}
+          onClick={handleRemove}
+        >
+          <X className="h-3 w-3" />
+        </button>
+        {issue.identifier ? (
+          <Link
+            to={`/issues/${issueLabel}`}
+            className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+            aria-label={`Issue ${issueLabel}: ${issue.title}`}
+          >
+            {content}
+          </Link>
+        ) : (
+          <span className="inline-flex min-w-0 items-center gap-1">{content}</span>
+        )}
+      </span>
+      <Dialog open={isConfirmOpen} onOpenChange={setIsConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove blocker?</DialogTitle>
+            <DialogDescription>
+              Remove {confirmLabel} as a blocker for this issue.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button type="button" variant="destructive" onClick={confirmRemove}>
+              Remove blocker
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -171,10 +316,14 @@ export function IssueProperties({
   const [reviewerSearch, setReviewerSearch] = useState("");
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+  const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
+  const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -186,6 +335,16 @@ export function IssueProperties({
     queryKey: queryKeys.agents.list(companyId!),
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
+  });
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(companyId!),
+    queryFn: () => accessApi.listUserDirectory(companyId!),
+    enabled: !!companyId,
+  });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
   });
 
   const { data: projects } = useQuery({
@@ -218,8 +377,16 @@ export function IssueProperties({
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
     onSuccess: async (created) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
+      queryClient.setQueryData<IssueLabel[] | undefined>(
+        queryKeys.issues.labels(companyId!),
+        (current) => {
+          if (!current) return [created];
+          if (current.some((label) => label.id === created.id)) return current;
+          return [...current, created];
+        },
+      );
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
     },
   });
@@ -246,6 +413,46 @@ export function IssueProperties({
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
+  const issueProject = issue.project ?? currentProject;
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const issueUsesMainWorkspace = useMemo(
+    () => isMainIssueWorkspace({ issue, project: issueProject }),
+    [issue, issueProject],
+  );
+  const workspaceTasksExecutionWorkspaceId = useMemo(() => {
+    if (!isolatedWorkspacesEnabled) return null;
+    if (issueUsesMainWorkspace) return null;
+    return issue.executionWorkspaceId ?? issue.currentExecutionWorkspace?.id ?? null;
+  }, [isolatedWorkspacesEnabled, issue, issueUsesMainWorkspace]);
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
+  const liveWorkspaceService = useMemo(() => {
+    if (issueUsesMainWorkspace) return null;
+    return runningRuntimeServiceWithUrl(issue.currentExecutionWorkspace?.runtimeServices);
+  }, [issue.currentExecutionWorkspace?.runtimeServices, issueUsesMainWorkspace]);
+  const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
+  const relatedTasks = useMemo(() => {
+    const excluded = new Set<string>();
+    const addExcluded = (candidate: { id: string; identifier?: string | null }) => {
+      excluded.add(candidate.id);
+      if (candidate.identifier) excluded.add(candidate.identifier);
+    };
+
+    for (const blocker of issue.blockedBy ?? []) addExcluded(blocker);
+    for (const blocked of issue.blocks ?? []) addExcluded(blocked);
+    for (const child of childIssues) addExcluded(child);
+
+    const referencedIssues = issue.relatedWork?.outbound.map((item) => item.issue) ?? [];
+    if (referencedIssues.length > 0) {
+      return referencedIssues.filter((referenced) => {
+        const label = referenced.identifier ?? referenced.id;
+        return !excluded.has(referenced.id) && !excluded.has(label);
+      });
+    }
+
+    return referencedIssueIdentifiers
+      .filter((identifier) => !excluded.has(identifier))
+      .map((identifier) => ({ id: identifier, identifier, title: identifier }));
+  }, [childIssues, issue.blockedBy, issue.blocks, issue.relatedWork?.outbound, referencedIssueIdentifiers]);
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -253,9 +460,23 @@ export function IssueProperties({
   };
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
+  const recentAssigneeSelectionIds = useMemo(() => getRecentAssigneeSelectionIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
     () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
     [agents, recentAssigneeIds],
+  );
+  const recentAssigneeValues = useMemo(
+    () => recentAssigneeSelectionIds,
+    [recentAssigneeSelectionIds],
+  );
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [projectOpen]);
+  const userLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+  const otherUserOptions = useMemo(
+    () => buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId, issue.createdByUserId] }),
+    [companyMembers?.users, currentUserId, issue.createdByUserId],
   );
 
   const assignee = issue.assigneeAgentId
@@ -263,9 +484,14 @@ export function IssueProperties({
     : null;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
-  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
+  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const selectedAssigneeValue = issue.assigneeAgentId
+    ? `agent:${issue.assigneeAgentId}`
+    : issue.assigneeUserId
+      ? `user:${issue.assigneeUserId}`
+      : "";
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -334,10 +560,161 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  useEffect(() => {
+    setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+    setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
+    setMonitorServiceInput(issue.executionPolicy?.monitor?.serviceName ?? "");
+  }, [
+    issue.executionPolicy?.monitor?.nextCheckAt,
+    issue.executionPolicy?.monitor?.notes,
+    issue.executionPolicy?.monitor?.serviceName,
+  ]);
 
-  const labelsTrigger = (issue.labels ?? []).length > 0 ? (
+  const updateMonitor = (nextMonitor: Issue["executionPolicy"] extends infer T
+    ? T extends { monitor?: infer M | null } | null | undefined
+      ? M | null
+      : never
+    : never) => {
+    const basePolicy = buildExecutionPolicy({
+      existingPolicy: issue.executionPolicy ?? null,
+      reviewerValues,
+      approverValues,
+    });
+    if (!basePolicy && !nextMonitor) {
+      onUpdate({ executionPolicy: null });
+      return;
+    }
+    onUpdate({
+      executionPolicy: {
+        mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
+        commentRequired: true,
+        stages: basePolicy?.stages ?? [],
+        ...(nextMonitor ? { monitor: nextMonitor } : {}),
+      },
+    });
+  };
+  const saveMonitor = () => {
+    if (!monitorAtInput) return;
+    const nextCheckAt = new Date(monitorAtInput);
+    if (Number.isNaN(nextCheckAt.getTime())) return;
+    const serviceName = monitorServiceInput.trim() || null;
+    updateMonitor({
+      nextCheckAt: nextCheckAt.toISOString(),
+      notes: monitorNotesInput.trim() || null,
+      scheduledBy: "board",
+      kind: serviceName ? "external_service" : null,
+      serviceName,
+      externalRef: null,
+    });
+    setMonitorOpen(false);
+  };
+  const clearMonitor = () => {
+    updateMonitor(null);
+    setMonitorOpen(false);
+  };
+  const currentMonitorLabel = (() => {
+    if (issue.executionPolicy?.monitor?.nextCheckAt) {
+      return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
+    }
+    if (issue.executionState?.monitor?.status === "cleared") {
+      return "Cleared";
+    }
+    if (issue.monitorLastTriggeredAt) {
+      return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
+    }
+    return "Not scheduled";
+  })();
+  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorTrigger = (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      {monitorNextCheckAt ? (
+        <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      ) : null}
+      <span
+        className={cn(
+          "min-w-0 text-sm break-words",
+          monitorNextCheckAt ? "text-foreground" : "text-muted-foreground",
+        )}
+        title={monitorNextCheckAt ? currentMonitorLabel : undefined}
+      >
+        {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
+      </span>
+      {monitorNextCheckAt ? (
+        <span className="text-xs text-muted-foreground" title={currentMonitorLabel}>
+          {formatDate(new Date(monitorNextCheckAt))}
+        </span>
+      ) : null}
+    </span>
+  );
+  const monitorAttemptBadge = issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
+    <span className="text-xs text-muted-foreground">
+      Attempt {issue.monitorAttemptCount}
+    </span>
+  ) : null;
+  const monitorContent = (
+    <div className="flex w-full flex-col gap-2">
+      <div className="flex flex-col gap-2 md:flex-row">
+        <input
+          type="datetime-local"
+          className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          value={monitorAtInput}
+          onChange={(e) => setMonitorAtInput(e.target.value)}
+        />
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="What should the agent re-check?"
+          value={monitorNotesInput}
+          onChange={(e) => setMonitorNotesInput(e.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-2 md:flex-row">
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="External service"
+          value={monitorServiceInput}
+          onChange={(e) => setMonitorServiceInput(e.target.value)}
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+            disabled={!monitorAtInput}
+            onClick={saveMonitor}
+          >
+            Schedule
+          </button>
+          {issue.executionPolicy?.monitor ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              onClick={clearMonitor}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  const selectedIssueLabels = useMemo(() => {
+    const selectedIds = issue.labelIds ?? [];
+    if (selectedIds.length === 0) return issue.labels ?? [];
+
+    const labelById = new Map<string, IssueLabel>();
+    for (const label of labels ?? []) labelById.set(label.id, label);
+    for (const label of issue.labels ?? []) labelById.set(label.id, label);
+
+    return selectedIds
+      .map((id) => labelById.get(id))
+      .filter((label): label is IssueLabel => Boolean(label));
+  }, [issue.labelIds, issue.labels, labels]);
+
+  const labelsTrigger = selectedIssueLabels.length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
-      {(issue.labels ?? []).slice(0, 3).map((label) => (
+      {selectedIssueLabels.slice(0, 3).map((label) => (
         <span
           key={label.id}
           className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
@@ -350,8 +727,8 @@ export function IssueProperties({
           {label.name}
         </span>
       ))}
-      {(issue.labels ?? []).length > 3 && (
-        <span className="text-xs text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+      {selectedIssueLabels.length > 3 && (
+        <span className="text-xs text-muted-foreground">+{selectedIssueLabels.length - 3}</span>
       )}
     </div>
   ) : (
@@ -399,7 +776,8 @@ export function IssueProperties({
                 onClick={() => toggleLabel(label.id)}
               >
                 <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
-                <span className="truncate">{label.name}</span>
+                <span className="truncate flex-1">{label.name}</span>
+                {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
               </button>
             );
           })}
@@ -450,6 +828,46 @@ export function IssueProperties({
     </>
   );
 
+  const assigneePickerOptions = orderItemsBySelectedAndRecent(
+    [
+      { id: "", kind: "none" as const, label: "No assignee", searchText: "" },
+      ...(currentUserId
+        ? [{
+            id: `user:${currentUserId}`,
+            kind: "user" as const,
+            userId: currentUserId,
+            label: "Assign to me",
+            searchText: userLabel(currentUserId) ?? "",
+          }]
+        : []),
+      ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
+        ? [{
+            id: `user:${issue.createdByUserId}`,
+            kind: "user" as const,
+            userId: issue.createdByUserId,
+            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+            searchText: creatorUserLabel ?? "requester",
+          }]
+        : []),
+      ...otherUserOptions.map((option) => ({
+        id: option.id,
+        kind: "user" as const,
+        userId: option.id.slice("user:".length),
+        label: option.label,
+        searchText: option.searchText ?? "",
+      })),
+      ...sortedAgents.map((agent) => ({
+        id: `agent:${agent.id}`,
+        kind: "agent" as const,
+        agent,
+        label: agent.name,
+        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+      })),
+    ],
+    selectedAssigneeValue,
+    recentAssigneeValues,
+  );
+
   const assigneeContent = (
     <>
       <input
@@ -460,64 +878,40 @@ export function IssueProperties({
         autoFocus={!inline}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
-        <button
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-            !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent"
-          )}
-          onClick={() => { onUpdate({ assigneeAgentId: null, assigneeUserId: null }); setAssigneeOpen(false); }}
-        >
-          No assignee
-        </button>
-        {currentUserId && (
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              issue.assigneeUserId === currentUserId && "bg-accent",
-            )}
-            onClick={() => {
-              onUpdate({ assigneeAgentId: null, assigneeUserId: currentUserId });
-              setAssigneeOpen(false);
-            }}
-          >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
-          </button>
-        )}
-        {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              issue.assigneeUserId === issue.createdByUserId && "bg-accent",
-            )}
-            onClick={() => {
-              onUpdate({ assigneeAgentId: null, assigneeUserId: issue.createdByUserId });
-              setAssigneeOpen(false);
-            }}
-          >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
-          </button>
-        )}
-        {sortedAgents
-          .filter((a) => {
+        {assigneePickerOptions
+          .filter((option) => {
             if (!assigneeSearch.trim()) return true;
             const q = assigneeSearch.toLowerCase();
-            return a.name.toLowerCase().includes(q);
+            return `${option.label} ${option.searchText}`.toLowerCase().includes(q);
           })
-          .map((a) => (
-          <button
-            key={a.id}
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              a.id === issue.assigneeAgentId && "bg-accent"
-            )}
-            onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
-          >
-            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-            {a.name}
-          </button>
-        ))}
+          .map((option) => (
+            <button
+              key={option.id || "__none__"}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                option.id === selectedAssigneeValue && "bg-accent",
+              )}
+              onClick={() => {
+                if (option.kind === "agent") {
+                  trackRecentAssignee(option.agent.id);
+                  onUpdate({ assigneeAgentId: option.agent.id, assigneeUserId: null });
+                } else if (option.kind === "user") {
+                  trackRecentAssigneeUser(option.userId);
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: option.userId });
+                } else {
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: null });
+                }
+                setAssigneeOpen(false);
+              }}
+            >
+              {option.kind === "agent" ? (
+                <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+              ) : option.kind === "user" ? (
+                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              ) : null}
+              {option.label}
+            </button>
+          ))}
       </div>
     </>
   );
@@ -571,6 +965,24 @@ export function IssueProperties({
             {creatorUserLabel ? creatorUserLabel : "Requester"}
           </button>
         )}
+        {otherUserOptions
+          .filter((option) => {
+            if (!search.trim()) return true;
+            return `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(search.toLowerCase());
+          })
+          .map((option) => (
+            <button
+              key={`${stageType}:${option.id}`}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                values.includes(option.id) && "bg-accent",
+              )}
+              onClick={() => toggleExecutionParticipant(stageType, option.id)}
+            >
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              {option.label}
+            </button>
+          ))}
         {sortedAgents
           .filter((agent) => {
             if (!search.trim()) return true;
@@ -610,6 +1022,20 @@ export function IssueProperties({
       <span className="text-sm text-muted-foreground">No project</span>
     </>
   );
+  const projectPickerOptions = orderItemsBySelectedAndRecent(
+    [
+      { id: "", kind: "none" as const, name: "No project", color: null as string | null },
+      ...orderedProjects.map((project) => ({
+        id: project.id,
+        kind: "project" as const,
+        project,
+        name: project.name,
+        color: project.color ?? null,
+      })),
+    ],
+    issue.projectId ?? "",
+    recentProjectIds,
+  );
 
   const projectContent = (
     <>
@@ -621,58 +1047,53 @@ export function IssueProperties({
         autoFocus={!inline}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
-        <button
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
-            !issue.projectId && "bg-accent"
-          )}
-          onClick={() => {
-            onUpdate({
-              projectId: null,
-              projectWorkspaceId: null,
-              executionWorkspaceId: null,
-              executionWorkspacePreference: null,
-              executionWorkspaceSettings: null,
-            });
-            setProjectOpen(false);
-          }}
-        >
-          No project
-        </button>
-        {orderedProjects
-          .filter((p) => {
+        {projectPickerOptions
+          .filter((option) => {
             if (!projectSearch.trim()) return true;
             const q = projectSearch.toLowerCase();
-            return p.name.toLowerCase().includes(q);
+            return option.name.toLowerCase().includes(q);
           })
-          .map((p) => (
-          <button
-            key={p.id}
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
-              p.id === issue.projectId && "bg-accent"
-            )}
-            onClick={() => {
-              const defaultMode = defaultExecutionWorkspaceModeForProject(p);
-              onUpdate({
-                projectId: p.id,
-                projectWorkspaceId: defaultProjectWorkspaceIdForProject(p),
-                executionWorkspaceId: null,
-                executionWorkspacePreference: defaultMode,
-                executionWorkspaceSettings: p.executionWorkspacePolicy?.enabled
-                  ? { mode: defaultMode }
-                  : null,
-              });
-              setProjectOpen(false);
-            }}
-          >
-            <span
-              className="shrink-0 h-3 w-3 rounded-sm"
-              style={{ backgroundColor: p.color ?? "#6366f1" }}
-            />
-            {p.name}
-          </button>
-        ))}
+          .map((option) => (
+            <button
+              key={option.id || "__none__"}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
+                option.id === (issue.projectId ?? "") && "bg-accent",
+              )}
+              onClick={() => {
+                if (option.kind === "project") {
+                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
+                  trackRecentProject(option.project.id);
+                  onUpdate({
+                    projectId: option.project.id,
+                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
+                    executionWorkspaceId: null,
+                    executionWorkspacePreference: defaultMode,
+                    executionWorkspaceSettings: option.project.executionWorkspacePolicy?.enabled
+                      ? { mode: defaultMode }
+                      : null,
+                  });
+                } else {
+                  onUpdate({
+                    projectId: null,
+                    projectWorkspaceId: null,
+                    executionWorkspaceId: null,
+                    executionWorkspacePreference: null,
+                    executionWorkspaceSettings: null,
+                  });
+                }
+                setProjectOpen(false);
+              }}
+            >
+              {option.kind === "project" ? (
+                <span
+                  className="shrink-0 h-3 w-3 rounded-sm"
+                  style={{ backgroundColor: option.color ?? "#6366f1" }}
+                />
+              ) : null}
+              {option.name}
+            </button>
+          ))}
       </div>
     </>
   );
@@ -781,21 +1202,6 @@ export function IssueProperties({
       </div>
     </>
   );
-  const blockedByTrigger = blockedByIds.length > 0 ? (
-    <div className="flex items-center gap-1 flex-wrap min-w-0">
-      {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
-        <span key={relation.id} className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs">
-          <span className="truncate">{relation.identifier ?? relation.title}</span>
-        </span>
-      ))}
-      {(issue.blockedBy ?? []).length > 2 && (
-        <span className="text-xs text-muted-foreground">+{(issue.blockedBy ?? []).length - 2}</span>
-      )}
-    </div>
-  ) : (
-    <span className="text-sm text-muted-foreground">No blockers</span>
-  );
-
   const blockingIssues = issue.blocks ?? [];
   const blockerOptions = (allIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
@@ -818,6 +1224,9 @@ export function IssueProperties({
       ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
       : [...blockedByIds, blockedByIssueId];
     onUpdate({ blockedByIssueIds: nextBlockedByIds });
+  };
+  const removeBlockedBy = (blockedByIssueId: string) => {
+    onUpdate({ blockedByIssueIds: blockedByIds.filter((candidate) => candidate !== blockedByIssueId) });
   };
 
   const blockedByContent = (
@@ -861,6 +1270,16 @@ export function IssueProperties({
       </div>
     </>
   );
+  const renderAddBlockedByButton = (onClick?: () => void) => (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      onClick={onClick}
+    >
+      <Plus className="h-3 w-3" />
+      Add blocker
+    </button>
+  );
 
   return (
     <div className="space-y-4">
@@ -868,6 +1287,7 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
+            blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel
           />
@@ -951,32 +1371,47 @@ export function IssueProperties({
           {parentContent}
         </PropertyPicker>
 
-        <PropertyPicker
-          inline={inline}
-          label="Blocked by"
-          open={blockedByOpen}
-          onOpenChange={(open) => {
-            setBlockedByOpen(open);
-            if (!open) setBlockedBySearch("");
-          }}
-          triggerContent={blockedByTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-72"
-        >
-          {blockedByContent}
-        </PropertyPicker>
+        {inline ? (
+          <div>
+            <PropertyRow label="Blocked by">
+              {(issue.blockedBy ?? []).map((relation) => (
+                <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+              ))}
+              {renderAddBlockedByButton(() => setBlockedByOpen((open) => !open))}
+            </PropertyRow>
+            {blockedByOpen && (
+              <div className="rounded-md border border-border bg-popover p-1 mb-2">
+                {blockedByContent}
+              </div>
+            )}
+          </div>
+        ) : (
+          <PropertyRow label="Blocked by">
+            {(issue.blockedBy ?? []).map((relation) => (
+              <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+            ))}
+            <Popover
+              open={blockedByOpen}
+              onOpenChange={(open) => {
+                setBlockedByOpen(open);
+                if (!open) setBlockedBySearch("");
+              }}
+            >
+              <PopoverTrigger asChild>
+                {renderAddBlockedByButton()}
+              </PopoverTrigger>
+              <PopoverContent className="w-72 p-1" align="end" collisionPadding={16}>
+                {blockedByContent}
+              </PopoverContent>
+            </Popover>
+          </PropertyRow>
+        )}
 
         <PropertyRow label="Blocking">
           {blockingIssues.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {blockingIssues.map((relation) => (
-                <Link
-                  key={relation.id}
-                  to={`/issues/${relation.identifier ?? relation.id}`}
-                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
-                >
-                  {relation.identifier ?? relation.title}
-                </Link>
+                <IssueReferencePill key={relation.id} issue={relation} />
               ))}
             </div>
           ) : null}
@@ -986,13 +1421,7 @@ export function IssueProperties({
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
-                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
-                >
-                  {child.identifier ?? child.title}
-                </Link>
+                <IssueReferencePill key={child.id} issue={child} />
               ))
               : null}
             {onAddSubIssue ? (
@@ -1002,11 +1431,21 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-                Add sub-issue
+              Add sub-issue
               </button>
             ) : null}
           </div>
         </PropertyRow>
+
+        {relatedTasks.length > 0 ? (
+          <PropertyRow label="Related Tasks">
+            <div className="flex flex-wrap gap-1">
+              {relatedTasks.map((related) => (
+                <IssueReferencePill key={related.id} issue={related} />
+              ))}
+            </div>
+          </PropertyRow>
+        ) : null}
 
         <PropertyPicker
           inline={inline}
@@ -1052,6 +1491,19 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
+        <PropertyPicker
+          inline={inline}
+          label="Monitor"
+          open={monitorOpen}
+          onOpenChange={setMonitorOpen}
+          triggerContent={monitorTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+          extra={monitorAttemptBadge}
+        >
+          {monitorContent}
+        </PropertyPicker>
+
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
@@ -1059,17 +1511,41 @@ export function IssueProperties({
         )}
       </div>
 
-      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
+      {liveWorkspaceService || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <>
           <Separator />
           <div className="space-y-1">
-            {issue.executionWorkspaceId && (
+            {liveWorkspaceService?.url && (
+              <PropertyRow label="Service">
+                <a
+                  href={liveWorkspaceService.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-w-0 items-start gap-1 text-sm font-mono text-emerald-700 hover:text-emerald-800 hover:underline dark:text-emerald-300 dark:hover:text-emerald-200"
+                >
+                  <span className="min-w-0 break-all">{liveWorkspaceService.url}</span>
+                  <ExternalLink className="mt-1 h-3 w-3 shrink-0" />
+                </a>
+              </PropertyRow>
+            )}
+            {showWorkspaceDetailLink && issue.executionWorkspaceId && (
               <PropertyRow label="Workspace">
                 <Link
                   to={`/execution-workspaces/${issue.executionWorkspaceId}`}
                   className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                 >
                   View workspace
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              </PropertyRow>
+            )}
+            {workspaceTasksExecutionWorkspaceId && (
+              <PropertyRow label="Tasks">
+                <Link
+                  to={executionWorkspaceIssuesHref(workspaceTasksExecutionWorkspaceId)}
+                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  View workspace tasks
                   <ExternalLink className="h-3 w-3" />
                 </Link>
               </PropertyRow>
@@ -1116,16 +1592,16 @@ export function IssueProperties({
         )}
         {issue.startedAt && (
           <PropertyRow label="Started">
-            <span className="text-sm">{formatDate(issue.startedAt)}</span>
+            <span className="text-sm">{formatDateTime(issue.startedAt)}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
           <PropertyRow label="Completed">
-            <span className="text-sm">{formatDate(issue.completedAt)}</span>
+            <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
         <PropertyRow label="Created">
-          <span className="text-sm">{formatDate(issue.createdAt)}</span>
+          <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>

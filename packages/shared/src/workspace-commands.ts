@@ -166,6 +166,10 @@ export function scoreWorkspaceRuntimeServiceMatch(
   command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd">,
   runtimeService: Pick<WorkspaceRuntimeService, "configIndex" | "serviceName" | "command" | "cwd">,
 ) {
+  if (command.command && runtimeService.command && runtimeService.command !== command.command) {
+    return -1;
+  }
+
   if (command.serviceIndex !== null && runtimeService.configIndex !== null && runtimeService.configIndex !== undefined) {
     return runtimeService.configIndex === command.serviceIndex ? 100 : -1;
   }

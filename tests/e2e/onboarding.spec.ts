@@ -84,7 +84,7 @@ test.describe("Onboarding wizard", () => {
                 intervalSec: 300,
                 wakeOnDemand: false,
                 cooldownSec: 10,
-                maxConcurrentRuns: 1,
+                maxConcurrentRuns: 5,
               },
             },
           },

@@ -1,3 +1,4 @@
+import type { Issue } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 
@@ -67,4 +68,18 @@ export function removeLiveRunById(
   if (!runs) return runs;
   const nextRuns = runs.filter((run) => run.id !== runId);
   return nextRuns.length === runs.length ? runs : nextRuns;
+}
+
+export function clearIssueExecutionRun(
+  issue: Issue | undefined,
+  runId: string,
+) {
+  if (!issue || issue.executionRunId !== runId) return issue;
+  return {
+    ...issue,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    updatedAt: new Date(),
+  };
 }

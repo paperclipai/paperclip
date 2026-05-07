@@ -25,7 +25,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function formatFastModeSupportedModels(): string {
-  return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
+  return `${CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ")} or manually configured model IDs`;
 }
 
 export function buildCodexExecArgs(

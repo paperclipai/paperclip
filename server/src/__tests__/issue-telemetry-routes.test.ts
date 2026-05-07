@@ -27,6 +27,9 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => ({
       canUser: vi.fn(),
       hasPermission: vi.fn(),
@@ -42,6 +45,19 @@ function registerModuleMocks() {
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
@@ -57,7 +73,7 @@ function makeIssue(status: "todo" | "done") {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status,
-    assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    assigneeAgentId: "agent-1",
     assigneeUserId: null,
     createdByUserId: "local-board",
     identifier: "PAP-1018",
@@ -91,7 +107,7 @@ describe("issue telemetry routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);

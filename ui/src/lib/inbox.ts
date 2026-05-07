@@ -12,6 +12,7 @@ import {
   normalizeIssueFilterState,
   type IssueFilterState,
 } from "./issue-filters";
+import { formatAssigneeUserLabel } from "./assignees";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -33,7 +34,7 @@ export type InboxCategoryFilter =
   | "failed_runs"
   | "alerts";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
-export type InboxWorkItemGroupBy = "none" | "type" | "workspace";
+export type InboxWorkItemGroupBy = "none" | "type" | "assignee" | "project" | "workspace";
 export const inboxIssueColumns = [
   "status",
   "id",
@@ -100,11 +101,18 @@ export interface InboxGroupedSection {
 
 export interface InboxKeyboardGroupSection {
   key: string;
+  label?: string | null;
   displayItems: InboxWorkItem[];
   childrenByIssueId: ReadonlyMap<string, Issue[]>;
 }
 
 export type InboxKeyboardNavEntry =
+  | {
+      type: "group";
+      groupKey: string;
+      label: string;
+      collapsed: boolean;
+    }
   | {
       type: "top";
       itemKey: string;
@@ -130,6 +138,10 @@ export interface InboxWorkspaceGroupingOptions {
   executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
   projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
   defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+  projectById?: ReadonlyMap<string, { name: string | null | undefined }>;
+  agentById?: ReadonlyMap<string, string | null | undefined>;
+  userLabelById?: ReadonlyMap<string, string>;
+  currentUserId?: string | null;
 }
 
 const defaultInboxFilterPreferences: InboxFilterPreferences = {
@@ -335,7 +347,7 @@ export function saveInboxIssueColumns(columns: InboxIssueColumn[]) {
 export function loadInboxWorkItemGroupBy(): InboxWorkItemGroupBy {
   try {
     const raw = localStorage.getItem(INBOX_GROUP_BY_KEY);
-    return raw === "type" || raw === "workspace" ? raw : "none";
+    return raw === "type" || raw === "assignee" || raw === "project" || raw === "workspace" ? raw : "none";
   } catch {
     return "none";
   }
@@ -438,6 +450,7 @@ export function getInboxSearchSupplementIssues({
   issueFilters,
   currentUserId,
   enableRoutineVisibilityFilter = false,
+  liveIssueIds,
 }: {
   query: string;
   filteredWorkItems: InboxWorkItem[];
@@ -446,6 +459,7 @@ export function getInboxSearchSupplementIssues({
   issueFilters: IssueFilterState;
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
+  liveIssueIds?: ReadonlySet<string>;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -455,7 +469,7 @@ export function getInboxSearchSupplementIssues({
       .map((item) => item.issue.id),
     ...archivedSearchIssues.map((issue) => issue.id),
   ]);
-  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter)
+  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter, liveIssueIds)
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
@@ -625,6 +639,10 @@ export function isMineInboxTab(tab: InboxTab): boolean {
   return tab === "mine";
 }
 
+export function shouldShowCompanyAlerts(tab: InboxTab): boolean {
+  return tab === "all";
+}
+
 export function resolveInboxSelectionIndex(
   previousIndex: number,
   itemCount: number,
@@ -695,12 +713,16 @@ export function getApprovalsForTab(
   approvals: Approval[],
   tab: InboxTab,
   filter: InboxApprovalFilter,
+  currentUserId?: string | null,
 ): Approval[] {
   const sortedApprovals = [...approvals].sort(
     (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
   );
 
-  if (tab === "mine" || tab === "recent") return sortedApprovals;
+  if (tab === "mine") {
+    return sortedApprovals.filter((approval) => isApprovalVisibleInMine(approval, currentUserId));
+  }
+  if (tab === "recent") return sortedApprovals;
   if (tab === "unread") {
     return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
   }
@@ -710,6 +732,15 @@ export function getApprovalsForTab(
     const isActionable = ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
     return filter === "actionable" ? isActionable : !isActionable;
   });
+}
+
+export function isApprovalVisibleInMine(
+  approval: Approval,
+  currentUserId?: string | null,
+): boolean {
+  if (ACTIONABLE_APPROVAL_STATUSES.has(approval.status)) return true;
+  if (!currentUserId) return false;
+  return approval.requestedByUserId === currentUserId || approval.decidedByUserId === currentUserId;
 }
 
 export function approvalActivityTimestamp(approval: Approval): number {
@@ -779,6 +810,86 @@ const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
   join_request: "Join requests",
 };
 
+function resolveIssueAssigneeGroup(
+  issue: Pick<Issue, "assigneeAgentId" | "assigneeUserId">,
+  {
+    agentById,
+    currentUserId,
+    userLabelById,
+  }: Pick<InboxWorkspaceGroupingOptions, "agentById" | "currentUserId" | "userLabelById">,
+): { key: string; label: string } {
+  if (issue.assigneeAgentId) {
+    const agentName = agentById?.get(issue.assigneeAgentId)?.trim();
+    return {
+      key: `assignee:agent:${issue.assigneeAgentId}`,
+      label: agentName || issue.assigneeAgentId.slice(0, 8),
+    };
+  }
+
+  if (issue.assigneeUserId) {
+    return {
+      key: `assignee:user:${issue.assigneeUserId}`,
+      label: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelById) ?? "User",
+    };
+  }
+
+  return { key: "assignee:none", label: "Unassigned" };
+}
+
+function resolveIssueProjectGroup(
+  issue: Pick<Issue, "projectId">,
+  { projectById }: Pick<InboxWorkspaceGroupingOptions, "projectById">,
+): { key: string; label: string } {
+  if (!issue.projectId) return { key: "project:none", label: "No project" };
+
+  const projectName = projectById?.get(issue.projectId)?.name?.trim();
+  return {
+    key: `project:${issue.projectId}`,
+    label: projectName || issue.projectId.slice(0, 8),
+  };
+}
+
+function groupInboxWorkItemsByIssueGroup(
+  items: InboxWorkItem[],
+  resolveIssueGroup: (issue: Issue) => { key: string; label: string },
+): InboxWorkItemGroup[] {
+  const groups = new Map<string, { label: string; items: InboxWorkItem[]; latestTimestamp: number }>();
+  for (const item of items) {
+    const resolvedGroup = item.kind === "issue"
+      ? resolveIssueGroup(item.issue)
+      : { key: `kind:${item.kind}`, label: inboxWorkItemKindLabels[item.kind] };
+    const existing = groups.get(resolvedGroup.key);
+    if (existing) {
+      existing.items.push(item);
+      existing.latestTimestamp = Math.max(existing.latestTimestamp, item.timestamp);
+    } else {
+      groups.set(resolvedGroup.key, {
+        label: resolvedGroup.label,
+        items: [item],
+        latestTimestamp: item.timestamp,
+      });
+    }
+  }
+
+  return [...groups.entries()]
+    .map(([key, value]) => ({
+      key,
+      label: value.label,
+      items: value.items,
+      latestTimestamp: value.latestTimestamp,
+    }))
+    .sort((a, b) => {
+      const timestampDiff = b.latestTimestamp - a.latestTimestamp;
+      if (timestampDiff !== 0) return timestampDiff;
+      return a.label.localeCompare(b.label);
+    })
+    .map(({ key, label, items: groupItems }) => ({
+      key,
+      label,
+      items: groupItems,
+    }));
+}
+
 export function groupInboxWorkItems(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
@@ -789,41 +900,15 @@ export function groupInboxWorkItems(
   }
 
   if (groupBy === "workspace") {
-    const groups = new Map<string, { label: string; items: InboxWorkItem[]; latestTimestamp: number }>();
-    for (const item of items) {
-      const resolvedGroup = item.kind === "issue"
-        ? resolveIssueWorkspaceGroup(item.issue, options)
-        : { key: `kind:${item.kind}`, label: inboxWorkItemKindLabels[item.kind] };
-      const existing = groups.get(resolvedGroup.key);
-      if (existing) {
-        existing.items.push(item);
-        existing.latestTimestamp = Math.max(existing.latestTimestamp, item.timestamp);
-      } else {
-        groups.set(resolvedGroup.key, {
-          label: resolvedGroup.label,
-          items: [item],
-          latestTimestamp: item.timestamp,
-        });
-      }
-    }
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueWorkspaceGroup(issue, options));
+  }
 
-    return [...groups.entries()]
-      .map(([key, value]) => ({
-        key,
-        label: value.label,
-        items: value.items,
-        latestTimestamp: value.latestTimestamp,
-      }))
-      .sort((a, b) => {
-        const timestampDiff = b.latestTimestamp - a.latestTimestamp;
-        if (timestampDiff !== 0) return timestampDiff;
-        return a.label.localeCompare(b.label);
-      })
-      .map(({ key, label, items: groupItems }) => ({
-        key,
-        label,
-        items: groupItems,
-      }));
+  if (groupBy === "assignee") {
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueAssigneeGroup(issue, options));
+  }
+
+  if (groupBy === "project") {
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueProjectGroup(issue, options));
   }
 
   const groups = new Map<InboxWorkItem["kind"], InboxWorkItem[]>();
@@ -880,9 +965,26 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
     }
   }
 
-  // Sort each child list by most recent activity
+  const subtreeActivityTimestamp = (issue: Issue, seen: ReadonlySet<string> = new Set()): number => {
+    const ownTimestamp = issueLastActivityTimestamp(issue);
+    if (seen.has(issue.id)) return ownTimestamp;
+    const nextSeen = new Set(seen);
+    nextSeen.add(issue.id);
+    const children = childrenByIssueId.get(issue.id) ?? [];
+    if (children.length === 0) return ownTimestamp;
+    return Math.max(
+      ownTimestamp,
+      ...children.map((child) => subtreeActivityTimestamp(child, nextSeen)),
+    );
+  };
+
+  // Sort each child list by most recent descendant activity, not just direct issue activity.
   for (const children of childrenByIssueId.values()) {
-    children.sort(sortIssuesByMostRecentActivity);
+    children.sort((a, b) => {
+      const activityDiff = subtreeActivityTimestamp(b) - subtreeActivityTimestamp(a);
+      if (activityDiff !== 0) return activityDiff;
+      return sortIssuesByMostRecentActivity(a, b);
+    });
   }
 
   // Build root issue items with group-adjusted timestamps
@@ -891,7 +993,7 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
     .map((item) => {
       const children = childrenByIssueId.get(item.issue.id);
       if (!children?.length) return item;
-      const maxChildTs = Math.max(...children.map(issueLastActivityTimestamp));
+      const maxChildTs = Math.max(...children.map((child) => subtreeActivityTimestamp(child)));
       return { ...item, timestamp: Math.max(item.timestamp, maxChildTs) };
     });
 
@@ -948,7 +1050,33 @@ export function buildInboxKeyboardNavEntries(
   const entries: InboxKeyboardNavEntry[] = [];
 
   for (const group of groupedSections) {
-    if (collapsedGroupKeys.has(group.key)) continue;
+    const isCollapsed = collapsedGroupKeys.has(group.key);
+    if (group.label) {
+      entries.push({
+        type: "group",
+        groupKey: group.key,
+        label: group.label,
+        collapsed: isCollapsed,
+      });
+    }
+    if (isCollapsed) continue;
+
+    const addIssueChildren = (issueId: string, seen: ReadonlySet<string>) => {
+      const children = group.childrenByIssueId.get(issueId);
+      if (!children?.length || collapsedInboxParents.has(issueId)) return;
+
+      for (const child of children) {
+        if (seen.has(child.id)) continue;
+        const nextSeen = new Set(seen);
+        nextSeen.add(child.id);
+        entries.push({
+          type: "child",
+          issueId: child.id,
+          issue: child,
+        });
+        addIssueChildren(child.id, nextSeen);
+      }
+    };
 
     for (const item of group.displayItems) {
       entries.push({
@@ -958,17 +1086,7 @@ export function buildInboxKeyboardNavEntries(
       });
 
       if (item.kind !== "issue") continue;
-
-      const children = group.childrenByIssueId.get(item.issue.id);
-      if (!children?.length || collapsedInboxParents.has(item.issue.id)) continue;
-
-      for (const child of children) {
-        entries.push({
-          type: "child",
-          issueId: child.id,
-          issue: child,
-        });
-      }
+      addIssueChildren(item.issue.id, new Set([item.issue.id]));
     }
   }
 
@@ -1005,6 +1123,7 @@ export function computeInboxBadgeData({
   mineIssues,
   dismissedAlerts,
   dismissedAtByKey,
+  currentUserId,
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
@@ -1013,9 +1132,11 @@ export function computeInboxBadgeData({
   mineIssues: Issue[];
   dismissedAlerts: Set<string>;
   dismissedAtByKey: ReadonlyMap<string, number>;
+  currentUserId?: string | null;
 }): InboxBadgeData {
   const actionableApprovals = approvals.filter(
     (approval) =>
+      isApprovalVisibleInMine(approval, currentUserId) &&
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
@@ -1040,7 +1161,8 @@ export function computeInboxBadgeData({
   const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
 
   return {
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues + alerts,
+    // The inbox badge reflects personal/actionable work, not company-wide health alerts.
+    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
