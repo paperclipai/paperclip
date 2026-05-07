@@ -137,6 +137,7 @@ import { IssueBlockedNotice } from "./IssueBlockedNotice";
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   feedbackTermsUrl: string | null;
+  newestFirst: boolean;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
@@ -175,6 +176,7 @@ interface IssueChatMessageContext {
 const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  newestFirst: true,
   issueStatus: undefined,
   successfulRunHandoff: null,
 });
@@ -327,6 +329,7 @@ interface IssueChatThreadProps {
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
+  newestFirst?: boolean;
   emptyMessage?: string;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
@@ -1281,6 +1284,7 @@ function IssueChatUserMessage({
     onCancelQueued,
     currentUserId,
     userProfileMap,
+    newestFirst,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1319,11 +1323,13 @@ function IssueChatUserMessage({
             Follow-up
           </Badge>
         ) : null}
-        <IssueChatTimestampLink
-          anchorId={anchorId}
-          createdAt={message.createdAt}
-          className="shrink-0"
-        />
+        {newestFirst ? (
+          <IssueChatTimestampLink
+            anchorId={anchorId}
+            createdAt={message.createdAt}
+            className="shrink-0"
+          />
+        ) : null}
       </div>
       <div
         className={cn(
@@ -1378,6 +1384,12 @@ function IssueChatUserMessage({
             isCurrentUser ? "justify-end" : "justify-start",
           )}
         >
+          {!newestFirst ? (
+            <IssueChatTimestampLink
+              anchorId={anchorId}
+              createdAt={message.createdAt}
+            />
+          ) : null}
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
@@ -1437,6 +1449,7 @@ function IssueChatAssistantMessage({
     onVote,
     agentMap,
     onStopRun,
+    newestFirst,
     stopRunLabel = "Stop run",
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
@@ -1542,11 +1555,13 @@ function IssueChatAssistantMessage({
                   </span>
                 ) : null}
               </div>
-              <IssueChatTimestampLink
-                anchorId={anchorId}
-                createdAt={message.createdAt}
-                className="shrink-0"
-              />
+              {newestFirst ? (
+                <IssueChatTimestampLink
+                  anchorId={anchorId}
+                  createdAt={message.createdAt}
+                  className="shrink-0"
+                />
+              ) : null}
             </div>
           )}
 
@@ -1601,6 +1616,12 @@ function IssueChatAssistantMessage({
                     sharingPreference={feedbackDataSharingPreference}
                     termsUrl={feedbackTermsUrl ?? null}
                     onVote={handleVote}
+                  />
+                ) : null}
+                {!newestFirst ? (
+                  <IssueChatTimestampLink
+                    anchorId={anchorId}
+                    createdAt={message.createdAt}
                   />
                 ) : null}
                 <DropdownMenu>
@@ -2647,8 +2668,19 @@ function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: st
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
 
-export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
-  for (let index = 0; index < messages.length; index += 1) {
+export function findLatestCommentMessageIndex(
+  messages: readonly ThreadMessage[],
+  newestFirst = true,
+): number {
+  if (newestFirst) {
+    for (let index = 0; index < messages.length; index += 1) {
+      const anchorId = issueChatMessageAnchorId(messages[index]);
+      if (anchorId && anchorId.startsWith("comment-")) return index;
+    }
+    return -1;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
     const anchorId = issueChatMessageAnchorId(messages[index]);
     if (anchorId && anchorId.startsWith("comment-")) return index;
   }
@@ -3643,6 +3675,7 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
+  newestFirst = true,
   emptyMessage,
   variant = "full",
   enableLiveTranscriptPolling = true,
@@ -3778,8 +3811,8 @@ export function IssueChatThread({
     return stabilized.messages;
   }, [rawMessages]);
   const messages = useMemo(
-    () => [...ascendingMessages].reverse(),
-    [ascendingMessages],
+    () => newestFirst ? [...ascendingMessages].reverse() : ascendingMessages,
+    [ascendingMessages, newestFirst],
   );
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
@@ -3922,10 +3955,18 @@ export function IssueChatThread({
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
-      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      if (newestFirst) {
+        virtualizedThreadRef.current?.scrollToIndex(0, { align: "start", behavior: "smooth" });
+      } else {
+        virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      }
       return;
     }
-    topAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (newestFirst) {
+      topAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    document.documentElement.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
   // Lands on the latest `comment-*` row and then keeps nudging the scroll
@@ -3940,7 +3981,7 @@ export function IssueChatThread({
   // comment element is at the scroll container's top edge (or the layout
   // stops changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
-    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot, newestFirst);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
@@ -4101,6 +4142,7 @@ export function IssueChatThread({
     () => ({
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      newestFirst,
       agentMap,
       currentUserId,
       userLabelMap,
@@ -4123,6 +4165,7 @@ export function IssueChatThread({
     [
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      newestFirst,
       agentMap,
       currentUserId,
       userLabelMap,
@@ -4161,6 +4204,17 @@ export function IssueChatThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        {resolvedShowJumpToLatest && !newestFirst ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Jump to latest
+            </button>
+          </div>
+        ) : null}
         <IssueChatErrorBoundary
           resetKey={errorBoundaryResetKey}
           messages={messages}
@@ -4234,7 +4288,7 @@ export function IssueChatThread({
           </div>
         </IssueChatErrorBoundary>
 
-        {resolvedShowJumpToLatest ? (
+        {resolvedShowJumpToLatest && newestFirst ? (
           <div className="flex justify-end">
             <button
               type="button"

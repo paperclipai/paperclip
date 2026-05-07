@@ -356,6 +356,41 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders the jump control above the thread when newest-first mode is disabled", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            newestFirst={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const threadRoot = container.querySelector('[data-testid="thread-root"]');
+    const jumpButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    );
+    expect(threadRoot).not.toBeNull();
+    expect(jumpButton).toBeDefined();
+    expect(
+      threadRoot?.compareDocumentPosition(jumpButton!),
+    ).toBe(Node.DOCUMENT_POSITION_PRECEDING);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the composer in planning mode when the issue is in planning mode", () => {
     const root = createRoot(container);
 
@@ -1020,6 +1055,17 @@ describe("IssueChatThread", () => {
       ] as never),
     ).toBe(-1);
     expect(findLatestCommentMessageIndex([] as never)).toBe(-1);
+  });
+
+  it("findLatestCommentMessageIndex prefers the last comment-anchored row when newest-first mode is disabled", () => {
+    const messages = [
+      { metadata: { custom: { anchorId: "comment-a" } } },
+      { metadata: { custom: { anchorId: "run-1" } } },
+      { metadata: { custom: { anchorId: "comment-b" } } },
+      { metadata: { custom: { anchorId: "run-2" } } },
+      { metadata: { custom: { anchorId: "activity-3" } } },
+    ];
+    expect(findLatestCommentMessageIndex(messages as never, false)).toBe(2);
   });
 
   it("keeps the direct render path for short threads under the virtualization threshold", () => {

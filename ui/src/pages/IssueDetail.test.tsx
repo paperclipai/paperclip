@@ -59,6 +59,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -192,6 +193,7 @@ vi.mock("../components/InlineEditor", () => ({
 
 vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
+    newestFirst?: boolean;
     onWorkModeChange?: (workMode: string) => void;
     issueWorkMode?: string;
     onStopRun?: (runId: string) => Promise<void>;
@@ -804,6 +806,9 @@ describe("IssueDetail", () => {
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableNewestFirstIssueThread: false,
+    });
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
   });
@@ -837,6 +842,45 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("passes oldest-first thread mode when the experimental flag is disabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      newestFirst: false,
+    });
+  });
+
+  it("passes newest-first thread mode when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableNewestFirstIssueThread: true,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      newestFirst: true,
+    });
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {
