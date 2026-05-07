@@ -49,8 +49,10 @@ import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const CODEX_ROLLOUT_NOISE_RE =
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CODEX_ROLLOUT_NOISE_PATTERNS = [
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i,
+  /^Error:\s+thread\/resume:\s+thread\/resume failed:\s+no rollout found for thread id\s+[a-z0-9-]+(?:\s+\([^)]*\))?$/i,
+];
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -61,7 +63,7 @@ function stripCodexRolloutNoise(text: string): string {
       kept.push(part);
       continue;
     }
-    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
+    if (CODEX_ROLLOUT_NOISE_PATTERNS.some((pattern) => pattern.test(trimmed))) continue;
     kept.push(part);
   }
   return kept.join("\n");
