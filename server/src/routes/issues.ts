@@ -375,6 +375,32 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
+// Accepts the comma-separated form (`?priority=critical,high`) and the
+// repeated-key form (`?priority=critical&priority=high`, parsed by Express
+// as a string array) and normalizes both to a single comma-separated string
+// the service layer already understands. Anything else (objects from `qs`'s
+// nested-form parser, etc.) is rejected as undefined so a malformed query
+// fails closed instead of silently widening the result set.
+export function coerceListQueryParam(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (Array.isArray(value)) {
+    const parts: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string") return undefined;
+      for (const piece of entry.split(",")) {
+        const trimmed = piece.trim();
+        if (trimmed.length > 0) parts.push(trimmed);
+      }
+    }
+    return parts.length > 0 ? parts.join(",") : undefined;
+  }
+  return undefined;
+}
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
@@ -1381,7 +1407,8 @@ export function issueRoutes(
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
-      status: req.query.status as string | undefined,
+      status: coerceListQueryParam(req.query.status),
+      priority: coerceListQueryParam(req.query.priority),
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,

@@ -460,6 +460,87 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([grandchildId]);
   });
 
+  it("scopes issue lists by single priority value", async () => {
+    const companyId = randomUUID();
+    const criticalId = randomUUID();
+    const highId = randomUUID();
+    const mediumId = randomUUID();
+    const lowId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      { id: criticalId, companyId, title: "Critical", status: "todo", priority: "critical" },
+      { id: highId, companyId, title: "High", status: "todo", priority: "high" },
+      { id: mediumId, companyId, title: "Medium", status: "todo", priority: "medium" },
+      { id: lowId, companyId, title: "Low", status: "todo", priority: "low" },
+    ]);
+
+    const result = await svc.list(companyId, { priority: "high" });
+
+    expect(new Set(result.map((issue) => issue.id))).toEqual(new Set([highId]));
+  });
+
+  it("scopes issue lists by comma-separated priority values", async () => {
+    const companyId = randomUUID();
+    const criticalId = randomUUID();
+    const highId = randomUUID();
+    const mediumId = randomUUID();
+    const lowId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      { id: criticalId, companyId, title: "Critical", status: "todo", priority: "critical" },
+      { id: highId, companyId, title: "High", status: "todo", priority: "high" },
+      { id: mediumId, companyId, title: "Medium", status: "todo", priority: "medium" },
+      { id: lowId, companyId, title: "Low", status: "todo", priority: "low" },
+    ]);
+
+    const result = await svc.list(companyId, { priority: "critical,high" });
+
+    expect(new Set(result.map((issue) => issue.id))).toEqual(new Set([criticalId, highId]));
+  });
+
+  it("combines comma-separated priority and status filters", async () => {
+    const companyId = randomUUID();
+    const criticalTodo = randomUUID();
+    const highInProgress = randomUUID();
+    const highDone = randomUUID();
+    const mediumTodo = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      { id: criticalTodo, companyId, title: "Critical todo", status: "todo", priority: "critical" },
+      { id: highInProgress, companyId, title: "High in progress", status: "in_progress", priority: "high" },
+      { id: highDone, companyId, title: "High done", status: "done", priority: "high" },
+      { id: mediumTodo, companyId, title: "Medium todo", status: "todo", priority: "medium" },
+    ]);
+
+    const result = await svc.list(companyId, {
+      priority: "critical,high",
+      status: "todo,in_progress",
+    });
+
+    expect(new Set(result.map((issue) => issue.id))).toEqual(new Set([criticalTodo, highInProgress]));
+  });
+
   it("accepts issue identifiers with alphanumeric prefixes through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
