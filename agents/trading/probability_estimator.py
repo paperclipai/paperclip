@@ -17,6 +17,9 @@ import os
 import sys
 import json
 import re
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 from api_client import post_issue_result, post_issue_comment, resolve_issue_context, call_llm
 
@@ -25,6 +28,47 @@ sys.stderr.reconfigure(encoding="utf-8")
 
 MIN_EDGE_POINTS = 0.07   # Edge mínimo para recomendar trade (7 puntos porcentuales)
 MIN_CONFIDENCE  = "medium"
+
+CRYPTO_SYMBOLS = {
+    "bitcoin": "bitcoin", "btc": "bitcoin",
+    "ethereum": "ethereum", "eth": "ethereum",
+    "solana": "solana", "sol": "solana",
+    "xrp": "XRP", "ripple": "XRP",
+    "bnb": "BNB", "binance": "BNB",
+    "doge": "dogecoin", "dogecoin": "dogecoin",
+    "coinbase": "coinbase crypto",
+    "crypto": "cryptocurrency",
+}
+
+
+def extract_crypto_query(question: str) -> str:
+    """Extrae el término de búsqueda crypto más relevante de la pregunta."""
+    q = question.lower()
+    for keyword, symbol in CRYPTO_SYMBOLS.items():
+        if keyword in q:
+            return symbol
+    return "cryptocurrency"
+
+
+def fetch_google_news(query: str, max_items: int = 5) -> list[str]:
+    """Obtiene titulares recientes de Google News RSS. Sin API key."""
+    try:
+        encoded = urllib.parse.quote(f"{query} price")
+        url = f"https://news.google.com/rss/search?q={encoded}&hl=en&gl=US&ceid=US:en"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            xml_data = r.read().decode("utf-8", errors="replace")
+        root = ET.fromstring(xml_data)
+        titles = []
+        for item in root.findall(".//item")[:max_items]:
+            title = item.findtext("title", "").strip()
+            pub   = item.findtext("pubDate", "")[:16]
+            if title:
+                titles.append(f"- {title} ({pub})")
+        return titles
+    except Exception as e:
+        print(f"  ⚠️  Google News error: {e}", flush=True)
+        return []
 
 
 ESTIMATION_PROMPT = """Eres un analista experto en mercados de predicción (Polymarket).
@@ -37,11 +81,14 @@ MERCADO A ANALIZAR:
 - Categoría: {category}
 - Fecha resolución: {end_date}
 
+NOTICIAS RECIENTES (últimas horas):
+{news_section}
+
 Analiza este mercado considerando:
-1. ¿Cuál es la probabilidad base histórica para este tipo de evento?
-2. ¿Hay sesgos conocidos en mercados de predicción (overconfidence, recency bias)?
-3. ¿Qué información pública reciente es relevante para este evento?
-4. ¿El precio actual refleja correctamente la incertidumbre?
+1. ¿Qué indican las noticias recientes sobre la dirección del mercado?
+2. ¿Cuál es la probabilidad base histórica para este tipo de evento?
+3. ¿Hay sesgos conocidos en mercados de predicción (overconfidence, recency bias)?
+4. ¿El precio actual refleja correctamente la incertidumbre dado el contexto actual?
 
 IMPORTANTE: Sé conservador. Solo recomienda trade si tienes edge real y alta convicción.
 
@@ -141,12 +188,24 @@ def main():
     print(f"🎯 Mercado: {params['question'][:80]}...", flush=True)
     print(f"📈 Precio YES: {price_yes:.0%} | NO: {price_no:.0%}", flush=True)
 
+    # Buscar noticias recientes en Google News
+    crypto_query = extract_crypto_query(params["question"])
+    print(f"📰 Buscando noticias: '{crypto_query}'...", flush=True)
+    headlines = fetch_google_news(crypto_query)
+    if headlines:
+        news_section = "\n".join(headlines)
+        print(f"  → {len(headlines)} titulares obtenidos", flush=True)
+    else:
+        news_section = "No se pudieron obtener noticias recientes."
+        print("  → Sin noticias disponibles", flush=True)
+
     prompt = ESTIMATION_PROMPT.format(
-        question  = params["question"],
-        price_yes = price_yes,
-        price_no  = price_no,
-        category  = params["category"],
-        end_date  = params["end_date"] or "No especificada",
+        question     = params["question"],
+        price_yes    = price_yes,
+        price_no     = price_no,
+        category     = params["category"],
+        end_date     = params["end_date"] or "No especificada",
+        news_section = news_section,
     )
 
     response = call_llm(
