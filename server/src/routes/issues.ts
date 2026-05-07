@@ -1498,6 +1498,7 @@ export function issueRoutes(
       relations,
       blockerAttention,
       productivityReview,
+      scheduledRetry,
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
@@ -1510,6 +1511,7 @@ export function issueRoutes(
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+        svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
@@ -1525,6 +1527,7 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
+        scheduledRetry,
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
@@ -1606,6 +1609,7 @@ export function issueRoutes(
       productivityReview,
       referenceSummary,
       successfulRunHandoffStates,
+      scheduledRetry,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -1616,6 +1620,7 @@ export function issueRoutes(
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
+      svc.getCurrentScheduledRetry(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1631,6 +1636,7 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      scheduledRetry,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
       relatedWork: referenceSummary,
@@ -2436,6 +2442,44 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const result = await heartbeat.retryScheduledRetryNow({
+      issueId: issue.id,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "issue.scheduled_retry_retry_now",
+      entityType: "issue",
+      entityId: issue.id,
+      agentId: result.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+      runId: result.scheduledRetry?.runId ?? null,
+      details: {
+        outcome: result.outcome,
+        message: result.message,
+        scheduledRetry: result.scheduledRetry,
+      },
+    });
+
+    res.json(result);
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
