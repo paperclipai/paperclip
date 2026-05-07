@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { inArray } from "drizzle-orm";
 import {
@@ -18,13 +16,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { runGitIsolated } from "./helpers/git.js";
 import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
-
-const execFileAsync = promisify(execFile);
 
 describe("execution workspace config helpers", () => {
   it("reads typed config from persisted metadata", () => {
@@ -128,7 +125,7 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 async function runGit(cwd: string, args: string[]) {
-  await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+  await runGitIsolated(cwd, args);
 }
 
 async function createTempRepo() {
