@@ -105,7 +105,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
 
   afterEach(async () => {
 
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.indexed"]) {
+    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.indexed", multiMigrationPluginKey]) {
       const namespace = derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
@@ -279,10 +279,16 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const packageRoot = await createPluginPackage(
       pluginManifest,
       `
+      CREATE TABLE ${namespace}.mission_rows (
+        id uuid PRIMARY KEY,
+        issue_id uuid NOT NULL REFERENCES public.issues(id),
+        label text NOT NULL
+      );
+
       ALTER TABLE ${namespace}.mission_rows
         ADD COLUMN IF NOT EXISTS testing text;
 
-      CREATE INDEX IF NOT EXISTS ${namespace}_mission_rows_testing_idx
+      CREATE INDEX IF NOT EXISTS mission_rows_testing_idx
         ON ${namespace}.mission_rows (testing)
         WHERE testing IS NOT NULL;
       `,
