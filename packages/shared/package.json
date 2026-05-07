@@ -13,9 +13,9 @@
   },
   "type": "module",
   "exports": {
-    ".": "./dist/index.js",
-    "./telemetry": "./dist/telemetry/index.js",
-    "./*": "./dist/*.js"
+    ".": "./src/index.ts",
+    "./telemetry": "./src/telemetry/index.ts",
+    "./*": "./src/*.ts"
   },
   "publishConfig": {
     "access": "public",

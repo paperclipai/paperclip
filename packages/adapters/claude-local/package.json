@@ -13,10 +13,10 @@
   },
   "type": "module",
   "exports": {
-    ".": "./dist/index.js",
-    "./server": "./dist/server/index.js",
-    "./ui": "./dist/ui/index.js",
-    "./cli": "./dist/cli/index.js"
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./ui": "./src/ui/index.ts",
+    "./cli": "./src/cli/index.ts"
   },
   "publishConfig": {
     "access": "public",

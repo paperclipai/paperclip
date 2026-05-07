@@ -13,8 +13,8 @@
   },
   "type": "module",
   "exports": {
-    ".": "./dist/index.js",
-    "./*": "./dist/*.js"
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
   },
   "publishConfig": {
     "access": "public",
