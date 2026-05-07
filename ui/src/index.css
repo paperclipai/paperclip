@@ -257,6 +257,11 @@
   background: oklch(0.5 0 0) !important;
 }
 
+/* Anchor overlay color outside @layer so it wins over Tailwind v4 utility layers */
+[data-slot="dialog-overlay"] {
+  background-color: oklch(0 0 0 / 0.5);
+}
+
 /* Expandable dialog transition for max-width changes */
 [data-slot="dialog-content"] {
   transition: max-width 200ms cubic-bezier(0.16, 1, 0.3, 1);
