@@ -194,7 +194,7 @@ export function SidebarProjects() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
+              {t('sidebar.projects_heading')}
             </span>
           </CollapsibleTrigger>
           <button

@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
@@ -489,6 +490,7 @@ export function IssueRunLedgerContent({
   watchdogDecisionError,
   onWatchdogDecision,
 }: IssueRunLedgerContentProps) {
+  const { t } = useTranslation("issues");
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
   const latestRun = ledgerRuns[0] ?? null;
   const latestSilentRun = useMemo(
@@ -533,16 +535,16 @@ export function IssueRunLedgerContent({
   }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
 
   return (
-    <section className="space-y-3" aria-label="Issue run ledger">
+    <section className="space-y-3" aria-label={t("detail.run_ledger_aria_label")}>
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-muted-foreground">Run ledger</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">{t("detail.run_ledger_heading")}</h3>
           <p className="text-xs text-muted-foreground">
             {latestRun
               ? runSummary(latestRun, agentMap)
               : issueStatus === "in_progress"
-                ? "Waiting for the first run record."
-                : "No runs linked yet."}
+                ? t("detail.run_ledger_waiting")
+                : t("detail.run_ledger_no_runs")}
           </p>
         </div>
         {latestRun ? (
@@ -550,7 +552,7 @@ export function IssueRunLedgerContent({
             to={`/agents/${latestRun.agentId}/runs/${latestRun.runId}`}
             className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            Latest run
+            {t("detail.run_ledger_latest_run")}
           </Link>
         ) : null}
       </div>

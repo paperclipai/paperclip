@@ -92,6 +92,11 @@
     "archive_from_inbox": "Archive from inbox",
     "more_actions": "More actions",
     "copy_as_markdown": "Copy as markdown",
+    "run_ledger_aria_label": "Issue run ledger",
+    "run_ledger_heading": "Run ledger",
+    "run_ledger_waiting": "Waiting for the first run record.",
+    "run_ledger_no_runs": "No runs linked yet.",
+    "run_ledger_latest_run": "Latest run",
     "properties": "Properties",
     "hide_issue": "Hide this issue",
     "show_properties": "Show properties",
@@ -573,5 +578,13 @@
     "queued_ellipsis": "Queued...",
     "working": "Working...",
     "run_finished": "Run finished"
+  },
+  "related_work": {
+    "references": "References",
+    "references_description": "Other tasks this issue currently points at in its title, description, comments, or documents.",
+    "references_empty": "This issue does not reference any other tasks yet.",
+    "referenced_by": "Referenced by",
+    "referenced_by_description": "Other tasks that currently point at this issue.",
+    "referenced_by_empty": "No other tasks reference this issue yet."
   }
 }

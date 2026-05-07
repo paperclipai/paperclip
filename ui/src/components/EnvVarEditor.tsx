@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -65,6 +66,7 @@ export function EnvVarEditor({
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (env: Record<string, EnvBinding> | undefined) => void;
 }) {
+  const { t } = useTranslation("agents");
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
   const valueRef = useRef(value);
@@ -169,7 +171,7 @@ export function EnvVarEditor({
           <div key={index} className="flex items-center gap-1.5">
             <input
               className={cn(inputClass, "flex-[2]")}
-              placeholder="KEY"
+              placeholder={t("env_var_editor.key_placeholder")}
               value={row.key}
               onChange={(event) => updateRow(index, { key: event.target.value })}
             />
@@ -205,7 +207,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  title={t("env_var_editor.create_secret_title")}
                 >
                   New
                 </button>
@@ -223,7 +225,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Store value as secret and replace with reference"
+                  title={t("env_var_editor.seal_title")}
                 >
                   Seal
                 </button>

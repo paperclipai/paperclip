@@ -21,6 +21,7 @@
   },
   "status": {
     "approved": "Согласовано",
+    "cancelled": "Отменено",
     "pending": "Ожидает",
     "rejected": "Отклонено",
     "revision_requested": "Требуется доработка"

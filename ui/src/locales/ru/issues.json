@@ -94,6 +94,11 @@
     "archive_from_inbox": "Архивировать из inbox",
     "more_actions": "Дополнительные действия",
     "copy_as_markdown": "Копировать как markdown",
+    "run_ledger_aria_label": "Журнал запусков задачи",
+    "run_ledger_heading": "Журнал запусков",
+    "run_ledger_waiting": "Ожидание первой записи о запуске.",
+    "run_ledger_no_runs": "Нет связанных запусков.",
+    "run_ledger_latest_run": "Последний запуск",
     "properties": "Свойства",
     "hide_issue": "Скрыть задачу",
     "show_properties": "Показать свойства",
@@ -581,5 +586,13 @@
     "queued_ellipsis": "В очереди...",
     "working": "Выполняется...",
     "run_finished": "Запуск завершён"
+  },
+  "related_work": {
+    "references": "Ссылается на",
+    "references_description": "Другие задачи, на которые ссылается эта задача в заголовке, описании, комментариях или документах.",
+    "references_empty": "Эта задача пока не ссылается на другие задачи.",
+    "referenced_by": "Ссылаются сюда",
+    "referenced_by_description": "Другие задачи, которые ссылаются на эту задачу.",
+    "referenced_by_empty": "Пока ни одна задача не ссылается на эту."
   }
 }

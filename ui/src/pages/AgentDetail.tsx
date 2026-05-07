@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1696,6 +1697,7 @@ function PromptsTab({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
+  const { t } = useTranslation("issues");
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
@@ -2359,7 +2361,7 @@ function PromptsTab({
                 <CopyText
                   text={displayValue}
                   ariaLabel="Copy instructions file as markdown"
-                  title="Copy as markdown"
+                  title={t("detail.copy_as_markdown")}
                   copiedLabel="Copied"
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 >

@@ -172,9 +172,6 @@ function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
 }
 
-function approvalStatusLabel(status: Approval["status"]): string {
-  return status.replaceAll("_", " ");
-}
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
   const context = run.contextSnapshot;
@@ -410,6 +407,7 @@ function ApprovalInboxRow({
   className?: string;
 }) {
   const { t } = useTranslation("inbox");
+  const { t: tApprovals } = useTranslation("approvals");
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
@@ -474,7 +472,7 @@ function ApprovalInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
+              <span>{tApprovals(`status.${approval.status}`)}</span>
               {requesterName ? <span>{t("misc.requested_by", { name: requesterName })}</span> : null}
               <span>{t("misc.updated_time", { time: timeAgo(approval.updatedAt) })}</span>
             </span>
