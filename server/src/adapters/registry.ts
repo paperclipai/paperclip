@@ -84,6 +84,10 @@ import {
 import {
   execute as openrouterLocalExecute,
   testEnvironment as openrouterLocalTestEnvironment,
+  listModels as listOpenrouterLocalModels,
+  refreshModels as refreshOpenrouterLocalModels,
+  detectModel as detectOpenrouterLocalModel,
+  getConfigSchema as getOpenrouterLocalConfigSchema,
 } from "@paperclipai/adapter-openrouter-local/server";
 import {
   agentConfigurationDoc as openrouterLocalAgentConfigurationDoc,
@@ -374,6 +378,10 @@ const openrouterLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: openrouterLocalAgentConfigurationDoc,
+  listModels: listOpenrouterLocalModels,
+  refreshModels: refreshOpenrouterLocalModels,
+  detectModel: detectOpenrouterLocalModel,
+  getConfigSchema: getOpenrouterLocalConfigSchema,
 };
 
 const piLocalAdapter: ServerAdapterModule = {

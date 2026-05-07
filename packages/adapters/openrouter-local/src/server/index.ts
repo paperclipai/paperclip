@@ -2,6 +2,7 @@ import type { ServerAdapterModule } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import { listModels, refreshModels, detectModel } from "./models.js";
+import { getConfigSchema } from "./config-schema.js";
 import {
   type,
   label,
@@ -16,6 +17,7 @@ import {
 
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
+export { getConfigSchema } from "./config-schema.js";
 export {
   loadInstructionFragments,
   joinInstructionFragments,
@@ -62,5 +64,6 @@ export function createServerAdapter(): ServerAdapterModule {
     listModels,
     refreshModels,
     detectModel,
+    getConfigSchema,
   } as ServerAdapterModule & { label: string };
 }
