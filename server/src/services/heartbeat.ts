@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -180,6 +180,7 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
 
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
+const TERMINAL_RUN_STATUSES = ["skipped", "succeeded", "failed", "cancelled", "timed_out"] as const;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
@@ -6353,6 +6354,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileIssueGraphLiveness(opts);
   }
 
+  /**
+   * Reap issues whose executionRunId references a terminal run.
+   *
+   * This is a safety net for cases where releaseIssueExecutionAndPromote was
+   * skipped or threw — leaving an issue locked to a dead run.  Clears both
+   * executionRunId and checkoutRunId so the issue can be checked out again
+   * without manual board intervention.
+   *
+   * Called on startup and on every heartbeat-scheduler tick.
+   */
+  async function reapStaleExecutionRunLocks() {
+    const stale = await db
+      .select({
+        issueId: issues.id,
+        runId: heartbeatRuns.id,
+      })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
+        ),
+      )
+      .where(isNotNull(issues.executionRunId));
+
+    if (stale.length === 0) return { reaped: 0, issueIds: [] as string[] };
+
+    // Single bulk UPDATE — one round-trip for all stale locks.
+    // The OR predicate preserves the per-row (id, executionRunId) guard so
+    // a concurrent checkout that already moved to a live run is never cleared.
+    // The CASE on checkoutRunId mirrors the same guard: only clear it when it
+    // still points at the same terminal run being reaped.
+    const updated = await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        checkoutRunId: sql`CASE WHEN checkout_run_id = execution_run_id THEN NULL ELSE checkout_run_id END`,
+        updatedAt: new Date(),
+      })
+      .where(
+        or(...stale.map((r) => and(eq(issues.id, r.issueId), eq(issues.executionRunId, r.runId))))!,
+      )
+      .returning({ id: issues.id });
+
+    const reaped = updated.map((r) => r.id);
+
+    if (reaped.length > 0) {
+      logger.warn(
+        { reaped: reaped.length, issueIds: reaped },
+        "reaped stale executionRunId locks on issues",
+      );
+    }
+
+    return { reaped: reaped.length, issueIds: reaped };
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -7862,17 +7922,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
-      if (issue.executionRunId === run.id) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, issue.id));
-      }
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          checkoutRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issue.id));
 
       while (true) {
         const deferred = await tx
@@ -9383,6 +9442,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reapOrphanedRuns,
 
     promoteDueScheduledRetries,
+    reapStaleExecutionRunLocks,
 
     resumeQueuedRuns,
 
