@@ -44,6 +44,7 @@ import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -212,6 +213,21 @@ export function adapterRoutes() {
     ).sort((a, b) => a.type.localeCompare(b.type));
 
     res.json(result);
+  });
+
+  /**
+   * POST /api/adapters/opencode/clear-model-cache
+   *
+   * For instance-admins: force-clear the in-memory opencode models discovery cache.
+   */
+  router.post("/adapters/opencode/clear-model-cache", async (req, res) => {
+    assertInstanceAdmin(req);
+    try {
+      resetOpenCodeModelsCacheForTests();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   /**

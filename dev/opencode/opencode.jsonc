@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "{env:OLLAMA_BASE_URL}"
+      },
+      "models": {
+        "qwen2.5:3b": { "name": "Qwen 2.5 (3B)" },
+        "qwen3:4b": { "name": "Qwen 3 (4B)" },
+        "llama3.2:1b": { "name": "Llama 3.2 (1B)" },
+        "nemotron-3-nano:4b": { "name": "NemoTron 3 Nano (4B)" },
+        "qwen3.5:0.8b": { "name": "Qwen 3.5 (0.8B)" },
+        "qwen3.5:2b": { "name": "Qwen 3.5 (2B)" },
+        "qwen2.5-coder:3b": { "name": "Qwen 2.5 Coder (3B)" },
+        "nemotron-3-super:cloud": { "name": "NemoTron 3 Super (cloud)" }
+      }
+    }
+  }
+}

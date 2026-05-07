@@ -7,7 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const MODELS_CACHE_TTL_MS = 60_000;
+const MODELS_CACHE_TTL_MS = Number(process.env.PAPERCLIP_OPENCODE_MODELS_TTL_MS ?? 5000);
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
 
 function resolveOpenCodeCommand(input: unknown): string {
