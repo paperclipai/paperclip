@@ -1139,7 +1139,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // Embed paperclip context inside message instead of top-level (OpenClaw rejects unknown root keys)
+  const paperclipBlock = `\n<!-- paperclip-context\n${JSON.stringify(paperclipPayload)}\n-->`;
+  agentParams.message = `${message}${paperclipBlock}`;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
