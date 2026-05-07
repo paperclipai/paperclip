@@ -100,7 +100,13 @@ If `currentParticipant` does **not** match you, do not try to advance the stage.
 
 **Step 7 — Plan and do the work.**
 
-**Planning gate (non-routine tasks).** Before executing, check whether the issue already has a `plan` document (`GET /api/issues/{issueId}/documents/plan`). If **no plan exists** and the issue is **not** a routine-generated execution (`originKind` is not `"routine_execution"`):
+**Planning gate (planning-mode tasks).** The mandatory plan-first gate triggers on the issue's `workMode`, read from `heartbeat-context.issue.workMode`:
+
+- `workMode === "planning"` → run the gate (steps below). Plan-first is mandatory; do not start execution until the board approves.
+- `workMode === "standard"` → skip the mandatory gate. Use judgment: still write and save a `plan` document for large or risky work, but no forced `in_review` round-trip on every standard issue.
+- `originKind === "routine_execution"` → skip planning entirely, regardless of `workMode`.
+
+When the gate applies (`workMode === "planning"` and not a routine execution), check whether the issue already has a `plan` document (`GET /api/issues/{issueId}/documents/plan`). If no plan exists yet:
 
 1. Read the issue context, ancestors, and comments to fully understand the task and its purpose.
 2. Write a plan. If the `ce:plan` skill is available in your environment, invoke it (`Skill({ skill: "compound-engineering:ce-plan" })`). Otherwise, write a markdown plan covering: **approach** (what you will do and why), **scope** (key files and areas affected), **risks** (what could go wrong), and **verification** (how you will confirm success).
@@ -116,8 +122,6 @@ If `currentParticipant` does **not** match you, do not try to advance the stage.
 **Resuming after plan review.** When the board moves the issue back to `in_progress` (or `todo`) or comments with approval, you will be woken. If the plan exists and the issue is no longer in `in_review`, proceed with execution.
 
 **Handling plan feedback.** If the board requests changes (moves the issue back with feedback comments), update the plan to address the feedback, save it, and send it back for `in_review`. Repeat until the board approves.
-
-**Routine exemption.** Routine-generated execution issues (`originKind: "routine_execution"`) skip the planning gate entirely — proceed directly with execution.
 
 **Execution.** Once a plan is approved (or the planning gate does not apply), do the work using your tools and capabilities. While executing:
 
