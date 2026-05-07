@@ -223,10 +223,14 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
       handleEvent(event);
     }
 
-      const runList = (await api.get<(HeartbeatRun | null)[]>(
-        `/api/companies/${agent.companyId}/heartbeat-runs?agentId=${agent.id}`,
-      )) || [];
-      const currentRun = runList.find((r) => r && r.id === activeRunId) ?? null;
+      let currentRun: HeartbeatRun | null = null;
+      try {
+        currentRun = await api.get<HeartbeatRun | null>(
+          `/api/heartbeat-runs/${activeRunId}`
+        );
+      } catch (err: any) {
+        if (err.status !== 404) throw err;
+      }
 
     if (!currentRun) {
       console.error(pc.red("Heartbeat run disappeared"));

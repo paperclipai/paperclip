@@ -14,75 +14,135 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
-export function parseClaudeStreamJson(stdout: string) {
-  let sessionId: string | null = null;
-  let model = "";
-  let finalResult: Record<string, unknown> | null = null;
-  const assistantTexts: string[] = [];
+interface ClaudeStreamParseState {
+  sessionId: string | null;
+  model: string;
+  finalResult: Record<string, unknown> | null;
+  assistantTexts: string[];
+}
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const event = parseJson(line);
-    if (!event) continue;
+interface ClaudeStreamParseResult {
+  sessionId: string | null;
+  model: string;
+  costUsd: number | null;
+  usage: UsageSummary | null;
+  summary: string;
+  resultJson: Record<string, unknown> | null;
+}
 
-    const type = asString(event.type, "");
-    if (type === "system" && asString(event.subtype, "") === "init") {
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-      model = asString(event.model, model);
-      continue;
-    }
+function createClaudeStreamParseState(): ClaudeStreamParseState {
+  return {
+    sessionId: null,
+    model: "",
+    finalResult: null,
+    assistantTexts: [],
+  };
+}
 
-    if (type === "assistant") {
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-      const message = parseObject(event.message);
-      const content = Array.isArray(message.content) ? message.content : [];
-      for (const entry of content) {
-        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-        const block = entry as Record<string, unknown>;
-        if (asString(block.type, "") === "text") {
-          const text = asString(block.text, "");
-          if (text) assistantTexts.push(text);
-        }
-      }
-      continue;
-    }
-
-    if (type === "result") {
-      finalResult = event;
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-    }
+function processClaudeStreamEvent(state: ClaudeStreamParseState, event: Record<string, unknown>): void {
+  const type = asString(event.type, "");
+  if (type === "system" && asString(event.subtype, "") === "init") {
+    state.sessionId = asString(event.session_id, state.sessionId ?? "") || state.sessionId;
+    state.model = asString(event.model, state.model);
+    return;
   }
 
-  if (!finalResult) {
+  if (type === "assistant") {
+    state.sessionId = asString(event.session_id, state.sessionId ?? "") || state.sessionId;
+    const message = parseObject(event.message);
+    const content = Array.isArray(message.content) ? message.content : [];
+    for (const entry of content) {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+      const block = entry as Record<string, unknown>;
+      if (asString(block.type, "") === "text") {
+        const text = asString(block.text, "");
+        if (text) state.assistantTexts.push(text);
+      }
+    }
+    return;
+  }
+
+  if (type === "result") {
+    state.finalResult = event;
+    state.sessionId = asString(event.session_id, state.sessionId ?? "") || state.sessionId;
+  }
+}
+
+function processClaudeStreamLine(state: ClaudeStreamParseState, rawLine: string): void {
+  const line = rawLine.trim();
+  if (!line) return;
+  const event = parseJson(line);
+  if (!event) return;
+  processClaudeStreamEvent(state, event);
+}
+
+function finalizeClaudeStreamParse(state: ClaudeStreamParseState): ClaudeStreamParseResult {
+  if (!state.finalResult) {
     return {
-      sessionId,
-      model,
-      costUsd: null as number | null,
-      usage: null as UsageSummary | null,
-      summary: assistantTexts.join("\n\n").trim(),
-      resultJson: null as Record<string, unknown> | null,
+      sessionId: state.sessionId,
+      model: state.model,
+      costUsd: null,
+      usage: null,
+      summary: state.assistantTexts.join("\n\n").trim(),
+      resultJson: null,
     };
   }
 
-  const usageObj = parseObject(finalResult.usage);
+  const usageObj = parseObject(state.finalResult.usage);
   const usage: UsageSummary = {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
   };
-  const costRaw = finalResult.total_cost_usd;
+  const costRaw = state.finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
-  const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
+  const summary = asString(state.finalResult.result, state.assistantTexts.join("\n\n")).trim();
 
   return {
-    sessionId,
-    model,
+    sessionId: state.sessionId,
+    model: state.model,
     costUsd,
     usage,
     summary,
-    resultJson: finalResult,
+    resultJson: state.finalResult,
   };
+}
+
+function parseClaudeStreamJsonText(stdout: string): ClaudeStreamParseResult {
+  const state = createClaudeStreamParseState();
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    processClaudeStreamLine(state, rawLine);
+  }
+  return finalizeClaudeStreamParse(state);
+}
+
+async function parseClaudeStreamJsonStream(stdoutStream: AsyncIterable<string>): Promise<ClaudeStreamParseResult> {
+  const state = createClaudeStreamParseState();
+  let buffer = "";
+
+  for await (const chunk of stdoutStream) {
+    buffer += chunk;
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const rawLine = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      processClaudeStreamLine(state, rawLine);
+    }
+  }
+
+  if (buffer.trim()) {
+    processClaudeStreamLine(state, buffer);
+  }
+
+  return finalizeClaudeStreamParse(state);
+}
+
+export function parseClaudeStreamJson(stdout: string): ClaudeStreamParseResult;
+export function parseClaudeStreamJson(stdoutStream: AsyncIterable<string>): Promise<ClaudeStreamParseResult>;
+export function parseClaudeStreamJson(
+  input: string | AsyncIterable<string>,
+): ClaudeStreamParseResult | Promise<ClaudeStreamParseResult> {
+  return typeof input === "string" ? parseClaudeStreamJsonText(input) : parseClaudeStreamJsonStream(input);
 }
 
 function extractClaudeErrorMessages(parsed: Record<string, unknown>): string[] {

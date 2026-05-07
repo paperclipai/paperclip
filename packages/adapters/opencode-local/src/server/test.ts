@@ -306,7 +306,8 @@ export async function testEnvironment(
           },
         );
 
-        const parsed = parseOpenCodeJsonl(probe.stdout);
+        async function* asStream(text: string) { yield text; }
+        const parsed = await parseOpenCodeJsonl(asStream(probe.stdout));
         const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
         const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
 

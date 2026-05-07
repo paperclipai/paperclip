@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
-  it("parses assistant text, usage, cost, and errors", () => {
+  it("parses assistant text, usage, cost, and errors", async () => {
     const stdout = [
       JSON.stringify({
         type: "text",
@@ -30,7 +30,8 @@ describe("parseOpenCodeJsonl", () => {
       }),
     ].join("\n");
 
-    const parsed = parseOpenCodeJsonl(stdout);
+    async function* asStream(text: string) { yield text; }
+    const parsed = await parseOpenCodeJsonl(asStream(stdout));
     expect(parsed.sessionId).toBe("session_123");
     expect(parsed.summary).toBe("Hello from OpenCode");
     expect(parsed.usage).toEqual({
@@ -39,7 +40,7 @@ describe("parseOpenCodeJsonl", () => {
       outputTokens: 50,
     });
     expect(parsed.costUsd).toBeCloseTo(0.0025, 6);
-    expect(parsed.errorMessage).toContain("model unavailable");
+    expect(parsed.errorMessage).toBe("model unavailable");
     expect(parsed.toolErrors).toEqual([]);
   });
 

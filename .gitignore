@@ -10,6 +10,7 @@ drizzle/meta/
 .vite/
 coverage/
 .DS_Store
+**/._.DS_Store
 data/
 .paperclip/
 .pnpm-store/

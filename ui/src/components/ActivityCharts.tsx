@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRunStats } from "../api/heartbeats";
 
 /* ---- Utilities ---- */
 
@@ -58,9 +59,11 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
 
 /* ---- Chart Components ---- */
 
-type RunChartProps =
-  | { activity?: DashboardRunActivityDay[] | null; runs?: never }
-  | { runs?: HeartbeatRun[] | null; activity?: never };
+type RunChartProps = {
+  activity?: DashboardRunActivityDay[] | null;
+  runs?: HeartbeatRun[] | null;
+  stats?: HeartbeatRunStats[] | null;
+};
 
 function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivityDay[] {
   const days = getLast14Days();
@@ -75,12 +78,28 @@ function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivity
     else entry.other++;
     entry.total++;
   }
-  return Array.from(grouped.values());
+  return days.map((day) => grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
+}
+
+function aggregateStats(stats: readonly HeartbeatRunStats[] = []): DashboardRunActivityDay[] {
+  const days = getLast14Days();
+  const grouped = new Map<string, DashboardRunActivityDay>();
+  for (const day of days) grouped.set(day, { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
+  for (const stat of stats) {
+    const entry = grouped.get(stat.date);
+    if (!entry) continue;
+    if (stat.status === "succeeded") entry.succeeded += stat.count;
+    else if (stat.status === "failed" || stat.status === "timed_out") entry.failed += stat.count;
+    else entry.other += stat.count;
+    entry.total += stat.count;
+  }
+  return days.map((day) => grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
 }
 
 function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
   if (Array.isArray(props.activity)) return props.activity;
   if (Array.isArray(props.runs)) return aggregateRuns(props.runs);
+  if (Array.isArray(props.stats)) return aggregateStats(props.stats);
   return [];
 }
 
