@@ -14,6 +14,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
   deleteSkill: vi.fn(),
+  refreshFromDisk: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -96,6 +97,12 @@ describe("company skill mutation permissions", () => {
       id: "skill-1",
       slug: "find-skills",
       name: "Find Skills",
+    });
+    mockCompanySkillService.refreshFromDisk.mockResolvedValue({
+      skill: { id: "skill-1" },
+      refreshed: true,
+      markdown_length: 12,
+      markdown_sha256: "abc123",
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -295,6 +302,77 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("blocks refresh for same-company agents without skills:refresh permission", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: {},
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/skill-1/refresh")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockCompanySkillService.refreshFromDisk).not.toHaveBeenCalled();
+  });
+
+  it("allows refresh with explicit skills:refresh grant even without canCreateAgents", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateAgents: false },
+    });
+    mockAccessService.hasPermission.mockImplementation(async (_companyId: string, _principalType: string, _principalId: string, permissionKey: string) => (
+      permissionKey === "skills:refresh"
+    ));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/skill-1/refresh")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.refreshFromDisk).toHaveBeenCalledWith("company-1", "skill-1");
+    expect(res.body).toMatchObject({
+      refreshed: true,
+      markdown_length: 12,
+      markdown_sha256: "abc123",
+    });
+  });
+
+  it("returns 422 when refresh is requested for a non-local sourceType", async () => {
+    const { unprocessable } = await import("../errors.js");
+    mockCompanySkillService.refreshFromDisk.mockImplementationOnce(async () => {
+      throw unprocessable("refresh requires sourceType=local_path, got 'inline'");
+    });
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/skill-1/refresh")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toEqual({
+      error: "refresh requires sourceType=local_path, got 'inline'",
+    });
   });
 
   it("returns a blocking error when attempting to delete a skill still used by agents", async () => {

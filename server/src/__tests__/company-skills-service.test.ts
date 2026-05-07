@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -95,5 +96,75 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       status: 404,
       message: "Company not found",
     });
+  });
+
+  it("refreshes SKILL.md from disk and returns hash/length metadata", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-refresh-skill-"));
+    cleanupDirs.add(skillDir);
+    const markdown = "# Skill\n\nv1\n";
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown, "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/refresh-skill`,
+      slug: "refresh-skill",
+      name: "Refresh Skill",
+      description: "refresh test",
+      markdown: "# stale\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+
+    const refreshed = await svc.refreshFromDisk(companyId, skillId);
+    expect(refreshed.refreshed).toBe(true);
+    expect(refreshed.markdown_length).toBe(markdown.length);
+    expect(refreshed.markdown_sha256).toBe(createHash("sha256").update(markdown, "utf8").digest("hex"));
+  });
+
+  it("is idempotent when SKILL.md has not changed", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-refresh-idempotent-"));
+    cleanupDirs.add(skillDir);
+    const markdown = "# Same\n";
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown, "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/same-skill`,
+      slug: "same-skill",
+      name: "Same Skill",
+      description: null,
+      markdown,
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+
+    const refreshed = await svc.refreshFromDisk(companyId, skillId);
+    expect(refreshed.refreshed).toBe(false);
   });
 });

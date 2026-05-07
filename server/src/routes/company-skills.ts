@@ -81,6 +81,40 @@ export function companySkillRoutes(db: Db) {
     throw forbidden("Missing permission: can create agents");
   }
 
+  async function assertCanRefreshCompanySkill(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      const allowed = await access.canUser(companyId, req.actor.userId, "skills:refresh");
+      if (!allowed) {
+        throw forbidden("Missing permission: skills:refresh");
+      }
+      return;
+    }
+
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skills:refresh");
+    const allowedByDefault = Boolean(
+      actorAgent.permissions
+      && typeof actorAgent.permissions === "object"
+      && (actorAgent.permissions as Record<string, unknown>)["skills:refresh"] === true,
+    );
+    if (allowedByGrant || allowedByDefault) {
+      return;
+    }
+
+    throw forbidden("Missing permission: skills:refresh");
+  }
+
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -186,6 +220,14 @@ export function companySkillRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  router.post("/companies/:companyId/skills/:skillId/refresh", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    await assertCanRefreshCompanySkill(req, companyId);
+    const result = await svc.refreshFromDisk(companyId, skillId);
+    res.json(result);
+  });
 
   router.post(
     "/companies/:companyId/skills/import",

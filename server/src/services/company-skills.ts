@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -117,6 +117,13 @@ type ParsedSkillImportSource = {
   requestedSkillSlug: string | null;
   originalSkillsShUrl: string | null;
   warnings: string[];
+};
+
+type CompanySkillRefreshResult = {
+  skill: CompanySkill;
+  refreshed: boolean;
+  markdown_length: number;
+  markdown_sha256: string;
 };
 
 type SkillSourceMeta = {
@@ -1915,6 +1922,66 @@ export function companySkillService(db: Db) {
     return detail;
   }
 
+  async function refreshFromDisk(companyId: string, skillId: string): Promise<CompanySkillRefreshResult> {
+    await ensureSkillInventoryCurrent(companyId);
+
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select ${companySkills.id}
+        from ${companySkills}
+        where ${companySkills.id} = ${skillId}
+          and ${companySkills.companyId} = ${companyId}
+        for update
+      `);
+
+      const skill = await tx
+        .select()
+        .from(companySkills)
+        .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!skill) throw notFound("Skill not found");
+      if (skill.sourceType !== "local_path") {
+        throw unprocessable(`refresh requires sourceType=local_path, got '${skill.sourceType}'`);
+      }
+
+      const absolutePath = resolveLocalSkillFilePath(skill, "SKILL.md");
+      if (!absolutePath) throw notFound("Skill file not found");
+      const markdown = await fs.readFile(absolutePath, "utf8");
+      const markdownSha = createHash("sha256").update(markdown, "utf8").digest("hex");
+      const currentSha = createHash("sha256").update(skill.markdown, "utf8").digest("hex");
+      const refreshed = currentSha !== markdownSha;
+
+      if (refreshed) {
+        const parsed = parseFrontmatterMarkdown(markdown);
+        await tx
+          .update(companySkills)
+          .set({
+            name: asString(parsed.frontmatter.name) ?? skill.name,
+            description: asString(parsed.frontmatter.description) ?? skill.description,
+            markdown,
+            updatedAt: new Date(),
+          })
+          .where(eq(companySkills.id, skill.id));
+      }
+
+      const skillAfter = await tx
+        .select()
+        .from(companySkills)
+        .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!skillAfter) throw notFound("Skill not found");
+
+      return {
+        skill: toCompanySkill(skillAfter),
+        refreshed,
+        markdown_length: markdown.length,
+        markdown_sha256: markdownSha,
+      };
+    });
+
+    return result;
+  }
+
   async function installUpdate(companyId: string, skillId: string): Promise<CompanySkill | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
@@ -2467,6 +2534,7 @@ export function companySkillService(db: Db) {
     updateStatus,
     readFile,
     updateFile,
+    refreshFromDisk,
     createLocalSkill,
     deleteSkill,
     importFromSource,
