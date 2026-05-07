@@ -59,7 +59,7 @@ import { SwipeToArchive } from "../components/SwipeToArchive";
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import { approvalLabel, approvalSubject, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -409,7 +409,9 @@ function ApprovalInboxRow({
   const { t, i18n } = useTranslation("inbox");
   const { t: ta } = useTranslation("approvals");
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = ta(`payload.type_${approval.type}`, { defaultValue: approvalLabel(approval.type, null) }) + approvalLabel(approval.type, approval.payload as Record<string, unknown> | null).slice(approvalLabel(approval.type, null).length);
+  const typePrefix = ta(`payload.type_${approval.type}`, { defaultValue: approvalLabel(approval.type, null) });
+  const subject = approvalSubject(approval.payload as Record<string, unknown> | null);
+  const label = subject ? `${typePrefix}: ${subject}` : typePrefix;
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
