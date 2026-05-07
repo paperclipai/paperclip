@@ -318,6 +318,10 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const ADAPTER_PROCESS_MATCH_TOKENS: Record<string, string[]> = {
+  claude_local: ["claude"],
+  codex_local: ["codex"],
+};
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -2132,6 +2136,46 @@ function isProcessAlive(pid: number | null | undefined) {
     if (code === "EPERM") return true;
     if (code === "ESRCH") return false;
     return false;
+  }
+}
+
+async function readProcessCommandLine(pid: number | null | undefined) {
+  if (process.platform === "win32") return null;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const { stdout } = await execFile("ps", ["-o", "command=", "-p", String(pid)]);
+    const commandLine = stdout.trim();
+    return commandLine.length > 0 ? commandLine : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProcessCommandLine(value: string) {
+  return value.replace(/["']/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+async function isLikelyAdapterChildProcess(input: {
+  adapterType: string;
+  pid: number | null | undefined;
+}) {
+  const tokens = ADAPTER_PROCESS_MATCH_TOKENS[input.adapterType];
+  if (!tokens || tokens.length === 0) return true;
+  const commandLine = await readProcessCommandLine(input.pid);
+  if (!commandLine) return true;
+  const normalized = normalizeProcessCommandLine(commandLine);
+  return tokens.some((token) => normalized.includes(token));
+}
+
+async function readProcessGroupIdForPid(pid: number): Promise<number | null> {
+  if (process.platform === "win32") return null;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const { stdout } = await execFile("ps", ["-o", "pgid=", "-p", String(pid)]);
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -6403,28 +6447,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      let processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const processGroupMatchesPid = tracksLocalChild && run.processPid && run.processGroupId && processPidAlive
+        ? (await readProcessGroupIdForPid(run.processPid)) === run.processGroupId
+        : true;
+      if (
+        processPidAlive &&
+        run.processPid &&
+        run.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+        !(await isLikelyAdapterChildProcess({ adapterType, pid: run.processPid }))
+      ) {
+        // Detached runs can outlive their original pid; if the pid now belongs to another command, treat it as stale.
+        processPidAlive = false;
+      }
       if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
-          });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: detachedMessage,
-              payload: {
-                processPid: run.processPid,
-              },
+        if (!processGroupMatchesPid) {
+          // PID was reused by a different process group; treat this run as orphaned.
+        } else {
+          if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+            const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
+            const detachedRun = await setRunStatus(run.id, "running", {
+              error: detachedMessage,
+              errorCode: DETACHED_PROCESS_ERROR_CODE,
             });
+            if (detachedRun) {
+              await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: detachedMessage,
+                payload: {
+                  processPid: run.processPid,
+                },
+              });
+            }
           }
+          continue;
         }
-        continue;
       }
 
       let descendantOnlyCleanup = false;
@@ -6489,6 +6549,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(!processGroupMatchesPid ? { stalePidReused: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });

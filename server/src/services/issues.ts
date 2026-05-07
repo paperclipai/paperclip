@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -66,6 +68,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { isProcessGroupAlive } from "./local-service-supervisor.js";
 import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -76,6 +79,41 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+const STALE_HEARTBEAT_RECOVERY_GRACE_MS = 60_000;
+const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const execFile = promisify(execFileCallback);
+const ADAPTER_PROCESS_MATCH_TOKENS: Record<string, string[]> = {
+  claude_local: ["claude"],
+  codex_local: ["codex"],
+};
+
+function isProcessAlive(pid: number | null | undefined) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM") return true;
+    if (code === "ESRCH") return false;
+    return false;
+  }
+}
+
+async function readProcessCommandLine(pid: number) {
+  if (process.platform === "win32") return null;
+  try {
+    const { stdout } = await execFile("ps", ["-o", "command=", "-p", String(pid)]);
+    const commandLine = stdout.trim();
+    return commandLine.length > 0 ? commandLine : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProcessCommandLine(value: string) {
+  return value.replace(/["']/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -2096,14 +2134,91 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
+  async function isLikelyMatchingAdapterProcess(
+    tx: Db,
+    agentId: string,
+    processPid: number,
+  ) {
+    const agent = await tx
+      .select({ adapterType: agents.adapterType })
+      .from(agents)
+      .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (!agent) return true;
+
+    const tokens = ADAPTER_PROCESS_MATCH_TOKENS[agent.adapterType];
+    if (!tokens || tokens.length === 0 || process.platform === "win32") return true;
+
+    const commandLine = await readProcessCommandLine(processPid);
+    if (!commandLine) return true;
+
+    const normalized = normalizeProcessCommandLine(commandLine);
+    return tokens.some((token) => normalized.includes(token));
+  }
+
+  async function isTerminalOrRecoverablyStaleHeartbeatRun(input: {
+    runId: string;
+    actorAgentId?: string | null;
+    actorRunId?: string | null;
+  }) {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.runId} for update`,
+      );
+      const run = await tx
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          updatedAt: heartbeatRuns.updatedAt,
+          errorCode: heartbeatRuns.errorCode,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.runId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) return true;
+      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+
+      if (!input.actorAgentId || run.agentId !== input.actorAgentId) return false;
+      if (input.actorRunId && run.id === input.actorRunId) return false;
+      if (run.status !== "running") return false;
+
+      const now = new Date();
+      const updatedAtMs = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+      if (now.getTime() - updatedAtMs < STALE_HEARTBEAT_RECOVERY_GRACE_MS) return false;
+
+      const processPidAlive = isProcessAlive(run.processPid);
+      const processGroupAlive = isProcessGroupAlive(run.processGroupId);
+      if (processGroupAlive) return false;
+      if (processPidAlive && run.processPid) {
+        const matchesExpectedAdapter = await isLikelyMatchingAdapterProcess(
+          tx,
+          run.agentId,
+          run.processPid,
+        );
+        if (matchesExpectedAdapter) return false;
+      }
+
+      const updated = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          errorCode: "process_lost",
+          error:
+            run.errorCode === DETACHED_PROCESS_ERROR_CODE
+              ? "Recovered stale detached process lock during issue ownership recovery"
+              : "Recovered stale running lock during issue ownership recovery",
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, run.status)))
+        .returning({ id: heartbeatRuns.id })
+        .then((rows) => rows[0] ?? null);
+
+      return Boolean(updated);
+    });
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -2112,7 +2227,11 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+    const stale = await isTerminalOrRecoverablyStaleHeartbeatRun({
+      runId: input.expectedCheckoutRunId,
+      actorAgentId: input.actorAgentId,
+      actorRunId: input.actorRunId,
+    });
     if (!stale) return null;
 
     const now = new Date();
@@ -3623,7 +3742,11 @@ export function issueService(db: Db) {
         existing.checkoutRunId &&
         !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
       ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        const stale = await isTerminalOrRecoverablyStaleHeartbeatRun({
+          runId: existing.checkoutRunId,
+          actorAgentId,
+          actorRunId: actorRunId ?? null,
+        });
         if (!stale) {
           throw conflict("Only checkout run can release issue", {
             issueId: existing.id,
