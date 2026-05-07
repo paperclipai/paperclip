@@ -162,6 +162,65 @@ describeEmbeddedPostgres("dashboard orphanCandidates", () => {
     });
   });
 
+  it("does not count children whose parentId resolves to a different company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const otherProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Tenant A",
+        issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Tenant B",
+        issuePrefix: `B${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: otherCompanyId,
+      name: "Other Project",
+      shortName: "other",
+    });
+
+    const otherParentId = randomUUID();
+    const crossTenantChildId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: otherParentId,
+        companyId: otherCompanyId,
+        projectId: otherProjectId,
+        title: "Parent in other tenant",
+        status: "in_progress",
+      },
+      {
+        id: crossTenantChildId,
+        companyId,
+        // Data corruption case: parentId references an issue from a different company.
+        parentId: otherParentId,
+        projectId: null,
+        goalId: null,
+        title: "Cross-tenant orphan (must be excluded)",
+        status: "todo",
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.orphanCandidates).toEqual({
+      projectOrphans: 0,
+      goalOrphans: 0,
+      total: 0,
+    });
+  });
+
   it("returns zeroes when no orphans exist", async () => {
     const companyId = randomUUID();
 
