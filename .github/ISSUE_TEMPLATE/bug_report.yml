@@ -1,0 +1,101 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more detail you provide, the faster we can help.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the issue clearly. What did you expect vs what actually happened?
+      placeholder: "When an agent's heartbeat fires, the task doesn't get picked up..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps to trigger this issue, starting from a clean state.
+      placeholder: |
+        1. Created a task and assigned it to an agent
+        2. Agent heartbeat fired on schedule
+        3. Task status never changed from "open"
+        4. Checked server logs, saw error below
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the system is involved?
+      options:
+        - Agents / adapters
+        - Tasks / tickets
+        - Org chart / roles
+        - Governance / approvals
+        - Heartbeats / scheduling
+        - Budgets / cost control
+        - Dashboard UI
+        - CLI
+        - API / server
+        - Database / migrations
+        - Setup / installation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste relevant logs. Check these sources:
+        - Server logs: `tail -50 logs/paperclip.log`
+        - Agent adapter output in the dashboard or CLI
+      render: shell
+      placeholder: |
+        [10:24:12.928] INFO: Heartbeat triggered for agent "researcher"
+        [10:24:13.001] ERROR: Task assignment failed
+          err: "budget limit exceeded"
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Run the following and paste the output:
+        ```bash
+        echo "OS: $(uname -s) $(uname -r)"
+        echo "Node: $(node --version)"
+        echo "Paperclip: $(node -p "require('./package.json').version")"
+        ```
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: |
+        Any relevant config — agent config, adapter settings, org chart structure, .env snippets.
+        **Do NOT paste tokens, API keys, or webhook URLs.**
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, error messages, or anything else that might help.
+    validations:
+      required: false
