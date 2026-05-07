@@ -47,7 +47,7 @@ import {
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
  * which file paths are in the checked set.
- *   agents/{slug}/AGENT.md   → agents slug
+ *   agents/{slug}/AGENTS.md  → agents slug
  *   projects/{slug}/PROJECT.md → projects slug
  *   tasks/{slug}/TASK.md     → tasks slug
  */
