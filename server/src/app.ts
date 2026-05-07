@@ -236,6 +236,16 @@ export async function createApp(
     jobStore,
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
+  // Wire crash/restart events from the worker manager into the cleanup
+  // controller so stale plugin-event-bus subscriptions are disposed before
+  // an auto-restart re-registers them. Without this, every domain event
+  // fires N+1 times after a crash. Registered post-construction so the
+  // wiring works regardless of whether the manager was created here or
+  // injected via opts.pluginWorkerManager (the seam exists for tests but
+  // remains correct if a real manager is ever injected).
+  workerManager.addWorkerEventListener?.((event) =>
+    hostServiceCleanup.handleWorkerEvent(event),
+  );
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
     db,
