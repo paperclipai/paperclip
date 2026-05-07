@@ -1005,6 +1005,19 @@ export async function realizeExecutionWorkspace(input: {
       created: false,
     };
   }
+  if (!input.issue && !input.base.projectId) {
+    return {
+      ...input.base,
+      strategy: "project_primary",
+      cwd: input.base.baseCwd,
+      branchName: null,
+      worktreePath: null,
+      warnings: [
+        "Skipping git worktree strategy because this run is not scoped to an issue or project.",
+      ],
+      created: false,
+    };
+  }
 
   const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
