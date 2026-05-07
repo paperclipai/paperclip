@@ -1577,13 +1577,13 @@ export function Inbox() {
     }, 300);
   }, [markItemRead]);
 
-  const handleArchiveNonIssue = useCallback((key: string) => {
+  const handleArchiveNonIssue = useCallback((key: string, options?: { resolveFailedRun?: boolean }) => {
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
       if (key.startsWith("alert:")) {
         dismissAlert(key);
       } else {
-        dismissInboxItem(key);
+        dismissInboxItem(key, options);
       }
       setArchivingNonIssueIds((prev) => {
         const next = new Set(prev);
@@ -2383,12 +2383,12 @@ export function Inbox() {
                           issueById={issueById}
                           agentName={agentName(item.run.agentId)}
                           issueLinkState={issueLinkState}
-                          onDismiss={() => dismissInboxItem(runKey)}
+                          onDismiss={() => dismissInboxItem(runKey, { resolveFailedRun: true })}
                           onRetry={() => retryRunMutation.mutate(item.run)}
                           isRetrying={retryingRunIds.has(item.run.id)}
                           unreadState={nonIssueUnreadState(runKey)}
                           onMarkRead={() => handleMarkNonIssueRead(runKey)}
-                          onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(runKey) : undefined}
+                          onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(runKey, { resolveFailedRun: true }) : undefined}
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
@@ -2402,7 +2402,7 @@ export function Inbox() {
                           key={runKey}
                           selected={isSelected}
                           disabled={isArchiving}
-                          onArchive={() => handleArchiveNonIssue(runKey)}
+                          onArchive={() => handleArchiveNonIssue(runKey, { resolveFailedRun: true })}
                         >
                           {row}
                         </SwipeToArchive>

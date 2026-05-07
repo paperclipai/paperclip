@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   approvals,
   companies,
@@ -16,6 +20,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
+import { errorHandler } from "../middleware/error-handler.js";
+import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -40,6 +46,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(inboxDismissals);
     await db.delete(joinRequests);
     await db.delete(invites);
@@ -75,6 +82,18 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     expect(dismissals[0]?.itemKey).toBe("approval:approval-1");
     expect(new Date(dismissals[0]?.dismissedAt ?? 0).toISOString()).toBe(secondDismissedAt.toISOString());
   });
+
+  function createInboxDismissalApp(actor: Record<string, unknown>) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = actor;
+      next();
+    });
+    app.use("/api", inboxDismissalRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
 
   it("honors dismissal timestamps and resurfaces approvals with newer activity", async () => {
     const companyId = randomUUID();
@@ -208,5 +227,181 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       failedRuns: 1,
       joinRequests: 0,
     });
+  });
+
+  it("resolves a failed heartbeat run without mutating run history", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+
+    const app = createInboxDismissalApp({
+      type: "board",
+      source: "local_implicit",
+      userId,
+    });
+
+    const response = await request(app)
+      .post(`/api/heartbeat-runs/${runId}/resolve`)
+      .send({})
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      companyId,
+      userId,
+      itemKey: `run:${runId}`,
+    });
+
+    const dismissedAtByKey = new Map(
+      (await dismissalsSvc.list(companyId, userId)).map((dismissal) => [
+        dismissal.itemKey,
+        new Date(dismissal.dismissedAt).getTime(),
+      ]),
+    );
+    const badges = await badgesSvc.get(companyId, { dismissals: dismissedAtByKey });
+
+    expect(badges.failedRuns).toBe(0);
+    expect(badges.inbox).toBe(0);
+
+    const [persistedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(persistedRun?.status).toBe("failed");
+  });
+
+  it("does not disclose heartbeat runs outside the board actor companies", async () => {
+    const actorCompanyId = randomUUID();
+    const runCompanyId = randomUUID();
+    const userId = "board-user";
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: actorCompanyId,
+        name: "Actor Company",
+        issuePrefix: "ACT",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: runCompanyId,
+        name: "Run Company",
+        issuePrefix: "RUN",
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: runCompanyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: runCompanyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+
+    const app = createInboxDismissalApp({
+      type: "board",
+      source: "session",
+      userId,
+      companyIds: [actorCompanyId],
+      memberships: [{ companyId: actorCompanyId, status: "active", membershipRole: "member" }],
+    });
+
+    await request(app)
+      .post(`/api/heartbeat-runs/${runId}/resolve`)
+      .send({})
+      .expect(404);
+
+    await expect(dismissalsSvc.list(runCompanyId, userId)).resolves.toHaveLength(0);
+  });
+
+  it("does not resolve successful heartbeat runs", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+
+    const app = createInboxDismissalApp({
+      type: "board",
+      source: "local_implicit",
+      userId,
+    });
+
+    await request(app)
+      .post(`/api/heartbeat-runs/${runId}/resolve`)
+      .send({})
+      .expect(400);
+
+    await expect(dismissalsSvc.list(companyId, userId)).resolves.toHaveLength(0);
   });
 });
