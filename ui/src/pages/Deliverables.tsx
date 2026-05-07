@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Download, Package } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -9,30 +9,8 @@ import { deliverablesApi } from "../api/deliverables";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Input } from "@/components/ui/input";
-import { issueUrl, agentUrl, relativeTime, formatDateTime } from "../lib/utils";
+import { issueUrl, agentUrl, relativeTime, formatDateTime, formatFileSize } from "../lib/utils";
 import type { DeliverableListItem } from "@paperclipai/shared";
-
-function formatFileSize(byteSize: number) {
-  if (byteSize < 1024) return `${byteSize} B`;
-  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} KB`;
-  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function matchesSearch(item: DeliverableListItem, q: string): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  const fields = [
-    item.title,
-    item.originalFilename ?? "",
-    item.summary ?? "",
-    item.childIssue.identifier ?? "",
-    item.childIssue.title,
-    item.rootIssue?.identifier ?? "",
-    item.rootIssue?.title ?? "",
-    item.agent?.name ?? "",
-  ];
-  return fields.some((value) => value.toLowerCase().includes(needle));
-}
 
 export function Deliverables() {
   const { selectedCompanyId } = useCompany();
@@ -43,17 +21,19 @@ export function Deliverables() {
     setBreadcrumbs([{ label: "Deliverables" }]);
   }, [setBreadcrumbs]);
 
+  const searchTerm = search.trim();
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.deliverables.list(selectedCompanyId!),
-    queryFn: () => deliverablesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.deliverables.list(selectedCompanyId!, {
+      q: searchTerm || undefined,
+    }),
+    queryFn: () =>
+      deliverablesApi.list(selectedCompanyId!, {
+        q: searchTerm || undefined,
+      }),
     enabled: !!selectedCompanyId,
   });
 
   const items = data?.items ?? [];
-  const filtered = useMemo(
-    () => items.filter((item) => matchesSearch(item, search.trim())),
-    [items, search],
-  );
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Package} message="Select a company to view deliverables." />;
@@ -93,10 +73,12 @@ export function Deliverables() {
       {items.length === 0 ? (
         <EmptyState
           icon={Package}
-          message="No deliverables yet. Agents that produce file artifacts will list them here."
+          message={
+            searchTerm
+              ? "No deliverables match your search."
+              : "No deliverables yet. Agents that produce file artifacts will list them here."
+          }
         />
-      ) : filtered.length === 0 ? (
-        <EmptyState icon={Package} message="No deliverables match your search." />
       ) : (
         <div className="overflow-hidden rounded-md border border-border">
           <table className="w-full text-sm">
@@ -111,7 +93,7 @@ export function Deliverables() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => (
+              {items.map((item) => (
                 <DeliverableRow key={item.id} item={item} />
               ))}
             </tbody>

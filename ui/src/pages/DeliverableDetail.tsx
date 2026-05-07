@@ -8,14 +8,8 @@ import { deliverablesApi } from "../api/deliverables";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
-import { agentUrl, formatDateTime, issueUrl, relativeTime } from "../lib/utils";
+import { agentUrl, formatDateTime, issueUrl, relativeTime, formatFileSize } from "../lib/utils";
 import type { DeliverableDetail as DeliverableDetailType } from "@paperclipai/shared";
-
-function formatFileSize(byteSize: number) {
-  if (byteSize < 1024) return `${byteSize} B`;
-  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} KB`;
-  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function isImage(contentType: string) {
   return contentType.toLowerCase().startsWith("image/");

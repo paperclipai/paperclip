@@ -116,6 +116,45 @@ describe("Deliverables page", () => {
     expect(firstDownload.getAttribute("download")).toBe("report.pdf");
   });
 
+  it("uses server-side search query parameter", async () => {
+    listMock.mockImplementation(async (_companyId: string, filters?: { q?: string }) => {
+      if (filters?.q === "draft") {
+        return {
+          items: [sampleItem({ id: "deliverable-2", title: "Draft" })],
+          limit: 50,
+          offset: 0,
+        };
+      }
+      return {
+        items: [sampleItem()],
+        limit: 50,
+        offset: 0,
+      };
+    });
+
+    await renderDeliverables(container);
+    await flushReact();
+    await flushReact();
+
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(input, "draft");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(listMock.mock.calls.some(([, filters]) => (filters as { q?: string } | undefined)?.q === "draft")).toBe(true);
+    expect(container.textContent).toContain("Draft");
+  });
+
   it("renders an empty state when there are no deliverables", async () => {
     listMock.mockResolvedValue({ items: [], limit: 50, offset: 0 });
 

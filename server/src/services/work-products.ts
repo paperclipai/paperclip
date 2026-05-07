@@ -425,39 +425,41 @@ function rowToDeliverableListItem(row: DeliverableQueryRow): DeliverableListItem
 }
 
 async function loadAncestorChain(db: Db, startIssueId: string): Promise<DeliverableIssueRef[]> {
-  const chain: DeliverableIssueRef[] = [];
-  const visited = new Set<string>([startIssueId]);
+  const rows = await db.execute<{
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  }>(sql`
+    WITH RECURSIVE issue_chain AS (
+      SELECT i.id, i.identifier, i.title, i.status, i.parent_id, 0 AS depth
+      FROM issues i
+      WHERE i.id = ${startIssueId}
+      UNION ALL
+      SELECT p.id, p.identifier, p.title, p.status, p.parent_id, ic.depth + 1
+      FROM issue_chain ic
+      JOIN issues p ON p.id = ic.parent_id
+      WHERE ic.parent_id IS NOT NULL AND ic.depth < 50
+    ),
+    dedup AS (
+      SELECT DISTINCT ON (id) id, identifier, title, status, depth
+      FROM issue_chain
+      WHERE depth > 0
+      ORDER BY id, depth ASC
+    )
+    SELECT id, identifier, title, status
+    FROM dedup
+    ORDER BY depth ASC
+  `);
 
-  const start = await db
-    .select({ parentId: issues.parentId })
-    .from(issues)
-    .where(eq(issues.id, startIssueId))
-    .then((rows) => rows[0] ?? null);
-  let currentId = start?.parentId ?? null;
-
-  while (currentId && !visited.has(currentId) && chain.length < 50) {
-    visited.add(currentId);
-    const parent = await db
-      .select({
-        id: issues.id,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        parentId: issues.parentId,
-      })
-      .from(issues)
-      .where(eq(issues.id, currentId))
-      .then((rows) => rows[0] ?? null);
-    if (!parent) break;
-    chain.push({
-      id: parent.id,
-      identifier: parent.identifier ?? null,
-      title: parent.title,
-      status: parent.status,
-    });
-    currentId = parent.parentId ?? null;
-  }
-  return chain;
+  return toRowArray<{ id: string; identifier: string | null; title: string; status: string }>(rows).map(
+    (row) => ({
+      id: row.id,
+      identifier: row.identifier ?? null,
+      title: row.title,
+      status: row.status,
+    }),
+  );
 }
 
 export { toIssueWorkProduct };
