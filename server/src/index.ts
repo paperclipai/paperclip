@@ -35,6 +35,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { rescheduleBlockingPullRequestTimeouts } from "./services/execution-workspace-timeout.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -667,6 +668,19 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void rescheduleBlockingPullRequestTimeouts(db as any)
+    .then((result) => {
+      if (result.rescheduled > 0) {
+        logger.warn(
+          { rescheduled: result.rescheduled },
+          "re-scheduled blocking pull-request archive timeouts from a previous server process",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup re-scheduling of pull-request archive timeouts failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {

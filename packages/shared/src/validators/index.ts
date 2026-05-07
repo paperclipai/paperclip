@@ -251,7 +251,14 @@ export {
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
+  pullRequestMergeStrategySchema,
+  pullRequestRecordStatusSchema,
+  pullRequestRequestModeSchema,
+  pullRequestPolicySchema,
+  executionWorkspacePullRequestRecordSchema,
+  pullRequestResultRequestSchema,
   type UpdateExecutionWorkspace,
+  type PullRequestResultRequest,
 } from "./execution-workspace.js";
 
 export {

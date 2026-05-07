@@ -129,6 +129,12 @@ export type {
   ProjectExecutionWorkspacePolicy,
   ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
+  PullRequestPolicy,
+  PullRequestPolicyLoose,
+  PullRequestMergeStrategy,
+  PullRequestRecordStatus,
+  PullRequestRequestMode,
+  ExecutionWorkspacePullRequestRecord,
 } from "./workspace-runtime.js";
 export type {
   WorkspaceOperation,

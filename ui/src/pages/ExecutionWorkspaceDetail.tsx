@@ -11,6 +11,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
+import { ExecutionWorkspacePullRequestPanel } from "../components/ExecutionWorkspacePullRequestPanel";
 import { agentsApi } from "../api/agents";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -766,6 +767,10 @@ export function ExecutionWorkspaceDetail() {
           />
         ) : activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
+            <ExecutionWorkspacePullRequestPanel
+              workspace={workspace}
+              policy={project?.executionWorkspacePolicy?.pullRequestPolicy ?? null}
+            />
             <Card className="rounded-none">
               <CardHeader>
                 <CardTitle>Workspace settings</CardTitle>
@@ -1141,6 +1146,7 @@ export function ExecutionWorkspaceDetail() {
         currentStatus={workspace.status}
         open={closeDialogOpen}
         onOpenChange={setCloseDialogOpen}
+        pullRequestPolicy={project?.executionWorkspacePolicy?.pullRequestPolicy ?? null}
         onClosed={(nextWorkspace) => {
           queryClient.setQueryData(queryKeys.executionWorkspaces.detail(nextWorkspace.id), nextWorkspace);
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(nextWorkspace.id) });
