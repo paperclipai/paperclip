@@ -4,6 +4,22 @@ import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 
+const SENSITIVE_BODY_FIELDS = new Set([
+  "password",
+  "currentPassword",
+  "newPassword",
+  "confirmPassword",
+]);
+
+function sanitizeBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    result[key] = SENSITIVE_BODY_FIELDS.has(key) ? "[REDACTED]" : value;
+  }
+  return result;
+}
+
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
   method: string;
@@ -23,7 +39,7 @@ function attachErrorContext(
     error: payload,
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
+    reqBody: sanitizeBody(req.body),
     reqParams: req.params,
     reqQuery: req.query,
   } satisfies ErrorContext;
