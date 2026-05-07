@@ -1,0 +1,20 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 9001,
+    "node_id": "WR_9001",
+    "head_sha": "abc123def456",
+    "conclusion": "success",
+    "status": "completed",
+    "pull_requests": [
+      {"number": 7, "head": {"sha": "abc123def456"}, "base": {"ref": "main"}}
+    ],
+    "html_url": "https://github.com/acme/sample-repo/actions/runs/9001"
+  },
+  "repository": {
+    "full_name": "acme/sample-repo",
+    "name": "sample-repo",
+    "owner": {"login": "acme"},
+    "html_url": "https://github.com/acme/sample-repo"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "action": "edited",
+  "issue": {
+    "id": 1001,
+    "node_id": "I_kwDOABCD123",
+    "number": 42,
+    "title": "Sample issue title (edited)",
+    "body": "Updated steps...",
+    "state": "open",
+    "labels": [{"name": "agent-eligible"}],
+    "html_url": "https://github.com/acme/sample-repo/issues/42",
+    "user": {"login": "octocat"},
+    "updated_at": "2026-05-07T12:00:00Z"
+  },
+  "repository": {
+    "full_name": "acme/sample-repo",
+    "name": "sample-repo",
+    "owner": {"login": "acme"},
+    "html_url": "https://github.com/acme/sample-repo"
+  }
+}

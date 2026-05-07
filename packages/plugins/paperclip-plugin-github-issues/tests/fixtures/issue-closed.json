@@ -1,0 +1,20 @@
+{
+  "action": "closed",
+  "issue": {
+    "id": 1001,
+    "node_id": "I_kwDOABCD123",
+    "number": 42,
+    "title": "Sample issue title",
+    "body": "...",
+    "state": "closed",
+    "labels": [{"name": "agent-eligible"}],
+    "html_url": "https://github.com/acme/sample-repo/issues/42",
+    "user": {"login": "octocat"}
+  },
+  "repository": {
+    "full_name": "acme/sample-repo",
+    "name": "sample-repo",
+    "owner": {"login": "acme"},
+    "html_url": "https://github.com/acme/sample-repo"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "action": "closed",
+  "pull_request": {
+    "id": 7001,
+    "node_id": "PR_7001",
+    "number": 7,
+    "title": "Fix: handle X",
+    "state": "closed",
+    "merged": true,
+    "head": {"sha": "abc123def456", "ref": "fix-x"},
+    "base": {"ref": "main"},
+    "html_url": "https://github.com/acme/sample-repo/pull/7"
+  },
+  "repository": {
+    "full_name": "acme/sample-repo",
+    "name": "sample-repo",
+    "owner": {"login": "acme"},
+    "html_url": "https://github.com/acme/sample-repo"
+  }
+}

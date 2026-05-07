@@ -1,0 +1,27 @@
+{
+  "action": "created",
+  "issue": {
+    "id": 1001,
+    "node_id": "I_kwDOABCD123",
+    "number": 42,
+    "title": "Sample issue title",
+    "body": "...",
+    "state": "open",
+    "labels": [{"name": "agent-eligible"}],
+    "html_url": "https://github.com/acme/sample-repo/issues/42",
+    "user": {"login": "octocat"}
+  },
+  "comment": {
+    "id": 5001,
+    "node_id": "IC_kwDOABCD500",
+    "body": "Adding more context: this happens when X.",
+    "user": {"login": "alice"},
+    "html_url": "https://github.com/acme/sample-repo/issues/42#issuecomment-5001"
+  },
+  "repository": {
+    "full_name": "acme/sample-repo",
+    "name": "sample-repo",
+    "owner": {"login": "acme"},
+    "html_url": "https://github.com/acme/sample-repo"
+  }
+}
