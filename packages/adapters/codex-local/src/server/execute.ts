@@ -40,6 +40,7 @@ import {
 import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
+  isCodexRefreshTokenReuseError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
@@ -47,6 +48,7 @@ import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolv
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { acquireCodexAuthLock, type CodexAuthLockHandle } from "./auth-lock.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -668,6 +670,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  // Paperclip-managed codex homes share a single ~/.codex/auth.json via
+  // symlink. The codex CLI's ChatGPT auth rotates the refresh token on every
+  // refresh, so concurrent runs racing on that file get back "refresh token
+  // already used" and bubble adapter_failed. Serialize the refresh window
+  // machine-wide. Skip when there is nothing shared to protect: api-key
+  // billing, remote execution targets, an operator-supplied CODEX_HOME, or an
+  // explicit PAPERCLIP_CODEX_AUTH_LOCK=0 opt-out.
+  const authLockDisabled = (process.env.PAPERCLIP_CODEX_AUTH_LOCK ?? "").trim() === "0";
+  const sharedCodexHome = resolveSharedCodexHomeDir(process.env);
+  const shouldUseAuthLock =
+    !authLockDisabled &&
+    !executionTargetIsRemote &&
+    billingType === "subscription" &&
+    configuredCodexHome === null;
+  const authLockPath = path.join(sharedCodexHome, ".paperclip-auth-refresh.lock");
+
   const runAttempt = async (resumeSessionId: string | null) => {
     const execArgs = buildCodexExecArgs(
       forceSaferInvocation ? { ...config, fastMode: false } : config,
@@ -695,32 +713,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
-      cwd,
-      env,
-      stdin: prompt,
-      timeoutSec,
-      graceSec,
-      onSpawn,
-      onLog: async (stream, chunk) => {
-        if (stream !== "stderr") {
-          await onLog(stream, chunk);
-          return;
-        }
-        const cleaned = stripCodexRolloutNoise(chunk);
-        if (!cleaned.trim()) return;
-        await onLog(stream, cleaned);
-      },
-    });
-    const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
-    return {
-      proc: {
-        ...proc,
-        stderr: cleanedStderr,
-      },
-      rawStderr: proc.stderr,
-      parsed: parseCodexJsonl(proc.stdout),
+    let authLock: CodexAuthLockHandle | null = null;
+    if (shouldUseAuthLock) {
+      authLock = await acquireCodexAuthLock({
+        lockPath: authLockPath,
+        onLog: (message) => onLog("stdout", `${message}\n`),
+      });
+    }
+
+    const releaseAuthLock = (reason: "first_output" | "completed" | "manual") => {
+      if (!authLock || authLock.released()) return;
+      void authLock.release(reason);
     };
+
+    let firstStdoutChunkSeen = false;
+
+    try {
+      const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
+        cwd,
+        env,
+        stdin: prompt,
+        timeoutSec,
+        graceSec,
+        onSpawn,
+        onLog: async (stream, chunk) => {
+          if (stream !== "stderr") {
+            if (!firstStdoutChunkSeen && chunk.length > 0) {
+              firstStdoutChunkSeen = true;
+              releaseAuthLock("first_output");
+            }
+            await onLog(stream, chunk);
+            return;
+          }
+          const cleaned = stripCodexRolloutNoise(chunk);
+          if (!cleaned.trim()) return;
+          await onLog(stream, cleaned);
+        },
+      });
+      const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
+      return {
+        proc: {
+          ...proc,
+          stderr: cleanedStderr,
+        },
+        rawStderr: proc.stderr,
+        parsed: parseCodexJsonl(proc.stdout),
+      };
+    } finally {
+      releaseAuthLock("completed");
+    }
   };
 
   const toResult = (
@@ -813,8 +854,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const initialAttemptStderrSummary = (
+    proc: { stderr: string; stdout: string; exitCode: number | null },
+    parsedErrorMessage: string | null,
+  ): string => {
+    const fromParsed = parsedErrorMessage?.trim();
+    if (fromParsed) return fromParsed;
+    return firstNonEmptyLine(proc.stderr) || `Codex exited with code ${proc.exitCode ?? -1}`;
+  };
+
   try {
-    const initial = await runAttempt(sessionId);
+    let initial = await runAttempt(sessionId);
+    // One-shot retry when a concurrent codex run rotated the OAuth refresh
+    // token while we were trying to refresh ours. The lock above prevents the
+    // race in the common case, but a stale/missing lock (e.g. across worktree
+    // instances or after a crash) can still let two processes meet at the
+    // refresh window. By the time we observe the error the other process has
+    // already written fresh tokens to auth.json, so re-spawning codex picks
+    // them up cleanly.
+    if (
+      shouldUseAuthLock &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isCodexRefreshTokenReuseError({
+        stdout: initial.proc.stdout,
+        stderr: initial.rawStderr,
+        errorMessage: initial.parsed.errorMessage,
+      })
+    ) {
+      const summary = initialAttemptStderrSummary(initial.proc, initial.parsed.errorMessage);
+      await onLog(
+        "stdout",
+        `[paperclip] Codex refresh-token reuse detected (${summary}); retrying once after re-reading auth.json.\n`,
+      );
+      // Brief pause so the rotating process can finish persisting the new
+      // tokens to disk before we re-spawn.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      initial = await runAttempt(sessionId);
+    }
     if (
       sessionId &&
       !initial.proc.timedOut &&
