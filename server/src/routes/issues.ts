@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueExecutionDecisions } from "@paperclipai/db";
+import { heartbeatRuns, issueExecutionDecisions } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -430,6 +431,17 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  // Resolves the agentId that owns a given run ID. Used to detect self-comments posted
+  // by agent runs that were mis-attributed to local-board due to missing Bearer token
+  // in local_trusted deployment mode.
+  async function getRunAgentId(runId: string): Promise<string | null> {
+    return db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.agentId ?? null);
+  }
+
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -3414,6 +3426,19 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    // In local_trusted mode, agent requests without a Bearer token fall through to local-board
+    // actor type. Detect this case by checking whether the run ID header maps to the assignee
+    // agent, and promote the actor type to "agent" so downstream logic correctly treats the
+    // comment as a self-comment (no implicit reopen, no self-wake).
+    let resolvedActorType = actor.actorType;
+    let resolvedActorId = actor.actorId;
+    if (actor.actorType === "user" && actor.runId && issue.assigneeAgentId) {
+      const runAgentId = await getRunAgentId(actor.runId).catch(() => null);
+      if (runAgentId && runAgentId === issue.assigneeAgentId) {
+        resolvedActorType = "agent";
+        resolvedActorId = runAgentId;
+      }
+    }
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -3429,8 +3454,8 @@ export function issueRoutes(
       shouldImplicitlyMoveCommentedIssueToTodo({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
+        actorType: resolvedActorType,
+        actorId: resolvedActorId,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
@@ -3563,8 +3588,9 @@ export function issueRoutes(
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      // Use resolvedActorType/Id (which corrects local_trusted mis-attribution) for self-comment detection.
+      const actorIsAgent = resolvedActorType === "agent";
+      const selfComment = actorIsAgent && resolvedActorId === assigneeId;
       const skipWake = selfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
