@@ -1,0 +1,77 @@
+{
+  "list": {
+    "items": [
+      {
+        "id": "exec-001",
+        "workspaceId": "ws-001",
+        "projectId": "proj-001",
+        "status": "passed",
+        "agentId": "agent-001",
+        "testCaseIds": ["tc-001", "tc-002"],
+        "results": [
+          { "testCaseId": "tc-001", "status": "passed", "durationMs": 12500, "error": null },
+          { "testCaseId": "tc-002", "status": "passed", "durationMs": 34200, "error": null }
+        ],
+        "startedAt": "2025-05-01T08:00:00.000Z",
+        "completedAt": "2025-05-01T08:01:30.000Z",
+        "createdAt": "2025-05-01T07:59:00.000Z"
+      },
+      {
+        "id": "exec-002",
+        "workspaceId": "ws-001",
+        "projectId": "proj-001",
+        "status": "failed",
+        "agentId": "agent-001",
+        "testCaseIds": ["tc-001"],
+        "results": [
+          { "testCaseId": "tc-001", "status": "failed", "durationMs": 8300, "error": "Element not found: #submit-btn" }
+        ],
+        "startedAt": "2025-05-06T14:00:00.000Z",
+        "completedAt": "2025-05-06T14:00:15.000Z",
+        "createdAt": "2025-05-06T13:59:00.000Z"
+      }
+    ],
+    "total": 2,
+    "page": 1,
+    "pageSize": 20
+  },
+  "get": {
+    "id": "exec-001",
+    "workspaceId": "ws-001",
+    "projectId": "proj-001",
+    "status": "passed",
+    "agentId": "agent-001",
+    "testCaseIds": ["tc-001", "tc-002"],
+    "results": [
+      { "testCaseId": "tc-001", "status": "passed", "durationMs": 12500, "error": null },
+      { "testCaseId": "tc-002", "status": "passed", "durationMs": 34200, "error": null }
+    ],
+    "startedAt": "2025-05-01T08:00:00.000Z",
+    "completedAt": "2025-05-01T08:01:30.000Z",
+    "createdAt": "2025-05-01T07:59:00.000Z"
+  },
+  "create": {
+    "id": "exec-003",
+    "workspaceId": "ws-001",
+    "projectId": "proj-001",
+    "status": "pending",
+    "agentId": null,
+    "testCaseIds": ["tc-001"],
+    "results": [],
+    "startedAt": null,
+    "completedAt": null,
+    "createdAt": "2025-05-07T12:00:00.000Z"
+  },
+  "cancel": {
+    "id": "exec-003",
+    "workspaceId": "ws-001",
+    "projectId": "proj-001",
+    "status": "cancelled",
+    "agentId": null,
+    "testCaseIds": ["tc-001"],
+    "results": [],
+    "startedAt": null,
+    "completedAt": "2025-05-07T12:00:30.000Z",
+    "createdAt": "2025-05-07T12:00:00.000Z"
+  }
+}

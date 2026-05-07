@@ -1,0 +1,64 @@
+{
+  "list": {
+    "items": [
+      {
+        "id": "tc-001",
+        "projectId": "proj-001",
+        "workspaceId": "ws-001",
+        "name": "Login Happy Path",
+        "description": "Validates successful user login",
+        "status": "active",
+        "tags": ["smoke", "login"],
+        "createdAt": "2025-01-25T09:00:00.000Z",
+        "updatedAt": "2025-03-01T10:00:00.000Z"
+      },
+      {
+        "id": "tc-002",
+        "projectId": "proj-001",
+        "workspaceId": "ws-001",
+        "name": "Document Upload",
+        "description": "Validates KYC document upload flow",
+        "status": "active",
+        "tags": ["kyc", "upload"],
+        "createdAt": "2025-01-26T09:00:00.000Z",
+        "updatedAt": "2025-03-05T10:00:00.000Z"
+      },
+      {
+        "id": "tc-003",
+        "projectId": "proj-001",
+        "workspaceId": "ws-001",
+        "name": "Legacy Flow",
+        "description": "Old onboarding flow, no longer used",
+        "status": "deprecated",
+        "tags": ["legacy"],
+        "createdAt": "2025-01-10T09:00:00.000Z",
+        "updatedAt": "2025-02-28T10:00:00.000Z"
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "pageSize": 20
+  },
+  "get": {
+    "id": "tc-001",
+    "projectId": "proj-001",
+    "workspaceId": "ws-001",
+    "name": "Login Happy Path",
+    "description": "Validates successful user login",
+    "status": "active",
+    "tags": ["smoke", "login"],
+    "createdAt": "2025-01-25T09:00:00.000Z",
+    "updatedAt": "2025-03-01T10:00:00.000Z"
+  },
+  "create": {
+    "id": "tc-004",
+    "projectId": "proj-001",
+    "workspaceId": "ws-001",
+    "name": "Password Reset",
+    "description": "Validates password reset flow",
+    "status": "active",
+    "tags": ["auth"],
+    "createdAt": "2025-05-07T12:00:00.000Z",
+    "updatedAt": "2025-05-07T12:00:00.000Z"
+  }
+}

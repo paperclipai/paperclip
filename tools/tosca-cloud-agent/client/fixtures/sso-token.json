@@ -1,0 +1,5 @@
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.fixture",
+  "token_type": "bearer",
+  "expires_in": 3600
+}

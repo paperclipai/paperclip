@@ -1,0 +1,44 @@
+{
+  "list": {
+    "items": [
+      {
+        "id": "ws-001",
+        "name": "Itecor Workspace",
+        "description": "Main workspace for Itecor projects",
+        "createdAt": "2025-01-15T09:00:00.000Z",
+        "updatedAt": "2025-03-20T14:30:00.000Z"
+      },
+      {
+        "id": "ws-002",
+        "name": "Dev Workspace",
+        "description": "Development and staging workspace",
+        "createdAt": "2025-02-01T10:00:00.000Z",
+        "updatedAt": "2025-04-05T08:15:00.000Z"
+      }
+    ],
+    "total": 2,
+    "page": 1,
+    "pageSize": 20
+  },
+  "get": {
+    "id": "ws-001",
+    "name": "Itecor Workspace",
+    "description": "Main workspace for Itecor projects",
+    "createdAt": "2025-01-15T09:00:00.000Z",
+    "updatedAt": "2025-03-20T14:30:00.000Z"
+  },
+  "create": {
+    "id": "ws-003",
+    "name": "New Workspace",
+    "description": "A freshly created workspace",
+    "createdAt": "2025-05-01T12:00:00.000Z",
+    "updatedAt": "2025-05-01T12:00:00.000Z"
+  },
+  "update": {
+    "id": "ws-001",
+    "name": "Updated Workspace",
+    "description": "Main workspace for Itecor projects",
+    "createdAt": "2025-01-15T09:00:00.000Z",
+    "updatedAt": "2025-05-07T10:00:00.000Z"
+  }
+}

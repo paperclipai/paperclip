@@ -1,0 +1,56 @@
+{
+  "list": {
+    "items": [
+      {
+        "id": "agent-001",
+        "name": "Windows Runner 01",
+        "status": "online",
+        "version": "15.2.1",
+        "capabilities": ["web", "sap", "windows"],
+        "workspaceIds": ["ws-001", "ws-002"],
+        "registeredAt": "2025-01-10T09:00:00.000Z",
+        "lastSeenAt": "2025-05-07T11:55:00.000Z"
+      },
+      {
+        "id": "agent-002",
+        "name": "Windows Runner 02",
+        "status": "busy",
+        "version": "15.2.1",
+        "capabilities": ["web", "windows"],
+        "workspaceIds": ["ws-001"],
+        "registeredAt": "2025-02-01T10:00:00.000Z",
+        "lastSeenAt": "2025-05-07T11:58:00.000Z"
+      }
+    ],
+    "total": 2,
+    "page": 1,
+    "pageSize": 20
+  },
+  "get": {
+    "id": "agent-001",
+    "name": "Windows Runner 01",
+    "status": "online",
+    "version": "15.2.1",
+    "capabilities": ["web", "sap", "windows"],
+    "workspaceIds": ["ws-001", "ws-002"],
+    "registeredAt": "2025-01-10T09:00:00.000Z",
+    "lastSeenAt": "2025-05-07T11:55:00.000Z"
+  },
+  "listForWorkspace": {
+    "items": [
+      {
+        "id": "agent-001",
+        "name": "Windows Runner 01",
+        "status": "online",
+        "version": "15.2.1",
+        "capabilities": ["web", "sap", "windows"],
+        "workspaceIds": ["ws-001", "ws-002"],
+        "registeredAt": "2025-01-10T09:00:00.000Z",
+        "lastSeenAt": "2025-05-07T11:55:00.000Z"
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "pageSize": 20
+  }
+}

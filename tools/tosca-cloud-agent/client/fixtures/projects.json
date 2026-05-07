@@ -1,0 +1,41 @@
+{
+  "list": {
+    "items": [
+      {
+        "id": "proj-001",
+        "workspaceId": "ws-001",
+        "name": "KYC Automation",
+        "description": "KYC process automation test suite",
+        "createdAt": "2025-01-20T09:00:00.000Z",
+        "updatedAt": "2025-03-25T11:00:00.000Z"
+      },
+      {
+        "id": "proj-002",
+        "workspaceId": "ws-001",
+        "name": "Onboarding Flows",
+        "description": "End-to-end onboarding test suite",
+        "createdAt": "2025-02-10T10:00:00.000Z",
+        "updatedAt": "2025-04-10T09:30:00.000Z"
+      }
+    ],
+    "total": 2,
+    "page": 1,
+    "pageSize": 20
+  },
+  "get": {
+    "id": "proj-001",
+    "workspaceId": "ws-001",
+    "name": "KYC Automation",
+    "description": "KYC process automation test suite",
+    "createdAt": "2025-01-20T09:00:00.000Z",
+    "updatedAt": "2025-03-25T11:00:00.000Z"
+  },
+  "create": {
+    "id": "proj-003",
+    "workspaceId": "ws-001",
+    "name": "New Project",
+    "description": "",
+    "createdAt": "2025-05-01T12:00:00.000Z",
+    "updatedAt": "2025-05-01T12:00:00.000Z"
+  }
+}
