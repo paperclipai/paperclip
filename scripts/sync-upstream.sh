@@ -46,8 +46,10 @@ update_issue() {
 
   local payload
   payload="$(jq -n --arg status "$status" --arg comment "$comment" '{"status": $status, "comment": $comment}')"
-  curl -s -o /dev/null -X PATCH "${api_url}/api/issues/${issue_id}" \
-    "${headers[@]}" -d "$payload" || log "Warning: issue update may have failed"
+  local http_code
+  http_code="$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "${api_url}/api/issues/${issue_id}" \
+    "${headers[@]}" -d "$payload")"
+  [[ "$http_code" =~ ^2 ]] || log "Warning: issue update returned HTTP $http_code"
 }
 
 cd "$REPO_ROOT"
