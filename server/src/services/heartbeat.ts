@@ -5538,7 +5538,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval" || agent.status === "error") {
       await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
       return null;
     }
@@ -6412,7 +6412,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval" || agent.status === "error") {
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -9423,7 +9423,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval" || agent.status === "error") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
