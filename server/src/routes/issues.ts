@@ -3483,9 +3483,9 @@ export function issueRoutes(
 
       await logActivity(db, {
         companyId: currentIssue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
+        actorType: resolvedActorType,
+        actorId: resolvedActorId,
+        agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
         runId: actor.runId,
         action: "issue.updated",
         entityType: "issue",
@@ -3528,8 +3528,8 @@ export function issueRoutes(
     }
 
     const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
+      userId: resolvedActorType === "user" ? resolvedActorId : undefined,
       runId: actor.runId,
     });
     await issueReferencesSvc.syncComment(comment.id);
@@ -3546,9 +3546,9 @@ export function issueRoutes(
 
     await logActivity(db, {
       companyId: currentIssue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
+      actorType: resolvedActorType,
+      actorId: resolvedActorId,
+      agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
       runId: actor.runId,
       action: "issue.comment_added",
       entityType: "issue",
@@ -3573,8 +3573,8 @@ export function issueRoutes(
       currentIssue,
       comment,
       {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
+        userId: resolvedActorType === "user" ? resolvedActorId : null,
       },
     );
     await logExpiredRequestConfirmations({
