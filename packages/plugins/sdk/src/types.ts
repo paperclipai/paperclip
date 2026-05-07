@@ -227,8 +227,12 @@ export interface ToolRunContext {
   runId: string;
   /** UUID of the company the run belongs to. */
   companyId: string;
-  /** UUID of the project the run belongs to. */
-  projectId: string;
+  /**
+   * UUID of the project the run belongs to, or `null` when the run is not
+   * scoped to a project (e.g. an agent operating directly on a standalone
+   * issue with no parent project).
+   */
+  projectId: string | null;
 }
 
 /**

@@ -39,6 +39,20 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+/**
+ * Plugin-tool routes accept two actor shapes:
+ *   - board users with company-org access (existing behavior), or
+ *   - agent JWTs (set by an adapter when spawning an agent run).
+ * Per-call scope (companyId / agentId / runId / projectId belong together)
+ * is enforced separately at each route — see `assertCompanyAccess` and
+ * `validateToolRunContextScope` in `routes/plugins.ts`.
+ */
+export function assertPluginToolAccess(req: Request) {
+  assertAuthenticated(req);
+  if (req.actor.type === "agent") return;
+  assertBoardOrgAccess(req);
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {

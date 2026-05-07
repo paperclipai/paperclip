@@ -99,6 +99,14 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  /**
+   * Whether this tool should be advertised to agents and callable by them.
+   * Defaults to `true`. Set `false` for operator-only tools (admin surfaces,
+   * destructive ops) — they remain visible and executable to board callers
+   * but are hidden from agent tool lists and rejected on agent-initiated
+   * execute as if the tool doesn't exist.
+   */
+  exposeToAgents?: boolean;
 }
 
 /**
