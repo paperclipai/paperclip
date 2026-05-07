@@ -13,9 +13,7 @@
   },
   "type": "module",
   "exports": {
-    ".": {
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts"
   },
   "publishConfig": {
     "access": "public",
