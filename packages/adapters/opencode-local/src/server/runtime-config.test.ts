@@ -65,6 +65,70 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("copies an existing JSON5-style config with trailing commas and comments", async () => {
+    const configHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+    cleanupPaths.add(configHome);
+    const configDir = path.join(configHome, "opencode");
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `{
+  "model": "custom/model",
+  // This is a comment
+  "provider": {
+    "custom": {
+      "models": {
+        "model": {
+          "name": "model",
+          "modalities": {
+            "input": ["text", "image",],
+            "output": ["text",],
+          },
+        },
+      },
+    },
+  },
+}\n`,
+      "utf8",
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      model: "custom/model",
+      provider: {
+        custom: {
+          models: {
+            "model": {
+              name: "model",
+              modalities: {
+                input: ["text", "image"],
+                output: ["text"],
+              },
+            },
+          },
+        },
+      },
+      permission: {
+        external_directory: "allow",
+      },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+    await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({

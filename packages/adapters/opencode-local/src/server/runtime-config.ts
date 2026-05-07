@@ -21,10 +21,55 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function stripJsonComments(raw: string): string {
+  let result = "";
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+
+    if (escape) {
+      result += char;
+      escape = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      result += char;
+      escape = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      result += char;
+      continue;
+    }
+
+    if (!inString && char === "/" && raw[i + 1] === "/") {
+      // Skip to end of line (preserve the terminating newline)
+      while (i < raw.length && raw[i] !== "\n") {
+        i++;
+      }
+      // raw[i] is now '\n' (or past end); let the main loop emit it
+      if (i < raw.length) result += raw[i];
+      continue;
+    }
+
+    result += char;
+  }
+
+  return result;
+}
+
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await fs.readFile(filepath, "utf8");
-    const parsed = JSON.parse(raw);
+    // Strip single-line comments and trailing commas — opencode.json may
+    // contain JSON5-style syntax that JSON.parse rejects.
+    const cleaned = stripJsonComments(raw).replace(/,\s*([}\]])/g, "$1");
+    const parsed = JSON.parse(cleaned);
     return isPlainObject(parsed) ? parsed : {};
   } catch {
     return {};
