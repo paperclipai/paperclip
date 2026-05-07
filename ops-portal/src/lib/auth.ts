@@ -4,6 +4,12 @@ import type { JWT } from 'next-auth/jwt';
 import Zitadel from 'next-auth/providers/zitadel';
 import { OIDCConfigurationError } from './errors';
 
+// The Zitadel role key that grants operator access.  Override via
+// OPERATOR_ROLE env var to match whatever key you created in Zitadel.
+// Zitadel role keys appear as-is in the token (no project-name prefix).
+export const OPERATOR_ROLE: string =
+  process.env['OPERATOR_ROLE'] ?? 'paperclip-ops:operator';
+
 // Zitadel returns project roles as a nested map:
 // "urn:zitadel:iam:org:project:roles": { "roleName": { "orgId": "orgName" } }
 function extractZitadelRoles(profile: Record<string, unknown>): string[] {
@@ -58,7 +64,7 @@ const authConfig: NextAuthConfig = {
     }) {
       const { nextUrl } = request;
       const isLoggedIn = auth?.user != null;
-      const hasRole = (auth?.roles ?? []).includes('paperclip-ops:operator');
+      const hasRole = (auth?.roles ?? []).includes(OPERATOR_ROLE);
       const protectedPaths = ['/launch'];
       const isProtected = protectedPaths.some((p) =>
         nextUrl.pathname.startsWith(p)
@@ -100,7 +106,7 @@ export async function requireSession(): Promise<AppSession> {
 
 export async function requireOperatorSession(): Promise<AppSession> {
   const session = await requireSession();
-  if (!session.roles.includes('paperclip-ops:operator')) {
+  if (!session.roles.includes(OPERATOR_ROLE)) {
     const { AuthProxyError } = await import('./errors');
     throw new AuthProxyError('Missing paperclip-ops:operator role', 403);
   }

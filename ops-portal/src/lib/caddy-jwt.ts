@@ -10,7 +10,9 @@ function getSecret(): Uint8Array {
       `${SECRET_ENV} is not set — Caddy session JWT cannot be minted`
     );
   }
-  return new TextEncoder().encode(raw);
+  // ggicci/caddy-jwt base64-decodes sign_key before using it as the HMAC key,
+  // so we must decode here to get the same key bytes Caddy will verify against.
+  return new Uint8Array(Buffer.from(raw, 'base64'));
 }
 
 export interface CaddyJwtPayload {
