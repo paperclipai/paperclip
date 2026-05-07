@@ -30,6 +30,7 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: "resume failed",
+      terminalResultType: "failed",
     });
   });
 
@@ -63,6 +64,7 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: null,
+      terminalResultType: "completed",
     });
   });
 });
