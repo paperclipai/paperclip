@@ -651,16 +651,22 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
       sourceEl?: HTMLElement | null,
     ) => {
       switch (launcher.action.type) {
-        case "navigate":
-          navigate(launcher.action.target);
+        case "navigate": {
+          const target = launcher.action.target;
+          // Ensure plugin navigate targets resolve as absolute paths so they
+          // aren't resolved relative to the current browser URL.
+          navigate(target.startsWith("/") ? target : `/${target}`);
           return;
-        case "deepLink":
-          if (/^https?:\/\//.test(launcher.action.target)) {
-            window.open(launcher.action.target, "_blank", "noopener,noreferrer");
+        }
+        case "deepLink": {
+          const dlTarget = launcher.action.target;
+          if (/^https?:\/\//.test(dlTarget)) {
+            window.open(dlTarget, "_blank", "noopener,noreferrer");
           } else {
-            navigate(launcher.action.target);
+            navigate(dlTarget.startsWith("/") ? dlTarget : `/${dlTarget}`);
           }
           return;
+        }
         case "performAction":
           await pluginsApi.bridgePerformAction(
             launcher.pluginId,
