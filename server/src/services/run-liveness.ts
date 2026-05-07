@@ -106,7 +106,7 @@ export function hasUsefulOutput(input: RunLivenessClassificationInput) {
 }
 
 export function declaredBlocker(input: RunLivenessClassificationInput) {
-  if (input.issue?.status === "blocked") return true;
+  if (input.issue?.status === "blocked" || input.issue?.status === "awaiting_human") return true;
   const text = combinedOutput(input);
   if (!text || NEGATED_BLOCKER_RE.test(text)) return false;
   return BLOCKER_RE.test(text);
@@ -200,7 +200,13 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   }
 
   if (declaredBlocker(input)) {
-    return output("blocked", issueStatus === "blocked" ? "Issue status is blocked" : "Run output declared a concrete blocker", extractNextAction(input));
+    const reason =
+      issueStatus === "blocked"
+        ? "Issue status is blocked"
+        : issueStatus === "awaiting_human"
+          ? "Issue status is awaiting_human"
+          : "Run output declared a concrete blocker";
+    return output("blocked", reason, extractNextAction(input));
   }
 
   if (!usefulOutput && !concreteEvidence) {

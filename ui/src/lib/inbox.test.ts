@@ -281,6 +281,7 @@ const dashboard: DashboardSummary = {
     open: 1,
     inProgress: 0,
     blocked: 0,
+    awaitingHuman: 0,
     done: 0,
   },
   costs: {

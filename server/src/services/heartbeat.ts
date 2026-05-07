@@ -1325,6 +1325,13 @@ function describeSessionResetReason(
   return null;
 }
 
+const HUMAN_ACTION_WAKE_REASONS_FOR_AUTO_CHECKOUT = new Set([
+  "issue_commented",
+  "issue_reopened_via_comment",
+  "interaction_resolved",
+  "approval_approved",
+]);
+
 function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
@@ -1340,6 +1347,7 @@ function shouldAutoCheckoutIssueForWake(input: {
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
     issueStatus !== "blocked" &&
+    issueStatus !== "awaiting_human" &&
     issueStatus !== "in_progress"
   ) {
     return false;
@@ -1349,6 +1357,15 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (!wakeReason) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason.startsWith("execution_")) return false;
+
+  // For human-blocked issues, only re-engage the assignee on wakes that
+  // indicate the human/board has actually acted (e.g. comment, reopen,
+  // interaction resolution, approval). Generic execution-recovery wakes
+  // must not auto-checkout an `awaiting_human` issue, otherwise the AI
+  // would silently start working on something parked for a human.
+  if (issueStatus === "awaiting_human" && !HUMAN_ACTION_WAKE_REASONS_FOR_AUTO_CHECKOUT.has(wakeReason)) {
+    return false;
+  }
 
   return true;
 }
