@@ -190,7 +190,9 @@ describe("IssueScheduledRetryCard", () => {
       getRetryNowButton()!.click();
     });
     await flushAll();
-    expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
+    await vi.waitFor(() => {
+      expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
+    });
     expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
   });
 
