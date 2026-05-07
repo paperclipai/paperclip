@@ -848,6 +848,26 @@ describe("rewriteWorkspaceCwdEnvVarsForExecution", () => {
       RANDOM_WORKSPACE_CWD_TOKEN: "/host/workspace",
     });
   });
+
+  it("only rewrites matching *_WORKSPACE_CWD string values", () => {
+    const env = rewriteWorkspaceCwdEnvVarsForExecution({
+      workspaceCwd: "/host/workspace",
+      executionCwd: "/remote/workspace",
+      executionTargetIsRemote: true,
+      env: {
+        MATCHING_WORKSPACE_CWD: "/host/workspace/.",
+        DIFFERENT_WORKSPACE_CWD: "/host/other-workspace",
+        BLANK_WORKSPACE_CWD: "   ",
+        NON_STRING_WORKSPACE_CWD: 42,
+      },
+    });
+
+    expect(env).toEqual({
+      MATCHING_WORKSPACE_CWD: "/remote/workspace",
+      DIFFERENT_WORKSPACE_CWD: "/host/other-workspace",
+      BLANK_WORKSPACE_CWD: "   ",
+    });
+  });
 });
 
 describe("refreshPaperclipWorkspaceEnvForExecution", () => {

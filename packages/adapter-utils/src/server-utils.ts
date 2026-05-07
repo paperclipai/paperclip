@@ -1012,8 +1012,13 @@ export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
   const localWorkspaceCwd = typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
     ? path.resolve(input.workspaceCwd)
     : null;
+  // executionCwd is a remote path on the target host; we deliberately do not
+  // run `path.resolve` against it because that applies host-Node semantics
+  // (current working directory, host path separator) to a path that lives on
+  // the remote shell. Callers always pass absolute remote paths, so we
+  // forward the trimmed value verbatim.
   const remoteWorkspaceCwd = typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
-    ? path.resolve(input.executionCwd)
+    ? input.executionCwd.trim()
     : null;
 
   if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
