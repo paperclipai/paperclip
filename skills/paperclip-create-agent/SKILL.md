@@ -109,17 +109,19 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
     "adapterType": "codex_local",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
-    "instructionsBundle": {"files": {"AGENTS.md": "You are the CTO..."}},
+    "instructionsBundle": {"entryFile": "AGENTS.md", "files": {"AGENTS.md": "You are the CTO..."}},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"
   }'
 ```
 
+Capture both the new `agent.id` from the response and the exact `instructionsBundle.files` you sent — **Step 10** needs them. Do not mark the hire issue `done` from this step; verification is mandatory and runs after approval (or immediately if the company does not require approval).
+
 ### 9. Handle governance state
 
 - if the response has `approval`, the hire is `pending_approval`
 - monitor and discuss on the approval thread
-- when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
+- when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues, **run Step 10 before closing any of them**, then comment/close as appropriate
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
@@ -151,8 +153,50 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
 ```
 
 For each linked issue, either:
-- close it if the approval resolved the request, or
+- close it if the approval resolved the request **and Step 10 has passed**, or
 - comment in markdown with links to the approval and next actions.
+
+### 10. Verify the instructions bundle was persisted (REQUIRED)
+
+`POST /api/companies/:companyId/agent-hires` with `instructionsBundle.files` only persists the bundle **config** (`mode`, `entryFile`). It does **not** write the file content to disk. Skipping this step ships agents as empty shells (`files: []`, `resolvedEntryPath: null`), and any heartbeat then runs with no prompt.
+
+Run this verification after the hire is approved (or immediately, if the company does not require approval) — and before marking any hire/source issue `done`.
+
+```sh
+curl -sS "$PAPERCLIP_API_URL/api/agents/<new-agent-id>/instructions-bundle" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+```
+
+Required assertions on the response:
+
+- `files.length >= 1`
+- `resolvedEntryPath` is non-null
+- the entry file you sent (e.g. `AGENTS.md`) appears in `files[].path`
+- if you sent companion files in `instructionsBundle.files`, every one of them appears in `files[].path`
+
+If any assertion fails, upload each missing file explicitly. The PUT body carries `path` and `content` (the path is **in the body, not the query string**):
+
+```sh
+# Repeat per file you sent in instructionsBundle.files
+jq -nR --rawfile body /tmp/AGENTS.md \
+  '{path: "AGENTS.md", content: $body, clearLegacyPromptTemplate: true}' \
+  | curl -sS -X PUT "$PAPERCLIP_API_URL/api/agents/<new-agent-id>/instructions-bundle/file" \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "Content-Type: application/json" \
+      --data-binary @-
+```
+
+Then re-run the GET and re-assert. Only when verification passes may you:
+
+- mark the source/hire issue `done`
+- post the close-out comment on linked approval issues
+- record the agent as ready for assignments
+
+If the bundle is still empty after the fallback PUT, **stop and escalate** — the file content was lost and re-uploading by hand is the only safe recovery path. Do not paper over with placeholder text.
+
+State the verification result in your hire close-out comment, e.g. `Verified: GET /instructions-bundle returned files=1, resolvedEntryPath set, entryFile=AGENTS.md`.
+
+> Origin: this gap shipped 8 agents as empty shells in a prior hire batch before being caught by audit. The skill now treats the verification as part of the hire — never an "optional" follow-up.
 
 ## References
 
