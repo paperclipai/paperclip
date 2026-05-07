@@ -5,7 +5,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama (local)",
       "options": {
-        "baseURL": "{env:OLLAMA_BASE_URL}"
+        "baseURL": "http://localhost:11434",
       },
       "models": {
         "qwen2.5:3b": { "name": "Qwen 2.5 (3B)" },
@@ -15,8 +15,8 @@
         "qwen3.5:0.8b": { "name": "Qwen 3.5 (0.8B)" },
         "qwen3.5:2b": { "name": "Qwen 3.5 (2B)" },
         "qwen2.5-coder:3b": { "name": "Qwen 2.5 Coder (3B)" },
-        "nemotron-3-super:cloud": { "name": "NemoTron 3 Super (cloud)" }
-      }
-    }
-  }
+        "nemotron-3-super:cloud": { "name": "NemoTron 3 Super (cloud)" },
+      },
+    },
+  },
 }
