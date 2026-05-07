@@ -33,6 +33,8 @@ export interface ExecuteOptions {
   openAiFactory?: (init: { apiKey: string; baseURL: string; defaultHeaders?: Record<string, string> }) => Pick<OpenAI, "chat">;
   /** Override the tool registry — used for tests. */
   tools?: ToolHandler[];
+  /** Override the post-loop generation fetch delay in ms (default 800). Set to 0 in tests. */
+  generationFetchDelayMs?: number;
 }
 
 interface RunState {
@@ -42,6 +44,8 @@ interface RunState {
   provider: string | null;
   model: string;
   finalAssistantText: string;
+  generationIds: string[];
+  costUsd: number;
 }
 
 const DEFAULT_OPENROUTER_HEADERS: Record<string, string> = {
@@ -126,6 +130,26 @@ function resolveReasoningParam(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
   }
   return null;
+}
+
+async function fetchGenerationCost(
+  id: string,
+  apiKey: string,
+): Promise<{ costUsd: number; providerName: string | null }> {
+  try {
+    const url = `https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(id)}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    });
+    if (!res.ok) return { costUsd: 0, providerName: null };
+    const json = await res.json() as { data?: { total_cost?: number; provider_name?: string } };
+    return {
+      costUsd: json.data?.total_cost ?? 0,
+      providerName: json.data?.provider_name ?? null,
+    };
+  } catch {
+    return { costUsd: 0, providerName: null };
+  }
 }
 
 export async function execute(
@@ -232,6 +256,8 @@ export async function execute(
     provider: null,
     model,
     finalAssistantText: "",
+    generationIds: [],
+    costUsd: 0,
   };
 
   await emit({
@@ -271,6 +297,7 @@ export async function execute(
       }
       const provider = (completion as unknown as { provider?: string }).provider;
       if (provider && !state.provider) state.provider = provider;
+      if (completion.id) state.generationIds.push(completion.id);
 
       const choice = completion.choices?.[0];
       if (!choice) {
@@ -339,6 +366,16 @@ export async function execute(
       }
     }
 
+    if (isOpenRouter(baseUrl) && state.generationIds.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, options.generationFetchDelayMs ?? 800));
+      const genResults = await Promise.all(
+        state.generationIds.map((id) => fetchGenerationCost(id, apiKey)),
+      );
+      state.costUsd = genResults.reduce((sum, r) => sum + r.costUsd, 0);
+      const lastProvider = genResults.at(-1)?.providerName ?? null;
+      if (lastProvider) state.provider = lastProvider;
+    }
+
     const usageSummary: UsageSummary = {
       inputTokens: state.inputTokens,
       outputTokens: state.outputTokens,
@@ -354,7 +391,7 @@ export async function execute(
       inputTokens: usageSummary.inputTokens,
       outputTokens: usageSummary.outputTokens,
       cachedTokens: state.cachedInputTokens,
-      costUsd: 0,
+      costUsd: state.costUsd,
       subtype: "ok",
       isError: false,
       errors: [],

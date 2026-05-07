@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
 
+// Wrapper that zeroes out the generation fetch delay so tests run fast.
+function exec(
+  ctx: AdapterExecutionContext,
+  opts: Omit<Parameters<typeof execute>[1], "generationFetchDelayMs"> & { generationFetchDelayMs?: number } = {},
+) {
+  return execute(ctx, { generationFetchDelayMs: 0, ...opts });
+}
+
 interface CapturedRequest {
   model: string;
   messages: unknown[];
@@ -180,12 +188,15 @@ beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-local-execute-"));
   logs = [];
   process.env.OPENROUTER_API_KEY = "sk-test";
+  // Default fetch stub: non-2xx so generation cost stays 0 for tests that don't care about it.
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }));
 });
 
 afterEach(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.OPENAI_API_KEY;
+  vi.unstubAllGlobals();
 });
 
 function buildCtx(overrides: Partial<AdapterExecutionContext> = {}): AdapterExecutionContext {
@@ -227,7 +238,7 @@ describe("execute", () => {
   it("returns missing_api_key when no key is in the env", async () => {
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.OPENAI_API_KEY;
-    const result = await execute(buildCtx(), { openAiFactory: () => ({ chat: {} as never }) });
+    const result = await exec(buildCtx(), { openAiFactory: () => ({ chat: {} as never }) });
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("missing_api_key");
   });
@@ -240,7 +251,7 @@ describe("execute", () => {
         provider: "openai",
       },
     ]);
-    const result = await execute(buildCtx(), { openAiFactory: factory });
+    const result = await exec(buildCtx(), { openAiFactory: factory });
     expect(result.exitCode).toBe(0);
     expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
     expect(result.provider).toBe("openai");
@@ -271,7 +282,7 @@ describe("execute", () => {
       },
     ]);
 
-    const result = await execute(buildCtx(), { openAiFactory: factory });
+    const result = await exec(buildCtx(), { openAiFactory: factory });
     expect(result.exitCode).toBe(0);
     expect(result.usage).toEqual({ inputTokens: 13, outputTokens: 8 });
     expect(state.capturedRequests).toHaveLength(2);
@@ -294,7 +305,7 @@ describe("execute", () => {
 
   it("sends OpenRouter headers when baseUrl points at openrouter", async () => {
     const { factory, state } = buildClient([{ content: "ok" }]);
-    await execute(
+    await exec(
       buildCtx({
         config: {
           cwd: tmp,
@@ -312,7 +323,7 @@ describe("execute", () => {
 
   it("omits OpenRouter headers when baseUrl is not openrouter", async () => {
     const { factory, state } = buildClient([{ content: "ok" }]);
-    await execute(
+    await exec(
       buildCtx({
         config: {
           cwd: tmp,
@@ -327,7 +338,7 @@ describe("execute", () => {
 
   it("respects disabledTools", async () => {
     const { factory, state } = buildClient([{ content: "ok" }]);
-    await execute(
+    await exec(
       buildCtx({
         config: {
           cwd: tmp,
@@ -348,7 +359,7 @@ describe("execute", () => {
 
   it("renders prompt template variables", async () => {
     const { factory, state } = buildClient([{ content: "ok" }]);
-    await execute(
+    await exec(
       buildCtx({
         config: {
           cwd: tmp,
@@ -368,7 +379,7 @@ describe("execute", () => {
   it("loads AGENTS.md as the system prompt", async () => {
     await fs.writeFile(path.join(tmp, "AGENTS.md"), "follow the rules");
     const { factory, state } = buildClient([{ content: "ok" }]);
-    await execute(buildCtx(), { openAiFactory: factory });
+    await exec(buildCtx(), { openAiFactory: factory });
     const systemMessage = (state.capturedRequests[0].messages as Array<{
       role: string;
       content: string;
@@ -381,7 +392,7 @@ describe("execute", () => {
       const { factory } = buildClient([
         { content: "done", usage: { prompt_tokens: 5, completion_tokens: 2 } },
       ]);
-      const result = await execute(buildCtx(), { openAiFactory: factory });
+      const result = await exec(buildCtx(), { openAiFactory: factory });
       expect(result.exitCode).toBe(0);
       expect(result.timedOut).toBe(false);
       expect((result as { errorCode?: string }).errorCode).toBeUndefined();
@@ -389,7 +400,7 @@ describe("execute", () => {
 
     it("returns timedOut when timeout fires during OpenAI call", async () => {
       const { factory } = buildHangingClient([]);
-      const result = await execute(
+      const result = await exec(
         buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 1 } }),
         { openAiFactory: factory },
       );
@@ -407,7 +418,7 @@ describe("execute", () => {
           usage: { prompt_tokens: 10, completion_tokens: 3 },
         },
       ]);
-      const result = await execute(
+      const result = await exec(
         buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 1 } }),
         { openAiFactory: factory },
       );
@@ -425,7 +436,7 @@ describe("execute", () => {
           usage: { prompt_tokens: 50, completion_tokens: 12 },
         },
       ]);
-      const result = await execute(
+      const result = await exec(
         buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 1 } }),
         { openAiFactory: factory },
       );
@@ -438,7 +449,7 @@ describe("execute", () => {
       const { factory } = buildClient([
         { content: "done fast", usage: { prompt_tokens: 5, completion_tokens: 2 } },
       ]);
-      const result = await execute(
+      const result = await exec(
         buildCtx({ config: { cwd: tmp, model: "x", timeoutSec: 60 } }),
         { openAiFactory: factory },
       );
@@ -451,7 +462,7 @@ describe("execute", () => {
   describe("reasoning token support", () => {
     it("emits no thinking entry when response has no reasoning content", async () => {
       const { factory } = buildClient([{ content: "plain answer" }]);
-      await execute(buildCtx(), { openAiFactory: factory });
+      await exec(buildCtx(), { openAiFactory: factory });
       const events = readJsonlEvents();
       expect(events.some((e) => e.kind === "thinking")).toBe(false);
     });
@@ -460,7 +471,7 @@ describe("execute", () => {
       const { factory } = buildClient([
         { content: "answer", reasoning: "let me think..." },
       ]);
-      await execute(buildCtx(), { openAiFactory: factory });
+      await exec(buildCtx(), { openAiFactory: factory });
       const events = readJsonlEvents();
       const thinkingIdx = events.findIndex((e) => e.kind === "thinking");
       const assistantIdx = events.findIndex((e) => e.kind === "assistant");
@@ -480,7 +491,7 @@ describe("execute", () => {
           ],
         },
       ]);
-      await execute(buildCtx(), { openAiFactory: factory });
+      await exec(buildCtx(), { openAiFactory: factory });
       const events = readJsonlEvents();
       const thinking = events.find((e) => e.kind === "thinking");
       expect(thinking).toBeTruthy();
@@ -497,7 +508,7 @@ describe("execute", () => {
           reasoning_details: [{ type: "reasoning.text", text: "structured reasoning" }],
         },
       ]);
-      await execute(buildCtx(), { openAiFactory: factory });
+      await exec(buildCtx(), { openAiFactory: factory });
       const events = readJsonlEvents();
       const thinking = events.find((e) => e.kind === "thinking");
       expect(thinking?.text).toBe("structured reasoning");
@@ -506,7 +517,7 @@ describe("execute", () => {
 
     it("passes { enabled: true } when config.reasoning is true", async () => {
       const { factory, state } = buildClient([{ content: "ok" }]);
-      await execute(
+      await exec(
         buildCtx({ config: { cwd: tmp, model: "openai/gpt-4o-mini", reasoning: true } }),
         { openAiFactory: factory },
       );
@@ -515,7 +526,7 @@ describe("execute", () => {
 
     it("forwards config.reasoning object verbatim", async () => {
       const { factory, state } = buildClient([{ content: "ok" }]);
-      await execute(
+      await exec(
         buildCtx({ config: { cwd: tmp, model: "openai/gpt-4o-mini", reasoning: { effort: "high" } } }),
         { openAiFactory: factory },
       );
@@ -524,7 +535,7 @@ describe("execute", () => {
 
     it("omits reasoning key from completions call when config.reasoning is absent", async () => {
       const { factory, state } = buildClient([{ content: "ok" }]);
-      await execute(buildCtx(), { openAiFactory: factory });
+      await exec(buildCtx(), { openAiFactory: factory });
       expect("reasoning" in state.capturedRequests[0]).toBe(false);
     });
   });
@@ -541,7 +552,7 @@ describe("execute", () => {
       ],
     };
     const { factory, state } = buildClient([reply, reply, reply, reply]);
-    const result = await execute(
+    const result = await exec(
       buildCtx({
         config: { cwd: tmp, model: "x", maxIterations: 2 },
       }),
@@ -549,5 +560,117 @@ describe("execute", () => {
     );
     expect(state.capturedRequests).toHaveLength(2);
     expect(result.exitCode).toBe(0);
+  });
+
+  describe("USD cost tracking", () => {
+    it("does not call the generation endpoint for a non-OpenRouter baseUrl", async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+      vi.stubGlobal("fetch", fetchSpy);
+      const { factory } = buildClient([{ content: "ok", usage: { prompt_tokens: 5, completion_tokens: 2 } }]);
+      await exec(
+        buildCtx({ config: { cwd: tmp, baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" } }),
+        { openAiFactory: factory },
+      );
+      const generationCalls = fetchSpy.mock.calls.filter(([url]: [string]) =>
+        String(url).includes("openrouter.ai/api/v1/generation"),
+      );
+      expect(generationCalls).toHaveLength(0);
+      const events = readJsonlEvents();
+      const result = events.find((e) => e.kind === "result");
+      expect(result?.costUsd).toBe(0);
+    });
+
+    it("fetches cost and provider for a single-turn OpenRouter run", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: { total_cost: 0.001, provider_name: "Anthropic" } }),
+        }),
+      );
+      const { factory } = buildClient([{ content: "done", usage: { prompt_tokens: 10, completion_tokens: 5 } }]);
+      await exec(
+        buildCtx({ config: { cwd: tmp, baseUrl: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4" } }),
+        { openAiFactory: factory },
+      );
+      const events = readJsonlEvents();
+      const result = events.find((e) => e.kind === "result");
+      expect(result?.costUsd).toBeCloseTo(0.001);
+    });
+
+    it("sets provider from generation provider_name even when completion has none", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: { total_cost: 0.002, provider_name: "Anthropic" } }),
+        }),
+      );
+      const { factory } = buildClient([{ content: "done" }]);
+      const result = await exec(
+        buildCtx({ config: { cwd: tmp, baseUrl: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4" } }),
+        { openAiFactory: factory },
+      );
+      expect(result.provider).toBe("Anthropic");
+    });
+
+    it("sums costs across multiple tool-loop iterations", async () => {
+      let callCount = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(async () => {
+          callCount++;
+          return {
+            ok: true,
+            json: async () => ({ data: { total_cost: 0.001 * callCount, provider_name: "Anthropic" } }),
+          };
+        }),
+      );
+      await fs.writeFile(path.join(tmp, "note.txt"), "data");
+      const { factory } = buildClient([
+        {
+          toolCalls: [{ id: "c1", name: "read_file", arguments: JSON.stringify({ path: "note.txt" }) }],
+          usage: { prompt_tokens: 5, completion_tokens: 3 },
+        },
+        {
+          toolCalls: [{ id: "c2", name: "read_file", arguments: JSON.stringify({ path: "note.txt" }) }],
+          usage: { prompt_tokens: 8, completion_tokens: 4 },
+        },
+        { content: "all done", usage: { prompt_tokens: 12, completion_tokens: 6 } },
+      ]);
+      await exec(
+        buildCtx({ config: { cwd: tmp, baseUrl: "https://openrouter.ai/api/v1", model: "x/y" } }),
+        { openAiFactory: factory },
+      );
+      const events = readJsonlEvents();
+      const result = events.find((e) => e.kind === "result");
+      // 3 completions → 3 fetch calls at 0.001, 0.002, 0.003 → sum = 0.006
+      expect(result?.costUsd).toBeCloseTo(0.006);
+    });
+
+    it("degrades gracefully when the generation fetch throws a network error", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network failure")));
+      const { factory } = buildClient([{ content: "ok" }]);
+      const result = await exec(
+        buildCtx({ config: { cwd: tmp, baseUrl: "https://openrouter.ai/api/v1", model: "x/y" } }),
+        { openAiFactory: factory },
+      );
+      expect(result.exitCode).toBe(0);
+      const events = readJsonlEvents();
+      const ev = events.find((e) => e.kind === "result");
+      expect(ev?.costUsd).toBe(0);
+    });
+
+    it("returns costUsd: 0 when generation endpoint responds with non-2xx", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }));
+      const { factory } = buildClient([{ content: "ok" }]);
+      await exec(
+        buildCtx({ config: { cwd: tmp, baseUrl: "https://openrouter.ai/api/v1", model: "x/y" } }),
+        { openAiFactory: factory },
+      );
+      const events = readJsonlEvents();
+      const result = events.find((e) => e.kind === "result");
+      expect(result?.costUsd).toBe(0);
+    });
   });
 });
