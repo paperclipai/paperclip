@@ -216,6 +216,36 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("guides assigned agents to watchdog-decisions and routes cancel through the board", async () => {
+    // LEV-243: agent-facing recovery tickets must not recommend a direct cancel
+    // call. POST /api/heartbeat-runs/:runId/cancel is board-only (assertBoard);
+    // the assigned agent owns `snooze`, `continue`, and `dismissed_false_positive`
+    // through /watchdog-decisions, and any urgent cancel should escalate to the
+    // board.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    const description = evaluation?.description ?? "";
+
+    expect(description).not.toContain("Cancel or recover through the explicit run recovery controls when authorized.");
+    expect(description).toContain(`/api/heartbeat-runs/${runId}/watchdog-decisions`);
+    expect(description).toContain("continue");
+    expect(description).toContain("snooze");
+    expect(description).toContain("dismissed_false_positive");
+    expect(description).toContain("board-only");
+    expect(description).toContain(`@board cancel runId=${runId}`);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";

@@ -919,11 +919,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "",
       "## Decision Checklist",
       "",
-      "- Continue or snooze if the run is intentionally quiet.",
+      "- Continue, snooze, or dismiss as a false positive by recording a watchdog decision (`POST /api/heartbeat-runs/" + input.run.id + "/watchdog-decisions` with `decision` of `continue`, `snooze`, or `dismissed_false_positive`). Direct run cancel is board-only and will return 403 for assigned agents.",
       "- Ask the run owner for context if work may be delegated outside the transcript.",
-      "- Preserve artifacts, branch state, and useful output before cancellation.",
-      "- Cancel or recover through the explicit run recovery controls when authorized.",
-      "- Close this issue as a false positive only after recording the reason.",
+      "- Preserve artifacts, branch state, and useful output before any operator-initiated cancel.",
+      "- If the run is wedged and cancel is needed, escalate to the board with a comment such as `@board cancel runId=" + input.run.id + "` so an authorized operator can act.",
+      "- Close this issue as a false positive only after recording the reason in a `dismissed_false_positive` watchdog decision.",
     ].join("\n");
   }
 
