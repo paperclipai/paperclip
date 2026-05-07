@@ -98,6 +98,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Cursor agent",
     icon: MousePointer2,
   },
+  deepseek_local: {
+    label: "DeepSeek",
+    description: "DeepSeek-hosted LLM (single-shot completions)",
+    icon: Sparkles,
+  },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
     description: "Invoke OpenClaw via gateway protocol",

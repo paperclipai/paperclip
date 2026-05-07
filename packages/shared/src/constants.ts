@@ -33,6 +33,7 @@ export const AGENT_ADAPTER_TYPES = [
   "acpx_local",
   "claude_local",
   "codex_local",
+  "deepseek_local",
   "gemini_local",
   "opencode_local",
   "pi_local",

@@ -3,6 +3,7 @@ import { acpxLocalUIAdapter } from "./acpx-local";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
+import { deepseekLocalUIAdapter } from "./deepseek-local";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
@@ -53,6 +54,7 @@ function registerBuiltInUIAdapters() {
     acpxLocalUIAdapter,
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
+    deepseekLocalUIAdapter,
     geminiLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
