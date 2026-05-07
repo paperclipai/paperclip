@@ -70,6 +70,9 @@ export function proposalService(db: Db) {
       if (proposal.status !== "pending" && proposal.status !== "approved") {
         throw new Error(`Proposal is ${proposal.status}; cannot apply`);
       }
+      if (proposal.approvalId) {
+        throw new Error("This proposal is approval-governed and must be resolved from the Approvals queue");
+      }
 
       const catalog = getBuilderToolCatalog(db);
       const tool = findApplier(proposal.kind, catalog);

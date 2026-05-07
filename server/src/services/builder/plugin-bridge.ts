@@ -54,6 +54,15 @@ export function getPluginBuilderTools(_db: Db): BuilderTool[] {
       source: `plugin.${tool.pluginId}`,
       async run(params: Record<string, unknown>, ctx: BuilderToolRunContext): Promise<BuilderToolRunResult> {
         try {
+          const latest = dispatcher.getRegistry().getTool(tool.namespacedName);
+          if (latest?.requiresApproval) {
+            return {
+              ok: false,
+              error:
+                "Plugin builder tools that require approval cannot run directly. Expose them through the agent surface or remove requiresApproval.",
+            };
+          }
+
           // Dispatch into the plugin worker. We pass the actor/company in
           // the runContext so plugins can scope their behaviour. Plugin
           // tool errors come back as failed `result`s, not thrown.

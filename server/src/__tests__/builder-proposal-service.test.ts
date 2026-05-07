@@ -82,6 +82,43 @@ afterEach(() => {
 });
 
 describe("proposalService", () => {
+  it("blocks direct apply for approval-governed proposals", async () => {
+    const apply = vi.fn(async () => ({ summary: "ran", entityId: "ent-0", entityType: "thing" }));
+    const tool = defineMutationTool({
+      name: "governed_thing",
+      description: "x",
+      parametersSchema: { type: "object" },
+      capability: "test",
+      source: "test_extension0",
+      buildPayload: () => ({}),
+      summarize: () => "governed thing",
+      apply,
+      approvalType: "set_budget",
+    });
+    registerBuilderTool(tool);
+
+    seedProposal({
+      id: "p-governed",
+      companyId,
+      sessionId,
+      messageId: "m1",
+      kind: "governed_thing",
+      payload: {},
+      status: "approved",
+      approvalId: "approval-1",
+    });
+
+    const mockDb = {
+      transaction: vi.fn(async (fn) => fn(mockDb)),
+    } as unknown as Db;
+    const svc = proposalService(mockDb);
+
+    await expect(svc.apply(companyId, "p-governed", "user-1")).rejects.toThrow(
+      "This proposal is approval-governed and must be resolved from the Approvals queue",
+    );
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("dispatches apply() to the matching mutation tool", async () => {
     const apply = vi.fn(async () => ({
       summary: "ran",

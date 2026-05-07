@@ -627,7 +627,7 @@ const createProject = defineMutationTool({
     additionalProperties: false,
   },
   capability: "projects.write",
-  buildPayload(params) {
+  async buildPayload(params, ctx) {
     const parsed = createProjectSchema.parse({
       goalId: params.goalId,
       goalIds: params.goalIds,
@@ -641,6 +641,9 @@ const createProject = defineMutationTool({
     if ((params as Record<string, unknown>).workspace !== undefined) {
       throw new Error("Project workspace creation is not supported through this tool");
     }
+    await assertGoalBelongsToCompany(ctx.db, ctx.companyId, (parsed.goalId as string | null) ?? null);
+    await assertGoalIdsBelongToCompany(ctx.db, ctx.companyId, parsed.goalIds as string[] | undefined);
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (parsed.leadAgentId as string | null) ?? null, "Lead agent");
     return parsed as unknown as Record<string, unknown>;
   },
   summarize(payload) {
@@ -686,7 +689,7 @@ const updateProject = defineMutationTool({
     additionalProperties: false,
   },
   capability: "projects.write",
-  buildPayload(params) {
+  async buildPayload(params, ctx) {
     const projectId = nonEmptyString(params.projectId, "projectId");
     const parsed = updateProjectSchema.parse({
       goalId: params.goalId,
@@ -699,6 +702,9 @@ const updateProject = defineMutationTool({
       color: params.color,
       archivedAt: params.archivedAt,
     });
+    await assertGoalBelongsToCompany(ctx.db, ctx.companyId, (parsed.goalId as string | null) ?? null);
+    await assertGoalIdsBelongToCompany(ctx.db, ctx.companyId, parsed.goalIds as string[] | undefined);
+    await assertAgentBelongsToCompany(ctx.db, ctx.companyId, (parsed.leadAgentId as string | null) ?? null, "Lead agent");
     return {
       projectId,
       patch: parsed as Record<string, unknown>,

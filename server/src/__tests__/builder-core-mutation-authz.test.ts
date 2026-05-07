@@ -175,17 +175,16 @@ describe("builder core mutation auth guards", () => {
     expect(mockRunRoutine).not.toHaveBeenCalled();
   });
 
-  it("rejects create_project apply when deprecated goalId belongs to another company", async () => {
+  it("returns tool error for create_project when deprecated goalId belongs to another company", async () => {
     mockGoalGetById.mockResolvedValue({
       id: "goal-foreign",
       companyId: otherCompanyId,
     });
 
     const tool = getTool("create_project");
-    expect(isMutationTool(tool)).toBe(true);
 
     await expect(
-      tool.apply(
+      tool.run(
         {
           name: "Project X",
           goalId: "11111111-1111-4111-8111-111111111117",
@@ -193,42 +192,41 @@ describe("builder core mutation auth guards", () => {
         {
           db: {} as never,
           companyId,
-          decidedByUserId: "user-1",
+          actor: { type: "user", id: "user-1" },
         } as never,
       ),
-    ).rejects.toThrow("Goal not found");
+    ).resolves.toEqual({
+      ok: false,
+      error: "Goal not found",
+    });
 
     expect(mockProjectCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects update_project apply when deprecated goalId belongs to another company", async () => {
-    mockProjectGetById.mockResolvedValue({
-      id: "project-1",
-      companyId,
-    });
+  it("returns tool error for update_project when deprecated goalId belongs to another company", async () => {
     mockGoalGetById.mockResolvedValue({
       id: "goal-foreign",
       companyId: otherCompanyId,
     });
 
     const tool = getTool("update_project");
-    expect(isMutationTool(tool)).toBe(true);
 
     await expect(
-      tool.apply(
+      tool.run(
         {
           projectId: "11111111-1111-4111-8111-111111111118",
-          patch: {
-            goalId: "11111111-1111-4111-8111-111111111119",
-          },
+          goalId: "11111111-1111-4111-8111-111111111119",
         },
         {
           db: {} as never,
           companyId,
-          decidedByUserId: "user-1",
+          actor: { type: "user", id: "user-1" },
         } as never,
       ),
-    ).rejects.toThrow("Goal not found");
+    ).resolves.toEqual({
+      ok: false,
+      error: "Goal not found",
+    });
 
     expect(mockProjectUpdate).not.toHaveBeenCalled();
   });
