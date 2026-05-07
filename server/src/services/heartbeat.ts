@@ -162,6 +162,10 @@ import { extractSkillMentionIds } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import {
+  applyModelTierSelection,
+  selectHeartbeatModelTier,
+} from "./model-tier-routing.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -6800,10 +6804,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    let runtimeConfig = {
+    let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const modelTierSelection = selectHeartbeatModelTier({
+      config: runtimeConfig,
+      context,
+      wakePayload: paperclipWakePayload,
+    });
+    if (modelTierSelection) {
+      runtimeConfig = applyModelTierSelection(runtimeConfig, modelTierSelection);
+      context.paperclipModelTierSelection = {
+        tier: modelTierSelection.tier,
+        model: modelTierSelection.model,
+        reason: modelTierSelection.reason,
+      };
+      logger.info(
+        {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          tier: modelTierSelection.tier,
+          model: modelTierSelection.model,
+          reason: modelTierSelection.reason,
+        },
+        "model tier routed",
+      );
+    }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
