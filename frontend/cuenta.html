@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mi cuenta — Discontrol Creator</title>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:      #0d0d0f;
+      --surface: #161618;
+      --surface2:#1c1c1f;
+      --border:  #2a2a2e;
+      --muted:   #3a3a40;
+      --text:    #e8e8ec;
+      --sub:     #8888a0;
+      --accent:  #a855f7;
+      --accent2: #7c3aed;
+      --green:   #22c55e;
+      --yellow:  #eab308;
+      --red:     #ef4444;
+      --blue:    #3b82f6;
+    }
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--text); font-family: 'Barlow', system-ui, sans-serif; min-height: 100vh; }
+
+    /* ── NAV ── */
+    nav {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(13,13,15,.94); backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 32px;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 9px;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 16px; font-weight: 800;
+      letter-spacing: .04em; text-transform: uppercase; color: var(--text); text-decoration: none;
+    }
+    .nav-logo .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .nav-user { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sub); }
+    .avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; font-family: 'Barlow', sans-serif; transition: all .2s; text-decoration: none; }
+    .btn-ghost { background: transparent; color: var(--sub); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent2); }
+    .btn-danger { background: transparent; color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+    .btn-danger:hover { background: rgba(239,68,68,.08); }
+
+    /* ── LAYOUT ── */
+    .layout { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
+
+    /* ── PAGE TITLE ── */
+    .page-title { font-family: 'Space Grotesk', sans-serif; font-size: 26px; font-weight: 900; letter-spacing: -.02em; margin-bottom: 32px; }
+
+    /* ── TABS ── */
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 32px; }
+    .tab {
+      padding: 10px 18px; font-size: 14px; font-weight: 600; color: var(--sub);
+      cursor: pointer; border: none; background: transparent; font-family: 'Barlow', sans-serif;
+      border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .2s, border-color .2s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── CARDS ── */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 28px; }
+    .card + .card { margin-top: 16px; }
+    .card-title { font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--sub); margin-bottom: 20px; }
+
+    /* ── PLAN CARD ── */
+    .plan-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+    .plan-name { font-family: 'Space Grotesk', sans-serif; font-size: 28px; font-weight: 900; }
+    .plan-badge {
+      font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+      padding: 5px 12px; border-radius: 20px; border: 1px solid;
+    }
+    .plan-badge.starter { color: var(--blue);   background: rgba(59,130,246,.1);  border-color: rgba(59,130,246,.25); }
+    .plan-badge.pro     { color: var(--accent); background: rgba(168,85,247,.1);  border-color: rgba(168,85,247,.25); }
+    .plan-badge.agency  { color: var(--yellow); background: rgba(234,179,8,.1);   border-color: rgba(234,179,8,.25); }
+    .plan-price { font-size: 15px; color: var(--sub); margin-bottom: 24px; }
+    .plan-price strong { color: var(--text); font-size: 20px; }
+
+    /* usage bar */
+    .usage-label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+    .usage-label span { font-size: 13px; color: var(--sub); }
+    .usage-label strong { font-size: 18px; font-weight: 800; color: var(--text); }
+    .usage-bar-track { height: 6px; background: var(--muted); border-radius: 3px; overflow: hidden; margin-bottom: 20px; }
+    .usage-bar-fill  { height: 100%; border-radius: 3px; background: var(--accent); transition: width .6s ease; }
+    .usage-bar-fill.warn  { background: var(--yellow); }
+    .usage-bar-fill.full  { background: var(--red); }
+    .plan-renewal { font-size: 13px; color: var(--sub); padding-top: 20px; border-top: 1px solid var(--border); }
+
+    /* ── FEATURES LIST ── */
+    .features-list { display: flex; flex-direction: column; gap: 10px; }
+    .feature-item { display: flex; gap: 10px; font-size: 14px; align-items: center; }
+    .feature-item .ck { color: var(--green); font-weight: 700; flex-shrink: 0; }
+
+    /* ── VIDEOS GRID ── */
+    .videos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    .video-card {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+      overflow: hidden; cursor: pointer; transition: border-color .2s, transform .2s;
+    }
+    .video-card:hover { border-color: rgba(168,85,247,.35); transform: translateY(-2px); }
+    .video-thumb {
+      aspect-ratio: 9/16; background: var(--muted);
+      display: flex; align-items: center; justify-content: center; font-size: 22px;
+      overflow: hidden;
+    }
+    .video-thumb img, .video-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .video-info { padding: 8px 10px; }
+    .video-tema { font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .video-date { font-size: 10px; color: var(--sub); margin-top: 2px; }
+    .video-status { display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; margin-top: 4px; }
+    .video-status.done    { background: rgba(34,197,94,.12); color: var(--green); }
+    .video-status.pending { background: rgba(234,179,8,.12); color: var(--yellow); }
+
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--sub); }
+    .empty-state .emoji { font-size: 36px; margin-bottom: 12px; }
+    .empty-state p { font-size: 14px; line-height: 1.6; }
+
+    /* ── ACCOUNT FORM ── */
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .form-group { margin-bottom: 16px; }
+    .form-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--sub); margin-bottom: 7px; display: block; }
+    .form-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 9px;
+      padding: 10px 14px; font-size: 14px; color: var(--text); font-family: 'Barlow', sans-serif;
+      transition: border-color .2s; outline: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-input:disabled { color: var(--sub); cursor: not-allowed; }
+    .form-hint { font-size: 12px; color: var(--sub); margin-top: 5px; }
+    .danger-zone { border-color: rgba(239,68,68,.25); }
+    .danger-zone .card-title { color: var(--red); }
+
+    /* ── UPGRADE BANNER ── */
+    .upgrade-banner {
+      background: linear-gradient(135deg, rgba(168,85,247,.1), rgba(124,58,237,.05));
+      border: 1px solid rgba(168,85,247,.2); border-radius: 12px;
+      padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      margin-top: 20px; flex-wrap: wrap;
+    }
+    .upgrade-banner p { font-size: 14px; color: var(--sub); }
+    .upgrade-banner strong { color: var(--text); display: block; font-size: 15px; margin-bottom: 4px; }
+
+    /* ── TOAST ── */
+    .toast {
+      position: fixed; bottom: 24px; right: 24px; z-index: 300;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 18px; font-size: 13px; font-weight: 600;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4);
+      transform: translateY(80px); opacity: 0; transition: all .3s;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.success { border-color: rgba(34,197,94,.3); color: var(--green); }
+    .toast.error   { border-color: rgba(239,68,68,.3); color: var(--red); }
+
+    /* ── LOADING ── */
+    .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-center { display: flex; justify-content: center; align-items: center; padding: 48px; }
+
+    @media (max-width: 600px) {
+      nav { padding: 12px 16px; }
+      .layout { padding: 24px 16px 60px; }
+      .form-row { grid-template-columns: 1fr; }
+      .plan-header { flex-direction: column; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-logo"><span class="dot"></span>Discontrol Creator</a>
+  <div class="nav-right">
+    <div class="nav-user">
+      <div class="avatar" id="nav-avatar">?</div>
+      <span id="nav-email" style="display:none"></span>
+    </div>
+    <a href="/studio" class="btn btn-ghost">Studio</a>
+    <button class="btn btn-ghost" onclick="logout()">Cerrar sesión</button>
+  </div>
+</nav>
+
+<div class="layout">
+  <div class="page-title">Mi cuenta</div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('plan')">Mi plan</button>
+    <button class="tab"        onclick="switchTab('videos')">Mis vídeos</button>
+    <button class="tab"        onclick="switchTab('cuenta')">Cuenta</button>
+  </div>
+
+  <!-- TAB: PLAN -->
+  <div class="tab-panel active" id="panel-plan">
+    <div class="card" id="plan-card">
+      <div class="loading-center"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- TAB: VÍDEOS -->
+  <div class="tab-panel" id="panel-videos">
+    <div class="card">
+      <div class="card-title">Vídeos recientes</div>
+      <div id="videos-container">
+        <div class="loading-center"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: CUENTA -->
+  <div class="tab-panel" id="panel-cuenta">
+    <div class="card">
+      <div class="card-title">Información personal</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Nombre</label>
+          <input class="form-input" type="text" id="field-name" placeholder="Tu nombre" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <input class="form-input" type="email" id="field-email" disabled />
+          <div class="form-hint">El email no se puede cambiar.</div>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="saveProfile()">Guardar cambios</button>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Cambiar contraseña</div>
+      <div class="form-group" style="max-width:360px">
+        <label class="form-label">Nueva contraseña</label>
+        <input class="form-input" type="password" id="field-newpass" placeholder="Mínimo 8 caracteres" minlength="8" />
+      </div>
+      <button class="btn btn-ghost" onclick="changePassword()">Actualizar contraseña</button>
+    </div>
+
+    <div class="card danger-zone" style="margin-top:16px">
+      <div class="card-title">Zona de peligro</div>
+      <p style="font-size:14px;color:var(--sub);margin-bottom:16px">Cerrar sesión en todos los dispositivos o cancelar tu suscripción.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-danger" onclick="logout()">Cerrar sesión</button>
+        <a href="mailto:alejandrojesusperezblanco4@gmail.com?subject=Cancelar suscripción" class="btn btn-ghost" style="color:var(--sub)">Cancelar suscripción</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+  const PLANS = {
+    starter: { label: 'Starter', price: '€29',  limit: 8,  badge: 'starter', features: ['Guión por IA','Voz ElevenLabs','Imágenes Higgsfield','Formato vertical','Entrega 48h'] },
+    pro:     { label: 'Pro',     price: '€65',  limit: 20, badge: 'pro',     features: ['Todo Starter','Formato horizontal','Subtítulos automáticos','Eliges nicho','Entrega 24h'] },
+    agency:  { label: 'Agency',  price: '€149', limit: 50, badge: 'agency',  features: ['Todo Pro','Marca blanca','Subida directa canales','Panel estado','Soporte WhatsApp'] },
+  };
+
+  let supabaseClient = null;
+  let currentUser    = null;
+
+  async function init() {
+    try {
+      const r = await fetch('/api/creator/config');
+      const cfg = await r.json();
+      if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) { redirectHome(); return; }
+      supabaseClient = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      if (!session) { redirectHome(); return; }
+      currentUser = session.user;
+      renderNav();
+      renderPlan();
+    } catch (_) { redirectHome(); }
+  }
+
+  function redirectHome() { window.location.href = '/'; }
+
+  function renderNav() {
+    const email  = currentUser.email || '';
+    const initials = (currentUser.user_metadata?.full_name || email).slice(0,2).toUpperCase();
+    document.getElementById('nav-avatar').textContent = initials;
+    document.getElementById('nav-email').textContent  = email;
+  }
+
+  /* ── PLAN TAB ── */
+  function renderPlan() {
+    const plan  = currentUser.user_metadata?.plan || 'starter';
+    const info  = PLANS[plan] || PLANS.starter;
+    const used  = 0; // placeholder — necesita tabla de usage en Supabase
+    const pct   = Math.round((used / info.limit) * 100);
+    const fillClass = pct >= 100 ? 'full' : pct >= 80 ? 'warn' : '';
+    const renewDate = new Date();
+    renewDate.setMonth(renewDate.getMonth() + 1);
+    const renewStr = renewDate.toLocaleDateString('es', { day: '2-digit', month: 'long', year: 'numeric' });
+
+    document.getElementById('plan-card').innerHTML = `
+      <div class="plan-header">
+        <div>
+          <div class="plan-name">${info.label}</div>
+          <div class="plan-price" style="margin-top:4px">
+            <strong>${info.price}</strong>/mes
+          </div>
+        </div>
+        <span class="plan-badge ${info.badge}">${info.label}</span>
+      </div>
+
+      <div class="usage-label">
+        <span>Vídeos este mes</span>
+        <strong>${used} / ${info.limit}</strong>
+      </div>
+      <div class="usage-bar-track">
+        <div class="usage-bar-fill ${fillClass}" style="width:${pct}%"></div>
+      </div>
+
+      <div class="card-title" style="margin-top:24px">Incluido en tu plan</div>
+      <div class="features-list">
+        ${info.features.map(f => `<div class="feature-item"><span class="ck">✓</span>${f}</div>`).join('')}
+      </div>
+
+      <div class="plan-renewal">Próxima renovación: ${renewStr}</div>
+
+      ${plan !== 'agency' ? `
+      <div class="upgrade-banner">
+        <div>
+          <strong>Sube a ${plan === 'starter' ? 'Pro' : 'Agency'}</strong>
+          <p>${plan === 'starter' ? 'Consigue 20 vídeos/mes, YouTube y subtítulos automáticos.' : 'Hasta 50 vídeos, marca blanca y soporte WhatsApp.'}</p>
+        </div>
+        <button class="btn btn-primary" onclick="window.location.href='/#precios'">Ver planes →</button>
+      </div>` : ''}
+    `;
+
+    // Populate cuenta tab
+    document.getElementById('field-name').value  = currentUser.user_metadata?.full_name || '';
+    document.getElementById('field-email').value = currentUser.email || '';
+  }
+
+  /* ── VÍDEOS TAB ── */
+  async function loadVideos() {
+    const container = document.getElementById('videos-container');
+    try {
+      const r = await fetch('/api/content/videos?limit=24');
+      const rows = await r.json();
+      if (!Array.isArray(rows) || !rows.length) {
+        container.innerHTML = `<div class="empty-state"><div class="emoji">🎬</div><p>Aún no hay vídeos generados.<br>Ve al Studio y lanza tu primer run.</p></div>`;
+        return;
+      }
+      container.innerHTML = `<div class="videos-grid">${rows.map(v => {
+        const thumb  = v.image_urls?.[0] || '';
+        const date   = v.created_at ? new Date(v.created_at).toLocaleDateString('es', { day:'2-digit', month:'short' }) : '';
+        const status = v.video_url ? 'done' : 'pending';
+        const badge  = v.video_url ? '🎬' : v.audio_url ? '🎙️' : '🖼️';
+        return `<div class="video-card">
+          <div class="video-thumb">${thumb ? `<img src="${thumb}" loading="lazy" onerror="this.parentElement.innerHTML='🖼️'">` : badge}</div>
+          <div class="video-info">
+            <div class="video-tema">${v.tema || 'Sin título'}</div>
+            <div class="video-date">${date}</div>
+            <span class="video-status ${status}">${status === 'done' ? 'Listo' : 'Procesando'}</span>
+          </div>
+        </div>`;
+      }).join('')}</div>`;
+    } catch (_) {
+      container.innerHTML = `<div class="empty-state"><div class="emoji">⚠️</div><p>Error al cargar los vídeos.</p></div>`;
+    }
+  }
+
+  /* ── CUENTA TAB ── */
+  async function saveProfile() {
+    if (!supabaseClient) return;
+    const name = document.getElementById('field-name').value.trim();
+    const { error } = await supabaseClient.auth.updateUser({ data: { full_name: name } });
+    error ? showToast('Error al guardar.', 'error') : showToast('Cambios guardados.', 'success');
+  }
+
+  async function changePassword() {
+    if (!supabaseClient) return;
+    const pass = document.getElementById('field-newpass').value;
+    if (pass.length < 8) { showToast('Mínimo 8 caracteres.', 'error'); return; }
+    const { error } = await supabaseClient.auth.updateUser({ password: pass });
+    if (error) { showToast(error.message, 'error'); } else { showToast('Contraseña actualizada.', 'success'); document.getElementById('field-newpass').value = ''; }
+  }
+
+  async function logout() {
+    if (supabaseClient) await supabaseClient.auth.signOut();
+    window.location.href = '/';
+  }
+
+  /* ── TABS ── */
+  let videosLoaded = false;
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ['plan','videos','cuenta'][i] === name));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('panel-' + name).classList.add('active');
+    if (name === 'videos' && !videosLoaded) { videosLoaded = true; loadVideos(); }
+  }
+
+  /* ── TOAST ── */
+  function showToast(msg, type = 'success') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = `toast ${type} show`;
+    setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  init();
+</script>
+</body>
+</html>

@@ -423,6 +423,49 @@ export async function createApp(
     res.json({ supabaseUrl, supabaseAnonKey: supabaseAnonKey || null });
   });
 
+  // GET /api/admin/users?secret=X — list all Supabase Auth users
+  app.get("/api/admin/users", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    if (!secret || secret !== (process.env.ADMIN_SECRET ?? "")) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    try {
+      const base = supabaseBase();
+      const key  = supabaseKey();
+      const r = await fetch(`${base}/auth/v1/admin/users?per_page=1000`, {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+      });
+      if (!r.ok) { res.status(r.status).json({ error: "Supabase error" }); return; }
+      const data = await r.json();
+      res.json(data);
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // PATCH /api/admin/users/:id?secret=X — update user plan in metadata
+  app.patch("/api/admin/users/:id", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    if (!secret || secret !== (process.env.ADMIN_SECRET ?? "")) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const { plan } = req.body as { plan?: string };
+    if (!plan) { res.status(400).json({ error: "plan required" }); return; }
+    try {
+      const base = supabaseBase();
+      const key  = supabaseKey();
+      const r = await fetch(`${base}/auth/v1/admin/users/${req.params.id}`, {
+        method:  "PUT",
+        headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body:    JSON.stringify({ user_metadata: { plan } }),
+      });
+      if (!r.ok) { res.status(r.status).json({ error: "Supabase error" }); return; }
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // GET /api/content/stats
   app.get("/api/content/stats", async (req, res) => {
     try {
@@ -1240,6 +1283,8 @@ TIKTOK_OPEN_ID=${openId}
     else res.status(404).send(`${file} not found.`);
   };
   app.get("/",             serveCreatorPage("landing.html"));
+  app.get("/cuenta",       serveCreatorPage("cuenta.html"));
+  app.get("/admin",        serveCreatorPage("admin.html"));
   app.get("/studio",       serveCreatorPage("index.html"));
   app.get("/agentes",      serveCreatorPage("agentes.html"));
   app.get("/estadisticas", serveCreatorPage("estadisticas.html"));
