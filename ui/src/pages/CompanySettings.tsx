@@ -1,16 +1,16 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { Link } from "@/lib/router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
-import { companiesApi } from "../api/companies";
+import { companiesApi, type CompanyMember } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, UserPlus, Trash2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -51,6 +51,31 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
+
+  // Members
+  const [memberEmail, setMemberEmail] = useState("");
+  const membersQuery = useQuery({
+    queryKey: ["company-members", selectedCompanyId],
+    queryFn: () => companiesApi.listMembers(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const addMemberMutation = useMutation({
+    mutationFn: (email: string) => companiesApi.addMember(selectedCompanyId!, email),
+    onSuccess: () => {
+      setMemberEmail("");
+      void queryClient.invalidateQueries({ queryKey: ["company-members", selectedCompanyId] });
+      pushToast({ title: "Member added", tone: "success" });
+    },
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to add member", tone: "error" }),
+  });
+  const removeMemberMutation = useMutation({
+    mutationFn: (userId: string) => companiesApi.removeMember(selectedCompanyId!, userId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["company-members", selectedCompanyId] });
+      pushToast({ title: "Member removed", tone: "success" });
+    },
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to remove member", tone: "error" }),
+  });
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -456,6 +481,63 @@ export function CompanySettings() {
               </a>
             ) : null}
           </div>
+        </div>
+      </div>
+
+      {/* Members */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Members
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          {/* Add member */}
+          <div className="flex items-center gap-2">
+            <input
+              className="flex-1 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:border-ring"
+              type="email"
+              placeholder="Email address"
+              value={memberEmail}
+              onChange={(e) => setMemberEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && memberEmail.trim()) addMemberMutation.mutate(memberEmail.trim()); }}
+            />
+            <Button
+              size="sm"
+              onClick={() => addMemberMutation.mutate(memberEmail.trim())}
+              disabled={!memberEmail.trim() || addMemberMutation.isPending}
+            >
+              <UserPlus className="mr-1.5 h-3.5 w-3.5" />
+              {addMemberMutation.isPending ? "Adding..." : "Add member"}
+            </Button>
+          </div>
+          {/* Members list */}
+          {membersQuery.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading members...</p>
+          ) : membersQuery.data?.members.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No members yet. Add someone by email above.</p>
+          ) : (
+            <div className="divide-y divide-border">
+              {(membersQuery.data?.members ?? []).map((m: CompanyMember) => (
+                <div key={m.membershipId} className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    {m.name && <div className="text-sm font-medium truncate">{m.name}</div>}
+                    <div className="text-xs text-muted-foreground truncate">{m.email ?? m.userId}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-muted-foreground capitalize">{m.role ?? "member"}</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                      onClick={() => removeMemberMutation.mutate(m.userId)}
+                      disabled={removeMemberMutation.isPending}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

@@ -62,4 +62,20 @@ export const companiesApi = {
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
+  listMembers: (companyId: string) =>
+    api.get<{ members: CompanyMember[] }>(`/companies/${companyId}/members`),
+  addMember: (companyId: string, email: string) =>
+    api.post<{ ok: boolean; user: { id: string; name: string; email: string } }>(`/companies/${companyId}/members`, { email }),
+  removeMember: (companyId: string, userId: string) =>
+    api.delete<{ ok: boolean }>(`/companies/${companyId}/members/${userId}`),
+};
+
+export type CompanyMember = {
+  membershipId: string;
+  userId: string;
+  role: string | null;
+  status: string;
+  createdAt: string;
+  name: string | null;
+  email: string | null;
 };
