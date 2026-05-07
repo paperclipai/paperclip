@@ -126,12 +126,25 @@ async function ensureEmbeddedPostgresConnection(
   if (runningPid) {
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    return {
-      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
-      source: `embedded-postgres@${port}`,
-      stop: async () => {},
-    };
+    try {
+      await ensurePostgresDatabase(adminConnectionString, "paperclip");
+      return {
+        connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+        source: `embedded-postgres@${port}`,
+        stop: async () => {},
+      };
+    } catch (err: unknown) {
+      // On Windows, process.kill(pid, 0) does not throw for recycled PIDs, so a
+      // connection error here means the PID is stale — remove postmaster.pid and
+      // fall through to start a fresh cluster.
+      // On POSIX the liveness check is reliable, so any non-connection error is
+      // unexpected and should propagate.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (typeof code !== "string" || !["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIMEDOUT"].includes(code)) {
+        throw err;
+      }
+      rmSync(postmasterPidFile, { force: true });
+    }
   }
 
   const instance = new EmbeddedPostgres({
