@@ -67,4 +67,48 @@ describe("buildCodexExecArgs", () => {
       "-",
     ]);
   });
+
+  it("adds a supported sandbox mode before model and extra args", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.5",
+      sandboxMode: "danger-full-access",
+      extraArgs: ["--skip-git-repo-check"],
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--sandbox",
+      "danger-full-access",
+      "--model",
+      "gpt-5.5",
+      "--skip-git-repo-check",
+      "-",
+    ]);
+  });
+
+  it("does not emit sandbox mode when bypassing approvals and sandbox", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.5",
+      sandboxMode: "danger-full-access",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.5",
+      "-",
+    ]);
+  });
+
+  it("ignores unknown sandbox modes", () => {
+    const result = buildCodexExecArgs({
+      sandboxMode: "network-all",
+    });
+
+    expect(result.args).toEqual(["exec", "--json", "-"]);
+  });
 });
