@@ -5,7 +5,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
-const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const SYMLINKED_SHARED_FILES = ["auth.json", ".credentials.json"] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 
 function nonEmpty(value: string | undefined): string | null {
