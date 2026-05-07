@@ -65,6 +65,7 @@ export function Projects() {
           {projects.map((project) => (
             <EntityRow
               key={project.id}
+              leading={<span className="shrink-0 h-3 w-3 rounded-sm" style={{ backgroundColor: project.color ?? "#6366f1" }} />}
               title={project.name}
               subtitle={project.description ?? undefined}
               to={projectUrl(project)}
