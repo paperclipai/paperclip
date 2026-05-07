@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { workProductService } from "../services/work-products.ts";
+import { escapeLikePattern, workProductService } from "../services/work-products.ts";
 
 function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) {
   const now = new Date("2026-03-17T00:00:00.000Z");
@@ -74,6 +74,12 @@ function createDeliverableQueryRow(overrides: Partial<Record<string, unknown>> =
 }
 
 describe("workProductService", () => {
+  it("escapes SQL LIKE metacharacters for deliverable search", () => {
+    expect(escapeLikePattern("report_2024")).toBe("report\\_2024");
+    expect(escapeLikePattern("100% done")).toBe("100\\% done");
+    expect(escapeLikePattern("path\\name")).toBe("path\\\\name");
+  });
+
   it("uses a transaction when creating a new primary work product", async () => {
     const updatedWhere = vi.fn(async () => undefined);
     const updateSet = vi.fn(() => ({ where: updatedWhere }));

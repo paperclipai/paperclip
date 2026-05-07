@@ -53,7 +53,7 @@ export function Deliverables() {
             {items.length > 0 ? ` (${items.length})` : null}
           </p>
         </div>
-        {items.length > 0 ? (
+        {items.length > 0 || searchTerm ? (
           <div className="w-full max-w-xs">
             <Input
               type="search"

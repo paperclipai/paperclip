@@ -204,8 +204,9 @@ export function workProductService(db: Db) {
       if (opts.projectId) filters.push(sql`wp.project_id = ${opts.projectId}`);
       if (opts.agentId) filters.push(sql`a.id = ${opts.agentId}`);
       if (opts.q && opts.q.trim().length > 0) {
-        const like = `%${opts.q.trim()}%`;
-        filters.push(sql`wp.title ILIKE ${like}`);
+        const escaped = escapeLikePattern(opts.q.trim());
+        const like = `%${escaped}%`;
+        filters.push(sql`wp.title ILIKE ${like} ESCAPE '\\'`);
       }
       const extraWhere = filters.length > 0 ? sql` AND ${sql.join(filters, sql` AND `)}` : sql``;
 
@@ -374,6 +375,10 @@ function toRowArray<T>(result: unknown): T[] {
   return [];
 }
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
 function toIsoString(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -462,4 +467,4 @@ async function loadAncestorChain(db: Db, startIssueId: string): Promise<Delivera
   );
 }
 
-export { toIssueWorkProduct };
+export { toIssueWorkProduct, escapeLikePattern };

@@ -155,6 +155,37 @@ describe("Deliverables page", () => {
     expect(container.textContent).toContain("Draft");
   });
 
+  it("keeps search input visible when search returns zero results", async () => {
+    listMock.mockImplementation(async (_companyId: string, filters?: { q?: string }) => {
+      if (filters?.q === "zzz") {
+        return { items: [], limit: 50, offset: 0 };
+      }
+      return { items: [sampleItem()], limit: 50, offset: 0 };
+    });
+
+    await renderDeliverables(container);
+    await flushReact();
+    await flushReact();
+
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(input, "zzz");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("No deliverables match your search.");
+    expect(container.querySelector('input[type="search"]')).toBeTruthy();
+  });
+
   it("renders an empty state when there are no deliverables", async () => {
     listMock.mockResolvedValue({ items: [], limit: 50, offset: 0 });
 
