@@ -12,7 +12,7 @@ import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } fro
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronRight, Copy, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
@@ -24,8 +24,10 @@ export function ApprovalDetail() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
+  const [decisionNote, setDecisionNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -66,7 +68,11 @@ export function ApprovalDetail() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Approvals", href: "/approvals" },
-      { label: approval?.id?.slice(0, 8) ?? approvalId ?? "Approval" },
+      {
+        label: approval
+          ? approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)
+          : approvalId ?? "Approval",
+      },
     ]);
   }, [setBreadcrumbs, approval, approvalId]);
 
@@ -95,7 +101,7 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: () => approvalsApi.reject(approvalId!, decisionNote.trim()),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -104,7 +110,7 @@ export function ApprovalDetail() {
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: () => approvalsApi.requestRevision(approvalId!, decisionNote.trim()),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -149,6 +155,7 @@ export function ApprovalDetail() {
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
+  const headerLabel = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
   const resolvedCta =
@@ -203,8 +210,26 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
-              <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
+              <h2 className="text-lg font-semibold">{headerLabel}</h2>
+              <div className="flex items-center gap-2 mt-0.5">
+                <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(approval.id);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1200);
+                    } catch {
+                      setError("Could not copy UUID.");
+                    }
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                  {copied ? "Copied" : "Copy UUID"}
+                </button>
+              </div>
             </div>
           </div>
           <StatusBadge status={approval.status} />
@@ -226,7 +251,7 @@ export function ApprovalDetail() {
             onClick={() => setShowRawPayload((v) => !v)}
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />
-            See full request
+            View technical details
           </button>
           {showRawPayload && (
             <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
@@ -246,12 +271,22 @@ export function ApprovalDetail() {
                 <Link
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="block text-xs rounded border border-border/70 px-2 py-1.5 hover:bg-accent/20"
+                  className="block text-xs rounded border border-border/70 px-2 py-1.5 hover:bg-accent/20 space-y-1"
                 >
-                  <span className="font-mono text-muted-foreground mr-2">
-                    {issue.identifier ?? issue.id.slice(0, 8)}
-                  </span>
-                  <span>{issue.title}</span>
+                  <div>
+                    <span className="font-mono text-muted-foreground mr-2">
+                      {issue.identifier ?? issue.id.slice(0, 8)}
+                    </span>
+                    <span>{issue.title}</span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Status: {issue.status} · Priority: {issue.priority} · Assignee:{" "}
+                    {issue.assigneeAgentId
+                      ? (agentNameById.get(issue.assigneeAgentId) ?? issue.assigneeAgentId.slice(0, 8))
+                      : issue.assigneeUserId
+                        ? "Board"
+                        : "Unassigned"}
+                  </div>
                 </Link>
               ))}
             </div>
@@ -263,6 +298,13 @@ export function ApprovalDetail() {
         <div className="flex flex-wrap items-center gap-2">
           {isActionable && !isBudgetApproval && (
             <>
+              <Textarea
+                value={decisionNote}
+                onChange={(e) => setDecisionNote(e.target.value)}
+                placeholder="Decision note (required for Reject / Request revision)"
+                rows={2}
+                className="w-full"
+              />
               <Button
                 size="sm"
                 className="bg-green-700 hover:bg-green-600 text-white"
@@ -272,29 +314,41 @@ export function ApprovalDetail() {
                 Approve
               </Button>
               <Button
-                variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                variant="outline"
+                onClick={() => {
+                  if (!decisionNote.trim()) {
+                    setError("Decision note is required to reject.");
+                    return;
+                  }
+                  rejectMutation.mutate();
+                }}
                 disabled={rejectMutation.isPending}
               >
                 Reject
               </Button>
+              {approval.status === "pending" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!decisionNote.trim()) {
+                      setError("Decision note is required to request revision.");
+                      return;
+                    }
+                    revisionMutation.mutate();
+                  }}
+                  disabled={revisionMutation.isPending}
+                >
+                  Request revision
+                </Button>
+              )}
             </>
           )}
           {isBudgetApproval && approval.status === "pending" && (
             <p className="text-sm text-muted-foreground">
               Resolve this budget stop from the budget controls on <Link to="/costs" className="underline underline-offset-2">/costs</Link>.
             </p>
-          )}
-          {approval.status === "pending" && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => revisionMutation.mutate()}
-              disabled={revisionMutation.isPending}
-            >
-              Request revision
-            </Button>
           )}
           {approval.status === "revision_requested" && (
             <Button
