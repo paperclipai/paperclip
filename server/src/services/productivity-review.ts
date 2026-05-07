@@ -636,9 +636,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   async function createOrUpdateReview(
     evidence: ProductivityReviewEvidence,
-    opts: { prefix: string; thresholds: ProductivityReviewThresholds },
+    opts: {
+      prefix: string;
+      thresholds: ProductivityReviewThresholds;
+      autoRecoveryEnabled?: boolean;
+    },
   ) {
-    if (!(await isAutoRecoveryIssuesEnabled(db))) {
+    const autoRecoveryEnabled = opts.autoRecoveryEnabled ?? (await isAutoRecoveryIssuesEnabled(db));
+    if (!autoRecoveryEnabled) {
       await logActivity(db, {
         companyId: evidence.sourceIssue.companyId,
         actorType: "system",
@@ -788,6 +793,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
+    const autoRecoveryEnabled = await isAutoRecoveryIssuesEnabled(db);
     const candidates = await db
       .select()
       .from(issues)
@@ -848,7 +854,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         prefixCache.set(candidate.companyId, prefix);
       }
       try {
-        const outcome = await createOrUpdateReview(evidence, { prefix, thresholds });
+        const outcome = await createOrUpdateReview(evidence, {
+          prefix,
+          thresholds,
+          autoRecoveryEnabled,
+        });
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;

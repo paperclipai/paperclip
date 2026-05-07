@@ -1428,10 +1428,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    autoRecoveryEnabled?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
-    if (!(await isAutoRecoveryIssuesEnabled(db))) {
+    const autoRecoveryEnabled = input.autoRecoveryEnabled ?? (await isAutoRecoveryIssuesEnabled(db));
+    if (!autoRecoveryEnabled) {
       await logActivity(db, {
         companyId: input.issue.companyId,
         actorType: "system",
@@ -1646,6 +1648,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     comment?: string;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    autoRecoveryEnabled?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
@@ -1661,6 +1664,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       latestRun: input.latestRun,
       recoveryCause: input.recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      autoRecoveryEnabled: input.autoRecoveryEnabled,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
@@ -1745,6 +1749,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const autoRecoveryEnabled = await isAutoRecoveryIssuesEnabled(db);
     const candidates = await db
       .select()
       .from(issues)
@@ -1845,6 +1850,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
+            autoRecoveryEnabled,
           });
           if (updated) {
             result.escalated += 1;
@@ -1894,6 +1900,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
+          autoRecoveryEnabled,
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
@@ -1920,6 +1927,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             comment:
               "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
               "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+            autoRecoveryEnabled,
           });
           if (updated) {
             result.escalated += 1;
@@ -1961,6 +1969,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
+          autoRecoveryEnabled,
         });
         if (updated) {
           result.escalated += 1;
