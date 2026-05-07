@@ -63,9 +63,17 @@
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
     "patchedDependencies": {
-      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+      "embedded-postgres@18.1.0-beta.15": "patches/embedded-postgres@18.1.0-beta.15.patch"
     },
     "overrides": {
+      "@embedded-postgres/darwin-arm64": "18.1.0-beta.15",
+      "@embedded-postgres/darwin-x64": "18.1.0-beta.15",
+      "@embedded-postgres/linux-arm": "18.1.0-beta.15",
+      "@embedded-postgres/linux-arm64": "18.1.0-beta.15",
+      "@embedded-postgres/linux-ia32": "18.1.0-beta.15",
+      "@embedded-postgres/linux-ppc64": "18.1.0-beta.15",
+      "@embedded-postgres/linux-x64": "18.1.0-beta.15",
+      "@embedded-postgres/windows-x64": "18.1.0-beta.15",
       "rollup": ">=4.59.0"
     }
   }
