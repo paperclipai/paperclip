@@ -526,7 +526,6 @@ function IssueChatFallbackThread({
 
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
-const SUBMIT_SCROLL_RESERVE_VH = 0.4;
 
 type ComposerAttachmentItem = {
   id: string;
@@ -2636,7 +2635,7 @@ function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: st
 }
 
 export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  for (let index = 0; index < messages.length; index += 1) {
     const anchorId = issueChatMessageAnchorId(messages[index]);
     if (anchorId && anchorId.startsWith("comment-")) return index;
   }
@@ -2908,8 +2907,8 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     },
     scrollToLatest: (options) => {
       if (messages.length === 0) return;
-      virtualizer.scrollToIndex(messages.length - 1, {
-        align: "end",
+      virtualizer.scrollToIndex(0, {
+        align: "start",
         behavior: options?.behavior ?? "smooth",
       });
     },
@@ -3654,17 +3653,14 @@ export function IssueChatThread({
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
-  const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const topAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
   const pendingSubmitScrollRef = useRef(false);
   const lastUserMessageIdRef = useRef<string | null>(null);
-  const spacerBaselineAnchorRef = useRef<string | null>(null);
-  const spacerInitialReserveRef = useRef(0);
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
-  const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -3758,7 +3754,7 @@ export function IssueChatThread({
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
   const stableMessageCacheRef = useRef<Map<string, StableThreadMessageCacheEntry>>(new Map());
-  const messages = useMemo(() => {
+  const ascendingMessages = useMemo(() => {
     const stabilized = stabilizeThreadMessages(
       rawMessages,
       stableMessagesRef.current,
@@ -3768,6 +3764,10 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const messages = useMemo(
+    () => [...ascendingMessages].reverse(),
+    [ascendingMessages],
+  );
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
 
@@ -3842,48 +3842,26 @@ export function IssueChatThread({
   });
 
   useEffect(() => {
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
-    const lastUserId = lastUserMessage?.id ?? null;
+    const latestUserMessage = messages.find((m) => m.role === "user");
+    const latestUserId = latestUserMessage?.id ?? null;
 
     if (
       pendingSubmitScrollRef.current
-      && lastUserId
-      && lastUserId !== lastUserMessageIdRef.current
+      && latestUserId
+      && latestUserId !== lastUserMessageIdRef.current
     ) {
       pendingSubmitScrollRef.current = false;
-      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+      const custom = latestUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
       const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
       if (anchorId) {
-        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
-        spacerBaselineAnchorRef.current = anchorId;
-        spacerInitialReserveRef.current = reserve;
-        setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
           scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
         });
       }
     }
 
-    lastUserMessageIdRef.current = lastUserId;
+    lastUserMessageIdRef.current = latestUserId;
   }, [messageAnchorIndex, messages, useVirtualizedThread]);
-
-  useLayoutEffect(() => {
-    const anchorId = spacerBaselineAnchorRef.current;
-    if (!anchorId || spacerInitialReserveRef.current <= 0) return;
-    const userEl = document.getElementById(anchorId);
-    const bottomEl = bottomAnchorRef.current;
-    if (!userEl || !bottomEl) return;
-    const contentBelow = Math.max(
-      0,
-      bottomEl.getBoundingClientRect().top - userEl.getBoundingClientRect().bottom,
-    );
-    const next = Math.max(0, spacerInitialReserveRef.current - contentBelow);
-    setBottomSpacerHeight((prev) => (prev === next ? prev : next));
-    if (next === 0) {
-      spacerBaselineAnchorRef.current = null;
-      spacerInitialReserveRef.current = 0;
-    }
-  }, [messages]);
   useLayoutEffect(() => {
     const composerElement = composerViewportAnchorRef.current;
     if (preserveComposerViewportRef.current) {
@@ -3934,21 +3912,20 @@ export function IssueChatThread({
       virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
       return;
     }
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    topAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // Lands on the latest `comment-*` row and then drives the scroll the rest
-  // of the way home as the virtualizer's per-row measurements arrive.
+  // Lands on the latest `comment-*` row and then keeps nudging the scroll
+  // until that newest comment is pinned to the top edge as row measurements
+  // settle in the virtualizer.
   //
   // The virtualizer estimates 220px for unmeasured rows. On long threads
   // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
-  // underestimated until rows render and get measured. A single scroll
-  // lands above the actual bottom; rendered rows then expand, the layout
-  // grows, and the user has to keep clicking Jump-to-latest to walk closer
-  // to the real bottom. The convergence loop below issues `scrollIntoView`
-  // on the latest comment element on every tick until the DOM bottom of
-  // that element is at the scroll container's bottom (or scroll position
-  // and content height stop changing).
+  // underestimated until rows render and get measured. A single scroll can
+  // land below the true newest row; rendered rows then expand and shift. The
+  // convergence loop below keeps issuing `scrollIntoView` until the newest
+  // comment element is at the scroll container's top edge (or the layout
+  // stops changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
     const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
@@ -3963,7 +3940,7 @@ export function IssueChatThread({
 
     const initial = scrollToThreadAnchor(
       latestCommentAnchor,
-      { align: "end", behavior: "smooth" },
+      { align: "start", behavior: "smooth" },
       messageSnapshot,
     );
     if (!initial) {
@@ -4035,7 +4012,7 @@ export function IssueChatThread({
         // Row hasn't been rendered into the virtualizer's buffer yet — nudge
         // the offset (instant) so it gets mounted, then keep settling.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
-          align: "end",
+          align: "start",
           behavior: "auto",
         });
         scheduleTick(TICK_MS);
@@ -4043,22 +4020,22 @@ export function IssueChatThread({
       }
 
       const container = resolveScrollContainer();
-      const containerBottom = container
-        ? container.getBoundingClientRect().bottom
-        : window.innerHeight;
-      const elBottom = el.getBoundingClientRect().bottom;
-      const offBottom = elBottom - containerBottom;
+      const containerTop = container
+        ? container.getBoundingClientRect().top
+        : 0;
+      const elTop = el.getBoundingClientRect().top;
+      const offTop = elTop - containerTop;
 
-      if (Math.abs(offBottom) > TOLERANCE_PX) {
-        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      if (Math.abs(offTop) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
 
       const currentScrollTop = container?.scrollTop ?? window.scrollY;
       const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
       const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
       const heightStable = currentScrollHeight === lastScrollHeight;
-      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
-      if (scrollStable && heightStable && atBottom) {
+      const atTop = Math.abs(offTop) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atTop) {
         stableTicks += 1;
         if (stableTicks >= 3) {
           finish();
@@ -4194,6 +4171,7 @@ export function IssueChatThread({
               data-testid="thread-viewport"
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
+              <div ref={topAnchorRef} />
               {messages.length === 0 ? (
                 <div className={cn(
                   "text-center text-sm text-muted-foreground",
@@ -4244,12 +4222,11 @@ export function IssueChatThread({
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
-              <div ref={bottomAnchorRef} />
               {showComposer ? (
                 <div
                   aria-hidden
                   data-testid="issue-chat-bottom-spacer"
-                  style={{ height: bottomSpacerHeight }}
+                  style={{ height: 0 }}
                 />
               ) : null}
             </div>

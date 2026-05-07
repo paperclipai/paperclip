@@ -995,7 +995,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("findLatestCommentMessageIndex prefers the last comment-anchored row (PAP-2672)", () => {
+  it("findLatestCommentMessageIndex prefers the first comment-anchored row when newest renders first", () => {
     const messages = [
       { metadata: { custom: { anchorId: "comment-a" } } },
       { metadata: { custom: { anchorId: "run-1" } } },
@@ -1003,7 +1003,7 @@ describe("IssueChatThread", () => {
       { metadata: { custom: { anchorId: "run-2" } } },
       { metadata: { custom: { anchorId: "activity-3" } } },
     ];
-    expect(findLatestCommentMessageIndex(messages as never)).toBe(2);
+    expect(findLatestCommentMessageIndex(messages as never)).toBe(0);
     expect(
       findLatestCommentMessageIndex([
         { metadata: { custom: { anchorId: "run-only" } } },
