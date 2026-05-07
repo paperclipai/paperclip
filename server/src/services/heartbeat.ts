@@ -331,10 +331,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
   projectEnv: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
 }) {
-  const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+  const runtimeResolution = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     input.executionRunConfig,
   );
+  const resolvedConfig = runtimeResolution.config;
+  // Only env-key secrets are tracked here. Header-name secrets returned by
+  // resolveAdapterConfigForRuntime are intentionally discarded — meta.env
+  // redaction below is keyed on env names, and conflating header names with
+  // env names risked masking unrelated env entries (e.g. a header literally
+  // named `PATH`).
+  const secretKeys = runtimeResolution.secretKeys ?? new Set<string>();
   const projectEnvResolution = input.projectEnv
     ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
     : { env: {}, secretKeys: new Set<string>() };

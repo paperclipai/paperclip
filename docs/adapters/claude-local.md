@@ -26,7 +26,7 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 
 ## `mcpServers`
 
-Per-agent MCP server definitions, mirroring the `mcpServers` shape from Claude Code's `.claude.json`. Three transports are supported: `stdio`, `sse`, `http`. Both `env` (stdio) and `headers` (sse/http) accept the same binding shapes as top-level `env`: a plain string, `{ "type": "plain", "value": "…" }`, or `{ "type": "secret_ref", "secretId": "…", "version": "latest" | <number> }`.
+Per-agent MCP server definitions, mirroring the `mcpServers` shape from Claude Code's `.claude.json`. Three transports are supported: `stdio`, `sse`, `http`. Both `env` (stdio) and `headers` (sse/http) accept the same **binding** shapes — a plain string, `{ "type": "plain", "value": "…" }`, or `{ "type": "secret_ref", "secretId": "…", "version": "latest" | <number> }`. The two differ only in **key validation**: `env` keys must match the C identifier rules (`[A-Za-z_][A-Za-z0-9_]*`), while `headers` keys must be valid HTTP header field names per RFC 7230 (token characters, including `-`, e.g. `Authorization`, `X-API-Key`, `Content-Type`).
 
 ```json
 {
@@ -58,7 +58,7 @@ Per-agent MCP server definitions, mirroring the `mcpServers` shape from Claude C
 }
 ```
 
-At spawn time the adapter resolves any `secret_ref` bindings via `secretService.resolveAdapterConfigForRuntime`, writes the fully-resolved config to `<runDir>/mcp-config.json` (mode `0600`), and passes `--mcp-config <path>` to the `claude` CLI. Per-run cleanup removes the file along with the rest of the run dir.
+At spawn time the adapter resolves any `secret_ref` bindings via `secretService.resolveAdapterConfigForRuntime`, writes the fully-resolved config to `<cwd>/mcp-config.json` (mode `0600`), and passes `--mcp-config <path>` to the `claude` CLI. The file is deleted in the adapter's `finally` block once the run completes (success, failure, or timeout); if a process is hard-killed before that point, the next run for the same agent overwrites the file in place.
 
 Remote execution targets currently log a warning and skip MCP propagation: stdio MCP binaries (e.g. `mcp-linear`) would need to exist on the remote host. Use HTTP/SSE transports if you need remote MCPs in the future.
 

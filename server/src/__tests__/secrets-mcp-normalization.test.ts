@@ -130,6 +130,69 @@ describeEmbeddedPostgres("secretService — mcpServers binding normalization", (
     });
   });
 
+  it("accepts hyphenated and other RFC 7230 token characters in header names", async () => {
+    const companyId = await seedCompany();
+    const secretId = await seedSecret(companyId);
+    const svc = secretService(db);
+    const out = await svc.normalizeAdapterConfigForPersistence(companyId, {
+      mcpServers: {
+        remote: {
+          type: "http",
+          url: "https://mcp.linear.app/mcp",
+          headers: {
+            "X-API-Key": { type: "secret_ref" as const, secretId, version: "latest" as const },
+            "Content-Type": "application/json",
+            "MCP-Session-Id": "abc",
+          },
+        },
+      },
+    });
+    expect((out as any).mcpServers.remote.headers["X-API-Key"]).toMatchObject({
+      type: "secret_ref",
+      secretId,
+    });
+    expect((out as any).mcpServers.remote.headers["Content-Type"]).toEqual({
+      type: "plain",
+      value: "application/json",
+    });
+    expect((out as any).mcpServers.remote.headers["MCP-Session-Id"]).toEqual({
+      type: "plain",
+      value: "abc",
+    });
+  });
+
+  it("rejects header names that are not RFC 7230 tokens", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    await expect(
+      svc.normalizeAdapterConfigForPersistence(companyId, {
+        mcpServers: {
+          remote: {
+            type: "http",
+            url: "https://mcp.linear.app/mcp",
+            headers: { "Bad Header": "x" },
+          },
+        },
+      }),
+    ).rejects.toThrow(/Invalid header name/);
+  });
+
+  it("still rejects hyphenated keys inside mcpServers.*.env (env keys remain identifier-only)", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    await expect(
+      svc.normalizeAdapterConfigForPersistence(companyId, {
+        mcpServers: {
+          stdio: {
+            type: "stdio",
+            command: "mcp-x",
+            env: { "X-API-Key": "x" },
+          },
+        },
+      }),
+    ).rejects.toThrow(/Invalid environment variable name/);
+  });
+
   it("does not touch top-level env when mcpServers also has env", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -179,12 +242,73 @@ describeEmbeddedPostgres("secretService — mcpServers binding normalization", (
         },
       },
     };
-    const { config: resolved, secretKeys } = await svc.resolveAdapterConfigForRuntime(
+    const { config: resolved, secretKeys, headerSecretKeys } =
+      await svc.resolveAdapterConfigForRuntime(companyId, config);
+    expect((resolved as any).mcpServers.linear.headers.Authorization).toBe(PLAINTEXT_VALUE);
+    expect(headerSecretKeys.has("Authorization")).toBe(true);
+    // Header-name secrets must NOT pollute the env-key redaction set.
+    expect(secretKeys.has("Authorization")).toBe(false);
+  });
+
+  it("resolves a hyphenated header secret_ref at runtime without throwing", async () => {
+    const companyId = await seedCompany();
+    const secretId = await seedSecret(companyId, "linear-bearer");
+    const svc = secretService(db);
+    const config = {
+      mcpServers: {
+        remote: {
+          type: "http",
+          url: "https://mcp.linear.app/mcp",
+          headers: {
+            "X-API-Key": { type: "secret_ref" as const, secretId, version: "latest" as const },
+          },
+        },
+      },
+    };
+    const { config: resolved, secretKeys, headerSecretKeys } =
+      await svc.resolveAdapterConfigForRuntime(companyId, config);
+    expect((resolved as any).mcpServers.remote.headers["X-API-Key"]).toBe(PLAINTEXT_VALUE);
+    expect(headerSecretKeys.has("X-API-Key")).toBe(true);
+    expect(secretKeys.has("X-API-Key")).toBe(false);
+  });
+
+  it("keeps env-key and header-name secret tracking separate", async () => {
+    const companyId = await seedCompany();
+    const envSecretId = await seedSecret(companyId, "stdio-env-secret");
+    const headerSecretId = await seedSecret(companyId, "http-header-secret");
+    const svc = secretService(db);
+    const config = {
+      mcpServers: {
+        stdio: {
+          type: "stdio",
+          command: "mcp-x",
+          env: {
+            FOO: {
+              type: "secret_ref" as const,
+              secretId: envSecretId,
+              version: "latest" as const,
+            },
+          },
+        },
+        http: {
+          type: "http",
+          url: "https://mcp.linear.app/mcp",
+          headers: {
+            Authorization: {
+              type: "secret_ref" as const,
+              secretId: headerSecretId,
+              version: "latest" as const,
+            },
+          },
+        },
+      },
+    };
+    const { secretKeys, headerSecretKeys } = await svc.resolveAdapterConfigForRuntime(
       companyId,
       config,
     );
-    expect((resolved as any).mcpServers.linear.headers.Authorization).toBe(PLAINTEXT_VALUE);
-    expect(secretKeys.has("Authorization")).toBe(true);
+    expect([...secretKeys].sort()).toEqual(["FOO"]);
+    expect([...headerSecretKeys].sort()).toEqual(["Authorization"]);
   });
 
   it("leaves mcpServers untouched when the field is absent", async () => {

@@ -7,9 +7,24 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// RFC 7230 token: HTTP header field names are tokens, which permit hyphens and
+// other punctuation that ENV_KEY_RE rejects (e.g. `X-API-Key`, `Content-Type`,
+// `MCP-Session-Id`). Keep this distinct from ENV_KEY_RE so headers and env
+// variables get the right validation.
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
+
+type BindingKeyKind = "env" | "header";
+
+function bindingKeyRegex(kind: BindingKeyKind) {
+  return kind === "header" ? HEADER_NAME_RE : ENV_KEY_RE;
+}
+
+function bindingKeyErrorLabel(kind: BindingKeyKind) {
+  return kind === "header" ? "header name" : "environment variable name";
+}
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
@@ -42,6 +57,7 @@ export function secretService(db: Db) {
   type NormalizeEnvOptions = {
     strictMode?: boolean;
     fieldPath?: string;
+    keyKind?: BindingKeyKind;
   };
 
   async function getById(id: string) {
@@ -104,10 +120,14 @@ export function secretService(db: Db) {
     const record = asRecord(envValue);
     if (!record) throw unprocessable(`${opts?.fieldPath ?? "env"} must be an object`);
 
+    const keyKind: BindingKeyKind = opts?.keyKind ?? "env";
+    const keyRegex = bindingKeyRegex(keyKind);
+    const keyLabel = bindingKeyErrorLabel(keyKind);
+
     const normalized: AgentEnvConfig = {};
     for (const [key, rawBinding] of Object.entries(record)) {
-      if (!ENV_KEY_RE.test(key)) {
-        throw unprocessable(`Invalid environment variable name: ${key}`);
+      if (!keyRegex.test(key)) {
+        throw unprocessable(`Invalid ${keyLabel}: ${key}`);
       }
 
       const parsed = envBindingSchema.safeParse(rawBinding);
@@ -156,12 +176,14 @@ export function secretService(db: Db) {
         next.env = await normalizeEnvConfig(companyId, server.env, {
           ...opts,
           fieldPath: `mcpServers.${serverName}.env`,
+          keyKind: "env",
         });
       }
       if (Object.prototype.hasOwnProperty.call(server, "headers")) {
         next.headers = await normalizeEnvConfig(companyId, server.headers, {
           ...opts,
           fieldPath: `mcpServers.${serverName}.headers`,
+          keyKind: "header",
         });
       }
       normalized[serverName] = next;
@@ -192,11 +214,14 @@ export function secretService(db: Db) {
     companyId: string,
     record: Record<string, unknown>,
     secretKeys: Set<string>,
+    keyKind: BindingKeyKind = "env",
   ): Promise<Record<string, string>> {
+    const keyRegex = bindingKeyRegex(keyKind);
+    const keyLabel = bindingKeyErrorLabel(keyKind);
     const resolved: Record<string, string> = {};
     for (const [key, rawBinding] of Object.entries(record)) {
-      if (!ENV_KEY_RE.test(key)) {
-        throw unprocessable(`Invalid environment variable name: ${key}`);
+      if (!keyRegex.test(key)) {
+        throw unprocessable(`Invalid ${keyLabel}: ${key}`);
       }
       const parsed = envBindingSchema.safeParse(rawBinding);
       if (!parsed.success) {
@@ -216,7 +241,8 @@ export function secretService(db: Db) {
   async function resolveMcpServersForRuntime(
     companyId: string,
     mcpServersValue: unknown,
-    secretKeys: Set<string>,
+    envSecretKeys: Set<string>,
+    headerSecretKeys: Set<string>,
   ): Promise<Record<string, Record<string, unknown>>> {
     const servers = asRecord(mcpServersValue);
     if (!servers) return {};
@@ -227,11 +253,11 @@ export function secretService(db: Db) {
       const next: Record<string, unknown> = { ...server };
       const envMap = asRecord(server.env);
       if (envMap) {
-        next.env = await resolveBindingMap(companyId, envMap, secretKeys);
+        next.env = await resolveBindingMap(companyId, envMap, envSecretKeys, "env");
       }
       const headersMap = asRecord(server.headers);
       if (headersMap) {
-        next.headers = await resolveBindingMap(companyId, headersMap, secretKeys);
+        next.headers = await resolveBindingMap(companyId, headersMap, headerSecretKeys, "header");
       }
       resolved[serverName] = next;
     }
@@ -431,21 +457,25 @@ export function secretService(db: Db) {
       return { env: resolved, secretKeys };
     },
 
-    resolveAdapterConfigForRuntime: async (companyId: string, adapterConfig: Record<string, unknown>): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
+    resolveAdapterConfigForRuntime: async (companyId: string, adapterConfig: Record<string, unknown>): Promise<{ config: Record<string, unknown>; secretKeys: Set<string>; headerSecretKeys: Set<string> }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
+      const headerSecretKeys = new Set<string>();
       if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
         const record = asRecord(adapterConfig.env);
-        resolved.env = record ? await resolveBindingMap(companyId, record, secretKeys) : {};
+        resolved.env = record
+          ? await resolveBindingMap(companyId, record, secretKeys, "env")
+          : {};
       }
       if (Object.prototype.hasOwnProperty.call(adapterConfig, "mcpServers")) {
         resolved.mcpServers = await resolveMcpServersForRuntime(
           companyId,
           adapterConfig.mcpServers,
           secretKeys,
+          headerSecretKeys,
         );
       }
-      return { config: resolved, secretKeys };
+      return { config: resolved, secretKeys, headerSecretKeys };
     },
   };
 }

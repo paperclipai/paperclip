@@ -21,7 +21,15 @@ through the new `adapterConfig.mcpServers` propagation.
 ```bash
 TOKEN="<board-jwt>"
 COMPANY=084af715-a80f-4916-b8b7-cdd34bf4fc67
-LINEAR_API_KEY_VALUE="$(jq -r '.projects."/".mcpServers.linear.env.LINEAR_API_KEY' /paperclip/.claude.json)"
+LINEAR_API_KEY_VALUE="$(jq -r '.projects."/".mcpServers.linear.env.LINEAR_API_KEY // empty' /paperclip/.claude.json)"
+
+# Abort early if the key isn't where we expect it — never POST a "null" or
+# empty string to the secret store, that would silently overwrite real material
+# on a re-run and leave the agent unable to authenticate to Linear.
+if [ -z "$LINEAR_API_KEY_VALUE" ] || [ "$LINEAR_API_KEY_VALUE" = "null" ]; then
+  echo "abort: LINEAR_API_KEY not found at projects./.mcpServers.linear.env.LINEAR_API_KEY" >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 curl -sS -X POST "https://paperclip.nveron.com/api/companies/$COMPANY/secrets" \
   -H "Authorization: Bearer $TOKEN" \

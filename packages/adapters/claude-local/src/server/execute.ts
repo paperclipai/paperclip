@@ -611,16 +611,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : undefined;
   })();
   const mcpServerNames = mcpServersConfig ? Object.keys(mcpServersConfig) : [];
-  const mcpConfigPath =
-    mcpServerNames.length > 0 && executionTargetIsRemote
-      ? null
-      : await writeMcpConfigFile(cwd, mcpServersConfig);
+  const mcpRemoteSkip = mcpServerNames.length > 0 && executionTargetIsRemote;
+  const mcpConfigPath = mcpRemoteSkip ? null : await writeMcpConfigFile(cwd, mcpServersConfig);
   if (mcpConfigPath) {
     await onLog(
       "stdout",
       `[paperclip] Wrote per-run Claude mcp-config.json with ${mcpServerNames.length} server(s).\n`,
     );
-  } else if (mcpServerNames.length > 0 && executionTargetIsRemote) {
+  } else if (mcpRemoteSkip) {
     await onLog(
       "stderr",
       `[paperclip] adapterConfig.mcpServers is set but execution target is remote; mcp-config not propagated.\n`,
@@ -919,6 +917,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
       await restoreRemoteWorkspace();
+    }
+    if (mcpConfigPath) {
+      await fs.unlink(mcpConfigPath).catch(() => {});
     }
   }
 }
