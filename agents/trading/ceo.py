@@ -168,6 +168,43 @@ def parse_input(raw: str) -> dict:
     return {"ticker": ticker, "style": style}
 
 
+# ── Helpers de extracción ─────────────────────────────────────────────────────
+
+def extract_pine_script(text: str) -> str:
+    """Extrae el bloque Pine Script de cualquier output."""
+    if "```pine" in text:
+        return text.split("```pine")[1].split("```")[0].strip()
+    if "//@version" in text:
+        for block in text.split("```")[1::2]:
+            if "//@version" in block:
+                return block.strip()
+    return text.strip()
+
+
+def compact_critic_for_optimizer(critic_result: str, pine_script: str) -> str:
+    """
+    Del output del Critic extrae el JSON de critique y lo compacta.
+    Garantiza que el Pine Script original esté presente sin depender del límite de chars.
+    """
+    import re as _re
+    data = {}
+    if "```json" in critic_result:
+        json_str = critic_result.split("```json")[1].split("```")[0].strip()
+        try:
+            data = json.loads(json_str)
+        except Exception:
+            pass
+    if not data:
+        m = _re.search(r'\{[\s\S]*?"overall_quality"[\s\S]*?\}', critic_result)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                pass
+    data["original_script"] = pine_script
+    return json.dumps(data, ensure_ascii=False)
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def run_pipeline(parent_issue_id: str, headers: dict, ticker: str, style: str) -> str:
@@ -213,8 +250,12 @@ def run_pipeline(parent_issue_id: str, headers: dict, ticker: str, style: str) -
 
     # ── PASO 4: Strategy Optimizer ────────────────────────────────────────────
     post_issue_comment("⚙️ **Paso 4/5** — Optimizando y refinando la estrategia...")
+    # Extraer Pine Script del Designer y construir input compacto para el Optimizer
+    # (evita que el JSON del Critic quede truncado por límite de descripción)
+    pine_from_designer = extract_pine_script(designer_result)
+    optimizer_input    = compact_critic_for_optimizer(critic_result, pine_from_designer)
     optimizer_issue = create_sub_issue(
-        f"Optimize strategy for {ticker}", critic_result,
+        f"Optimize strategy for {ticker}", optimizer_input,
         "strategy_optimizer", parent_issue_id, headers
     )
     if not optimizer_issue:
