@@ -203,7 +203,8 @@ describe("workProductService", () => {
         metadata: null,
         document_key: "company-requirements",
         document_format: "markdown",
-        document_body: "# Requirements\n",
+        document_body: null,
+        document_byte_size: 15,
         created_at: now,
         updated_at: now,
       }),
@@ -216,6 +217,7 @@ describe("workProductService", () => {
     expect(items[0]?.id).toBe("doc-deliverable-1");
     expect(items[0]?.contentPath).toBe("/api/deliverables/doc-deliverable-1/content");
     expect(items[0]?.contentType).toContain("text/markdown");
+    expect(items[0]?.byteSize).toBe(15);
     expect(items[0]?.originalFilename).toBe("company-requirements.md");
   });
 });

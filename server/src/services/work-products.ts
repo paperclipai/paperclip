@@ -275,6 +275,7 @@ export function workProductService(db: Db) {
             NULL::text AS document_key,
             NULL::text AS document_format,
             NULL::text AS document_body,
+            NULL::integer AS document_byte_size,
             ci.id AS ci_id,
             ci.identifier AS ci_identifier,
             ci.title AS ci_title,
@@ -321,7 +322,8 @@ export function workProductService(db: Db) {
             d.updated_at,
             idoc.key AS document_key,
             d.format AS document_format,
-            d.latest_body AS document_body,
+            NULL::text AS document_body,
+            COALESCE(octet_length(d.latest_body), 0)::integer AS document_byte_size,
             ci.id AS ci_id,
             ci.identifier AS ci_identifier,
             ci.title AS ci_title,
@@ -581,6 +583,7 @@ interface DeliverableQueryRow extends Record<string, unknown> {
   document_key: string | null;
   document_format: string | null;
   document_body: string | null;
+  document_byte_size?: number | string | null;
   ci_id: string;
   ci_identifier: string | null;
   ci_title: string;
@@ -638,11 +641,17 @@ function rowToDeliverableListItem(row: DeliverableQueryRow): DeliverableListItem
     originalFilename = metadata.originalFilename;
   } else {
     const body = row.document_body ?? "";
+    const sqlByteSize =
+      typeof row.document_byte_size === "number"
+        ? row.document_byte_size
+        : typeof row.document_byte_size === "string"
+          ? Number.parseInt(row.document_byte_size, 10)
+          : Number.NaN;
     contentPath = `/api/deliverables/${row.id}/content`;
     contentType = row.document_format === "markdown"
       ? "text/markdown; charset=utf-8"
       : "text/plain; charset=utf-8";
-    byteSize = Buffer.byteLength(body, "utf8");
+    byteSize = Number.isFinite(sqlByteSize) ? sqlByteSize : Buffer.byteLength(body, "utf8");
     const key = (row.document_key ?? "document").trim() || "document";
     originalFilename = `${key}.md`;
   }
