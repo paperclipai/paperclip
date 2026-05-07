@@ -226,6 +226,24 @@ export function companySkillRoutes(db: Db) {
     const skillId = req.params.skillId as string;
     await assertCanRefreshCompanySkill(req, companyId);
     const result = await svc.refreshFromDisk(companyId, skillId);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_refreshed",
+      entityType: "company_skill",
+      entityId: skillId,
+      details: {
+        refreshed: result.refreshed,
+        markdownLength: result.markdown_length,
+        markdownSha256: result.markdown_sha256,
+      },
+    });
+
     res.json(result);
   });
 

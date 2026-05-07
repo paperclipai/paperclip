@@ -167,4 +167,41 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const refreshed = await svc.refreshFromDisk(companyId, skillId);
     expect(refreshed.refreshed).toBe(false);
   });
+
+  it("returns a typed not-found error when SKILL.md disappears before refresh read", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-refresh-missing-skill-"));
+    cleanupDirs.add(skillDir);
+    const skillFile = path.join(skillDir, "SKILL.md");
+    await fs.writeFile(skillFile, "# Initial\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/missing-skill`,
+      slug: "missing-skill",
+      name: "Missing Skill",
+      description: null,
+      markdown: "# stale\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+
+    await fs.rm(skillFile);
+
+    const thrown = await svc.refreshFromDisk(companyId, skillId).catch((error) => error);
+    expect(thrown).toMatchObject({ status: 404 });
+    expect(String(thrown?.message ?? "")).toMatch(/Skill (file )?not found/i);
+  });
 });

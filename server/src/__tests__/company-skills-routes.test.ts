@@ -351,6 +351,20 @@ describe("company skill mutation permissions", () => {
       markdown_length: 12,
       markdown_sha256: "abc123",
     });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "company.skill_refreshed",
+        entityType: "company_skill",
+        entityId: "skill-1",
+        details: expect.objectContaining({
+          refreshed: true,
+          markdownLength: 12,
+          markdownSha256: "abc123",
+        }),
+      }),
+    );
   });
 
   it("returns 422 when refresh is requested for a non-local sourceType", async () => {

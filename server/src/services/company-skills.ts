@@ -1946,7 +1946,12 @@ export function companySkillService(db: Db) {
 
       const absolutePath = resolveLocalSkillFilePath(skill, "SKILL.md");
       if (!absolutePath) throw notFound("Skill file not found");
-      const markdown = await fs.readFile(absolutePath, "utf8");
+      const markdown = await fs.readFile(absolutePath, "utf8").catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+          throw notFound("Skill file not found");
+        }
+        throw error;
+      });
       const markdownSha = createHash("sha256").update(markdown, "utf8").digest("hex");
       const currentSha = createHash("sha256").update(skill.markdown, "utf8").digest("hex");
       const refreshed = currentSha !== markdownSha;

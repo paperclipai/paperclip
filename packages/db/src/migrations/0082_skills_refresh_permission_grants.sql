@@ -25,3 +25,28 @@ join company_memberships cm
  and cm.status = 'active'
 where a.role in ('cto', 'engineer', 'qa', 'devops', 'ceo')
 on conflict (company_id, principal_type, principal_id, permission_key) do nothing;
+
+insert into principal_permission_grants (
+  company_id,
+  principal_type,
+  principal_id,
+  permission_key,
+  scope,
+  granted_by_user_id,
+  created_at,
+  updated_at
+)
+select
+  cm.company_id,
+  'user',
+  cm.principal_id,
+  'skills:refresh',
+  null,
+  null,
+  now(),
+  now()
+from company_memberships cm
+where cm.principal_type = 'user'
+  and cm.status = 'active'
+  and coalesce(cm.membership_role, 'operator') in ('owner', 'admin')
+on conflict (company_id, principal_type, principal_id, permission_key) do nothing;

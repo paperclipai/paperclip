@@ -68,8 +68,19 @@ describe("human invite roles", () => {
   it("maps owner to the full management grant set", () => {
     expect(grantsForHumanRole("owner")).toEqual([
       { permissionKey: "agents:create", scope: null },
+      { permissionKey: "skills:refresh", scope: null },
       { permissionKey: "users:invite", scope: null },
       { permissionKey: "users:manage_permissions", scope: null },
+      { permissionKey: "tasks:assign", scope: null },
+      { permissionKey: "joins:approve", scope: null },
+    ]);
+  });
+
+  it("maps admin to include skills:refresh", () => {
+    expect(grantsForHumanRole("admin")).toEqual([
+      { permissionKey: "agents:create", scope: null },
+      { permissionKey: "skills:refresh", scope: null },
+      { permissionKey: "users:invite", scope: null },
       { permissionKey: "tasks:assign", scope: null },
       { permissionKey: "joins:approve", scope: null },
     ]);
