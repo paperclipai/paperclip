@@ -416,6 +416,13 @@ export async function createApp(
     }
   });
 
+  // GET /api/creator/config — exposes public Supabase config for the landing page auth
+  app.get("/api/creator/config", (_req, res) => {
+    const supabaseUrl     = supabaseBase();
+    const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+    res.json({ supabaseUrl, supabaseAnonKey: supabaseAnonKey || null });
+  });
+
   // GET /api/content/stats
   app.get("/api/content/stats", async (req, res) => {
     try {
@@ -1232,6 +1239,7 @@ TIKTOK_OPEN_ID=${openId}
     if (fs.existsSync(p)) res.sendFile(p);
     else res.status(404).send(`${file} not found.`);
   };
+  app.get("/",             serveCreatorPage("landing.html"));
   app.get("/studio",       serveCreatorPage("index.html"));
   app.get("/agentes",      serveCreatorPage("agentes.html"));
   app.get("/estadisticas", serveCreatorPage("estadisticas.html"));
