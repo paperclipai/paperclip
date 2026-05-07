@@ -1,6 +1,7 @@
 import type { ServerAdapterModule } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
+import { listModels, refreshModels, detectModel } from "./models.js";
 import {
   type,
   label,
@@ -58,5 +59,8 @@ export function createServerAdapter(): ServerAdapterModule {
     instructionsPathKey,
     requiresMaterializedRuntimeSkills,
     supportsLocalAgentJwt,
+    listModels,
+    refreshModels,
+    detectModel,
   } as ServerAdapterModule & { label: string };
 }

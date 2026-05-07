@@ -56,6 +56,10 @@ Required config:
 Required env input:
 - OPENROUTER_API_KEY (or OPENAI_API_KEY for whichever endpoint you point at)
 
+Optional env input:
+- OPENROUTER_MODEL (string): model slug to use when config.model is not set
+  (e.g. deepseek/deepseek-r1). Takes precedence over the built-in default.
+
 Optional config:
 - cwd (string): absolute working directory for built-in tools (defaults to
   PAPERCLIP_WORKSPACE_PATH or process.cwd())

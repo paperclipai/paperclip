@@ -102,7 +102,10 @@ export async function execute(
   const { config, agent, context, onLog } = ctx;
 
   const baseUrl = asString(config.baseUrl, DEFAULT_OPENROUTER_LOCAL_BASE_URL);
-  const model = asString(config.model, DEFAULT_OPENROUTER_LOCAL_MODEL);
+  const model = asString(
+    config.model,
+    process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_LOCAL_MODEL,
+  );
   const maxIterations = asInt(config.maxIterations, DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS);
   const runCommandTimeoutSec = asInt(
     config.maxRunCommandTimeoutSec,

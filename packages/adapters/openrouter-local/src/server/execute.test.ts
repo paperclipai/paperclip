@@ -128,7 +128,7 @@ function buildCtx(overrides: Partial<AdapterExecutionContext> = {}): AdapterExec
       promptTemplate: "do thing",
       model: "openai/gpt-4o-mini",
     },
-    context: { taskTitle: "the task" },
+    context: { paperclipWake: { issue: { title: "the task" } } },
     onLog: async (stream, chunk) => {
       logs.push({ stream, chunk });
     },
