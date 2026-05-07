@@ -16,23 +16,64 @@ import {
   buildOnboardingIssuePayload,
 } from "../lib/onboarding-launch";
 import { getUIAdapter } from "../adapters";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { defaultCreateValues } from "./agent-config-defaults";
-import { AdapterTypePicker } from "./AdapterTypePicker";
-import { AdapterEnvironmentResult } from "./AdapterEnvironmentResult";
+import {
+  AdapterStepFields,
+  resolveEffectiveAdapterCommand,
+} from "./AdapterStepFields";
 import { OnboardingChrome } from "./OnboardingChrome";
 
 const COACH_ISSUE_TITLE = "Welcome — let's figure out what your company should do";
 const COACH_ISSUE_DESCRIPTION =
   "Your Coach will start the conversation here. Reply when you're ready.";
 
-function buildCoachAdapterConfig(adapterType: string): Record<string, unknown> {
+function buildCoachAdapterConfig(args: {
+  adapterType: string;
+  model: string;
+  url: string;
+  forceUnsetAnthropicApiKey: boolean;
+}): Record<string, unknown> {
+  const { adapterType, model, url, forceUnsetAnthropicApiKey } = args;
   const adapter = getUIAdapter(adapterType);
-  return adapter.buildAdapterConfig({
+  const config = adapter.buildAdapterConfig({
     ...defaultCreateValues,
     adapterType,
+    model:
+      adapterType === "codex_local"
+        ? model || DEFAULT_CODEX_LOCAL_MODEL
+        : adapterType === "gemini_local"
+          ? model || DEFAULT_GEMINI_LOCAL_MODEL
+          : adapterType === "cursor"
+            ? model || DEFAULT_CURSOR_LOCAL_MODEL
+            : adapterType === "opencode_local"
+              ? model || DEFAULT_OPENCODE_LOCAL_MODEL
+              : model,
+    url,
     dangerouslySkipPermissions:
       adapterType === "claude_local" || adapterType === "opencode_local",
+    dangerouslyBypassSandbox:
+      adapterType === "codex_local"
+        ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
+        : defaultCreateValues.dangerouslyBypassSandbox,
   });
+  if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
+    const env =
+      typeof config.env === "object"
+        && config.env !== null
+        && !Array.isArray(config.env)
+        ? { ...(config.env as Record<string, unknown>) }
+        : {};
+    env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
+    config.env = env;
+  }
+  return config;
 }
 
 export function CoachOnboardingPage() {
@@ -40,6 +81,11 @@ export function CoachOnboardingPage() {
   const queryClient = useQueryClient();
   const { setSelectedCompanyId } = useCompany();
   const [adapterType, setAdapterType] = useState<string>("claude_local");
+  const [model, setModel] = useState("");
+  const [url, setUrl] = useState("");
+  const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
+    useState(false);
+  const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [companyId, setCompanyId] = useState<string | null>(null);
   const [companyPrefix, setCompanyPrefix] = useState<string | null>(null);
   const [adapterEnvResult, setAdapterEnvResult] =
@@ -49,15 +95,41 @@ export function CoachOnboardingPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset env test state when the adapter changes — old result no longer applies.
-  const lastAdapterRef = useRef(adapterType);
+  // Reset env test state when the adapter or its config changes — old result
+  // no longer applies.
+  const lastAdapterKeyRef = useRef(`${adapterType}|${model}|${url}`);
   useEffect(() => {
-    if (lastAdapterRef.current !== adapterType) {
-      lastAdapterRef.current = adapterType;
+    const key = `${adapterType}|${model}|${url}`;
+    if (lastAdapterKeyRef.current !== key) {
+      lastAdapterKeyRef.current = key;
       setAdapterEnvResult(null);
       setAdapterEnvError(null);
     }
-  }, [adapterType]);
+  }, [adapterType, model, url]);
+
+  const effectiveAdapterCommand = resolveEffectiveAdapterCommand(adapterType, "");
+
+  function handleAdapterTypeChange(nextType: string) {
+    setAdapterType(nextType);
+    setForceUnsetAnthropicApiKey(false);
+    if (nextType === "codex_local") {
+      if (!model) setModel(DEFAULT_CODEX_LOCAL_MODEL);
+      return;
+    }
+    if (nextType === "opencode_local") {
+      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+      return;
+    }
+    if (nextType === "gemini_local" && !model) {
+      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+      return;
+    }
+    if (nextType === "cursor" && !model) {
+      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+      return;
+    }
+    setModel("");
+  }
 
   const testPassed =
     adapterEnvResult !== null && adapterEnvResult.status !== "fail";
@@ -78,12 +150,21 @@ export function CoachOnboardingPage() {
     return { id: company.id, issuePrefix: company.issuePrefix };
   }
 
-  async function runTest(): Promise<AdapterEnvironmentTestResult | null> {
+  async function runTest(
+    adapterConfigOverride?: Record<string, unknown>,
+  ): Promise<AdapterEnvironmentTestResult | null> {
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
       const { id } = await ensureCompany();
-      const adapterConfig = buildCoachAdapterConfig(adapterType);
+      const adapterConfig =
+        adapterConfigOverride
+        ?? buildCoachAdapterConfig({
+          adapterType,
+          model,
+          url,
+          forceUnsetAnthropicApiKey,
+        });
       const result = await agentsApi.testEnvironment(id, adapterType, {
         adapterConfig,
       });
@@ -96,6 +177,36 @@ export function CoachOnboardingPage() {
       return null;
     } finally {
       setAdapterEnvLoading(false);
+    }
+  }
+
+  async function handleUnsetAnthropicApiKey() {
+    if (unsetAnthropicLoading) return;
+    setUnsetAnthropicLoading(true);
+    setError(null);
+    setAdapterEnvError(null);
+    setForceUnsetAnthropicApiKey(true);
+    try {
+      const configWithUnset = buildCoachAdapterConfig({
+        adapterType,
+        model,
+        url,
+        forceUnsetAnthropicApiKey: true,
+      });
+      const result = await runTest(configWithUnset);
+      if (result?.status === "fail") {
+        setError(
+          "Retried with ANTHROPIC_API_KEY unset, but the environment test is still failing.",
+        );
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to unset ANTHROPIC_API_KEY and retry.",
+      );
+    } finally {
+      setUnsetAnthropicLoading(false);
     }
   }
 
@@ -123,7 +234,12 @@ export function CoachOnboardingPage() {
         return;
       }
 
-      const adapterConfig = buildCoachAdapterConfig(adapterType);
+      const adapterConfig = buildCoachAdapterConfig({
+        adapterType,
+        model,
+        url,
+        forceUnsetAnthropicApiKey,
+      });
       const hire = await agentsApi.hire(id, {
         name: "Coach",
         role: "coach",
@@ -184,54 +300,32 @@ export function CoachOnboardingPage() {
           </p>
 
           <div className="mt-5">
-            <label className="text-xs text-muted-foreground mb-2 block">
-              Adapter
-            </label>
-            <AdapterTypePicker
-              value={adapterType}
-              onChange={setAdapterType}
-              disabled={submitting || adapterEnvLoading}
+            <AdapterStepFields
+              companyId={companyId}
+              adapterType={adapterType}
+              onAdapterTypeChange={handleAdapterTypeChange}
+              model={model}
+              onModelChange={setModel}
+              url={url}
+              onUrlChange={setUrl}
+              envResult={adapterEnvResult}
+              envError={adapterEnvError}
+              envLoading={adapterEnvLoading}
+              onRunProbe={() => {
+                void runTest();
+              }}
+              forceUnsetAnthropicApiKey={forceUnsetAnthropicApiKey}
+              unsetAnthropicLoading={unsetAnthropicLoading}
+              onUnsetAnthropicApiKey={handleUnsetAnthropicApiKey}
+              effectiveAdapterCommand={effectiveAdapterCommand}
+              enabled={!submitting}
             />
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              We'll use the adapter's defaults. You can edit the agent's config later
-              once the conversation starts.
-            </p>
-          </div>
-
-          <div className="mt-5 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">
-                Adapter environment
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={runTest}
-                disabled={adapterEnvLoading || submitting}
-              >
-                {adapterEnvLoading ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                    Testing…
-                  </>
-                ) : adapterEnvResult ? (
-                  "Re-test"
-                ) : (
-                  "Test now"
-                )}
-              </Button>
-            </div>
-            {adapterEnvError ? (
-              <p className="text-xs text-red-600">{adapterEnvError}</p>
-            ) : null}
-            {adapterEnvResult ? (
-              <AdapterEnvironmentResult result={adapterEnvResult} />
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
+            {!adapterEnvResult ? (
+              <p className="mt-3 text-[11px] text-muted-foreground">
                 We'll verify your adapter can reach a model before starting. Test
                 runs automatically when you click Start, or trigger it now.
               </p>
-            )}
+            ) : null}
           </div>
 
           <div className="mt-5">

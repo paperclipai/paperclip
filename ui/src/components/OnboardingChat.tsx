@@ -284,6 +284,13 @@ export function OnboardingChat() {
         <p className="text-[11px] text-muted-foreground">
           Your Coach asks questions to help shape your company. Answer freely; the conversation is just between you and the Coach.
         </p>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          Prefer to fill out a form?{" "}
+          <a href="/onboarding/classic" className="underline">
+            Switch to classic onboarding
+          </a>
+          {" "}— this Coach conversation will stay here as a draft.
+        </p>
       </div>
 
       <div
