@@ -98,6 +98,7 @@ import {
   isSuccessfulRunHandoffComment,
   isSuccessfulRunHandoffEscalationComment,
 } from "../lib/successful-run-handoff";
+import { useTranslation } from "react-i18next";
 import { SystemNotice } from "./SystemNotice";
 import { buildSystemNoticeProps } from "../lib/system-notice-comment";
 import type {
@@ -119,6 +120,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+
+type TFunc = (key: string, opts?: Record<string, unknown>) => string;
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -388,14 +391,15 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
 }
 
 function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+  const { t } = useTranslation("issues");
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
-      ? "It was paused by a budget hard stop."
+      ? t("chat.paused_budget_stop")
       : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : "It was paused manually.";
+        ? t("chat.paused_system")
+        : t("chat.paused_manual");
 
   return (
     <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
@@ -409,13 +413,13 @@ function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
   );
 }
 
-function fallbackAuthorLabel(message: ThreadMessage) {
+function fallbackAuthorLabel(message: ThreadMessage, t: TFunc) {
   const custom = message.metadata?.custom as Record<string, unknown> | undefined;
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
   if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
-  if (message.role === "assistant") return "Agent";
-  if (message.role === "user") return "You";
-  return "System";
+  if (message.role === "assistant") return t("chat.agent");
+  if (message.role === "user") return t("chat.you");
+  return t("chat.system");
 }
 
 function fallbackTextParts(message: ThreadMessage) {
@@ -449,15 +453,16 @@ function IssueChatFallbackThread({
   emptyMessage: string;
   variant: "full" | "embedded";
 }) {
+  const { t } = useTranslation("issues");
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
       <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="font-medium">{t("chat.error_banner")}</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              {t("chat.error_banner_desc")}
             </p>
           </div>
         </div>
@@ -479,7 +484,7 @@ function IssueChatFallbackThread({
             return (
               <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
-                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
+                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message, t)}</span>
                   {message.createdAt ? (
                     <span className="text-[11px] text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
@@ -645,8 +650,8 @@ export function SuccessfulRunHandoffCommentCallout({
   );
 }
 
-function humanizeValue(value: string | null) {
-  if (!value) return "None";
+function humanizeValue(value: string | null, t: TFunc) {
+  if (!value) return t("chat.none");
   return value.replace(/_/g, " ");
 }
 
@@ -655,14 +660,15 @@ function formatTimelineAssigneeLabel(
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
+  t?: TFunc,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? (t ? t("chat.board") : "Board");
   }
-  return "Unassigned";
+  return t ? t("chat.unassigned") : "Unassigned";
 }
 
 function initialsForName(name: string) {
@@ -679,15 +685,16 @@ function formatInteractionActorLabel(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  t?: TFunc;
 }) {
-  const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
+  const { agentId, userId, agentMap, currentUserId, userLabelMap, t } = args;
   if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   if (userId) {
     return userLabelMap?.get(userId)
       ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
-      ?? "Board";
+      ?? (t ? t("chat.board") : "Board");
   }
-  return "System";
+  return t ? t("chat.system") : "System";
 }
 
 export function resolveIssueChatHumanAuthor(args: {
@@ -695,13 +702,14 @@ export function resolveIssueChatHumanAuthor(args: {
   authorUserId?: string | null;
   currentUserId?: string | null;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+  t?: TFunc;
 }) {
-  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
+  const { authorName, authorUserId, currentUserId, userProfileMap, t } = args;
   const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
   const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
   const resolvedAuthorName = profile?.label?.trim()
     || authorName?.trim()
-    || (authorUserId === "local-board" ? "Board" : (isCurrentUser ? "You" : "User"));
+    || (authorUserId === "local-board" ? (t ? t("chat.board") : "Board") : (isCurrentUser ? (t ? t("chat.you") : "You") : (t ? t("chat.user") : "User")));
 
   return {
     isCurrentUser,
@@ -1228,6 +1236,7 @@ function IssueChatUserMessage({
   message: ThreadMessage;
   isInterruptingQueuedRun: boolean;
 }) {
+  const { t } = useTranslation("issues");
   const {
     onInterruptQueued,
     onCancelQueued,
@@ -1255,6 +1264,7 @@ function IssueChatUserMessage({
     authorUserId,
     currentUserId,
     userProfileMap,
+    t,
   });
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
@@ -1858,6 +1868,7 @@ function ExpiredRequestConfirmationActivity({
   anchorId?: string;
   interaction: RequestConfirmationInteraction;
 }) {
+  const { t } = useTranslation("issues");
   const {
     agentMap,
     currentUserId,
@@ -1880,6 +1891,7 @@ function ExpiredRequestConfirmationActivity({
     agentMap,
     currentUserId,
     userLabelMap,
+    t,
   });
   const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
   const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
@@ -2073,6 +2085,7 @@ function SystemNoticeCommentRow({
 }
 
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
+  const { t } = useTranslation("issues");
   const {
     agentMap,
     currentUserId,
@@ -2167,9 +2180,9 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Status
             </span>
-            <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
+            <span className="text-muted-foreground">{humanizeValue(statusChange.from, t)}</span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
+            <span className="font-medium text-foreground">{humanizeValue(statusChange.to, t)}</span>
           </div>
         ) : null}
 
@@ -2179,11 +2192,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               Assignee
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap, t)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap, t)}
             </span>
           </div>
         ) : null}
