@@ -891,6 +891,9 @@ export function issueRoutes(
         else resolve();
       });
     });
+    if (req.file && typeof req.file.originalname === "string") {
+      req.file.originalname = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+    }
   }
 
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
@@ -4122,6 +4125,13 @@ export function issueRoutes(
       }
     }
 
+    if (actor.runId) {
+      const run = await heartbeat.getRun(actor.runId);
+      if (!run) {
+        res.status(409).json({ error: "Unknown runId: x-paperclip-run-id does not match any heartbeat_runs row" });
+        return;
+      }
+    }
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -4506,7 +4516,9 @@ export function issueRoutes(
     }
     const filename = attachment.originalFilename ?? "attachment";
     const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const asciiFallback = filename.replaceAll('"', '').replace(/[^\x20-\x7e]/g, "_");
+    const encodedFilename = encodeURIComponent(filename);
+    res.setHeader("Content-Disposition", `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`);
 
     object.stream.on("error", (err) => {
       next(err);
