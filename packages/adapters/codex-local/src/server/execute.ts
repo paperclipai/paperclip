@@ -76,6 +76,10 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+function hasCodexTerminalResult(text: string): boolean {
+  return /"type"\s*:\s*"turn\.(?:completed|failed)"/.test(text);
+}
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -524,6 +528,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  const terminalResultCleanupGraceMs = Math.max(0, asNumber(config.terminalResultCleanupGraceMs, 5_000));
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -702,6 +707,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
+      terminalResultCleanup: {
+        graceMs: terminalResultCleanupGraceMs,
+        hasTerminalResult: ({ stdout, stderr }) =>
+          hasCodexTerminalResult(stdout) || hasCodexTerminalResult(stderr),
+      },
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
           await onLog(stream, chunk);
@@ -738,6 +748,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
+    const terminalResultType = attempt.parsed.terminalResultType ?? null;
+    const completedTurn = terminalResultType === "completed";
+    const normalizedExitCode = completedTurn ? 0 : attempt.proc.exitCode;
+    const normalizedSignal = completedTurn ? null : attempt.proc.signal;
     const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
     const resolvedSessionId =
       attempt.parsed.sessionId ??
@@ -761,9 +775,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const fallbackErrorMessage =
       parsedError ||
       stderrLine ||
-      `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+      `Codex exited with code ${normalizedExitCode ?? -1}`;
     const transientRetryNotBefore =
-      (attempt.proc.exitCode ?? 0) !== 0
+      (normalizedExitCode ?? 0) !== 0
         ? extractCodexRetryNotBefore({
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -771,7 +785,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : null;
     const transientUpstream =
-      (attempt.proc.exitCode ?? 0) !== 0 &&
+      (normalizedExitCode ?? 0) !== 0 &&
       isCodexTransientUpstreamError({
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -779,11 +793,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
 
     return {
-      exitCode: attempt.proc.exitCode,
-      signal: attempt.proc.signal,
+      exitCode: normalizedExitCode,
+      signal: normalizedSignal,
       timedOut: false,
       errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+        completedTurn || (normalizedExitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
       errorCode:

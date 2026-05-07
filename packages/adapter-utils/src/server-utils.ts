@@ -52,11 +52,15 @@ type ChildProcessWithEvents = ChildProcess & {
   ): ChildProcess;
 };
 
-function resolveProcessGroupId(child: ChildProcess) {
+function resolveProcessGroupId(child: ChildProcess): number | null {
   if (process.platform === "win32") return null;
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
+function resolveWindowsTaskkill(): string {
+  const fallbackRoot = process.env.SystemRoot || "C:\\Windows";
+  return path.join(fallbackRoot, "System32", "taskkill.exe");
+}
 function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
@@ -67,6 +71,23 @@ function signalRunningProcess(
       return;
     } catch {
       // Fall back to the direct child signal if group signaling fails.
+    }
+  }
+
+  if (process.platform === "win32" && typeof running.child.pid === "number" && running.child.pid > 0) {
+    try {
+      const args = ["/PID", String(running.child.pid), "/T"];
+      if (signal === "SIGKILL") {
+        args.push("/F");
+      }
+      const killer = spawn(resolveWindowsTaskkill(), args, {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.unref();
+      return;
+    } catch {
+      // Fall back to the direct child signal if taskkill is unavailable.
     }
   }
   if (!running.child.killed) {
@@ -1876,9 +1897,8 @@ export async function runChildProcess(
               onLogError(err, runId, "failed to inspect terminal adapter output");
             }
           }
-          if (!terminalResultSeen) return;
 
-          if (terminalCleanupTimer) return;
+          if (!terminalResultSeen || terminalCleanupTimer) return;
           const graceMs = Math.max(0, terminalCleanup.graceMs ?? 5_000);
           terminalCleanupTimer = setTimeout(() => {
             terminalCleanupTimer = null;

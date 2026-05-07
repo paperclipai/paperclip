@@ -15,6 +15,7 @@ export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let terminalResultType: "completed" | "failed" | null = null;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -50,6 +51,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.completed") {
+      terminalResultType = "completed";
       const usageObj = parseObject(event.usage);
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
@@ -58,6 +60,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.failed") {
+      terminalResultType = "failed";
       const err = parseObject(event.error);
       const msg = asString(err.message, "").trim();
       if (msg) errorMessage = msg;
@@ -69,6 +72,7 @@ export function parseCodexJsonl(stdout: string) {
     summary: finalMessage?.trim() ?? "",
     usage,
     errorMessage,
+    terminalResultType,
   };
 }
 
