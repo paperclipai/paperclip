@@ -30,6 +30,25 @@ function parseZaiEvent(rawJson: string): ZaiStdoutEvent | null {
         return { kind: "tool_call", id: parsed.id, name: parsed.name, input: parsed.input ?? {} };
       }
       return null;
+    case "tool_result":
+      if (typeof parsed.id === "string" && typeof parsed.name === "string" && typeof parsed.ok === "boolean") {
+        const elapsedMs = typeof parsed.elapsedMs === "number" ? parsed.elapsedMs : 0;
+        if (parsed.ok) {
+          return { kind: "tool_result", id: parsed.id, name: parsed.name, ok: true, output: parsed.output, elapsedMs };
+        }
+        const errorRecord = asRecord(parsed.error);
+        const code = errorRecord && typeof errorRecord.code === "string" ? errorRecord.code : "tool_threw";
+        const message = errorRecord && typeof errorRecord.message === "string" ? errorRecord.message : "Tool error";
+        return {
+          kind: "tool_result",
+          id: parsed.id,
+          name: parsed.name,
+          ok: false,
+          error: { code, message },
+          elapsedMs,
+        };
+      }
+      return null;
     case "usage":
       return {
         kind: "usage",
@@ -81,6 +100,23 @@ function renderEvent(event: ZaiStdoutEvent, ts: string): TranscriptEntry[] {
       return [{ kind: "assistant", ts, text: event.text }];
     case "tool_call":
       return [{ kind: "tool_call", ts, name: event.name, input: event.input, toolUseId: event.id }];
+    case "tool_result": {
+      const content = event.ok
+        ? typeof event.output === "string"
+          ? event.output
+          : JSON.stringify(event.output ?? {}, null, 2)
+        : `${event.error?.code ?? "tool_threw"}: ${event.error?.message ?? "Tool error"}`;
+      return [
+        {
+          kind: "tool_result",
+          ts,
+          toolUseId: event.id,
+          toolName: event.name,
+          content,
+          isError: !event.ok,
+        },
+      ];
+    }
     case "usage":
       return [
         {

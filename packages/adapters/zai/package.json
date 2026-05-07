@@ -51,7 +51,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*"
+    "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/mcp-server": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

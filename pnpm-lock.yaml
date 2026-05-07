@@ -259,6 +259,18 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@paperclipai/mcp-server':
+        specifier: workspace:*
+        version: link:../../mcp-server
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+      zod-to-json-schema:
+        specifier: ^3.25.2
+        version: 3.25.2(zod@3.25.76)
     devDependencies:
       '@types/node':
         specifier: ^24.6.0

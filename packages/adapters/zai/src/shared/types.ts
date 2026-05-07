@@ -62,6 +62,18 @@ export type ZaiStdoutEvent =
   | { kind: "assistant_final"; text: string }
   | { kind: "tool_call"; id: string; name: string; input: unknown }
   | {
+      kind: "tool_result";
+      id: string;
+      name: string;
+      ok: boolean;
+      /** Raw output value (already JSON-parsed) when ok=true. */
+      output?: unknown;
+      /** Structured error when ok=false. */
+      error?: { code: string; message: string };
+      /** Wall-clock time of the dispatch in ms. */
+      elapsedMs: number;
+    }
+  | {
       kind: "usage";
       inputTokens: number;
       outputTokens: number;
