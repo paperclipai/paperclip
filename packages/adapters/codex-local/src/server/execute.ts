@@ -46,6 +46,7 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { createCodexUpstreamKeepalive } from "./upstream-keepalive.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -521,6 +522,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  // EIG-235 / EIG-281: keep Paperclip's silence clock alive while codex is
+  // silently retrying an upstream/MCP transport stall (rmcp fatal,
+  // Reconnecting…, Connection reset by peer). 0 disables the keepalive.
+  const upstreamKeepaliveIntervalSec = asNumber(config.upstreamKeepaliveIntervalSec, 30);
+  const upstreamKeepaliveMaxEmits = asNumber(config.upstreamKeepaliveMaxEmits, 0);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -692,32 +698,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-      cwd,
-      env,
-      stdin: prompt,
-      timeoutSec,
-      graceSec,
-      onSpawn,
-      onLog: async (stream, chunk) => {
-        if (stream !== "stderr") {
-          await onLog(stream, chunk);
-          return;
-        }
-        const cleaned = stripCodexRolloutNoise(chunk);
-        if (!cleaned.trim()) return;
-        await onLog(stream, cleaned);
-      },
+    const keepalive = createCodexUpstreamKeepalive({
+      emit: (stream, chunk) => onLog(stream, chunk),
+      intervalMs: Math.max(0, Math.floor(upstreamKeepaliveIntervalSec * 1000)),
+      maxEmits: upstreamKeepaliveMaxEmits,
     });
-    const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
-    return {
-      proc: {
-        ...proc,
-        stderr: cleanedStderr,
-      },
-      rawStderr: proc.stderr,
-      parsed: parseCodexJsonl(proc.stdout),
-    };
+    try {
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        cwd,
+        env,
+        stdin: prompt,
+        timeoutSec,
+        graceSec,
+        onSpawn,
+        onLog: async (stream, chunk) => {
+          if (stream !== "stderr") {
+            keepalive.observe(stream, chunk);
+            await onLog(stream, chunk);
+            return;
+          }
+          const cleaned = stripCodexRolloutNoise(chunk);
+          if (!cleaned.trim()) return;
+          keepalive.observe(stream, cleaned);
+          await onLog(stream, cleaned);
+        },
+      });
+      const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
+      return {
+        proc: {
+          ...proc,
+          stderr: cleanedStderr,
+        },
+        rawStderr: proc.stderr,
+        parsed: parseCodexJsonl(proc.stdout),
+      };
+    } finally {
+      keepalive.stop();
+    }
   };
 
   const toResult = (
