@@ -418,6 +418,9 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("clear final disposition");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
@@ -451,8 +454,118 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
-    expect(prompt).toContain("use child issues instead of polling");
-    expect(prompt).toContain("mark blocked work with the unblock owner/action");
+    expect(prompt).toContain("clear final disposition");
+    expect(prompt).toContain("evidence, not valid liveness paths by themselves");
+    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
+    expect(prompt).toContain("named unblock owner/action");
+  });
+
+  it("renders planning-mode directives for assignment and comment wakes", () => {
+    const assignmentPrompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(assignmentPrompt).toContain("- issue work mode: planning");
+    expect(assignmentPrompt).toContain("Make the plan only. Do not write code or perform implementation work.");
+
+    const commentPrompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Revise the plan" }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(commentPrompt).toContain("Update the plan only. Do not write code or perform implementation work.");
+  });
+
+  it("does not render stale accepted-plan continuation guidance for later planning comment wakes", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Revise the plan" }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Update the plan only. Do not write code or perform implementation work.");
+    expect(prompt).not.toContain("accepted-plan continuation");
+    expect(prompt).not.toContain("Create child issues from the approved plan only");
+  });
+
+  it("renders accepted-plan continuation guidance for planning issues", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("accepted-plan continuation");
+    expect(prompt).toContain("Create child issues from the approved plan only");
+    expect(prompt).toContain("may create child implementation issues");
+    expect(prompt).toContain("must not start implementation work on the planning issue itself");
+  });
+
+  it("keeps accepted-plan guidance when stale comment ids have no loaded comments", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentIds: ["stale-comment-1"],
+      latestCommentId: "stale-comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 0, missingCount: 1 },
+      comments: [],
+      fallbackFetchNeeded: true,
+    });
+
+    expect(prompt).toContain("accepted-plan continuation");
+    expect(prompt).toContain("Create child issues from the approved plan only");
+    expect(prompt).not.toContain("Update the plan only");
   });
 
   it("renders dependency-blocked interaction guidance", () => {

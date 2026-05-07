@@ -93,7 +93,9 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
-  "- Leave durable progress in comments, documents, or work products with a clear next action.",
+  "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
+  "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
@@ -281,6 +283,7 @@ type PaperclipWakeIssue = {
   identifier: string | null;
   title: string | null;
   status: string | null;
+  workMode: string | null;
   priority: string | null;
 };
 
@@ -366,6 +369,8 @@ type PaperclipWakePayload = {
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  interactionKind: string | null;
+  interactionStatus: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -384,6 +389,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
+  const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
   if (!id && !identifier && !title) return null;
   return {
@@ -391,6 +397,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     identifier,
     title,
     status,
+    workMode,
     priority,
   };
 }
@@ -573,6 +580,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     livenessContinuation,
+    interactionKind: asString(payload.interactionKind, "").trim() || null,
+    interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -590,6 +599,15 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
   return JSON.stringify(normalized);
+}
+
+export function readPaperclipIssueWorkModeFromContext(value: unknown): string | null {
+  const context = parseObject(value);
+  const issue = parseObject(context.paperclipIssue);
+  const direct = asString(issue.workMode, "").trim();
+  if (direct) return direct;
+  const wake = normalizePaperclipWakePayload(context.paperclipWake);
+  return wake?.issue?.workMode ?? null;
 }
 
 export function renderPaperclipWakePrompt(
@@ -615,7 +633,7 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action, use child issues instead of polling for long or parallel work, and mark blocked work with the unblock owner/action.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -632,7 +650,7 @@ export function renderPaperclipWakePrompt(
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action, use child issues instead of polling for long or parallel work, and mark blocked work with the unblock owner/action.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -644,8 +662,30 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
   }
+  if (normalized.issue?.workMode) {
+    lines.push(`- issue work mode: ${normalized.issue.workMode}`);
+  }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.issue?.workMode === "planning") {
+    const hasWakeComments = normalized.comments.length > 0;
+    const acceptedPlanContinuation =
+      !hasWakeComments &&
+      normalized.interactionKind === "request_confirmation" && normalized.interactionStatus === "accepted";
+    let directive = "Make the plan only. Do not write code or perform implementation work.";
+    if (hasWakeComments) {
+      directive = "Update the plan only. Do not write code or perform implementation work.";
+    }
+    if (acceptedPlanContinuation) {
+      directive = "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+    }
+    lines.push(`- planning directive: ${directive}`);
+    if (acceptedPlanContinuation) {
+      lines.push(
+        "- accepted-plan continuation: you may create child implementation issues from the approved plan, but must not start implementation work on the planning issue itself",
+      );
+    }
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
