@@ -1,0 +1,49 @@
+{
+  "issue": "CMPAAA-115",
+  "baseline_contract_issue": "CMPAAA-49",
+  "generated_at": "2026-04-30T17:03:22+00:00",
+  "inputs": {
+    "schema_path": "cto/evidence/CMPAAA-115/cmpaaa-115-failure-drill-record.v1.schema.json",
+    "run_sample_path": "cto/evidence/CMPAAA-115/samples/cmpaaa-115-failure-drill-run.v1.json",
+    "cmpaaa49_sample_path": "cto/evidence/CMPAAA-49/traceback-audit-samples.v1.json"
+  },
+  "drill_id": "cmpaaa-115-20260430-ext2l1-failure-drill-01",
+  "summary": {
+    "record_count": 1,
+    "failed_record_count": 1,
+    "schema_error_count": 0,
+    "shared_field_total": 11,
+    "cmpaaa49_shared_fields_present_count": 11,
+    "failed_records_with_missing_shared_fields_count": 0,
+    "failed_records_with_root_cause_missing_count": 0,
+    "failed_records_with_evidence_prefix_failure_count": 0,
+    "failed_records_with_timestamp_order_failure_count": 0,
+    "failed_records_with_latency_mismatch_count": 0,
+    "failed_records_with_target_breach_count": 0
+  },
+  "acceptance": {
+    "record_count_gte_1": true,
+    "failed_record_count_gte_1": true,
+    "schema_error_count_eq_0": true,
+    "cmpaaa49_shared_fields_present_eq_11": true,
+    "failed_records_missing_shared_fields_eq_0": true,
+    "failed_records_root_cause_missing_eq_0": true,
+    "failed_records_evidence_prefix_failure_eq_0": true,
+    "failed_records_timestamp_order_failure_eq_0": true,
+    "failed_records_latency_mismatch_eq_0": true,
+    "failed_records_target_breach_eq_0": true,
+    "closeout_ready": true
+  },
+  "missing_shared_fields": {
+    "cmpaaa49_sample": [],
+    "failed_records": {}
+  },
+  "schema_errors": [],
+  "failures": {
+    "root_cause_missing_samples": [],
+    "evidence_prefix_failed_samples": [],
+    "timestamp_order_failed_samples": [],
+    "latency_mismatch_samples": [],
+    "target_breach_samples": []
+  }
+}

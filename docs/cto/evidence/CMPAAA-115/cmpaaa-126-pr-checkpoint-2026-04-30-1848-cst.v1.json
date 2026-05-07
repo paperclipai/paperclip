@@ -1,0 +1,21 @@
+{
+  "issue": "CMPAAA-126",
+  "checkpoint_at_cst": "2026-04-30T18:48:00+08:00",
+  "status": "in_progress",
+  "pr_url": null,
+  "pr_opened_at": null,
+  "review_requested_at": null,
+  "checkpoint_type": "miss_reason_with_revised_timestamp",
+  "miss_reason": "Current execution workspace has no upstream git checkout metadata (.git root/remote not present), so PR URL cannot be created from this runtime.",
+  "revised_pr_url_target_cst": "2026-05-01T10:45:00+08:00",
+  "owner": "CTO",
+  "unblock_owner": "CTO",
+  "unblock_action": "Open first reviewable PR from upstream repository workspace and back-link the PR URL into CMPAAA-126.",
+  "artifact_refs": [
+    "docs/cto/CMPAAA-126-phase-a-first-pr-prewarm-package-v1.md",
+    "docs/cto/evidence/CMPAAA-115/cmpaaa-126-phase-a-pr-draft-body-v1.md",
+    "docs/cto/evidence/CMPAAA-115/cmpaaa-115-phase-a-validation-output.v1.json",
+    "docs/cto/evidence/CMPAAA-115/cmpaaa-115-failure-drill-validation-output.v1.json"
+  ],
+  "notes": "Checkpoint posted before 2026-04-30 21:30 CST guardrail window closes."
+}
