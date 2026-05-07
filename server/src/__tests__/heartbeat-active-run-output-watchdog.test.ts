@@ -406,6 +406,61 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations.filter((issue) => !["done", "cancelled"].includes(issue.status))).toHaveLength(1);
   });
 
+  it("suppresses re-firing once the source issue has been recovered after a prior terminal evaluation (SWI-98)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationIssueId = first.evaluationIssueIds[0];
+    expect(firstEvaluationIssueId).toBeTruthy();
+
+    // Simulate operator-driven recovery: triage the first evaluation to done
+    // and release the source-issue execution lock back to a startable state.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, firstEvaluationIssueId!));
+    await db
+      .update(issues)
+      .set({ status: "todo", checkoutRunId: null })
+      .where(eq(issues.id, issueId));
+
+    // Subsequent scans must not re-fire — the dead run has already been triaged.
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(second).toMatchObject({ created: 0, existing: 0, escalated: 0, skipped: 1 });
+    expect(third).toMatchObject({ created: 0, existing: 0, escalated: 0, skipped: 1 });
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(1);
+    expect(allEvaluations[0]?.id).toBe(firstEvaluationIssueId);
+  });
+
+  it("still fires when the source issue is recovered but no prior evaluation exists yet", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    // Source issue happens to be in `todo` with cleared lock at scan time, but
+    // no prior evaluation has been triaged yet — the watchdog must still fire
+    // so the operator gets a first signal.
+    await db
+      .update(issues)
+      .set({ status: "todo", checkoutRunId: null })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(1);
+  });
+
   it("rejects agent watchdog decisions using issues not bound to the target run", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, coderId, runId, issuePrefix } = await seedRunningRun({

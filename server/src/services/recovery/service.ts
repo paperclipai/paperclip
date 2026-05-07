@@ -688,6 +688,40 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // Returns a previously-closed evaluation issue for the same run, if any.
+  // Used to suppress re-firing once the source issue has clearly been
+  // recovered (operator already triaged a prior evaluation to terminal).
+  async function findTerminalStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  // The watchdog scan keys off `heartbeatRuns.status = 'running'` and a
+  // suspicious silence age. When a source issue has already been recovered
+  // (lock released, status returned to a startable state) and a prior
+  // evaluation for the same dead run was already closed, the operator has
+  // implicitly decided the run is dead. Re-firing burns CEO heartbeats on
+  // duplicate-closures, so suppress it.
+  function isSourceIssueRecoveredFromStaleRun(
+    sourceIssue: typeof issues.$inferSelect | null,
+  ) {
+    if (!sourceIssue) return false;
+    if (sourceIssue.checkoutRunId !== null) return false;
+    return sourceIssue.status === "todo" || sourceIssue.status === "backlog";
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1003,6 +1037,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+
+    // Suppress duplicate evaluations once the source issue has clearly been
+    // recovered (lock released + back to a startable status) AND a prior
+    // evaluation for the same run id was already triaged to a terminal state.
+    // Without this, every recovery scan re-fires on the same dead run because
+    // the heartbeat run row stays in `status='running'` indefinitely.
+    if (!existing && isSourceIssueRecoveredFromStaleRun(sourceIssue)) {
+      const priorTerminal = await findTerminalStaleRunEvaluation(
+        input.run.companyId,
+        input.run.id,
+      );
+      if (priorTerminal) {
+        return { kind: "skipped" as const };
+      }
+    }
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
