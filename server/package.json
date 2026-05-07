@@ -63,7 +63,7 @@
     "detect-port": "^2.1.0",
     "dompurify": "^3.3.2",
     "dotenv": "^17.0.1",
-    "drizzle-orm": "^0.38.4",
+    "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
     "hermes-paperclip-adapter": "^0.2.0",
