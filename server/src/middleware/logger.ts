@@ -27,9 +27,29 @@ const sharedOpts = {
   singleLine: true,
 };
 
+const SENSITIVE_BODY_KEYS = new Set([
+  "password", "newPassword", "currentPassword", "confirmPassword",
+  "token", "accessToken", "refreshToken", "resetToken", "verificationToken",
+  "apiKey", "api_key", "secret", "otp",
+  // "code" intentionally omitted — too broad; would suppress error/issue/promo codes
+]);
+
+function sanitizeBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    sanitized[key] = SENSITIVE_BODY_KEYS.has(key) ? "[REDACTED]" : sanitizeBody(value);
+  }
+  return sanitized;
+}
+
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "req.headers['x-api-key']",
+  ],
 }, pino.transport({
   targets: [
     {
@@ -65,11 +85,16 @@ export const httpLogger = pinoHttp({
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {
+      // Never log request bodies for auth routes — they contain passwords and tokens.
+      const isAuthRoute = typeof req.url === "string" && req.url.startsWith("/api/auth");
+      if (isAuthRoute) return {};
+
+      // Auth routes already returned {} above, so this branch never runs for them.
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: sanitizeBody(ctx.reqBody),
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
@@ -77,7 +102,7 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = sanitizeBody(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;
