@@ -257,9 +257,12 @@
   background: oklch(0.5 0 0) !important;
 }
 
-/* Anchor overlay color outside @layer so it wins over Tailwind v4 utility layers */
+/* Anchor overlay outside @layer so it wins over Tailwind v4 utility layers.
+   Using rgb instead of oklch avoids warm-tinting in browser color management. */
 [data-slot="dialog-overlay"] {
-  background-color: oklch(0 0 0 / 0.5);
+  background-color: rgb(0 0 0 / 0.45) !important;
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
 }
 
 /* Expandable dialog transition for max-width changes */
