@@ -1,4 +1,4 @@
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { verifySignature } from "./verify.js";
 import { acquireDelivery } from "./idempotency.js";
 import { dispatch, type Handlers } from "./dispatch.js";
@@ -63,7 +63,7 @@ export async function handleWebhook(input: any, ctx: any, config: PluginConfig):
 let _capturedCtx: any = null;
 let _capturedCfg: PluginConfig | null = null;
 
-export default definePlugin({
+const plugin = definePlugin({
   async setup(ctx) {
     _capturedCtx = ctx;
     _capturedCfg = (await ctx.config.get()) as unknown as PluginConfig;
@@ -75,3 +75,6 @@ export default definePlugin({
     return handleWebhook(input, _capturedCtx, _capturedCfg);
   },
 });
+
+export default plugin;
+runWorker(plugin, import.meta.url);

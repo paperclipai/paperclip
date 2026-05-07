@@ -11,6 +11,7 @@ export interface DeliveryLog {
 }
 
 export function logDelivery(entry: DeliveryLog): void {
+  // Write to stderr — stdout is reserved for the plugin IPC channel.
   // eslint-disable-next-line no-console
-  console.log(JSON.stringify({ ...entry, ts: new Date().toISOString(), plugin: "paperclip-plugin-github-issues" }));
+  console.error(JSON.stringify({ ...entry, ts: new Date().toISOString(), plugin: "paperclip-plugin-github-issues" }));
 }

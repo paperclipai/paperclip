@@ -9,7 +9,16 @@ const manifest: PaperclipPluginManifestV1 = {
     "Bridges GitHub issues, comments, PRs and CI runs into Paperclip tasks with idempotent dedup",
   author: "Paperclip",
   categories: ["connector", "automation"],
-  capabilities: ["webhooks.receive"],
+  capabilities: [
+    "webhooks.receive",
+    "plugin.state.read",
+    "plugin.state.write",
+    "issues.read",
+    "issues.create",
+    "issues.update",
+    "issues.wakeup",
+    "issue.comments.create",
+  ],
   entrypoints: {
     worker: "./dist/worker.js",
   },
