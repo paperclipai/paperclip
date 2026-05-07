@@ -7,7 +7,10 @@ import {
   type IssueChatComment,
   type IssueChatLinkedRun,
 } from "./issue-chat-messages";
-import type { SuggestTasksInteraction } from "./issue-thread-interactions";
+import type {
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
@@ -39,6 +42,7 @@ function createAgent(id: string, name: string): Agent {
 }
 
 function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComment {
+  const authorAgentId = overrides.authorAgentId ?? null;
   return {
     id: "comment-1",
     companyId: "company-1",
@@ -46,6 +50,9 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     authorAgentId: null,
     authorUserId: "user-1",
     body: "Hello",
+    authorType: authorAgentId ? "agent" : "user",
+    presentation: null,
+    metadata: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
@@ -79,6 +86,34 @@ function createInteraction(
           title: "Prototype the card",
         },
       ],
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
+function createRequestConfirmation(
+  overrides: Partial<RequestConfirmationInteraction> = {},
+): RequestConfirmationInteraction {
+  return {
+    id: "confirmation-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "request_confirmation",
+    title: "Approve the plan",
+    summary: "Review and approve the latest plan.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-06T12:01:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      prompt: "Approve the plan?",
     },
     result: null,
     ...overrides,
@@ -432,6 +467,130 @@ describe("buildIssueChatMessages", () => {
         },
       },
     });
+  });
+
+  it("places request confirmations after later same-run handoff status and comment", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-handoff",
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          body: "Ready for approval.",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+          runId: "run-1",
+          runAgentId: "agent-1",
+        }),
+        createComment({
+          id: "comment-user-reply",
+          body: "Approved.",
+          createdAt: new Date("2026-04-06T12:04:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:04:00.000Z"),
+        }),
+      ],
+      interactions: [
+        createRequestConfirmation({
+          id: "confirmation-1",
+          sourceRunId: "run-1",
+          status: "expired",
+          result: {
+            version: 1,
+            outcome: "superseded_by_comment",
+            commentId: "comment-user-reply",
+          },
+        }),
+      ],
+      timelineEvents: [
+        {
+          id: "event-in-review",
+          actorType: "agent",
+          actorId: "agent-1",
+          createdAt: new Date("2026-04-06T12:02:00.000Z"),
+          runId: "run-1",
+          statusChange: {
+            from: "in_progress",
+            to: "in_review",
+          },
+        },
+      ],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "system:activity:event-in-review",
+      "assistant:comment-handoff",
+      "system:interaction:confirmation-1",
+      "user:comment-user-reply",
+    ]);
+  });
+
+  it("keeps request confirmations chronological without later same-run handoff evidence", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-later",
+          createdAt: new Date("2026-04-06T12:02:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+        }),
+      ],
+      interactions: [
+        createRequestConfirmation({
+          id: "confirmation-1",
+          sourceRunId: "run-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "system:interaction:confirmation-1",
+      "user:comment-later",
+    ]);
+  });
+
+  it("does not move request confirmations past unrelated comments before same-run handoff", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-user-reply",
+          body: "I have a question first.",
+          createdAt: new Date("2026-04-06T12:02:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+        }),
+        createComment({
+          id: "comment-handoff",
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          body: "Ready for approval.",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+          runId: "run-1",
+          runAgentId: "agent-1",
+        }),
+      ],
+      interactions: [
+        createRequestConfirmation({
+          id: "confirmation-1",
+          sourceRunId: "run-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "system:interaction:confirmation-1",
+      "user:comment-user-reply",
+      "assistant:comment-handoff",
+    ]);
   });
 
   it("keeps succeeded runs as assistant messages when transcript output exists", () => {

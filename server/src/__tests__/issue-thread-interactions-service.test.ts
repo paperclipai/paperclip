@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -110,6 +111,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           {
             clientKey: "root",
             title: "Create the root follow-up",
+            workMode: "planning",
             assigneeAgentId,
           },
           {
@@ -153,6 +155,19 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "todo",
       }),
     ]);
+    const createdIssueRows = await db
+      .select({
+        title: issues.title,
+        workMode: issues.workMode,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(createdIssueRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Create the root follow-up", workMode: "planning" }),
+        expect.objectContaining({ title: "Create the nested follow-up", workMode: "standard" }),
+      ]),
+    );
 
     const children = await issuesSvc.list(companyId, { parentId: issueId });
     expect(children).toHaveLength(1);
