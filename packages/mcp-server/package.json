@@ -16,7 +16,7 @@
     "paperclip-mcp-server": "./dist/stdio.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "publishConfig": {
     "access": "public",
