@@ -10,6 +10,7 @@ import {
   stopTelegramBridge,
   testTelegramToken,
 } from "../bridges/telegram.js";
+import { verifyHmacSha256, verifySendgridSignature, warnIfWebhookSigningDisabledOnce } from "../lib/webhook-signatures.js";
 import { logger } from "../middleware/logger.js";
 import { companyService, logActivity, secretService } from "../services/index.js";
 import { messagingBridgeService } from "../services/messaging-bridges.js";
@@ -313,26 +314,76 @@ export function messagingRoutes(db: Db) {
 export function emailWebhookRoutes(db: Db) {
   const router = Router();
 
+  // Surface a single boot-time warning if signing keys are unset (backward-compat
+  // for existing deploys that lean on the static webhook-secret token only).
+  warnIfWebhookSigningDisabledOnce(logger);
+
   router.post("/webhooks/email", async (req, res) => {
+    // SEC-WEBHOOK-002: When provider signature headers are present, verify
+    // them BEFORE the static-token check so a leaked token alone can't be
+    // replayed against a Mailgun/SendGrid-protected deployment.
+    const rawBody: Buffer = (req as { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+
+    const mailgunSig = (req.headers["x-mailgun-signature-256"] as string | undefined) ?? null;
+    const sendgridSig = (req.headers["x-twilio-email-event-webhook-signature"] as string | undefined) ?? null;
+    const sendgridTs = (req.headers["x-twilio-email-event-webhook-timestamp"] as string | undefined) ?? null;
+
+    const mailgunKey = process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
+    const sendgridKey = process.env.SENDGRID_WEBHOOK_PUBLIC_KEY;
+    let providerSignatureVerified = false;
+
+    // Mailgun: enforce when either the env var OR header is present.
+    if (mailgunKey || mailgunSig) {
+      if (!mailgunKey) {
+        logger.warn("[email-bridge] Mailgun signature header present but MAILGUN_WEBHOOK_SIGNING_KEY unset");
+        res.status(401).json({ ok: false, error: "Mailgun signature verification unavailable" });
+        return;
+      }
+      if (!verifyHmacSha256(rawBody, mailgunSig, mailgunKey)) {
+        res.status(401).json({ ok: false, error: "Invalid Mailgun signature" });
+        return;
+      }
+      providerSignatureVerified = true;
+    }
+
+    // SendGrid: same logic — present env or header triggers enforcement.
+    if (sendgridKey || sendgridSig || sendgridTs) {
+      if (!sendgridKey) {
+        logger.warn("[email-bridge] SendGrid signature header present but SENDGRID_WEBHOOK_PUBLIC_KEY unset");
+        res.status(401).json({ ok: false, error: "SendGrid signature verification unavailable" });
+        return;
+      }
+      if (!verifySendgridSignature(rawBody, sendgridTs, sendgridSig, sendgridKey)) {
+        res.status(401).json({ ok: false, error: "Invalid SendGrid signature" });
+        return;
+      }
+      providerSignatureVerified = true;
+    }
+
     // SEC-INTEG-002: Validate webhook secret to prevent unauthorized issue creation.
     // Mailgun/SendGrid should be configured to include this token as a query param
     // or header. Without it, anyone can POST fake emails to create issues.
     // SEC-ADV-002: Webhook secret is mandatory in authenticated deployment mode.
     // Without it, anyone on the internet can create issues in any company.
-    const webhookSecret = process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
-    if (!webhookSecret) {
-      console.warn("[email-bridge] IRONWORKS_EMAIL_WEBHOOK_SECRET not set — rejecting all email webhooks");
-      res.status(503).json({ ok: false, error: "Email bridge not configured" });
-      return;
-    }
-    // SEC-WEBHOOK-001: timing-safe comparison to prevent webhook-secret oracle.
-    const tokenRaw = req.query.token ?? req.headers["x-webhook-secret"];
-    const token = typeof tokenRaw === "string" ? tokenRaw : "";
-    const tokenBuf = Buffer.from(token);
-    const secretBuf = Buffer.from(webhookSecret);
-    if (tokenBuf.length !== secretBuf.length || !timingSafeEqual(tokenBuf, secretBuf)) {
-      res.status(401).json({ ok: false, error: "Invalid webhook secret" });
-      return;
+    // If a provider signature already passed, the request is authenticated and
+    // the static-token gate is unnecessary. Otherwise fall back to the legacy
+    // shared-token check for unsigned (or non-Mailgun/SendGrid) parsers.
+    if (!providerSignatureVerified) {
+      const webhookSecret = process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
+      if (!webhookSecret) {
+        console.warn("[email-bridge] IRONWORKS_EMAIL_WEBHOOK_SECRET not set — rejecting all email webhooks");
+        res.status(503).json({ ok: false, error: "Email bridge not configured" });
+        return;
+      }
+      // SEC-WEBHOOK-001: timing-safe comparison to prevent webhook-secret oracle.
+      const tokenRaw = req.query.token ?? req.headers["x-webhook-secret"];
+      const token = typeof tokenRaw === "string" ? tokenRaw : "";
+      const tokenBuf = Buffer.from(token);
+      const secretBuf = Buffer.from(webhookSecret);
+      if (tokenBuf.length !== secretBuf.length || !timingSafeEqual(tokenBuf, secretBuf)) {
+        res.status(401).json({ ok: false, error: "Invalid webhook secret" });
+        return;
+      }
     }
     try {
       const result = await handleInboundEmail(db, req.body as Record<string, unknown>);

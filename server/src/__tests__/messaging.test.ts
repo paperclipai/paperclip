@@ -217,5 +217,54 @@ describe("messaging routes", () => {
       expect(res.status).toBe(401);
       delete process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
     });
+
+    // SEC-WEBHOOK-002 — provider signature verification.
+    it("rejects bad Mailgun signature with 401 even if token is valid", async () => {
+      process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET = "correct-secret";
+      process.env.MAILGUN_WEBHOOK_SIGNING_KEY = "mg-secret";
+      const app = await createApp(boardUser(USER_ID, [COMPANY_ID]));
+      const res = await request(app)
+        .post("/api/webhooks/email?token=correct-secret")
+        .set("X-Mailgun-Signature-256", "deadbeef")
+        .send({ from: "test@example.com", subject: "Test" });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Mailgun/);
+      delete process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
+      delete process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
+    });
+
+    it("accepts a valid Mailgun signature WITHOUT a static token", async () => {
+      const { createHmac } = await import("node:crypto");
+      delete process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
+      process.env.MAILGUN_WEBHOOK_SIGNING_KEY = "mg-secret";
+
+      const body = { from: "test@example.com", subject: "Test" };
+      const rawBody = Buffer.from(JSON.stringify(body));
+      const sig = createHmac("sha256", "mg-secret").update(rawBody).digest("hex");
+
+      const app = await createApp(boardUser(USER_ID, [COMPANY_ID]));
+      const res = await request(app)
+        .post("/api/webhooks/email")
+        .set("X-Mailgun-Signature-256", sig)
+        .set("Content-Type", "application/json")
+        .send(body);
+
+      expect(res.status).toBe(200);
+      delete process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
+    });
+
+    it("rejects Mailgun-signed request with 401 when signing key not configured", async () => {
+      delete process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
+      process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET = "correct-secret";
+      const app = await createApp(boardUser(USER_ID, [COMPANY_ID]));
+      const res = await request(app)
+        .post("/api/webhooks/email?token=correct-secret")
+        .set("X-Mailgun-Signature-256", "deadbeef")
+        .send({ from: "test@example.com" });
+
+      expect(res.status).toBe(401);
+      delete process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
+    });
   });
 });

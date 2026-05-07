@@ -4,6 +4,24 @@ All notable changes to IronWorks are documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **Email webhook provider signature verification** (`server/src/routes/messaging.ts`,
+  `server/src/lib/webhook-signatures.ts`): inbound `/api/webhooks/email` now verifies
+  Mailgun (`X-Mailgun-Signature-256`, HMAC-SHA256) and SendGrid
+  (`X-Twilio-Email-Event-Webhook-Signature` / `-Timestamp`, Ed25519) when the
+  matching env var is set (`MAILGUN_WEBHOOK_SIGNING_KEY`,
+  `SENDGRID_WEBHOOK_PUBLIC_KEY`). A valid provider signature satisfies authentication
+  without the legacy static `IRONWORKS_EMAIL_WEBHOOK_SECRET` token. Backward compatible:
+  deployments with neither env var set behave as before. Boot-time warning logs once
+  when signing keys are missing. Pure helpers + 16 unit tests + 4 route integration tests.
+- **Routine trigger HMAC enforcement** (`POST /routine-triggers/public/:publicId/fire`):
+  reaffirmed — the existing implementation in `server/src/services/routines.ts` already
+  enforces HMAC-SHA256 signed-timestamp verification (`signingMode: "hmac_sha256"`) or
+  bearer token (`signingMode: "bearer"`) using `crypto.timingSafeEqual` and
+  `companySecrets`-backed encrypted secret storage. No schema change needed; the proposed
+  inline `hmac_secret TEXT` column was rejected as a regression vs. the existing
+  encrypted-secret reference design.
+
 ### Added - HTTP Adapter Family (2026-04-20)
 - **Four production HTTP adapters**: `poe-api`, `anthropic-api`, `openai-api`,
   `openrouter-api`. Agents can now call external LLM APIs without a local CLI installed.

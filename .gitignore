@@ -83,3 +83,8 @@ load-tests/
 # Claude scheduled task lock + research scratch
 .claude/scheduled_tasks.lock
 skill-research-design-marketing.md
+
+# Audit/planning live docs
+ironworks-backlog.md
+ironworks-improve.md
+agent-chat-plan.md
