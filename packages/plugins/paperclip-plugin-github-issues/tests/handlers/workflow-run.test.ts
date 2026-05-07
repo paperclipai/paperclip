@@ -19,12 +19,12 @@ describe("handleWorkflowRun", () => {
     };
     await handleWorkflowRun(fixture as any, ctx as any, config);
     expect(ctx.issues.requestWakeup).toHaveBeenCalledOnce();
-    const args = ctx.issues.requestWakeup.mock.calls[0];
+    const args = (ctx.issues.requestWakeup.mock as any).lastCall;
     expect(args[0]).toBe("issue-1");
     expect(args[1]).toBe("company-1");
     expect(args[2].reason).toBe("ci_green");
     expect(ctx.issues.createComment).toHaveBeenCalledOnce();
-    expect(ctx.issues.createComment.mock.calls[0][1]).toContain("wake_payload");
+    expect((ctx.issues.createComment.mock as any).lastCall[1]).toContain("wake_payload");
   });
 
   it("noops when no linked PR in payload", async () => {

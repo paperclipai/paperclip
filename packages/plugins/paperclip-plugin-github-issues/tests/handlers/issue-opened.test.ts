@@ -25,7 +25,7 @@ describe("handleIssueOpened", () => {
     const ctx = makeCtx(null);
     await handleIssueOpened(fixture as any, ctx as any, config);
     expect(ctx.issues.create).toHaveBeenCalledOnce();
-    const args = ctx.issues.create.mock.calls[0][0];
+    const args = (ctx.issues.create.mock as any).lastCall[0];
     expect(args.companyId).toBe("company-1");
     expect(args.assigneeAgentId).toBe("agent-ceo");
     expect(args.originKind).toBe("plugin:paperclip-plugin-github-issues:issue");

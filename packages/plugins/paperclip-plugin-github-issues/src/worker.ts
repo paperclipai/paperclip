@@ -66,7 +66,7 @@ let _capturedCfg: PluginConfig | null = null;
 export default definePlugin({
   async setup(ctx) {
     _capturedCtx = ctx;
-    _capturedCfg = (await ctx.config.get()) as PluginConfig;
+    _capturedCfg = (await ctx.config.get()) as unknown as PluginConfig;
   },
   async onWebhook(input) {
     if (!_capturedCtx || !_capturedCfg) {

@@ -23,9 +23,9 @@ describe("handleCommentCreated", () => {
     const ctx = makeCtx();
     await handleCommentCreated(fixture as any, ctx as any, config);
     expect(ctx.issues.createComment).toHaveBeenCalledOnce();
-    expect(ctx.issues.createComment.mock.calls[0][1]).toContain("wake_payload");
+    expect((ctx.issues.createComment.mock as any).lastCall[1]).toContain("wake_payload");
     expect(ctx.issues.requestWakeup).toHaveBeenCalledOnce();
-    expect(ctx.issues.requestWakeup.mock.calls[0][2].reason).toBe("github_comment_created");
+    expect((ctx.issues.requestWakeup.mock as any).lastCall[2].reason).toBe("github_comment_created");
   });
 
   it("noops when issue does not exist", async () => {

@@ -23,9 +23,9 @@ describe("handleIssueEdited", () => {
     const ctx = makeCtx();
     await handleIssueEdited(fixture as any, ctx as any, config);
     expect(ctx.issues.createComment).toHaveBeenCalledOnce();
-    expect(ctx.issues.createComment.mock.calls[0][1]).toContain("wake_payload");
+    expect((ctx.issues.createComment.mock as any).lastCall[1]).toContain("wake_payload");
     expect(ctx.issues.requestWakeup).toHaveBeenCalledOnce();
-    const wakeArgs = ctx.issues.requestWakeup.mock.calls[0];
+    const wakeArgs = (ctx.issues.requestWakeup.mock as any).lastCall;
     expect(wakeArgs[0]).toBe("issue-1");
     expect(wakeArgs[1]).toBe("company-1");
     expect(wakeArgs[2].reason).toBe("github_issue_updated");
