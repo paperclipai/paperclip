@@ -16,6 +16,7 @@ describe("buildCodexExecArgs", () => {
       "--search",
       "exec",
       "--json",
+      "--skip-git-repo-check",
       "--model",
       "gpt-5.4",
       "-c",
@@ -38,6 +39,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--skip-git-repo-check",
       "--model",
       "gpt-5.5",
       "-c",
@@ -62,9 +64,21 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--skip-git-repo-check",
       "--model",
       "gpt-5.3-codex",
       "-",
     ]);
+  });
+
+  it("always passes --skip-git-repo-check so non-git workspaces are accepted", () => {
+    const result = buildCodexExecArgs({});
+    expect(result.args).toContain("--skip-git-repo-check");
+
+    const withResume = buildCodexExecArgs(
+      { model: "gpt-5.4", search: true, dangerouslyBypassApprovalsAndSandbox: true },
+      { resumeSessionId: "abc" },
+    );
+    expect(withResume.args).toContain("--skip-git-repo-check");
   });
 });
