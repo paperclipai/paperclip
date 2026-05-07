@@ -55,6 +55,7 @@ import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { writeMcpConfigFile, type ResolvedMcpServers } from "./mcp-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -603,6 +604,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  const mcpServersConfig = (() => {
+    const raw = (config as Record<string, unknown>).mcpServers;
+    return typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? (raw as ResolvedMcpServers)
+      : undefined;
+  })();
+  const mcpServerNames = mcpServersConfig ? Object.keys(mcpServersConfig) : [];
+  const mcpConfigPath =
+    mcpServerNames.length > 0 && executionTargetIsRemote
+      ? null
+      : await writeMcpConfigFile(cwd, mcpServersConfig);
+  if (mcpConfigPath) {
+    await onLog(
+      "stdout",
+      `[paperclip] Wrote per-run Claude mcp-config.json with ${mcpServerNames.length} server(s).\n`,
+    );
+  } else if (mcpServerNames.length > 0 && executionTargetIsRemote) {
+    await onLog(
+      "stderr",
+      `[paperclip] adapterConfig.mcpServers is set but execution target is remote; mcp-config not propagated.\n`,
+    );
+  }
+
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
@@ -626,6 +650,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (mcpConfigPath) {
+      args.push("--mcp-config", mcpConfigPath);
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
