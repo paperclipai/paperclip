@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -52,12 +53,21 @@ vi.mock("../services/index.js", () => ({
     })),
     listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
+  issueVisibilityService: () => ({
+    ensureCollaborator: vi.fn(async () => undefined),
+    resolveMentionsToCollaborators: vi.fn(async () => undefined),
+  }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
+  }),
+  webPushService: () => ({
+    sendToUser: vi.fn(async () => undefined),
+    listSubscriptionsForUser: vi.fn(async () => []),
+    sendNotificationToSubscription: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
 }));
@@ -93,12 +103,21 @@ function registerModuleMocks() {
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
+    issueVisibilityService: () => ({
+      ensureCollaborator: vi.fn(async () => undefined),
+      resolveMentionsToCollaborators: vi.fn(async () => undefined),
+    }),
     issueApprovalService: () => ({}),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    webPushService: () => ({
+      sendToUser: vi.fn(async () => undefined),
+      listSubscriptionsForUser: vi.fn(async () => []),
+      sendNotificationToSubscription: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
   }));
@@ -159,6 +178,52 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+  });
+
+  it("wakes assignees when an agent creates a delegated child issue under unfinished parent work", async () => {
+    const parent = makeIssue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+    });
+    const created = makeIssue({
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      parentId: parent.id,
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "todo",
+    });
+
+    mockIssueService.create.mockResolvedValue(created);
+    mockIssueService.getById.mockResolvedValue(parent);
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Delegated implementation task",
+        parentId: parent.id,
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        status: "todo",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: created.id,
+          mutation: "create",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: created.id,
+          source: "issue.create",
+        }),
+      }),
+    );
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {

@@ -1532,27 +1532,15 @@ export function issueRoutes(
       },
     });
 
-    // Master fork: skip wakeup if parent issue exists and isn't done yet (sequential work).
-    // The agent won't start working until the parent completes; the done-transition
-    // handler cascades wakeups to waiting children.
-    let parentBlocking = false;
-    if (issue.parentId) {
-      const parent = await svc.getById(issue.parentId);
-      if (parent && parent.status !== "done") parentBlocking = true;
-    }
-    if (!parentBlocking) {
-      void queueIssueAssignmentWakeup({
-        heartbeat,
-        issue,
-        reason: "issue_assigned",
-        mutation: "create",
-        contextSource: "issue.create",
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-      });
-    } else {
-      logger.info({ issueId: issue.id, parentId: issue.parentId }, "skipping wakeup — parent not done yet");
-    }
+    void queueIssueAssignmentWakeup({
+      heartbeat,
+      issue,
+      reason: "issue_assigned",
+      mutation: "create",
+      contextSource: "issue.create",
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
 
     res.status(201).json(issue);
   });
