@@ -547,6 +547,8 @@ const NumberField = React.memo(({
   error,
   defaultValue,
   type,
+  minimum,
+  maximum,
 }: {
   value: unknown;
   onChange: (val: unknown) => void;
@@ -557,6 +559,8 @@ const NumberField = React.memo(({
   error?: string;
   defaultValue?: unknown;
   type: "number" | "integer";
+  minimum?: number;
+  maximum?: number;
 }) => (
   <FieldWrapper
     label={label}
@@ -568,6 +572,8 @@ const NumberField = React.memo(({
     <Input
       type="number"
       step={type === "integer" ? "1" : "any"}
+      min={minimum}
+      max={maximum}
       value={value !== undefined ? String(value) : ""}
       onChange={(e) => {
         const val = e.target.value;
@@ -901,6 +907,8 @@ const FormField = React.memo(({
           error={error}
           defaultValue={propSchema.default}
           type={type as "number" | "integer"}
+          minimum={propSchema.minimum ?? propSchema.exclusiveMinimum}
+          maximum={propSchema.maximum ?? propSchema.exclusiveMaximum}
         />
       );
 
