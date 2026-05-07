@@ -336,6 +336,16 @@ describe("IssueChatThread", () => {
     expect(container.textContent).toContain("Jump to latest");
     expect(container.textContent).not.toContain("Chat (");
 
+    const threadRoot = container.querySelector('[data-testid="thread-root"]');
+    const jumpButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    );
+    expect(threadRoot).not.toBeNull();
+    expect(jumpButton).toBeDefined();
+    expect(
+      threadRoot?.compareDocumentPosition(jumpButton!),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");

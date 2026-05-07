@@ -4148,18 +4148,6 @@ export function IssueChatThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
-        {resolvedShowJumpToLatest ? (
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleJumpToLatest}
-              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-            >
-              Jump to latest
-            </button>
-          </div>
-        ) : null}
-
         <IssueChatErrorBoundary
           resetKey={errorBoundaryResetKey}
           messages={messages}
@@ -4204,8 +4192,8 @@ export function IssueChatThread({
                     stoppingRunId={stoppingRunId}
                     interruptingQueuedRunId={interruptingQueuedRunId}
                   />
-              ))
-            )}
+                ))
+              )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
                   <IssueBlockedNotice
@@ -4232,6 +4220,18 @@ export function IssueChatThread({
             </div>
           </div>
         </IssueChatErrorBoundary>
+
+        {resolvedShowJumpToLatest ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Jump to latest
+            </button>
+          </div>
+        ) : null}
 
         {showComposer ? (
           <div
