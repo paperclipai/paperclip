@@ -3650,36 +3650,91 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
-    if (!stale) return null;
+    return db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) {
+        return { adopted: null, latest: null };
+      }
 
-    const now = new Date();
-    const adopted = await db
-      .update(issues)
-      .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
-        executionLockedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.id, input.issueId),
-          eq(issues.status, "in_progress"),
-          eq(issues.assigneeAgentId, input.actorAgentId),
-          eq(issues.checkoutRunId, input.expectedCheckoutRunId),
-        ),
-      )
-      .returning({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .then((rows) => rows[0] ?? null);
+      if (
+        lockedIssue.status !== "in_progress" ||
+        lockedIssue.assigneeAgentId !== input.actorAgentId ||
+        lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
+      ) {
+        return { adopted: null, latest: lockedIssue };
+      }
 
-    return adopted;
+      const [existingRun, actorRun] = await Promise.all([
+        tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
+          .then((rows) => rows[0] ?? null),
+        tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.actorRunId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      if (!stale || !actorLive) {
+        return { adopted: null, latest: lockedIssue };
+      }
+
+      const now = new Date();
+      const adopted = await tx
+        .update(issues)
+        .set({
+          checkoutRunId: input.actorRunId,
+          executionRunId: input.actorRunId,
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+          ),
+        )
+        .returning({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .then((rows) => rows[0] ?? null);
+      if (adopted) {
+        return { adopted, latest: adopted };
+      }
+
+      const latest = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      return { adopted: null, latest };
+    });
   }
 
   async function adoptUnownedCheckoutRun(input: {
@@ -5469,13 +5524,13 @@ export function issueService(db: Db) {
         current.checkoutRunId &&
         current.checkoutRunId !== checkoutRunId
       ) {
-        const adopted = await adoptStaleCheckoutRun({
+        const staleAdoption = await adoptStaleCheckoutRun({
           issueId: id,
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
         });
-        if (adopted) {
+        if (staleAdoption.adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
@@ -5507,77 +5562,137 @@ export function issueService(db: Db) {
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
-      const current = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
+      const loadCurrent = () =>
+        db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+      const current = await loadCurrent();
 
       if (!current) throw notFound("Issue not found");
 
-      if (
-        current.status === "in_progress" &&
-        current.assigneeAgentId === actorAgentId &&
-        sameRunLock(current.checkoutRunId, actorRunId)
-      ) {
-        return { ...current, adoptedFromRunId: null as string | null };
-      }
-
-      if (
-        actorRunId &&
-        current.status === "in_progress" &&
-        current.assigneeAgentId === actorAgentId &&
-        current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === actorRunId)
-      ) {
-        const adopted = await adoptUnownedCheckoutRun({
-          issueId: id,
-          actorAgentId,
-          actorRunId,
-        });
-
-        if (adopted) {
-          return {
-            ...adopted,
-            adoptedFromRunId: null as string | null,
-          };
+      const resolveSameRunOwnership = (candidate: {
+        id: string;
+        status: string;
+        assigneeAgentId: string | null;
+        checkoutRunId: string | null;
+        executionRunId: string | null;
+      }) => {
+        if (
+          candidate.status === "in_progress" &&
+          candidate.assigneeAgentId === actorAgentId &&
+          sameRunLock(candidate.checkoutRunId, actorRunId)
+        ) {
+          return { ...candidate, adoptedFromRunId: null as string | null };
         }
-      }
+        return null;
+      };
 
-      if (
-        actorRunId &&
-        current.status === "in_progress" &&
-        current.assigneeAgentId === actorAgentId &&
-        current.checkoutRunId &&
-        current.checkoutRunId !== actorRunId
-      ) {
-        const adopted = await adoptStaleCheckoutRun({
-          issueId: id,
-          actorAgentId,
-          actorRunId,
-          expectedCheckoutRunId: current.checkoutRunId,
-        });
+      const resolveOwnership = async (
+        candidate: {
+          id: string;
+          status: string;
+          assigneeAgentId: string | null;
+          checkoutRunId: string | null;
+          executionRunId: string | null;
+        },
+      ) => {
+        const sameRunOwnership = resolveSameRunOwnership(candidate);
+        if (sameRunOwnership) return { ownership: sameRunOwnership, latest: null };
 
-        if (adopted) {
-          return {
-            ...adopted,
-            adoptedFromRunId: current.checkoutRunId,
-          };
+        if (
+          actorRunId &&
+          candidate.status === "in_progress" &&
+          candidate.assigneeAgentId === actorAgentId &&
+          candidate.checkoutRunId == null &&
+          (candidate.executionRunId == null || candidate.executionRunId === actorRunId)
+        ) {
+          const adopted = await adoptUnownedCheckoutRun({
+            issueId: id,
+            actorAgentId,
+            actorRunId,
+          });
+
+          if (adopted) {
+            return {
+              ownership: {
+                ...adopted,
+                adoptedFromRunId: null as string | null,
+              },
+              latest: null,
+            };
+          }
+        }
+
+        if (
+          actorRunId &&
+          candidate.status === "in_progress" &&
+          candidate.assigneeAgentId === actorAgentId &&
+          candidate.checkoutRunId &&
+          candidate.checkoutRunId !== actorRunId
+        ) {
+          const previousCheckoutRunId = candidate.checkoutRunId;
+          const staleAdoption = await adoptStaleCheckoutRun({
+            issueId: id,
+            actorAgentId,
+            actorRunId,
+            expectedCheckoutRunId: previousCheckoutRunId,
+          });
+
+          if (staleAdoption.adopted) {
+            return {
+              ownership: {
+                ...staleAdoption.adopted,
+                adoptedFromRunId: previousCheckoutRunId,
+              },
+              latest: null,
+            };
+          }
+
+          if (staleAdoption.latest) {
+            const latestOwnership = resolveSameRunOwnership(staleAdoption.latest);
+            if (latestOwnership) return { ownership: latestOwnership, latest: staleAdoption.latest };
+            return { ownership: null, latest: staleAdoption.latest };
+          }
+        }
+
+        return { ownership: null, latest: null };
+      };
+
+      const resolved = await resolveOwnership(current);
+      if (resolved.ownership) return resolved.ownership;
+
+      const latest = resolved.latest ?? await loadCurrent();
+      if (!latest) throw notFound("Issue not found");
+      if (!resolved.latest) {
+        const resolvedLatest = await resolveOwnership(latest);
+        if (resolvedLatest.ownership) return resolvedLatest.ownership;
+        if (resolvedLatest.latest) {
+          throw conflict("Issue run ownership conflict", {
+            issueId: resolvedLatest.latest.id,
+            status: resolvedLatest.latest.status,
+            assigneeAgentId: resolvedLatest.latest.assigneeAgentId,
+            checkoutRunId: resolvedLatest.latest.checkoutRunId,
+            executionRunId: resolvedLatest.latest.executionRunId,
+            actorAgentId,
+            actorRunId,
+          });
         }
       }
 
       throw conflict("Issue run ownership conflict", {
-        issueId: current.id,
-        status: current.status,
-        assigneeAgentId: current.assigneeAgentId,
-        checkoutRunId: current.checkoutRunId,
-        executionRunId: current.executionRunId,
+        issueId: latest.id,
+        status: latest.status,
+        assigneeAgentId: latest.assigneeAgentId,
+        checkoutRunId: latest.checkoutRunId,
+        executionRunId: latest.executionRunId,
         actorAgentId,
         actorRunId,
       });

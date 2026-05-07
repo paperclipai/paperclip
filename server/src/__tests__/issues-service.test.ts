@@ -4734,3 +4734,173 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adoption", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-owner-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedOwnershipIssue(params: {
+    checkoutStatus: "running" | "failed" | "timed_out";
+    actorRunStatus?: "running" | "failed" | "timed_out" | "succeeded";
+    assigneeMatchesActor?: boolean;
+  }) {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const actorAgentId = params.assigneeMatchesActor === false ? randomUUID() : assigneeAgentId;
+    const staleRunId = randomUUID();
+    const actorRunId = randomUUID();
+    const issueId = randomUUID();
+    const actorRunStatus = params.actorRunStatus ?? "running";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentRows = [
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Assignee",
+        role: "engineer" as const,
+        status: "active" as const,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ];
+    if (actorAgentId !== assigneeAgentId) {
+      agentRows.push({
+        id: actorAgentId,
+        companyId,
+        name: "Actor",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(agents).values(agentRows);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: params.checkoutStatus,
+        invocationSource: "manual",
+        finishedAt: params.checkoutStatus === "running" ? null : new Date(),
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId: actorAgentId,
+        status: actorRunStatus,
+        invocationSource: "manual",
+        startedAt: actorRunStatus === "running" ? new Date() : null,
+        finishedAt: actorRunStatus === "running" ? null : new Date(),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout owner recovery",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionLockedAt: new Date(),
+      executionAgentNameKey: "assignee",
+    });
+
+    return { issueId, assigneeAgentId, actorAgentId, staleRunId, actorRunId };
+  }
+
+  it("lets the current assignee adopt a stale terminal checkout owner", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+
+    const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.executionRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBe(seeded.staleRunId);
+  });
+
+  it("treats timed_out checkout owners as stale and recoverable", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "timed_out" });
+
+    const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBe(seeded.staleRunId);
+  });
+
+  it("does not allow non-assignees to adopt stale checkout ownership", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", assigneeMatchesActor: false });
+
+    await expect(
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("keeps live checkout owners protected with a 409 conflict", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "running" });
+
+    await expect(
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("does not let terminal actor runs adopt stale checkout ownership", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", actorRunStatus: "succeeded" });
+
+    await expect(
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: seeded.staleRunId,
+      executionRunId: null,
+    });
+  });
+
+});
