@@ -999,6 +999,99 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
   };
 }
 
+export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
+  env: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  executionCwd?: string | null;
+  executionTargetIsRemote?: boolean;
+}): Record<string, string> {
+  const nextEnv = Object.fromEntries(
+    Object.entries(input.env)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  ) as Record<string, string>;
+  const localWorkspaceCwd = typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+    ? path.resolve(input.workspaceCwd)
+    : null;
+  const remoteWorkspaceCwd = typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+    ? path.resolve(input.executionCwd)
+    : null;
+
+  if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
+    return nextEnv;
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!key.endsWith("_WORKSPACE_CWD")) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (path.resolve(trimmed) !== localWorkspaceCwd) continue;
+    nextEnv[key] = remoteWorkspaceCwd;
+  }
+
+  return nextEnv;
+}
+
+export function refreshPaperclipWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  envConfig?: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  workspaceSource?: string | null;
+  workspaceStrategy?: string | null;
+  workspaceId?: string | null;
+  workspaceRepoUrl?: string | null;
+  workspaceRepoRef?: string | null;
+  workspaceBranch?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  agentHome?: string | null;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: input.workspaceCwd,
+    workspaceWorktreePath: input.workspaceWorktreePath,
+    workspaceHints: input.workspaceHints,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+    executionCwd: input.executionCwd,
+  });
+
+  delete input.env.PAPERCLIP_WORKSPACE_CWD;
+  delete input.env.PAPERCLIP_WORKSPACE_WORKTREE_PATH;
+  delete input.env.PAPERCLIP_WORKSPACES_JSON;
+
+  applyPaperclipWorkspaceEnv(input.env, {
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
+    workspaceSource: input.workspaceSource,
+    workspaceStrategy: input.workspaceStrategy,
+    workspaceId: input.workspaceId,
+    workspaceRepoUrl: input.workspaceRepoUrl,
+    workspaceRepoRef: input.workspaceRepoRef,
+    workspaceBranch: input.workspaceBranch,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
+    agentHome: input.agentHome,
+  });
+
+  if (shapedWorkspaceEnv.workspaceHints.length > 0) {
+    input.env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
+  }
+
+  const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
+    env: input.envConfig ?? {},
+    workspaceCwd: input.workspaceCwd,
+    executionCwd: shapedWorkspaceEnv.workspaceCwd,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+  });
+  for (const [key, value] of Object.entries(shapedEnvConfig)) {
+    input.env[key] = value;
+  }
+
+  return shapedWorkspaceEnv;
+}
+
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
