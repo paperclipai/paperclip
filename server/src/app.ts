@@ -1140,6 +1140,42 @@ TIKTOK_OPEN_ID=${openId}
     }
   });
 
+  // ── Fix trading agent scripts in DiscontrolsBags ────────────────────────────
+  // Usage: GET /api/internal/fix-trading-scripts?secret=<ADMIN_SECRET>
+  app.get("/api/internal/fix-trading-scripts", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    if (!secret || secret !== (process.env.ADMIN_SECRET ?? "")) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const TRADING_COMPANY_ID = "866b74e7-79a7-4166-9f9f-025faa751aa1";
+    const FIXES = [
+      { name: "Market Scanner",        args: ["agents/trading/stock_analyzer.py"],     timeoutSec: 120 },
+      { name: "Probability Estimator", args: ["agents/trading/strategy_designer.py"],  timeoutSec: 120 },
+      { name: "Risk Manager",          args: ["agents/trading/strategy_critic.py"],     timeoutSec: 60  },
+      { name: "Executor",              args: ["agents/trading/strategy_optimizer.py"],  timeoutSec: 120 },
+    ];
+    try {
+      const existing: { id: string; name: string; adapterConfig: unknown }[] = await (db as any)
+        .select({ id: agentsTable.id, name: agentsTable.name, adapterConfig: agentsTable.adapterConfig })
+        .from(agentsTable)
+        .where(eq(agentsTable.companyId, TRADING_COMPANY_ID));
+
+      const results: Record<string, { id: string; updated: boolean }> = {};
+      for (const fix of FIXES) {
+        const agent = existing.find(a => a.name.toLowerCase() === fix.name.toLowerCase());
+        if (!agent) { results[fix.name] = { id: "not found", updated: false }; continue; }
+        const current = (agent.adapterConfig as Record<string, unknown>) ?? {};
+        await (db as any).update(agentsTable)
+          .set({ adapterConfig: { ...current, args: fix.args, timeoutSec: fix.timeoutSec } })
+          .where(eq(agentsTable.id, agent.id));
+        results[fix.name] = { id: agent.id, updated: true };
+      }
+      res.json({ ok: true, results });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Quick fix: set timeoutSec on process agents by ID ───────────────────────
   // Auth: Bearer <PAPERCLIP_API_KEY>
   // Usage: GET /api/internal/fix-agent-timeout?id=<agent-id>&timeoutSec=1800
