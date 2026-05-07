@@ -1190,6 +1190,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
+    let streamLifecycleCompleted = false;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
 
     const onEvent = async (frame: GatewayEventFrame) => {
@@ -1236,6 +1237,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const phase = nonEmpty(data.phase)?.toLowerCase();
         if (phase === "error" || phase === "failed" || phase === "cancelled") {
           lifecycleError = nonEmpty(data.error) ?? nonEmpty(data.message) ?? lifecycleError;
+        } else if (phase === "complete" || phase === "completed" || phase === "succeeded" || phase === "done" || phase === "ok") {
+          streamLifecycleCompleted = true;
         }
       }
     };
@@ -1388,13 +1391,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
-      const summaryFromEvents = assistantChunks.join("").trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
         extractResultText(acceptedPayload) ??
         extractResultText(asRecord(latestResultPayload)) ??
         null;
-      const summary = summaryFromEvents || summaryFromPayload || null;
+      const rawEventText = assistantChunks.join("").trim();
+      const eventStreamTrustworthy = lifecycleError === null;
+      if (rawEventText.length > 0 && !eventStreamTrustworthy) {
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] dropping ${rawEventText.length}-char partial assistant stream (lifecycleError=${lifecycleError ?? "unset"} completed=${streamLifecycleCompleted}); will not surface as summary\n`,
+        );
+      }
+      const summaryFromEvents = eventStreamTrustworthy ? rawEventText : "";
+      const summary = summaryFromPayload || summaryFromEvents || null;
 
       const acceptedResult = asRecord(acceptedPayload?.result);
       const latestPayload = asRecord(latestResultPayload);
