@@ -406,10 +406,10 @@ function ApprovalInboxRow({
   selected?: boolean;
   className?: string;
 }) {
-  const { t } = useTranslation("inbox");
-  const { t: tApprovals } = useTranslation("approvals");
+  const { t, i18n } = useTranslation("inbox");
+  const { t: ta } = useTranslation("approvals");
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const label = ta(`payload.type_${approval.type}`, { defaultValue: approvalLabel(approval.type, null) }) + approvalLabel(approval.type, approval.payload as Record<string, unknown> | null).slice(approvalLabel(approval.type, null).length);
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
@@ -472,9 +472,9 @@ function ApprovalInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>{tApprovals(`status.${approval.status}`)}</span>
+              <span>{ta(`status.${approval.status}`)}</span>
               {requesterName ? <span>{t("misc.requested_by", { name: requesterName })}</span> : null}
-              <span>{t("misc.updated_time", { time: timeAgo(approval.updatedAt) })}</span>
+              <span>{t("misc.updated_time", { time: timeAgo(approval.updatedAt, i18n.language) })}</span>
             </span>
           </span>
         </Link>
