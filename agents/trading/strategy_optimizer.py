@@ -102,20 +102,21 @@ def main():
         post_issue_result("❌ Strategy Optimizer: no se encontró el Pine Script original en el input.")
         sys.exit(1)
 
-    quality = critique.get("overall_quality", "needs_improvement")
+    # Soporta tanto claves largas (legacy) como cortas (nuevo Critic compacto)
+    quality = critique.get("q", critique.get("overall_quality", "needs_improvement"))
     post_issue_comment(f"⚙️ Strategy Optimizer — refinando estrategia (calidad base: `{quality}`)...")
     print(f"⚙️ Optimizando Pine Script ({len(original)} chars)...", flush=True)
 
-    params_str = json.dumps(critique.get("parameter_suggestions", {}), ensure_ascii=False)
+    params_str = json.dumps(critique.get("p", critique.get("parameter_suggestions", {})), ensure_ascii=False)
     prompt = OPTIMIZER_PROMPT.format(
         original_script = original,
         quality         = quality,
-        syntax_issues   = "; ".join(critique.get("syntax_issues", []) or ["Ninguno"]),
-        logic_issues    = "; ".join(critique.get("logic_issues", []) or ["Ninguno"]),
+        syntax_issues   = "; ".join(critique.get("syn", critique.get("syntax_issues", [])) or ["Ninguno"]),
+        logic_issues    = "; ".join(critique.get("log", critique.get("logic_issues", [])) or ["Ninguno"]),
         lookahead       = critique.get("lookahead_explanation", "Ninguno detectado"),
-        overfitting     = critique.get("overfitting_risk", "unknown"),
+        overfitting     = critique.get("ov", critique.get("overfitting_risk", "unknown")),
         params          = params_str,
-        summary         = critique.get("summary", ""),
+        summary         = critique.get("s", critique.get("summary", "")),
     )
 
     response = call_llm(
@@ -138,14 +139,16 @@ def main():
     print(f"  ✅ Pine Script optimizado ({len(pine_optimized)} chars)", flush=True)
 
     changes = []
-    if critique.get("syntax_issues"):
-        changes.append(f"✅ {len(critique['syntax_issues'])} errores de sintaxis corregidos")
-    if critique.get("logic_issues"):
-        changes.append(f"✅ {len(critique['logic_issues'])} problemas lógicos resueltos")
-    if critique.get("lookahead_bias"):
+    syn = critique.get("syn", critique.get("syntax_issues", []))
+    log = critique.get("log", critique.get("logic_issues", []))
+    if syn:
+        changes.append(f"✅ {len(syn)} errores de sintaxis corregidos")
+    if log:
+        changes.append(f"✅ {len(log)} problemas lógicos resueltos")
+    if critique.get("la", critique.get("lookahead_bias")):
         changes.append("✅ Look-ahead bias eliminado")
-    if critique.get("parameter_suggestions"):
-        changes.append(f"✅ {len(critique['parameter_suggestions'])} parámetros optimizados")
+    if critique.get("p", critique.get("parameter_suggestions")):
+        changes.append(f"✅ parámetros optimizados")
 
     lines = ["# ⚙️ STRATEGY OPTIMIZER — Pine Script Refinado\n"]
     if changes:
