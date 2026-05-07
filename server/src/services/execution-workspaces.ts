@@ -4,7 +4,13 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  executionWorkspaces,
+  issues,
+  projects,
+  projectWorkspaces,
+  workspaceRuntimeServices,
+} from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
@@ -358,6 +364,29 @@ function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
 }
 
+/**
+ * Hydrates cwd/repo fields from linked project workspaces when sparse, and exposes `repoRef` for tooling
+ * (canonical branch/ref derived from execution `baseRef` or project_workspace).
+ */
+export function hydrateExecutionWorkspaceSnapshotForApi(
+  workspace: ExecutionWorkspace,
+  projectWorkspace: {
+    cwd: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  } | null,
+): ExecutionWorkspace & { repoRef: string | null } {
+  const cwd = readNullableString(workspace.cwd) ?? readNullableString(projectWorkspace?.cwd);
+  const repoUrl = readNullableString(workspace.repoUrl) ?? readNullableString(projectWorkspace?.repoUrl);
+  const repoRef = readNullableString(workspace.baseRef) ?? readNullableString(projectWorkspace?.repoRef);
+  return {
+    ...workspace,
+    cwd,
+    repoUrl,
+    repoRef,
+  };
+}
+
 async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   db: Db,
   companyId: string,
@@ -472,6 +501,78 @@ export function executionWorkspaceService(db: Db) {
         row,
         (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
       );
+    },
+
+    /**
+     * Resolves the workspace snapshot returned on issue APIs: direct issue link, else the active shared
+     * session for the issue or project-primary project workspace. Merges cwd/repo/ref from project_workspace.
+     */
+    resolveSnapshotForIssue: async (
+      companyId: string,
+      issue: {
+        executionWorkspaceId: string | null;
+        projectWorkspaceId: string | null;
+      },
+      fallbackPrimaryProjectWorkspaceId: string | null,
+    ): Promise<(ExecutionWorkspace & { repoRef: string | null }) | null> => {
+      let workspace: ExecutionWorkspace | null = null;
+      if (issue.executionWorkspaceId) {
+        const row = await db
+          .select()
+          .from(executionWorkspaces)
+          .where(
+            and(eq(executionWorkspaces.id, issue.executionWorkspaceId), eq(executionWorkspaces.companyId, companyId)),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!row) {
+          workspace = null;
+        } else {
+          const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, [row]);
+          workspace = toExecutionWorkspace(
+            row,
+            (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+          );
+        }
+      } else {
+        const effectiveProjectWorkspaceId = issue.projectWorkspaceId ?? fallbackPrimaryProjectWorkspaceId ?? null;
+        if (effectiveProjectWorkspaceId) {
+          const conditions = buildListConditions(companyId, {
+            projectWorkspaceId: effectiveProjectWorkspaceId,
+            status: "active,idle,in_review",
+          });
+          const rows = await db
+            .select()
+            .from(executionWorkspaces)
+            .where(and(...conditions))
+            .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+          const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
+          const workspaces = rows.map((row) =>
+            toExecutionWorkspace(
+              row,
+              (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+            ),
+          );
+          workspace =
+            workspaces.find((w) => w.mode === "shared_workspace") ?? workspaces[0] ?? null;
+        }
+      }
+
+      if (!workspace) return null;
+
+      const pwId = workspace.projectWorkspaceId;
+      const pwRow = pwId
+        ? await db
+            .select({
+              cwd: projectWorkspaces.cwd,
+              repoUrl: projectWorkspaces.repoUrl,
+              repoRef: projectWorkspaces.repoRef,
+            })
+            .from(projectWorkspaces)
+            .where(and(eq(projectWorkspaces.id, pwId), eq(projectWorkspaces.companyId, companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+
+      return hydrateExecutionWorkspaceSnapshotForApi(workspace, pwRow);
     },
 
     getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
