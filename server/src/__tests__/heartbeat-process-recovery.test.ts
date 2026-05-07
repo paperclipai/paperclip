@@ -25,6 +25,8 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -330,6 +332,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRelations);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -354,6 +358,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     await db.delete(agentWakeupRequests);
     await db.delete(budgetPolicies);
+    // routineTriggers → routines must be deleted before agents (FK: routines.assignee_agent_id)
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
       try {
@@ -2826,5 +2833,262 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("caps explicit stranded recovery issue creation to one per source issue inside 1h", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const recoveryIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Recover stalled issue T-1",
+      status: "cancelled",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "stranded_issue_recovery",
+      originId: issueId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    const recoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
+    expect(recoveries.map((issue) => issue.id)).toEqual([recoveryIssueId]);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("1h recovery cap window");
+  });
+
+  it("pauses stranded recovery when a source issue exhausts the 24h automatic retry budget", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const now = new Date();
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 4 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        startedAt: new Date(now.getTime() - (index + 2) * 60_000),
+        finishedAt: new Date(now.getTime() - (index + 2) * 60_000 + 30_000),
+        createdAt: new Date(now.getTime() - (index + 2) * 60_000),
+        updatedAt: new Date(now.getTime() - (index + 2) * 60_000 + 30_000),
+        errorCode: "process_lost",
+        error: "retry failed",
+      })),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("consumed 5 automatic recovery attempts inside 24h");
+  });
+
+  it("backs off external rate-limit failures instead of retrying immediately", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "429 RESOURCE_EXHAUSTED: ChatGPT pro limit hit",
+    });
+    const recent = new Date(Date.now() - 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        createdAt: recent,
+        startedAt: recent,
+        finishedAt: recent,
+        updatedAt: recent,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("moves external rate-limit recovery to manual after the backoff ladder is exhausted", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "openclaw_gateway_wait_error",
+      runError: "429 RESOURCE_EXHAUSTED: ChatGPT pro limit hit",
+    });
+    const now = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        createdAt: new Date(now.getTime() - 90 * 60_000),
+        startedAt: new Date(now.getTime() - 90 * 60_000),
+        finishedAt: new Date(now.getTime() - 90 * 60_000),
+        updatedAt: new Date(now.getTime() - 90 * 60_000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          source: "external_rate_limit_backoff",
+        },
+        startedAt: new Date(now.getTime() - (index + 2) * 90 * 60_000),
+        finishedAt: new Date(now.getTime() - (index + 2) * 90 * 60_000 + 30_000),
+        createdAt: new Date(now.getTime() - (index + 2) * 90 * 60_000),
+        updatedAt: new Date(now.getTime() - (index + 2) * 90 * 60_000 + 30_000),
+        errorCode: "openclaw_gateway_wait_error",
+        error: "429 RESOURCE_EXHAUSTED: ChatGPT pro limit hit",
+      })),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("5m → 15m → 1h → manual");
+  });
+
+  it("skips reconcile when issue has an active routine with a future-scheduled cron trigger (external-dependency wake suppression)", async () => {
+    // Reproduces DGG-5074 pattern: blocked issue + future cron wake = self-feedback loop.
+    // The fix adds a guard in hasActiveExecutionPath that recognises a future routine trigger
+    // linked via routines.parentIssueId, preventing reconcileStrandedAssignedIssues from
+    // re-queuing a recovery wake that would produce a self-comment triggering yet another wake.
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+
+    // Promote the issue to in_progress (the status that triggers reconcile candidates).
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    // Create an active routine whose parentIssueId points at this issue.
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "External-dependency follow-up routine",
+      assigneeAgentId: agentId,
+      parentIssueId: issueId,
+      status: "active",
+    });
+
+    // Attach a cron trigger with nextRunAt in the future.
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // +7 days
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 13 5 *",
+      nextRunAt: futureDate,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Must be skipped — routine schedule satisfies hasActiveExecutionPath.
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    // No recovery wakeup should have been enqueued.
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.companyId, companyId)));
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("still reconciles todo issue when the linked routine trigger nextRunAt is in the past (expired schedule)", async () => {
+    // If the cron trigger already fired (nextRunAt <= now), the future-schedule guard must NOT suppress
+    // reconcile — the issue is genuinely stranded. We use a 'todo' issue with no prior run so reconcile
+    // will attempt assignment dispatch, making the assertion unambiguous.
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    // Keep status as 'todo' (seedAssignedTodoNoRunFixture default) so the assignment dispatch path fires.
+
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Expired routine",
+      assigneeAgentId: agentId,
+      parentIssueId: issueId,
+      status: "active",
+    });
+
+    // Trigger whose nextRunAt is in the past — guard must not fire.
+    const pastDate = new Date(Date.now() - 60 * 1000); // 1 min ago
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "* * * * *",
+      nextRunAt: pastDate,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Should NOT be suppressed — the past-dated trigger is not a live path.
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.companyId, companyId)));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      reason: "issue_assigned",
+      payload: expect.objectContaining({ issueId }),
+    });
   });
 });

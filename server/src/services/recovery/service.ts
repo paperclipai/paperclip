@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -16,9 +16,12 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -64,6 +67,11 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const STRANDED_RECOVERY_RECENT_ISSUE_CAP_MS = 60 * 60 * 1000;
+const STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1000;
+const STRANDED_RECOVERY_RETRY_BUDGET_MAX_ATTEMPTS = 5;
+const EXTERNAL_RATE_LIMIT_BACKOFF_DELAYS_MS = [5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000] as const;
+const EXTERNAL_RATE_LIMIT_RECOVERY_REASON = "external_rate_limit_backoff";
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -83,7 +91,16 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  | "id"
+  | "agentId"
+  | "status"
+  | "error"
+  | "errorCode"
+  | "resultJson"
+  | "contextSnapshot"
+  | "livenessState"
+  | "finishedAt"
+  | "createdAt"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -267,6 +284,52 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function isAutomaticStrandedRecoveryRetryReason(value: unknown) {
+  return value === "assignment_recovery" || value === "issue_continuation_needed";
+}
+
+function stringifyForRecoveryDetection(value: unknown) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function isExternalRateLimitRun(run: LatestIssueRun) {
+  if (!run) return false;
+  const haystack = [
+    run.errorCode,
+    run.error,
+    stringifyForRecoveryDetection(run.resultJson),
+    stringifyForRecoveryDetection(run.contextSnapshot),
+  ].join("\n").toLowerCase();
+
+  return [
+    "429",
+    "rate limit",
+    "rate_limit",
+    "resource_exhausted",
+    "quota",
+    "usage limit",
+    "pro limit",
+    "chatgpt pro",
+    "openclaw_gateway_wait_error",
+    "gateway_wait_error",
+    "too many requests",
+  ].some((needle) => haystack.includes(needle));
+}
+
+function runTerminalAt(run: LatestIssueRun) {
+  return run?.finishedAt ?? run?.createdAt ?? null;
+}
+
+function parseRecoveryRunRetryReason(run: LatestIssueRun) {
+  return readNonEmptyString(parseObject(run?.contextSnapshot).retryReason);
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -377,8 +440,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -392,8 +458,82 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRecentIssueRuns(companyId: string, issueId: string, since: Date) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          gt(heartbeatRuns.createdAt, since),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(100);
+  }
+
+  async function countRecentAutomaticStrandedRecoveryAttempts(companyId: string, issueId: string, now = new Date()) {
+    const since = new Date(now.getTime() - STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS);
+    const rows = await getRecentIssueRuns(companyId, issueId, since);
+    return rows.filter((run) => isAutomaticStrandedRecoveryRetryReason(parseRecoveryRunRetryReason(run))).length;
+  }
+
+  async function getRecentExternalRateLimitRuns(companyId: string, issueId: string, now = new Date()) {
+    const since = new Date(now.getTime() - STRANDED_RECOVERY_RETRY_BUDGET_WINDOW_MS);
+    const rows = await getRecentIssueRuns(companyId, issueId, since);
+    return rows.filter((run) => isUnsuccessfulTerminalIssueRun(run) && isExternalRateLimitRun(run));
+  }
+
+  async function evaluateExternalRateLimitBackoff(companyId: string, issueId: string, latestRun: LatestIssueRun, now = new Date()) {
+    if (!latestRun || !isUnsuccessfulTerminalIssueRun(latestRun) || !isExternalRateLimitRun(latestRun)) {
+      return { kind: "none" as const };
+    }
+
+    const recentRateLimitRuns = await getRecentExternalRateLimitRuns(companyId, issueId, now);
+    const latestIncluded = recentRateLimitRuns.some((run) => run.id === latestRun.id);
+    const attempt = Math.max(1, recentRateLimitRuns.length + (latestIncluded ? 0 : 1));
+    const delayMs = EXTERNAL_RATE_LIMIT_BACKOFF_DELAYS_MS[attempt - 1];
+    if (typeof delayMs !== "number") {
+      return { kind: "manual" as const, attempt };
+    }
+
+    const completedAt = runTerminalAt(latestRun);
+    if (!completedAt) return { kind: "retry_now" as const, attempt, delayMs };
+    const readyAt = new Date(completedAt.getTime() + delayMs);
+    if (readyAt.getTime() > now.getTime()) {
+      return { kind: "wait" as const, attempt, delayMs, readyAt };
+    }
+
+    return { kind: "retry_now" as const, attempt, delayMs };
+  }
+
+  /**
+   * Returns true when there is already an active or future-scheduled execution path for the issue,
+   * so reconcileStrandedAssignedIssues can safely skip recovery.
+   *
+   * Paths recognised:
+   * 1. An in-flight heartbeat run (queued / running / scheduled_retry)
+   * 2. A deferred wakeup request keyed to the issue
+   * 3. An active routine with a future-scheduled cron trigger whose parentIssueId matches the issue
+   *    — covers the "blocked + external-dependency" pattern where the issue is intentionally parked
+   *    until a scheduled cron fires (e.g. CEO return date).  Without this guard the reconciler
+   *    repeatedly wakes the issue, which in turn produces a self-comment that triggers another wake.
+   */
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const now = new Date();
+    const [run, deferredWake, futureRoutine] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -418,9 +558,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      // Guard: active routine with a future cron trigger linked to this issue.
+      // The join uses routines.parentIssueId which records the issue the routine was
+      // created to serve (set at routine creation time).
+      db
+        .select({ id: routines.id })
+        .from(routines)
+        .innerJoin(routineTriggers, eq(routineTriggers.routineId, routines.id))
+        .where(
+          and(
+            eq(routines.companyId, companyId),
+            eq(routines.parentIssueId, issueId),
+            eq(routines.status, "active"),
+            eq(routineTriggers.enabled, true),
+            gt(routineTriggers.nextRunAt, now),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || futureRoutine);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -436,6 +594,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  /**
+   * Returns true if the most recent comment on the issue was written by the assignee agent itself
+   * (a "self-comment"). Used to suppress productive-terminal continuation recovery when the agent
+   * left a status comment and then exited — re-dispatching immediately would produce a loop.
+   */
+  async function isLatestCommentBySelf(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const latest = await db
+      .select({ authorAgentId: issueComments.authorAgentId })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          isNotNull(issueComments.authorAgentId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return latest?.authorAgentId === agentId;
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -1313,6 +1497,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findRecentStrandedIssueRecoveryIssue(companyId: string, sourceIssueId: string, now = new Date()) {
+    const since = new Date(now.getTime() - STRANDED_RECOVERY_RECENT_ISSUE_CAP_MS);
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          isNull(issues.hiddenAt),
+          gt(issues.createdAt, since),
+        ),
+      )
+      .orderBy(desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
@@ -1428,13 +1631,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
-    if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+    if (isStrandedIssueRecoveryIssue(input.issue)) {
+      return { issue: null, suppressedReason: "recovery_issue_in_place" as const, recentIssue: null };
+    }
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-    if (existing) return existing;
+    if (existing) return { issue: existing, suppressedReason: null, recentIssue: null };
+
+    const recent = await findRecentStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+    if (recent) {
+      return { issue: null, suppressedReason: "recent_recovery_issue_cap" as const, recentIssue: recent };
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
-    if (!ownerAgentId) return null;
+    if (!ownerAgentId) return { issue: null, suppressedReason: "no_invokable_recovery_owner" as const, recentIssue: null };
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
@@ -1478,7 +1688,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (!isUniqueStrandedIssueRecoveryConflict(error)) throw error;
       const raced = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
       if (!raced) throw error;
-      return raced;
+      return { issue: raced, suppressedReason: null, recentIssue: null };
     }
 
     await deps.enqueueWakeup(ownerAgentId, {
@@ -1504,7 +1714,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }),
     });
 
-    return recovery;
+    return { issue: recovery, suppressedReason: null, recentIssue: null };
   }
 
   function buildRecoveryIssueInPlaceEscalationComment(input: {
@@ -1631,13 +1841,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
+    const recoveryResolution = await ensureStrandedIssueRecoveryIssue({
       issue: input.issue,
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
       recoveryCause: input.recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    const recoveryIssue = recoveryResolution.issue;
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]
@@ -1674,11 +1885,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Recovery owner: ${agentUiLink(recoveryOwner, prefix)}`,
         "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
       ].join("\n")
-      : [
-        "",
-        "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
-        "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
-      ].join("\n");
+      : recoveryResolution.suppressedReason === "recent_recovery_issue_cap" && recoveryResolution.recentIssue
+        ? [
+          "",
+          `- Recovery issue: not created because ${issueUiLink({ identifier: recoveryResolution.recentIssue.identifier, id: recoveryResolution.recentIssue.id }, prefix)} was already created for this source issue inside the 1h recovery cap window.`,
+          "- Next action: keep the existing/canonical recovery thread; Paperclip must not issue another duplicate recovery task for the same source within 1h.",
+        ].join("\n")
+        : [
+          "",
+          "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
+          "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
+        ].join("\n");
 
     if (notice) {
       await issuesSvc.addComment(input.issue.id, notice.body, {}, {
@@ -1713,6 +1930,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRunStatus: input.latestRun?.status ?? null,
         latestRunErrorCode: input.latestRun?.errorCode ?? null,
         recoveryIssueId: recoveryIssue?.id ?? null,
+        recoverySuppressedReason: recoveryResolution.suppressedReason,
+        recentRecoveryIssueId: recoveryResolution.recentIssue?.id ?? null,
         blockerIssueIds: nextBlockerIds,
       },
     });
@@ -1721,6 +1940,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const now = new Date();
     const candidates = await db
       .select()
       .from(issues)
@@ -1769,6 +1989,53 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const recentAutomaticRecoveryAttempts = await countRecentAutomaticStrandedRecoveryAttempts(
+        issue.companyId,
+        issue.id,
+        now,
+      );
+      if (recentAutomaticRecoveryAttempts >= STRANDED_RECOVERY_RETRY_BUDGET_MAX_ATTEMPTS) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: issue.status as "todo" | "in_progress",
+          latestRun,
+          comment:
+            "Paperclip paused automatic stranded-work recovery for this issue because the same source issue " +
+            `already consumed ${recentAutomaticRecoveryAttempts} automatic recovery attempts inside 24h. ` +
+            "Moving it to `blocked` for manual/COO intervention instead of continuing the retry loop.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      const externalRateLimitBackoff = await evaluateExternalRateLimitBackoff(issue.companyId, issue.id, latestRun, now);
+      if (externalRateLimitBackoff.kind === "wait") {
+        result.skipped += 1;
+        continue;
+      }
+      if (externalRateLimitBackoff.kind === "manual") {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: issue.status as "todo" | "in_progress",
+          latestRun,
+          comment:
+            "Paperclip stopped automatic stranded-work recovery after repeated external rate-limit failures. " +
+            "The backoff ladder (`5m → 15m → 1h → manual`) is exhausted; moving this issue to `blocked` for manual/COO intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -1812,6 +2079,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (externalRateLimitBackoff.kind === "retry_now") {
+            if (await isInvocationBudgetBlocked(issue, agentId)) {
+              result.skipped += 1;
+              continue;
+            }
+
+            const queued = await enqueueStrandedIssueRecovery({
+              issueId: issue.id,
+              agentId,
+              reason: "issue_assignment_recovery",
+              retryReason: "assignment_recovery",
+              source: EXTERNAL_RATE_LIMIT_RECOVERY_REASON,
+              retryOfRunId: latestRun!.id,
+            });
+            if (queued) {
+              result.dispatchRequeued += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -1906,6 +2196,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        // AC5 (DGG-5095): Skip productive-terminal re-dispatch when the agent's last run ended with
+        // a productive liveness state (advanced/blocked) AND the most recent comment on the issue was
+        // written by the agent itself.  In that scenario the agent deliberately left a status note and
+        // exited; immediately re-queuing it would produce a self-wake loop.  A human or an external
+        // trigger should resume work instead.
+        if (
+          (successfulRun.livenessState === "advanced" || successfulRun.livenessState === "blocked") &&
+          (await isLatestCommentBySelf(issue.companyId, issue.id, agentId))
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
         if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
           continue;
@@ -1928,6 +2231,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (externalRateLimitBackoff.kind === "retry_now") {
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: EXTERNAL_RATE_LIMIT_RECOVERY_REASON,
+            retryOfRunId: latestRun!.id,
+          });
+          if (queued) {
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,
