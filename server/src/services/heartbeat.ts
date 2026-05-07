@@ -1664,6 +1664,18 @@ function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+function autoResumeResolvedBlockerPruneSource(
+  wakeReason: string | null,
+): string | null {
+  if (wakeReason === "issue_blockers_resolved") {
+    return "heartbeat.issue_blockers_resolved_auto_resume";
+  }
+  if (wakeReason === "issue_children_completed") {
+    return "heartbeat.issue_children_completed_auto_resume";
+  }
+  return null;
+}
+
 function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
@@ -5586,10 +5598,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
-      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
-      const readiness = dependencyReadiness.get(issueId);
-      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      let dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
+      let unresolvedBlockerCount = dependencyReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
+
+      // Preflight blocker recheck (MON-307): If the issue has unresolved blockers,
+      // attempt to prune any that have since become "done". This makes the system
+      // self-healing when an issue_blockers_resolved wake was missed or delayed,
+      // preventing agents from spin-looping on issues whose blockers are already
+      // complete.
+      if (unresolvedBlockerCount > 0) {
+        const prunedBlockers = await issuesSvc.pruneResolvedBlockers(issueId, { agentId: run.agentId });
+        if (prunedBlockers.removedBlockedByIssueIds.length > 0) {
+          logger.info(
+            { runId: run.id, issueId, removedBlockers: prunedBlockers.removedBlockedByIssueIds, remainingBlockers: prunedBlockers.remainingBlockedByIssueIds },
+            "claimQueuedRun: preflight prune removed stale blocker edges",
+          );
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "agent",
+            actorId: run.agentId,
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.blockers_updated",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              source: "heartbeat.preflight_blocker_recheck",
+              blockedByIssueIds: prunedBlockers.remainingBlockedByIssueIds,
+              removedBlockedByIssueIds: prunedBlockers.removedBlockedByIssueIds,
+            },
+          });
+
+          // Re-evaluate dependency readiness after pruning
+          dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
+          unresolvedBlockerCount = dependencyReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
+        }
+      }
+
       if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+        const readiness = dependencyReadiness.get(issueId);
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -6519,7 +6566,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
+    const wakeReason = readNonEmptyString(context.wakeReason);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    const resolvedBlockerPruneSource = autoResumeResolvedBlockerPruneSource(wakeReason);
+    if (issueId && issueContext && resolvedBlockerPruneSource) {
+      // Guard: only prune if the issue still has unresolved blockers to avoid
+      // unnecessary DB round-trips on every standard prune-source wake.
+      const readinessBeforePrune = await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]);
+      if (!readinessBeforePrune.get(issueId)?.isDependencyReady) {
+        const prunedBlockers = await issuesSvc.pruneResolvedBlockers(issueId, { agentId: agent.id });
+        if (prunedBlockers.removedBlockedByIssueIds.length > 0) {
+          await logActivity(db, {
+            companyId: prunedBlockers.companyId,
+            actorType: "agent",
+            actorId: agent.id,
+            agentId: agent.id,
+            runId: run.id,
+            action: "issue.blockers_updated",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              identifier: issueContext.identifier,
+              source: resolvedBlockerPruneSource,
+              blockedByIssueIds: prunedBlockers.remainingBlockedByIssueIds,
+              removedBlockedByIssueIds: prunedBlockers.removedBlockedByIssueIds,
+            },
+          });
+          issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+        }
+      }
+    }
+
+    // MON-307: Preflight blocker recheck on any wake for a blocked issue.
+    // If the issue has unresolved blockers but none of the standard prune sources
+    // applied, attempt to prune anyway. This catches cases where the original
+    // issue_blockers_resolved wake was missed, delayed, or race-conditioned away.
+    if (issueId && issueContext && !resolvedBlockerPruneSource) {
+      const initialReadiness = await issuesSvc
+        .listDependencyReadiness(agent.companyId, [issueId])
+        .then((rows) => rows.get(issueId) ?? null);
+      if (initialReadiness && !initialReadiness.isDependencyReady) {
+        const prunedBlockers = await issuesSvc.pruneResolvedBlockers(issueId, { agentId: agent.id });
+        if (prunedBlockers.removedBlockedByIssueIds.length > 0) {
+          logger.info(
+            { runId: run.id, agentId: agent.id, issueId, wakeReason, removedBlockers: prunedBlockers.removedBlockedByIssueIds, remainingBlockers: prunedBlockers.remainingBlockedByIssueIds },
+            "heartbeat: preflight blocker recheck pruned stale blocker edges",
+          );
+          await logActivity(db, {
+            companyId: prunedBlockers.companyId,
+            actorType: "agent",
+            actorId: agent.id,
+            agentId: agent.id,
+            runId: run.id,
+            action: "issue.blockers_updated",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              identifier: issueContext.identifier,
+              source: "heartbeat.preflight_blocker_recheck",
+              blockedByIssueIds: prunedBlockers.remainingBlockedByIssueIds,
+              removedBlockedByIssueIds: prunedBlockers.removedBlockedByIssueIds,
+            },
+          });
+          issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+        }
+      }
+    }
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;

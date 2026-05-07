@@ -2211,6 +2211,109 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("pruneResolvedBlockers removes done blockers and keeps remaining ones", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerADone = randomUUID();
+    const blockerBDone = randomUUID();
+    const blockerCActive = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerADone, companyId, title: "Blocker A (done)", status: "done", priority: "medium" },
+      { id: blockerBDone, companyId, title: "Blocker B (done)", status: "done", priority: "medium" },
+      { id: blockerCActive, companyId, title: "Blocker C (active)", status: "in_progress", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked issue", status: "todo", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerADone, blockerBDone, blockerCActive] });
+
+    // Before pruning, all 3 blockers are in the relation
+    const readinessBefore = await svc.getDependencyReadiness(blockedId);
+    expect(readinessBefore.blockerIssueIds).toHaveLength(3);
+    expect(readinessBefore.unresolvedBlockerIssueIds).toHaveLength(1);
+    expect(readinessBefore.unresolvedBlockerIssueIds).toContain(blockerCActive);
+    expect(readinessBefore.isDependencyReady).toBe(false);
+
+    // Prune should remove the two done blockers and leave only the active one
+    const pruned = await svc.pruneResolvedBlockers(blockedId, { agentId: null });
+    expect(pruned.removedBlockedByIssueIds).toHaveLength(2);
+    expect(pruned.removedBlockedByIssueIds).toEqual(expect.arrayContaining([blockerADone, blockerBDone]));
+    expect(pruned.remainingBlockedByIssueIds).toEqual([blockerCActive]);
+
+    // After pruning, readiness reflects the pruned state
+    const readinessAfter = await svc.getDependencyReadiness(blockedId);
+    expect(readinessAfter.blockerIssueIds).toHaveLength(1);
+    expect(readinessAfter.unresolvedBlockerIssueIds).toHaveLength(1);
+    expect(readinessAfter.isDependencyReady).toBe(false);
+  });
+
+  it("pruneResolvedBlockers resolves dependency readiness when all blockers are done", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerADone = randomUUID();
+    const blockerBDone = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerADone, companyId, title: "Blocker A (done)", status: "done", priority: "medium" },
+      { id: blockerBDone, companyId, title: "Blocker B (done)", status: "done", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked issue", status: "todo", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerADone, blockerBDone] });
+
+    // Before pruning, dependency readiness is already "ready" because getDependencyReadiness
+    // live-queries blocker statuses. But the stale blocker edges still exist in issueRelations.
+    const readinessBefore = await svc.getDependencyReadiness(blockedId);
+    expect(readinessBefore.isDependencyReady).toBe(true);
+    expect(readinessBefore.unresolvedBlockerCount).toBe(0);
+    // However, blockerIssueIds still contains the done blockers (edges not yet pruned)
+    expect(readinessBefore.blockerIssueIds).toHaveLength(2);
+
+    // Prune removes all done blocker edges
+    const pruned = await svc.pruneResolvedBlockers(blockedId, { agentId: null });
+    expect(pruned.removedBlockedByIssueIds).toHaveLength(2);
+    expect(pruned.remainingBlockedByIssueIds).toEqual([]);
+
+    // After pruning, the blocker edges are removed from issueRelations
+    const readinessAfter = await svc.getDependencyReadiness(blockedId);
+    expect(readinessAfter.unresolvedBlockerCount).toBe(0);
+    expect(readinessAfter.isDependencyReady).toBe(true);
+    expect(readinessAfter.blockerIssueIds).toHaveLength(0);
+  });
+
+  it("pruneResolvedBlockers is idempotent when no blockers are done", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerActive = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerActive, companyId, title: "Blocker (active)", status: "in_progress", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked issue", status: "todo", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerActive] });
+
+    // Pruning when no blockers are done should be a no-op
+    const pruned = await svc.pruneResolvedBlockers(blockedId, { agentId: null });
+    expect(pruned.removedBlockedByIssueIds).toEqual([]);
+    expect(pruned.remainingBlockedByIssueIds).toEqual([blockerActive]);
+  });
+
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
