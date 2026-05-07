@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type AnchorHTMLAttributes, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
@@ -18,6 +18,11 @@ const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
 ));
 
 vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; children: ReactNode }) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
   useNavigate: () => navigateMock,
   useLocation: () => ({ pathname: "/routines", search: currentSearch ? `?${currentSearch}` : "", hash: "" }),
   useSearchParams: () => [new URLSearchParams(currentSearch), vi.fn()],
@@ -445,6 +450,45 @@ describe("Routines page", () => {
     expect(sortButton).not.toBeNull();
     expect(groupButton).not.toBeNull();
     expect(sortButton!.compareDocumentPosition(groupButton!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows a row-level run now button on the routines table", async () => {
+    routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Morning sync" })]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    let runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Run now"),
+    );
+    for (let attempts = 0; attempts < 5 && !runNowButton; attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+      runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Run now"),
+      );
+    }
+
+    expect(runNowButton).toBeTruthy();
 
     await act(async () => {
       root.unmount();
