@@ -412,6 +412,84 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "terminates the child and reports startupHang when no stdout arrives in time",
+    async () => {
+      let observedStdout = "";
+      let observedStderr = "";
+
+      const startedAt = Date.now();
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            // Emit only stderr — this should NOT clear the startup watchdog.
+            "process.stderr.write('boot error: simulated mcp auth required\\n');",
+            // Hang forever, simulating the codex-local startup-hang case.
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 0,
+          graceSec: 1,
+          startupStdoutTimeoutSec: 1,
+          onLog: async (stream, chunk) => {
+            if (stream === "stdout") observedStdout += chunk;
+            else observedStderr += chunk;
+          },
+        },
+      );
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(result.timedOut).toBe(true);
+      expect(result.startupHang).toBe(true);
+      expect(elapsedMs).toBeLessThan(8_000);
+      expect(observedStderr).toContain("[paperclip] startup-hang watchdog");
+      expect(observedStderr).toContain("Last stderr:");
+      expect(observedStderr).toContain("simulated mcp auth required");
+      // Stdout should be empty since the child never wrote to it.
+      expect(observedStdout).toBe("");
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not fire the startup watchdog when the child emits stdout in time",
+    async () => {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.stdout.write('{\"type\":\"thread.started\"}\\n');",
+            "setTimeout(() => process.stdout.write('{\"type\":\"turn.completed\"}\\n'), 100);",
+            "setTimeout(() => process.exit(0), 200);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 0,
+          graceSec: 1,
+          startupStdoutTimeoutSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.timedOut).toBe(false);
+      expect(result.startupHang).toBeUndefined();
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("thread.started");
+      expect(result.stdout).toContain("turn.completed");
+    },
+    10_000,
+  );
 });
 
 describe("renderPaperclipWakePrompt", () => {

@@ -81,6 +81,13 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  /**
+   * If > 0, terminate the process when no stdout chunk is observed within
+   * this many seconds after spawn. The result will carry `timedOut: true`
+   * and `startupHang: true`. Currently only applied for local (non-remote)
+   * execution; remote sandbox/ssh paths fall back to their own `timeoutMs`.
+   */
+  startupStdoutTimeoutSec?: number;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -373,6 +380,7 @@ export async function runAdapterExecutionTargetProcess(
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+    startupStdoutTimeoutSec: options.startupStdoutTimeoutSec,
   });
 }
 

@@ -18,6 +18,12 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  /**
+   * True when the process was terminated by the startup-stdout watchdog
+   * (`startupStdoutTimeoutSec`) because no stdout chunk arrived within
+   * the configured window after spawn. Always paired with `timedOut=true`.
+   */
+  startupHang?: boolean;
 }
 
 export interface TerminalResultCleanupOptions {
@@ -1790,6 +1796,16 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    /**
+     * If > 0, fire SIGTERM (then SIGKILL after `graceSec`) when no stdout
+     * chunk has been observed within this many seconds after spawn. The
+     * resolved {@link RunProcessResult} carries `timedOut: true` and
+     * `startupHang: true` so callers can distinguish a startup hang from
+     * the absolute `timeoutSec` watchdog. Stderr does not clear the timer:
+     * many adapters emit benign stderr noise during init even when their
+     * main loop is wedged.
+     */
+    startupStdoutTimeoutSec?: number;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -1840,6 +1856,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let startupHang = false;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -1849,6 +1866,26 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let startupStdoutTimer: NodeJS.Timeout | null = null;
+        let startupStdoutKillTimer: NodeJS.Timeout | null = null;
+        let firstStdoutSeen = false;
+
+        const clearStartupStdoutWatchdog = () => {
+          if (startupStdoutTimer) {
+            clearTimeout(startupStdoutTimer);
+            startupStdoutTimer = null;
+          }
+          if (startupStdoutKillTimer) {
+            clearTimeout(startupStdoutKillTimer);
+            startupStdoutKillTimer = null;
+          }
+        };
+
+        const tailForLog = (text: string, max: number): string => {
+          const trimmed = text.replace(/[\s ]+$/g, "");
+          if (trimmed.length <= max) return trimmed;
+          return `…${trimmed.slice(-max)}`;
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -1897,6 +1934,7 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
+                clearStartupStdoutWatchdog();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
                   signalRunningProcess({ child, processGroupId }, "SIGKILL");
@@ -1904,11 +1942,48 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        if (
+          typeof opts.startupStdoutTimeoutSec === "number" &&
+          opts.startupStdoutTimeoutSec > 0
+        ) {
+          const startupSec = opts.startupStdoutTimeoutSec;
+          startupStdoutTimer = setTimeout(() => {
+            startupStdoutTimer = null;
+            if (firstStdoutSeen || timedOut || child.killed) return;
+            timedOut = true;
+            startupHang = true;
+            clearTerminalCleanupTimers();
+            const stderrTail = tailForLog(stderr, 1_000);
+            const message =
+              `[paperclip] startup-hang watchdog: no stdout for ${startupSec}s ` +
+              `after spawn (pid=${child.pid ?? "?"}). Sending SIGTERM. ` +
+              (stderrTail.length > 0
+                ? `Last stderr: ${stderrTail.replace(/\n+/g, " | ")}`
+                : "No stderr captured.") +
+              "\n";
+            logChain = logChain
+              .then(() => opts.onLog("stderr", message))
+              .catch((err) =>
+                onLogError(err, runId, "failed to log startup-hang watchdog message"),
+              );
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            startupStdoutKillTimer = setTimeout(() => {
+              startupStdoutKillTimer = null;
+              if (child.killed) return;
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, startupSec * 1000);
+        }
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
           const text = String(chunk);
+          if (!firstStdoutSeen) {
+            firstStdoutSeen = true;
+            clearStartupStdoutWatchdog();
+          }
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -1948,6 +2023,7 @@ export async function runChildProcess(
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearStartupStdoutWatchdog();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -1966,6 +2042,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearStartupStdoutWatchdog();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()
@@ -1979,6 +2056,7 @@ export async function runChildProcess(
                 stderr,
                 pid: child.pid ?? null,
                 startedAt,
+                ...(startupHang ? { startupHang: true } : {}),
               });
               });
           });

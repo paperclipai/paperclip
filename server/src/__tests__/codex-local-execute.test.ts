@@ -42,6 +42,17 @@ process.exit(1);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeStartupHangCodexCommand(commandPath: string, stderrLine: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+process.stderr.write(${JSON.stringify(stderrLine + "\n")});
+// Simulate codex stuck after partial init — never emits a JSONL event,
+// never exits. Paperclip's startup-stdout watchdog must terminate this.
+setInterval(() => {}, 1000);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -604,6 +615,89 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "terminates a codex child stuck before any JSONL output and surfaces codex_startup_hang",
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-startup-hang-"));
+      const workspace = path.join(root, "workspace");
+      const commandPath = path.join(root, "codex");
+      await fs.mkdir(workspace, { recursive: true });
+      const stderrLine =
+        "ERROR codex_core::mcp::worker: figma server closed: AuthRequired";
+      await writeStartupHangCodexCommand(commandPath, stderrLine);
+
+      const previousHome = process.env.HOME;
+      process.env.HOME = root;
+      const logs: { stream: "stdout" | "stderr"; chunk: string }[] = [];
+
+      try {
+        const startedAt = Date.now();
+        const result = await execute({
+          runId: "run-startup-hang",
+          agent: {
+            id: "agent-1",
+            companyId: "company-1",
+            name: "Codex Coder",
+            adapterType: "codex_local",
+            adapterConfig: {},
+          },
+          runtime: {
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            taskKey: null,
+          },
+          config: {
+            command: commandPath,
+            cwd: workspace,
+            promptTemplate: "Follow the paperclip heartbeat.",
+            // Watchdog clamps to 5s minimum; pick a small value so the test
+            // finishes quickly without flaking on a slow box.
+            startupStdoutTimeoutSec: 5,
+            graceSec: 1,
+          },
+          context: {},
+          authToken: "run-jwt-token",
+          onLog: async (stream, chunk) => {
+            logs.push({ stream, chunk });
+          },
+        });
+        const elapsedMs = Date.now() - startedAt;
+
+        expect(result.timedOut).toBe(true);
+        expect(result.errorCode).toBe("codex_startup_hang");
+        expect(result.errorFamily).toBe("startup_hang");
+        expect(result.errorMessage).toContain("no JSONL output for 5s");
+        expect(result.errorMessage).toContain("AuthRequired");
+        expect(result.errorMeta?.startupStdoutTimeoutSec).toBe(5);
+        expect(result.errorMeta?.stderrTail).toContain("AuthRequired");
+        expect(result.resultJson?.errorFamily).toBe("startup_hang");
+        // Should fail fast (well under the 1h heartbeat watchdog threshold).
+        expect(elapsedMs).toBeLessThan(20_000);
+
+        // Stage-tracking instrumentation must surface in the run log so the
+        // operator can see the run got past spawn and where it stopped.
+        const allOut = logs
+          .filter((entry) => entry.stream === "stdout")
+          .map((entry) => entry.chunk)
+          .join("");
+        const allErr = logs
+          .filter((entry) => entry.stream === "stderr")
+          .map((entry) => entry.chunk)
+          .join("");
+        expect(allOut).toContain("[paperclip] codex spawned (pid=");
+        expect(allOut).toContain("awaiting first JSONL event within 5s");
+        expect(allErr).toContain("[paperclip] startup-hang watchdog");
+        expect(allErr).toContain("AuthRequired");
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 
   it("uses safer invocation settings and a fresh-session handoff for codex transient fallback retries", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-fallback-"));

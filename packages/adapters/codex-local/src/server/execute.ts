@@ -52,6 +52,14 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
+// Codex `exec --json` should emit at least a `thread.started` JSONL event
+// soon after spawn. If it produces zero stdout for this long the process is
+// wedged in startup (known causes: malformed local skill, MCP transport
+// AuthRequired close, shell snapshot validation failure) and the run will
+// otherwise sit `running` indefinitely. 120s gives slow boxes / cold MCP
+// connectors plenty of headroom while keeping silent failures bounded.
+const DEFAULT_CODEX_STARTUP_STDOUT_TIMEOUT_SEC = 120;
+
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
   const kept: string[] = [];
@@ -524,6 +532,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  const rawStartupStdoutTimeoutSec = asNumber(
+    config.startupStdoutTimeoutSec,
+    DEFAULT_CODEX_STARTUP_STDOUT_TIMEOUT_SEC,
+  );
+  // Allow operators to disable the watchdog with 0 / negative; clamp anything
+  // else to at least 5s so a misconfigured value can't punt the watchdog past
+  // the absolute timeout.
+  const startupStdoutTimeoutSec =
+    rawStartupStdoutTimeoutSec > 0 ? Math.max(5, rawStartupStdoutTimeoutSec) : 0;
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -695,13 +712,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const wrappedOnSpawn = onSpawn
+      ? async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+          await onSpawn(meta);
+          if (startupStdoutTimeoutSec > 0) {
+            await onLog(
+              "stdout",
+              `[paperclip] codex spawned (pid=${meta.pid}); awaiting first JSONL event within ${startupStdoutTimeoutSec}s.\n`,
+            );
+          }
+        }
+      : startupStdoutTimeoutSec > 0
+        ? async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+            await onLog(
+              "stdout",
+              `[paperclip] codex spawned (pid=${meta.pid}); awaiting first JSONL event within ${startupStdoutTimeoutSec}s.\n`,
+            );
+          }
+        : undefined;
+
     const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
       stdin: prompt,
       timeoutSec,
       graceSec,
-      onSpawn,
+      onSpawn: wrappedOnSpawn,
+      startupStdoutTimeoutSec,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
           await onLog(stream, chunk);
@@ -724,10 +761,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; startupHang?: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
     isRetry = false,
   ): AdapterExecutionResult => {
+    if (attempt.proc.startupHang) {
+      const stderrTail = firstNonEmptyLine(attempt.proc.stderr);
+      const errorMessage =
+        `Codex produced no JSONL output for ${startupStdoutTimeoutSec}s after spawn; ` +
+        `terminated by startup watchdog. ` +
+        (stderrTail.length > 0
+          ? `First stderr line: ${stderrTail}`
+          : "No stderr captured.");
+      return {
+        exitCode: attempt.proc.exitCode,
+        signal: attempt.proc.signal,
+        timedOut: true,
+        errorMessage,
+        errorCode: "codex_startup_hang",
+        errorFamily: "startup_hang",
+        errorMeta: {
+          startupStdoutTimeoutSec,
+          stderrTail: stderrTail || null,
+        },
+        resultJson: {
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorFamily: "startup_hang",
+          startupStdoutTimeoutSec,
+        },
+        clearSession: clearSessionOnMissingSession,
+      };
+    }
     if (attempt.proc.timedOut) {
       return {
         exitCode: attempt.proc.exitCode,
