@@ -3,6 +3,29 @@ import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
 
+export interface RunGitStateCommit {
+  sha: string;
+  subject: string;
+}
+
+export interface RunGitStatePushedRef {
+  ref: string;
+  oldSha: string;
+  newSha: string;
+  status: string;
+}
+
+export interface RunGitState {
+  headBefore: string;
+  branchBefore: string;
+  headAfter: string;
+  branchAfter: string;
+  commitsCreated: RunGitStateCommit[];
+  pushedRefs: RunGitStatePushedRef[];
+  pushed: boolean;
+  remoteUrl: string | null;
+}
+
 export const heartbeatRuns = pgTable(
   "heartbeat_runs",
   {
@@ -54,6 +77,7 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    runGitState: jsonb("run_git_state").$type<RunGitState>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

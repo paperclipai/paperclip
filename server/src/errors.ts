@@ -1,11 +1,13 @@
 export class HttpError extends Error {
   status: number;
   details?: unknown;
+  code?: string;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(status: number, message: string, details?: unknown, code?: string) {
     super(message);
     this.status = status;
     this.details = details;
+    this.code = code;
   }
 }
 
@@ -31,4 +33,8 @@ export function conflict(message: string, details?: unknown) {
 
 export function unprocessable(message: string, details?: unknown) {
   return new HttpError(422, message, details);
+}
+
+export function descriptiveError(code: string, prompt: string, details?: unknown): HttpError {
+  return new HttpError(422, prompt, details, code);
 }
