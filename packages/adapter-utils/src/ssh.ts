@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
@@ -5,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -596,7 +599,9 @@ async function importGitWorkspaceToSsh(input: {
 }): Promise<void> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  const tempRef = "refs/paperclip/ssh-sync/import";
+  // Per-import unique ref so concurrent imports against the same local repo
+  // can't race on `update-ref` between this run's update and bundle create.
+  const tempRef = `refs/paperclip/ssh-sync/import/${randomUUID()}`;
 
   try {
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
@@ -621,6 +626,8 @@ async function importGitWorkspaceToSsh(input: {
         : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
+      // Drop the per-import ref on the remote side too so it can't accumulate.
+      `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
     ].join("\n");
 
     await streamLocalFileToSsh({
@@ -641,10 +648,12 @@ async function exportGitWorkspaceFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
   localDir: string;
-}): Promise<void> {
+  importedRef?: string;
+  resetLocalWorkspace?: boolean;
+}): Promise<string> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  const importedRef = "refs/paperclip/ssh-sync/imported";
+  const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
 
   try {
     const exportScript = [
@@ -668,17 +677,95 @@ async function exportGitWorkspaceFromSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    });
-  } finally {
-    await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+    if (input.resetLocalWorkspace !== false) {
+      await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
+        timeout: 60_000,
+        maxBuffer: 1024 * 1024,
+      });
+    }
+    const importedHead = await runLocalGit(input.localDir, ["rev-parse", importedRef], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    }).catch(() => undefined);
+    });
+    return importedHead.stdout.trim();
+  } finally {
+    if (input.resetLocalWorkspace !== false) {
+      await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      }).catch(() => undefined);
+    }
     await fs.rm(bundleDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function integrateImportedGitHead(input: {
+  localDir: string;
+  importedHead: string;
+}): Promise<void> {
+  const snapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+  if (!snapshot) return;
+
+  const currentHead = snapshot.headCommit;
+  if (!currentHead || currentHead === input.importedHead) return;
+
+  const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
+  const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  }).catch(() => null);
+  const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
+
+  if (mergeBaseHead === input.importedHead) {
+    return;
+  }
+
+  if (mergeBaseHead === currentHead) {
+    await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    return;
+  }
+
+  let mergedTree;
+  try {
+    mergedTree = await runLocalGit(input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
+      timeout: 60_000,
+      maxBuffer: 256 * 1024,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Failed to merge concurrent SSH git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
+    );
+  }
+  const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
+  if (!mergedTreeId) {
+    throw new Error("Failed to compute a merged git tree for SSH workspace restore.");
+  }
+
+  const mergeCommit = await runLocalGit(
+    input.localDir,
+    [
+      "commit-tree",
+      mergedTreeId,
+      "-p",
+      currentHead,
+      "-p",
+      input.importedHead,
+      "-m",
+      `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
+    ],
+    {
+      timeout: 60_000,
+      maxBuffer: 64 * 1024,
+    },
+  );
+  await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  });
 }
 
 async function clearRemoteDirectory(input: {
@@ -1117,7 +1204,7 @@ export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
-}): Promise<void> {
+}): Promise<{ gitBacked: boolean }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
@@ -1139,7 +1226,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       remoteDir,
       deletedPaths: gitSnapshot.deletedPaths,
     });
-    return;
+    return { gitBacked: true };
   }
 
   await clearRemoteDirectory({
@@ -1153,14 +1240,64 @@ export async function prepareWorkspaceForSshExecution(input: {
     remoteDir,
     exclude: [".paperclip-runtime"],
   });
+  return { gitBacked: false };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
+  baselineSnapshot?: DirectorySnapshot;
+  restoreGitHistory?: boolean;
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  if (input.baselineSnapshot) {
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const importedRef = input.restoreGitHistory
+      ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
+      : null;
+    try {
+      const importedHead = input.restoreGitHistory
+        ? await exportGitWorkspaceFromSsh({
+          spec: input.spec,
+          remoteDir,
+          localDir: input.localDir,
+          importedRef: importedRef ?? undefined,
+          resetLocalWorkspace: false,
+        })
+        : null;
+      await syncDirectoryFromSsh({
+        spec: input.spec,
+        remoteDir,
+        localDir: stagingDir,
+        exclude: input.baselineSnapshot.exclude,
+      });
+      await mergeDirectoryWithBaseline({
+        baseline: input.baselineSnapshot,
+        sourceDir: stagingDir,
+        targetDir: input.localDir,
+        // Git history advances via integrateImportedGitHead; the working tree
+        // still comes from the remote file snapshot so dirty remote edits win.
+        beforeApply: importedHead
+          ? async () => {
+            await integrateImportedGitHead({
+              localDir: input.localDir,
+              importedHead,
+            });
+          }
+          : undefined,
+      });
+    } finally {
+      if (importedRef) {
+        await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        }).catch(() => undefined);
+      }
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return;
+  }
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {

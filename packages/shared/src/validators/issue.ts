@@ -8,8 +8,13 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_COMMENT_AUTHOR_TYPES,
+  ISSUE_COMMENT_METADATA_ROW_TYPES,
+  ISSUE_COMMENT_PRESENTATION_KINDS,
+  ISSUE_COMMENT_PRESENTATION_TONES,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
+  ISSUE_WORK_MODES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
@@ -168,7 +173,48 @@ const issueRequestDepthInputSchema = z
   .nonnegative()
   .transform((value) => clampIssueRequestDepth(value));
 
-export const createIssueSchema = z.object({
+type IssueCreateStatusDefaultInput = {
+  status?: unknown;
+  assigneeAgentId?: unknown;
+  assigneeUserId?: unknown;
+};
+
+export function resolveCreateIssueStatusDefault(input: IssueCreateStatusDefaultInput): {
+  status: (typeof ISSUE_STATUSES)[number];
+  defaulted: boolean;
+  reason: "explicit" | "assigned_omitted_status" | "unassigned_omitted_status";
+} {
+  if (typeof input.status === "string") {
+    return {
+      status: input.status as (typeof ISSUE_STATUSES)[number],
+      defaulted: false,
+      reason: "explicit",
+    };
+  }
+
+  const hasAssignee =
+    (typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0)
+    || (typeof input.assigneeUserId === "string" && input.assigneeUserId.length > 0);
+  return {
+    status: hasAssignee ? "todo" : "backlog",
+    defaulted: true,
+    reason: hasAssignee ? "assigned_omitted_status" : "unassigned_omitted_status",
+  };
+}
+
+function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
+  return z.preprocess((input) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const raw = input as Record<string, unknown>;
+    if (raw.status !== undefined) return input;
+    return {
+      ...raw,
+      status: resolveCreateIssueStatusDefault(raw).status,
+    };
+  }, schema);
+}
+
+const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -177,7 +223,8 @@ export const createIssueSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  status: z.enum(ISSUE_STATUSES),
+  workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -191,9 +238,15 @@ export const createIssueSchema = z.object({
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
+export const createIssueInputSchema = createIssueBaseSchema.extend({
+  status: createIssueBaseSchema.shape.status.optional(),
+});
+
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
-export const createChildIssueSchema = createIssueSchema
+export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
   .omit({
     parentId: true,
     inheritExecutionWorkspaceFromIssueId: true,
@@ -201,7 +254,7 @@ export const createChildIssueSchema = createIssueSchema
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  });
+  }));
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -212,7 +265,7 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
@@ -233,8 +286,96 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
+const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
+
+export const issueCommentAuthorTypeSchema = z.enum(ISSUE_COMMENT_AUTHOR_TYPES);
+
+export const issueCommentPresentationSchema = z.object({
+  kind: z.enum(ISSUE_COMMENT_PRESENTATION_KINDS).default("message"),
+  tone: z.enum(ISSUE_COMMENT_PRESENTATION_TONES).default("neutral"),
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+  detailsDefaultOpen: z.boolean().optional().default(false),
+}).strict();
+
+export type IssueCommentPresentation = z.infer<typeof issueCommentPresentationSchema>;
+
+const issueCommentMetadataBaseRowSchema = z.object({
+  type: z.enum(ISSUE_COMMENT_METADATA_ROW_TYPES),
+  label: commentMetadataLabelSchema.nullable().optional(),
+});
+
+const issueCommentMetadataTextRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("text"),
+  text: commentMetadataTextSchema,
+}).strict();
+
+const issueCommentMetadataCodeRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("code"),
+  code: z.string().min(1).max(4000),
+  language: z.string().trim().min(1).max(40).nullable().optional(),
+}).strict();
+
+const issueCommentMetadataKeyValueRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("key_value"),
+  label: commentMetadataLabelSchema,
+  value: commentMetadataTextSchema,
+}).strict();
+
+const issueCommentMetadataIssueLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("issue_link"),
+  issueId: z.string().uuid().nullable().optional(),
+  identifier: z.string().trim().min(1).max(80).nullable().optional(),
+  title: z.string().trim().min(1).max(240).nullable().optional(),
+}).strict();
+
+const issueCommentMetadataAgentLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("agent_link"),
+  agentId: z.string().uuid(),
+  name: z.string().trim().min(1).max(160).nullable().optional(),
+}).strict();
+
+const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
+  type: z.literal("run_link"),
+  runId: z.string().uuid(),
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+}).strict();
+
+export const issueCommentMetadataRowSchema = z.discriminatedUnion("type", [
+  issueCommentMetadataTextRowSchema,
+  issueCommentMetadataCodeRowSchema,
+  issueCommentMetadataKeyValueRowSchema,
+  issueCommentMetadataIssueLinkRowSchema,
+  issueCommentMetadataAgentLinkRowSchema,
+  issueCommentMetadataRunLinkRowSchema,
+]).superRefine((value, ctx) => {
+  if (value.type === "issue_link" && !value.issueId && !value.identifier) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Issue link rows require issueId or identifier",
+      path: ["issueId"],
+    });
+  }
+});
+
+export const issueCommentMetadataSectionSchema = z.object({
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+  rows: z.array(issueCommentMetadataRowSchema).min(1).max(50),
+}).strict();
+
+export const issueCommentMetadataSchema = z.object({
+  version: z.literal(1),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
+}).strict();
+
+export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
+
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
+  authorType: issueCommentAuthorTypeSchema.optional(),
+  presentation: issueCommentPresentationSchema.nullable().optional(),
+  metadata: issueCommentMetadataSchema.nullable().optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
@@ -262,6 +403,7 @@ export const suggestedTaskDraftSchema = z.object({
   title: z.string().trim().min(1).max(240),
   description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+  workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),
   assigneeUserId: z.string().trim().min(1).nullable().optional(),
   projectId: z.string().uuid().nullable().optional(),

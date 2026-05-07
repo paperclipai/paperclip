@@ -13,6 +13,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
@@ -543,8 +544,24 @@ describe("heartbeat comment wake batching", () => {
         .values({
           companyId,
           issueId,
+          authorType: "user",
           authorUserId: "user-1",
           body: "Queued follow-up",
+          presentation: {
+            kind: "system_notice",
+            tone: "warning",
+            detailsDefaultOpen: false,
+          },
+          metadata: {
+            version: 1,
+            sections: [
+              {
+                rows: [
+                  { type: "key_value", label: "Cause", value: "successful_run_missing_state" },
+                ],
+              },
+            ],
+          },
         })
         .returning()
         .then((rows) => rows[0]);
@@ -577,7 +594,15 @@ describe("heartbeat comment wake batching", () => {
           comments: [
             expect.objectContaining({
               id: queuedComment.id,
+              authorType: "user",
               body: "Queued follow-up",
+              presentation: expect.objectContaining({
+                kind: "system_notice",
+                tone: "warning",
+              }),
+              metadata: expect.objectContaining({
+                version: 1,
+              }),
             }),
           ],
           commentWindow: {
@@ -1130,6 +1155,7 @@ describe("heartbeat comment wake batching", () => {
       expect(payloads).toHaveLength(2);
       expect(runs[1]?.contextSnapshot).toMatchObject({
         retryReason: "missing_issue_comment",
+        modelProfile: "cheap",
       });
     } finally {
       gateway.releaseFirstWait();
@@ -1329,8 +1355,9 @@ describe("heartbeat comment wake batching", () => {
             eq(agentWakeupRequests.agentId, primaryAgentId),
             eq(agentWakeupRequests.reason, "missing_issue_comment"),
           ),
-        );
+      );
       expect(missingCommentRetries).toHaveLength(1);
+      expect(missingCommentRetries[0]?.payload).toMatchObject({ modelProfile: "cheap" });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -1566,7 +1593,8 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 1 && runs[0]?.status === "succeeded" && runs[0]?.issueCommentStatus === "satisfied";
+        const sourceRun = runs.find((run) => run.id === firstRun?.id);
+        return sourceRun?.status === "succeeded" && sourceRun.issueCommentStatus === "satisfied";
       });
 
       const runs = await db
@@ -1574,9 +1602,26 @@ describe("heartbeat comment wake batching", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
 
-      expect(runs).toHaveLength(1);
-      expect(runs[0]?.issueCommentStatus).toBe("satisfied");
-      expect(runs[0]?.issueCommentSatisfiedByCommentId).not.toBeNull();
+      const sourceRun = runs.find((run) => run.id === firstRun?.id);
+      expect(sourceRun?.issueCommentStatus).toBe("satisfied");
+      expect(sourceRun?.issueCommentSatisfiedByCommentId).not.toBeNull();
+
+      await waitFor(async () => {
+        const comments = await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId));
+        const wakeups = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+
+        const hasHandoffComment = comments.some((comment) =>
+          comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY
+        );
+        const hasHandoffWake = wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff");
+        return hasHandoffComment && hasHandoffWake;
+      });
 
       const comments = await db
         .select()
@@ -1584,16 +1629,19 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issueComments.issueId, issueId))
         .orderBy(asc(issueComments.createdAt));
 
-      expect(comments).toHaveLength(1);
-      expect(comments[0]?.body).toBe("Manual completion comment from the run.");
-      expect(comments[0]?.createdByRunId).toBe(firstRun?.id);
+      expect(comments.some((comment) => comment.body === "Manual completion comment from the run.")).toBe(true);
+      expect(comments.some((comment) =>
+        comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY
+      )).toBe(true);
+      expect(comments.every((comment) => !comment.body.startsWith("## Run summary"))).toBe(true);
 
       const wakeups = await db
         .select()
         .from(agentWakeupRequests)
         .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
 
-      expect(wakeups).toHaveLength(1);
+      expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
+      expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

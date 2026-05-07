@@ -610,6 +610,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
   });
   const authorizeRequest = input.authorizeRequest ??
     ((request: SandboxCallbackBridgeRequest) => authorizeSandboxCallbackBridgeRequestWithRoutes(request));
+  const buildWorkerFailureMessage = (error: unknown) =>
+    `Sandbox callback bridge worker failed: ${error instanceof Error ? error.message : String(error)}`;
 
   const processRequestFile = async (fileName: string) => {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
@@ -724,6 +726,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
         if (stopping && Date.now() >= stopDeadline) {
           break;
         }
+      }
+    } catch (error) {
+      const message = buildWorkerFailureMessage(error);
+      console.warn(`[paperclip] ${message}`);
+      try {
+        await failPendingRequests(message);
+      } catch (failPendingError) {
+        console.warn(
+          `[paperclip] sandbox callback bridge failed to abort queued requests after worker failure: ${failPendingError instanceof Error ? failPendingError.message : String(failPendingError)}`,
+        );
       }
     } finally {
       settled = true;
