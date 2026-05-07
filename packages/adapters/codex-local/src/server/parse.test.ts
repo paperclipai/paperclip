@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexRetryNotBefore,
+  hasCodexTerminalTurn,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -30,6 +31,7 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: "resume failed",
+      turnStatus: "failed",
     });
   });
 
@@ -63,7 +65,34 @@ describe("parseCodexJsonl", () => {
         outputTokens: 4,
       },
       errorMessage: null,
+      turnStatus: "completed",
     });
+  });
+});
+
+describe("hasCodexTerminalTurn", () => {
+  it("returns true when stdout includes turn.completed or turn.failed events", () => {
+    const completedStdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+    ].join("\n");
+
+    const failedStdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({ type: "turn.failed", error: { message: "upstream error" } }),
+    ].join("\n");
+
+    expect(hasCodexTerminalTurn(completedStdout)).toBe(true);
+    expect(hasCodexTerminalTurn(failedStdout)).toBe(true);
+  });
+
+  it("returns false when stdout has no terminal turn event", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Still working" } }),
+    ].join("\n");
+
+    expect(hasCodexTerminalTurn(stdout)).toBe(false);
   });
 });
 
