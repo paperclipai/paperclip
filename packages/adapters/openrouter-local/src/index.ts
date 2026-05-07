@@ -73,6 +73,11 @@ Optional config:
   SIGTERMs any running run_command subprocess. Absent or 0 means no limit.
 - extraHeaders (object): additional HTTP headers to send with each request
 - disabledTools (string[]): tool names to omit from the request
+- reasoning (object | boolean): passed as the \`reasoning\` request parameter for
+  models that support it (e.g. { effort: "high" }, { max_tokens: 8000 }, or
+  true as shorthand for { enabled: true }). Has no effect on models that ignore
+  it. Do not set for models that use the :thinking variant suffix — those enable
+  reasoning via the model ID.
 
 Built-in tools exposed to the model:
 - read_file({ path }) -> file contents

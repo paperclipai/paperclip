@@ -10,6 +10,7 @@ interface CapturedRequest {
   messages: unknown[];
   tools: unknown;
   tool_choice: unknown;
+  reasoning?: unknown;
 }
 
 interface ScriptedReply {
@@ -21,6 +22,8 @@ interface ScriptedReply {
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; cached?: number };
   provider?: string;
+  reasoning?: string;
+  reasoning_details?: Array<{ type: string; text?: string; content?: string }>;
 }
 
 interface ScriptedClient {
@@ -73,6 +76,8 @@ function buildHangingClient(firstReplies: ScriptedReply[]): {
                       role: "assistant" as const,
                       content: reply.content ?? null,
                       tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+                      ...(reply.reasoning !== undefined ? { reasoning: reply.reasoning } : {}),
+                      ...(reply.reasoning_details !== undefined ? { reasoning_details: reply.reasoning_details } : {}),
                     },
                     finish_reason: tool_calls.length > 0 ? "tool_calls" : "stop",
                   },
@@ -151,6 +156,8 @@ function buildClient(replies: ScriptedReply[]): {
                     role: "assistant" as const,
                     content: reply.content ?? null,
                     tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+                    ...(reply.reasoning !== undefined ? { reasoning: reply.reasoning } : {}),
+                    ...(reply.reasoning_details !== undefined ? { reasoning_details: reply.reasoning_details } : {}),
                   },
                   finish_reason: tool_calls.length > 0 ? "tool_calls" : "stop",
                 },
@@ -438,6 +445,87 @@ describe("execute", () => {
       expect(result.exitCode).toBe(0);
       expect(result.timedOut).toBe(false);
       expect(result.summary).toBe("done fast");
+    });
+  });
+
+  describe("reasoning token support", () => {
+    it("emits no thinking entry when response has no reasoning content", async () => {
+      const { factory } = buildClient([{ content: "plain answer" }]);
+      await execute(buildCtx(), { openAiFactory: factory });
+      const events = readJsonlEvents();
+      expect(events.some((e) => e.kind === "thinking")).toBe(false);
+    });
+
+    it("emits kind:thinking before kind:assistant when message.reasoning is a string", async () => {
+      const { factory } = buildClient([
+        { content: "answer", reasoning: "let me think..." },
+      ]);
+      await execute(buildCtx(), { openAiFactory: factory });
+      const events = readJsonlEvents();
+      const thinkingIdx = events.findIndex((e) => e.kind === "thinking");
+      const assistantIdx = events.findIndex((e) => e.kind === "assistant");
+      expect(thinkingIdx).toBeGreaterThanOrEqual(0);
+      expect(events[thinkingIdx].text).toBe("let me think...");
+      expect(thinkingIdx).toBeLessThan(assistantIdx);
+    });
+
+    it("extracts readable reasoning_details entries and ignores reasoning.encrypted", async () => {
+      const { factory } = buildClient([
+        {
+          content: "answer",
+          reasoning_details: [
+            { type: "reasoning.text", text: "step one" },
+            { type: "reasoning.encrypted", content: "opaque-blob" },
+            { type: "reasoning.summary", text: "summary text" },
+          ],
+        },
+      ]);
+      await execute(buildCtx(), { openAiFactory: factory });
+      const events = readJsonlEvents();
+      const thinking = events.find((e) => e.kind === "thinking");
+      expect(thinking).toBeTruthy();
+      expect(thinking.text).toContain("step one");
+      expect(thinking.text).toContain("summary text");
+      expect(thinking.text).not.toContain("opaque-blob");
+    });
+
+    it("prefers reasoning_details over message.reasoning when both are present", async () => {
+      const { factory } = buildClient([
+        {
+          content: "answer",
+          reasoning: "plain fallback",
+          reasoning_details: [{ type: "reasoning.text", text: "structured reasoning" }],
+        },
+      ]);
+      await execute(buildCtx(), { openAiFactory: factory });
+      const events = readJsonlEvents();
+      const thinking = events.find((e) => e.kind === "thinking");
+      expect(thinking?.text).toBe("structured reasoning");
+      expect(thinking?.text).not.toContain("plain fallback");
+    });
+
+    it("passes { enabled: true } when config.reasoning is true", async () => {
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await execute(
+        buildCtx({ config: { cwd: tmp, model: "openai/gpt-4o-mini", reasoning: true } }),
+        { openAiFactory: factory },
+      );
+      expect((state.capturedRequests[0] as CapturedRequest).reasoning).toEqual({ enabled: true });
+    });
+
+    it("forwards config.reasoning object verbatim", async () => {
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await execute(
+        buildCtx({ config: { cwd: tmp, model: "openai/gpt-4o-mini", reasoning: { effort: "high" } } }),
+        { openAiFactory: factory },
+      );
+      expect((state.capturedRequests[0] as CapturedRequest).reasoning).toEqual({ effort: "high" });
+    });
+
+    it("omits reasoning key from completions call when config.reasoning is absent", async () => {
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await execute(buildCtx(), { openAiFactory: factory });
+      expect("reasoning" in state.capturedRequests[0]).toBe(false);
     });
   });
 

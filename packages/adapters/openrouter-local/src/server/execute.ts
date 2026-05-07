@@ -99,6 +99,35 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
 }
 
+function extractReasoningText(message: unknown): string | null {
+  const msg = message as Record<string, unknown>;
+  const details = msg.reasoning_details;
+  if (Array.isArray(details) && details.length > 0) {
+    const readable = details
+      .filter((d): d is Record<string, unknown> =>
+        typeof d === "object" && d !== null &&
+        (d.type === "reasoning.text" || d.type === "reasoning.summary")
+      )
+      .map((d) => String(d.text ?? d.content ?? ""))
+      .filter(Boolean);
+    if (readable.length > 0) return readable.join("\n\n");
+  }
+  const reasoning = msg.reasoning;
+  if (typeof reasoning === "string" && reasoning.trim().length > 0) {
+    return reasoning;
+  }
+  return null;
+}
+
+function resolveReasoningParam(value: unknown): Record<string, unknown> | null {
+  if (!value) return null;
+  if (value === true) return { enabled: true };
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
 export async function execute(
   ctx: AdapterExecutionContext,
   options: ExecuteOptions = {},
@@ -194,6 +223,7 @@ export async function execute(
     ? setTimeout(() => controller.abort(), timeoutSec * 1000)
     : null;
 
+  const reasoningParam = resolveReasoningParam(config.reasoning);
   const toolCtx: ToolContext = { cwd, runCommandTimeoutSec, env: paperclipEnv, signal: controller?.signal };
   const state: RunState = {
     inputTokens: 0,
@@ -226,6 +256,7 @@ export async function execute(
         tools: tools.length > 0 ? toOpenAiTools(tools) : undefined,
         tool_choice: tools.length > 0 ? "auto" : undefined,
         ...(controller ? { signal: controller.signal } : {}),
+        ...(reasoningParam ? { reasoning: reasoningParam } : {}),
       });
 
       const usage = (completion as unknown as { usage?: OpenAI.Completions.CompletionUsage })
@@ -251,6 +282,15 @@ export async function execute(
       }
 
       messages.push(message);
+
+      const reasoningText = extractReasoningText(message);
+      if (reasoningText) {
+        await emit({
+          kind: "thinking",
+          ts: new Date().toISOString(),
+          text: reasoningText,
+        });
+      }
 
       if (message.content) {
         await emit({
