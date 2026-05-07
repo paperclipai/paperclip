@@ -158,10 +158,16 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    // Browsers send the filename as raw UTF-8 bytes; Busboy reads them as latin1 by
+    // default, producing a garbled string. Re-decoding recovers the correct text.
+    // Non-browser clients that send a non-UTF-8 encoding may see replacement chars.
+    const originalFilename = file.originalname
+      ? Buffer.from(file.originalname, "latin1").toString("utf8")
+      : null;
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
-      originalFilename: file.originalname || null,
+      originalFilename,
       contentType,
       body: fileBody,
     });
@@ -256,10 +262,16 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    // Browsers send the filename as raw UTF-8 bytes; Busboy reads them as latin1 by
+    // default, producing a garbled string. Re-decoding recovers the correct text.
+    // Non-browser clients that send a non-UTF-8 encoding may see replacement chars.
+    const logoOriginalFilename = file.originalname
+      ? Buffer.from(file.originalname, "latin1").toString("utf8")
+      : null;
     const stored = await storage.putFile({
       companyId,
       namespace: "assets/companies",
-      originalFilename: file.originalname || null,
+      originalFilename: logoOriginalFilename,
       contentType,
       body: fileBody,
     });
@@ -328,7 +340,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const asciiFallback = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    const encodedFilename = encodeURIComponent(filename);
+    res.setHeader("Content-Disposition", `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`);
 
     object.stream.on("error", (err) => {
       next(err);
