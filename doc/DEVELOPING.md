@@ -142,10 +142,10 @@ pnpm paperclipai run
 > npm config get registry
 > ```
 >
-> Workaround (force the public npm registry for this command):
+> Workaround (cross-platform; force the public npm registry for this command):
 >
 > ```sh
-> npm_config_registry=https://registry.npmjs.org npx paperclipai onboard --yes
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
 > ```
 
 `paperclipai run` does:

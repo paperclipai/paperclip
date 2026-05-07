@@ -294,10 +294,10 @@ npx paperclipai onboard --yes
 > npm config get registry
 > ```
 >
-> Workaround (force the public npm registry for this command):
+> Workaround (cross-platform; force the public npm registry for this command):
 >
 > ```bash
-> npm_config_registry=https://registry.npmjs.org npx paperclipai onboard --yes
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
 > ```
 
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
