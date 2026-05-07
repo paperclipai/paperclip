@@ -1,12 +1,22 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 
 const STORAGE_KEY = "paperclip:panel-visible";
+const WIDTH_STORAGE_KEY = "paperclip:panel-width";
+const DEFAULT_PANEL_WIDTH = 320;
+const MIN_PANEL_WIDTH = 240;
+const MAX_PANEL_WIDTH = 600;
+
+function clampPanelWidth(width: number): number {
+  return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width));
+}
 
 interface PanelContextValue {
   panelContent: ReactNode | null;
   panelVisible: boolean;
+  panelWidth: number;
   openPanel: (content: ReactNode) => void;
   closePanel: () => void;
+  setPanelWidth: (width: number) => void;
   setPanelVisible: (visible: boolean) => void;
   togglePanelVisible: () => void;
 }
@@ -30,9 +40,30 @@ function writePreference(visible: boolean) {
   }
 }
 
+function readPanelWidth(): number {
+  try {
+    const raw = localStorage.getItem(WIDTH_STORAGE_KEY);
+    if (raw === null) return DEFAULT_PANEL_WIDTH;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return DEFAULT_PANEL_WIDTH;
+    return clampPanelWidth(parsed);
+  } catch {
+    return DEFAULT_PANEL_WIDTH;
+  }
+}
+
+function writePanelWidth(width: number) {
+  try {
+    localStorage.setItem(WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 export function PanelProvider({ children }: { children: ReactNode }) {
   const [panelContent, setPanelContent] = useState<ReactNode | null>(null);
   const [panelVisible, setPanelVisibleState] = useState(readPreference);
+  const [panelWidth, setPanelWidthState] = useState(readPanelWidth);
 
   const openPanel = useCallback((content: ReactNode) => {
     setPanelContent(content);
@@ -47,6 +78,12 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     writePreference(visible);
   }, []);
 
+  const setPanelWidth = useCallback((width: number) => {
+    const clamped = clampPanelWidth(width);
+    setPanelWidthState(clamped);
+    writePanelWidth(clamped);
+  }, []);
+
   const togglePanelVisible = useCallback(() => {
     setPanelVisibleState((prev) => {
       const next = !prev;
@@ -57,7 +94,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   return (
     <PanelContext.Provider
-      value={{ panelContent, panelVisible, openPanel, closePanel, setPanelVisible, togglePanelVisible }}
+      value={{
+        panelContent,
+        panelVisible,
+        panelWidth,
+        openPanel,
+        closePanel,
+        setPanelWidth,
+        setPanelVisible,
+        togglePanelVisible,
+      }}
     >
       {children}
     </PanelContext.Provider>

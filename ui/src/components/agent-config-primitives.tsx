@@ -41,6 +41,12 @@ export const help: Record<string, string> = {
   worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
   runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
   maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
+  sessionRefreshPolicy:
+    "Server-side rule for resuming the Claude CLI session from Paperclip: none (default) keeps the session until max turns or an error; per_run starts fresh every run; inactivity starts fresh after idle (see TTL); daily starts fresh when the UTC refresh window rolls.",
+  sessionInactivityTtlSec:
+    "For inactivity policy: seconds after the last run touched the saved session before Paperclip starts a new Claude session (default 1800).",
+  sessionDailyRefreshHour:
+    "For daily policy: UTC hour (0–23) when each logical day starts for session refresh. Runs after crossing into a new window get a fresh Claude session.",
   command: "The command to execute (e.g. node, python).",
   localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
   args: "Command-line arguments, comma-separated.",

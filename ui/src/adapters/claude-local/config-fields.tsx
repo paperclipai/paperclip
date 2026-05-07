@@ -133,6 +133,73 @@ export function ClaudeLocalAdvancedFields({
           />
         )}
       </Field>
+      {!isCreate && (
+        <>
+          <Field label="Session refresh policy" hint={help.sessionRefreshPolicy}>
+            <select
+              className={inputClass}
+              value={
+                typeof eff("adapterConfig", "sessionRefreshPolicy", config.sessionRefreshPolicy) ===
+                "string"
+                  ? (eff("adapterConfig", "sessionRefreshPolicy", config.sessionRefreshPolicy) as string)
+                  : "none"
+              }
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "none") {
+                  mark("adapterConfig", "sessionRefreshPolicy", undefined);
+                  mark("adapterConfig", "sessionInactivityTtlSec", undefined);
+                  mark("adapterConfig", "sessionDailyRefreshHour", undefined);
+                } else {
+                  mark("adapterConfig", "sessionRefreshPolicy", v);
+                }
+              }}
+            >
+              <option value="none">None (resume until max turns / error)</option>
+              <option value="per_run">Every run (fresh session)</option>
+              <option value="inactivity">After idle (TTL)</option>
+              <option value="daily">Daily (UTC window)</option>
+            </select>
+          </Field>
+          {eff("adapterConfig", "sessionRefreshPolicy", config.sessionRefreshPolicy) ===
+            "inactivity" && (
+            <Field label="Idle TTL (seconds)" hint={help.sessionInactivityTtlSec}>
+              <DraftNumberInput
+                value={eff(
+                  "adapterConfig",
+                  "sessionInactivityTtlSec",
+                  Number(config.sessionInactivityTtlSec ?? 1800),
+                )}
+                onCommit={(v) =>
+                  mark("adapterConfig", "sessionInactivityTtlSec", v > 0 ? v : 1800)
+                }
+                immediate
+                className={inputClass}
+              />
+            </Field>
+          )}
+          {eff("adapterConfig", "sessionRefreshPolicy", config.sessionRefreshPolicy) === "daily" && (
+            <Field label="UTC day boundary hour" hint={help.sessionDailyRefreshHour}>
+              <DraftNumberInput
+                value={eff(
+                  "adapterConfig",
+                  "sessionDailyRefreshHour",
+                  Number(config.sessionDailyRefreshHour ?? 0),
+                )}
+                onCommit={(v) =>
+                  mark(
+                    "adapterConfig",
+                    "sessionDailyRefreshHour",
+                    Math.min(23, Math.max(0, Math.floor(v))),
+                  )
+                }
+                immediate
+                className={inputClass}
+              />
+            </Field>
+          )}
+        </>
+      )}
     </>
   );
 }
