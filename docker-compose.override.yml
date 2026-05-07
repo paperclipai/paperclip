@@ -1,0 +1,17 @@
+services:
+  paperclip:
+    environment:
+      - HOST=0.0.0.0
+      - OBSIDIAN_API_KEY=1c688774012cfdd1440c21bab81c636c9b2358506031c5999d09a8b93af5f00f
+      - GH_TOKEN=${GH_TOKEN}
+    volumes:
+      - ./data/docker-paperclip:/paperclip
+      - /Users/tomek/Obsidian_vault/Projects/paperclip/workspace:/workspace
+      - /Users/tomek/.claude:/paperclip/.claude
+      - /Users/tomek/dev/claude-agent-env:/workspace/claude-agent-env
+      # typingsense repo mounts removed Phase 6 — Archon exclusively owns codebase access
+    restart: always
+    ports:
+      - "3100:3100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
