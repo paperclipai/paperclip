@@ -75,6 +75,45 @@ describe("createBufferedTextFileWriter", () => {
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
+    "keeps the newest backup for each retained calendar month",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-retention-");
+      const realDateNow = Date.now;
+      Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+      const janNewest = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql.gz");
+      const janOlder = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
+      const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
+
+      try {
+        fs.writeFileSync(janNewest, "jan-newest");
+        fs.writeFileSync(janOlder, "jan-older");
+        fs.writeFileSync(decOld, "dec-old");
+
+        fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
+        fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
+        fs.utimesSync(decOld, new Date("2025-12-15T12:00:00Z"), new Date("2025-12-15T12:00:00Z"));
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-test",
+        });
+
+        expect(result.prunedCount).toBe(2);
+        expect(fs.existsSync(janNewest)).toBe(true);
+        expect(fs.existsSync(janOlder)).toBe(false);
+        expect(fs.existsSync(decOld)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
       const sourceConnectionString = await createTempDatabase();
