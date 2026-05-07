@@ -132,6 +132,22 @@ For a first-time local install, you can bootstrap and run in one command:
 pnpm paperclipai run
 ```
 
+> **Note: private npm registry `.npmrc` + first-run onboarding**
+>
+> The first-run experience often starts with `npx paperclipai onboard --yes` (before you have a repo checkout). If your global `~/.npmrc` sets `registry` to a private registry (for example GitHub Packages), `npx` may try to resolve `paperclipai` from that private registry and fail with `E404`.
+>
+> Diagnostic:
+>
+> ```sh
+> npm config get registry
+> ```
+>
+> Workaround (force the public npm registry for this command):
+>
+> ```sh
+> npm_config_registry=https://registry.npmjs.org npx paperclipai onboard --yes
+> ```
+
 `paperclipai run` does:
 
 1. auto-onboard if config is missing
