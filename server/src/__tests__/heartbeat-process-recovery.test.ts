@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { and, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -81,6 +82,7 @@ import {
 } from "../services/recovery/index.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const execFile = promisify(execFileCallback);
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -101,6 +103,17 @@ function isPidAlive(pid: number | null | undefined) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function readProcessGroupId(pid: number) {
+  if (process.platform === "win32") return null;
+  try {
+    const { stdout } = await execFile("ps", ["-o", "pgid=", "-p", String(pid)]);
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -896,6 +909,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it.skipIf(process.platform === "win32")("reaps a run when pid is alive but no longer belongs to the recorded process group", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const actualProcessGroupId = await readProcessGroupId(child.pid!);
+    expect(actualProcessGroupId).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      processGroupId: (actualProcessGroupId ?? 0) + 1_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.some((event) => (event.payload as Record<string, unknown> | null)?.stalePidReused === true)).toBe(true);
+  });
+
+  it("reaps detached runs when the recycled pid no longer matches the adapter command", async () => {
+    const { runId, agentId } = await seedRunFixture({
+      adapterType: "claude_local",
+      processPid: process.pid,
+      runErrorCode: "process_detached",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
