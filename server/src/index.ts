@@ -681,10 +681,10 @@ export async function startServer(): Promise<StartedServer> {
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeatScheduler
       .reapOrphanedRuns()
-      .then(() => heartbeat.promoteDueScheduledRetries())
+      .then(() => heartbeatScheduler.promoteDueScheduledRetries())
       .then(async (promotion) => {
-        await heartbeat.resumeQueuedRuns();
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        await heartbeatScheduler.resumeQueuedRuns();
+        const reconciled = await heartbeatScheduler.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
           reconciled.assignmentDispatched > 0 ||
@@ -700,19 +700,19 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
-        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+        const reconciled = await heartbeatScheduler.reconcileIssueGraphLiveness();
         if (reconciled.escalationsCreated > 0) {
           logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
         }
       })
       .then(async () => {
-        const scanned = await heartbeat.scanSilentActiveRuns();
+        const scanned = await heartbeatScheduler.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
         }
       })
       .then(async () => {
-        const reviewed = await heartbeat.reconcileProductivityReviews();
+        const reviewed = await heartbeatScheduler.reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
@@ -747,10 +747,10 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeatScheduler
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.promoteDueScheduledRetries())
+        .then(() => heartbeatScheduler.promoteDueScheduledRetries())
         .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          await heartbeatScheduler.resumeQueuedRuns();
+          const reconciled = await heartbeatScheduler.reconcileStrandedAssignedIssues();
           if (
             promotion.promoted > 0 ||
             reconciled.assignmentDispatched > 0 ||
@@ -766,19 +766,19 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .then(async () => {
-          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+          const reconciled = await heartbeatScheduler.reconcileIssueGraphLiveness();
           if (reconciled.escalationsCreated > 0) {
             logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
           }
         })
         .then(async () => {
-          const scanned = await heartbeat.scanSilentActiveRuns();
+          const scanned = await heartbeatScheduler.scanSilentActiveRuns();
           if (scanned.created > 0 || scanned.escalated > 0) {
             logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
           }
         })
         .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
+          const reviewed = await heartbeatScheduler.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
