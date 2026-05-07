@@ -51,10 +51,10 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai playwright \
   && apt-get update \
   && apt-get install -y --no-install-recommends \
-       openssh-client jq \
+       openssh-client jq pipx python3-venv \
        libnss3 libnspr4 libasound2t64 libpango-1.0-0 \
        libgbm1 libxss1 libwoff1 libxshmfence1 \
        libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
@@ -71,6 +71,10 @@ RUN cd /app \
   && PLAYWRIGHT_BROWSERS_PATH=/opt/playwright npx playwright install chromium \
   && chown -R node:node /opt/playwright
 
+# Graphify — Karpathy LLM Wiki knowledge graph CLI
+RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install graphifyy \
+  && (graphify install --skill-only 2>/dev/null || graphify install || true)
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
@@ -86,7 +90,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
