@@ -31,16 +31,58 @@ export const upsertAgentInstructionsFileSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
+const mcpStdioServerSchema = z.object({
+  type: z.literal("stdio"),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional().default([]),
+  env: envConfigSchema.optional(),
+});
+
+const mcpSseServerSchema = z.object({
+  type: z.literal("sse"),
+  url: z.string().url(),
+  headers: envConfigSchema.optional(),
+});
+
+const mcpHttpServerSchema = z.object({
+  type: z.literal("http"),
+  url: z.string().url(),
+  headers: envConfigSchema.optional(),
+});
+
+const mcpServerSchema = z.discriminatedUnion("type", [
+  mcpStdioServerSchema,
+  mcpSseServerSchema,
+  mcpHttpServerSchema,
+]);
+
+export const mcpServersSchema = z.record(z.string().min(1), mcpServerSchema);
+
 const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
-    });
+  if (envValue !== undefined) {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+
+  const mcpServersValue = value.mcpServers;
+  if (mcpServersValue !== undefined) {
+    const parsed = mcpServersSchema.safeParse(mcpServersValue);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: issue.message,
+          path: ["mcpServers", ...issue.path],
+        });
+      }
+    }
   }
 });
 
