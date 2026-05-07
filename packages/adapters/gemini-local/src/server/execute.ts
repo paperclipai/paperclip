@@ -490,7 +490,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
+    args.push(`--prompt=${prompt}`);
     return args;
   };
 
@@ -502,9 +502,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
+        commandArgs: args.map((value) =>
+          value.startsWith("--prompt=") ? `--prompt=<${prompt.length} chars>` : value
+        ),
         env: loggedEnv,
         prompt,
         promptMetrics,
