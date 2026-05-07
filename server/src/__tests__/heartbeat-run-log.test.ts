@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactRunLogChunk } from "../services/heartbeat.js";
+import { compactRunLogChunk, sanitizeRunLogChunkForPersistence } from "../services/heartbeat.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -20,5 +20,19 @@ describe("compactRunLogChunk", () => {
     expect(compacted.length).toBeLessThan(chunk.length);
     expect(compacted).toContain("[paperclip truncated run log chunk:");
     expect(compacted.endsWith("tail")).toBe(true);
+  });
+
+  it("redacts bearer and jwt-shaped values before persisting chunks", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const chunk = [
+      `> Authorization: Bearer ${jwt}`,
+      `PAPERCLIP_API_KEY=${jwt}`,
+    ].join("\n");
+
+    const sanitized = sanitizeRunLogChunkForPersistence(chunk);
+
+    expect(sanitized).toContain("Authorization: Bearer ***REDACTED***");
+    expect(sanitized).toContain("PAPERCLIP_API_KEY=***REDACTED***");
+    expect(sanitized).not.toContain(jwt);
   });
 });
