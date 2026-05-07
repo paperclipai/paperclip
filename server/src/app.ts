@@ -1321,7 +1321,7 @@ TIKTOK_OPEN_ID=${openId}
   };
   app.get("/",             serveCreatorPage("landing.html"));
   app.get("/cuenta",       serveCreatorPage("cuenta.html"));
-  app.get("/admin",        serveCreatorPage("admin.html"));
+  app.get("/panel",        serveCreatorPage("admin.html"));
   app.get("/studio",       serveCreatorPage("index.html"));
   app.get("/agentes",      serveCreatorPage("agentes.html"));
   app.get("/estadisticas", serveCreatorPage("estadisticas.html"));
