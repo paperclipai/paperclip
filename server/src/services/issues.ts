@@ -156,6 +156,19 @@ type IssueActiveRunRow = {
   finishedAt: Date | null;
   createdAt: Date;
 };
+type IssueScheduledRetryRow = {
+  runId: string;
+  status: "scheduled_retry" | "queued" | "running" | "cancelled";
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+};
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
@@ -1686,6 +1699,36 @@ export function issueService(db: Db) {
     return enriched;
   }
 
+  async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
+    const row = await db
+      .select({
+        runId: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        agentName: agents.name,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return row ? { ...row, status: "scheduled_retry" } : null;
+  }
+
   function deriveIssueCommentAuthorType(comment: {
     authorType?: string | null;
     authorAgentId?: string | null;
@@ -2500,6 +2543,16 @@ export function issueService(db: Db) {
 
     getByIdentifier: async (identifier: string) => {
       return getIssueByIdentifier(identifier);
+    },
+
+    getCurrentScheduledRetry: async (issueId: string) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
     getRelationSummaries: async (issueId: string) => {
