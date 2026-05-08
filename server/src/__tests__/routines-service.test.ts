@@ -1339,4 +1339,108 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  // ZDA-1594: spawn-cap guard for children of routine_execution parent issues.
+  // Cap fan-out per single routine fire to expectedChildCount (default 1) so
+  // anomaly/scan routines can't over-spawn (e.g. ZDA-1577 — DID 6 children).
+  describe("routine spawn-cap guard (ZDA-1594)", () => {
+    async function seedRoutineFireParent(
+      opts?: { expectedChildCount?: number | null },
+    ) {
+      const fx = await seedFixture();
+      if (opts?.expectedChildCount !== undefined) {
+        await db
+          .update(routines)
+          .set({ expectedChildCount: opts.expectedChildCount })
+          .where(eq(routines.id, fx.routine.id));
+      }
+      const runId = randomUUID();
+      const parent = await fx.issueSvc.create(fx.companyId, {
+        projectId: fx.routine.projectId,
+        title: fx.routine.title,
+        description: fx.routine.description,
+        status: "todo",
+        priority: fx.routine.priority,
+        assigneeAgentId: fx.routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: fx.routine.id,
+        originRunId: runId,
+      });
+      await db.insert(routineRuns).values({
+        id: runId,
+        companyId: fx.companyId,
+        routineId: fx.routine.id,
+        triggerId: null,
+        source: "manual",
+        status: "issue_created",
+        triggeredAt: new Date(),
+        linkedIssueId: parent.id,
+        completedAt: new Date(),
+      });
+      return { ...fx, parent };
+    }
+
+    it("allows the first child but blocks the second when cap defaults to 1", async () => {
+      const { companyId, agentId, parent, issueSvc } = await seedRoutineFireParent();
+      const firstChild = await issueSvc.create(companyId, {
+        title: "Anomaly child 1",
+        priority: "high",
+        assigneeAgentId: agentId,
+        parentId: parent.id,
+      });
+      expect(firstChild.parentId).toBe(parent.id);
+      await expect(
+        issueSvc.create(companyId, {
+          title: "Anomaly child 2",
+          priority: "high",
+          assigneeAgentId: agentId,
+          parentId: parent.id,
+        }),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining("spawn-cap exceeded"),
+      });
+    });
+
+    it("respects expectedChildCount declared on the routine for fan-out routines", async () => {
+      const { companyId, agentId, parent, issueSvc } = await seedRoutineFireParent({
+        expectedChildCount: 3,
+      });
+      for (let i = 0; i < 3; i += 1) {
+        await issueSvc.create(companyId, {
+          title: `Sync child ${i + 1}`,
+          priority: "high",
+          assigneeAgentId: agentId,
+          parentId: parent.id,
+        });
+      }
+      await expect(
+        issueSvc.create(companyId, {
+          title: "Sync child 4 (should overflow)",
+          priority: "high",
+          assigneeAgentId: agentId,
+          parentId: parent.id,
+        }),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining("spawn-cap exceeded"),
+      });
+    });
+
+    it("does not cap children of non-routine parents", async () => {
+      const { companyId, agentId, issueSvc } = await seedFixture();
+      const manualParent = await issueSvc.create(companyId, {
+        title: "Manual parent",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+      for (let i = 0; i < 4; i += 1) {
+        const child = await issueSvc.create(companyId, {
+          title: `Manual child ${i + 1}`,
+          priority: "medium",
+          assigneeAgentId: agentId,
+          parentId: manualParent.id,
+        });
+        expect(child.parentId).toBe(manualParent.id);
+      }
+    });
+  });
 });

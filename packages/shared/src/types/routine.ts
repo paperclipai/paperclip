@@ -58,6 +58,7 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  expectedChildCount: number | null;
   variables: RoutineVariable[];
   latestRevisionId: string | null;
   latestRevisionNumber: number;
@@ -97,6 +98,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  expectedChildCount: number | null;
   variables: RoutineVariable[];
 }
 

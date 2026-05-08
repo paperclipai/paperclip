@@ -59,6 +59,7 @@ export const createRoutineSchema = z.object({
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
+  expectedChildCount: z.number().int().min(1).max(1000).optional().nullable(),
   variables: z.array(routineVariableSchema).optional().default([]),
 });
 
@@ -82,6 +83,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   status: z.enum(ROUTINE_STATUSES),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
+  expectedChildCount: z.number().int().min(1).max(1000).nullable(),
   variables: z.array(routineVariableSchema),
 }).strict();
 

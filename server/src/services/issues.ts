@@ -26,6 +26,8 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import type {
   IssueCommentAuthorType,
@@ -3006,6 +3008,48 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
+
+        // Spawn-cap guard for routine_execution children (ZDA-1594).
+        // Cap fan-out per single routine fire at routine.expectedChildCount,
+        // defaulting to 1. Prevents over-spawn (e.g. ZDA-1577 — DID created
+        // 6 anomaly children from one fire). Routines that legitimately fan
+        // out (law-rollout, cache-rollout) declare expectedChildCount = N.
+        if (issueData.parentId) {
+          const parent = await tx
+            .select({
+              originKind: issues.originKind,
+              originRunId: issues.originRunId,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (parent && parent.originKind === "routine_execution" && parent.originRunId) {
+            const routineRow = await tx
+              .select({ expectedChildCount: routines.expectedChildCount })
+              .from(routineRuns)
+              .innerJoin(routines, eq(routineRuns.routineId, routines.id))
+              .where(eq(routineRuns.id, parent.originRunId))
+              .then((rows) => rows[0] ?? null);
+            const cap = routineRow?.expectedChildCount ?? 1;
+            const [countRow] = await tx
+              .select({ n: sql<number>`count(*)::int` })
+              .from(issues)
+              .where(and(eq(issues.parentId, issueData.parentId), eq(issues.companyId, companyId)));
+            const currentChildren = Number(countRow?.n ?? 0);
+            if (currentChildren >= cap) {
+              throw unprocessable(
+                `Routine spawn-cap exceeded (cap=${cap}, current=${currentChildren}). ` +
+                  `Declare expectedChildCount on the routine for legitimate fan-out.`,
+                {
+                  cap,
+                  currentChildren,
+                  parentIssueId: issueData.parentId,
+                  originRunId: parent.originRunId,
+                },
+              );
+            }
+          }
+        }
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
