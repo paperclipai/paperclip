@@ -776,7 +776,7 @@ function TranscriptToolCard({
             <div className={cn("grid gap-3", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Input
+                  {t("input")}
                 </div>
                 <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
                   {formatToolPayload(block.input) || "<empty>"}
@@ -784,7 +784,7 @@ function TranscriptToolCard({
               </div>
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Result
+                  {t("result")}
                 </div>
                 <pre className={cn(
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
@@ -1101,6 +1101,7 @@ function TranscriptEventRow({
   block: Extract<TranscriptBlock, { type: "event" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation("transcript");
   const compact = density === "compact";
   const toneClasses =
     block.tone === "error"
@@ -1134,7 +1135,7 @@ function TranscriptEventRow({
           ) : (
             <div className={cn("whitespace-pre-wrap break-words", compact ? "text-[11px]" : "text-xs")}>
               <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
-                {block.label}
+                {t(block.label)}
               </span>
               {block.text ? <span className="ml-2">{block.text}</span> : null}
             </div>

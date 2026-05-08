@@ -20,5 +20,8 @@
   "input": "输入",
   "result": "结果",
   "using": "使用",
-  "used": "已使用"
+  "used": "已使用",
+  "init": "初始化",
+  "skill": "工具",
+  "used_skill": "使用的工具"
 }

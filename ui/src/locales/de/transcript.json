@@ -20,5 +20,8 @@
   "input": "Eingabe",
   "result": "Ergebnis",
   "using": "Verwendet",
-  "used": "Verwendet"
+  "used": "Verwendet",
+  "init": "Initialisierung",
+  "skill": "Tool",
+  "used_skill": "Verwendetes Tool"
 }

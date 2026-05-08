@@ -20,5 +20,8 @@
   "input": "Entrada",
   "result": "Resultado",
   "using": "Usando",
-  "used": "Usado"
+  "used": "Usado",
+  "init": "inicialização",
+  "skill": "Ferramenta",
+  "used_skill": "Ferramenta usada"
 }

@@ -20,5 +20,8 @@
   "input": "Input",
   "result": "Result",
   "using": "Using",
-  "used": "Used"
+  "used": "Used",
+  "init": "init",
+  "skill": "Skill",
+  "used_skill": "Used Skill"
 }
