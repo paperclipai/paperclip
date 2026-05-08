@@ -16,6 +16,8 @@ import inboxEN from "./en/inbox.json";
 import settingsEN from "./en/settings.json";
 import adaptersEN from "./en/adapters.json";
 import onboardingEN from "./en/onboarding.json";
+import transcriptEN from "./en/transcript.json";
+import commentsEN from "./en/comments.json";
 
 import commonRU from "./ru/common.json";
 import agentsRU from "./ru/agents.json";
@@ -32,6 +34,8 @@ import inboxRU from "./ru/inbox.json";
 import settingsRU from "./ru/settings.json";
 import adaptersRU from "./ru/adapters.json";
 import onboardingRU from "./ru/onboarding.json";
+import transcriptRU from "./ru/transcript.json";
+import commentsRU from "./ru/comments.json";
 
 import commonUK from "./uk/common.json";
 import agentsUK from "./uk/agents.json";
@@ -48,6 +52,8 @@ import inboxUK from "./uk/inbox.json";
 import settingsUK from "./uk/settings.json";
 import adaptersUK from "./uk/adapters.json";
 import onboardingUK from "./uk/onboarding.json";
+import transcriptUK from "./uk/transcript.json";
+import commentsUK from "./uk/comments.json";
 
 import commonDE from "./de/common.json";
 import agentsDE from "./de/agents.json";
@@ -64,6 +70,8 @@ import inboxDE from "./de/inbox.json";
 import settingsDE from "./de/settings.json";
 import adaptersDE from "./de/adapters.json";
 import onboardingDE from "./de/onboarding.json";
+import transcriptDE from "./de/transcript.json";
+import commentsDE from "./de/comments.json";
 
 import commonES from "./es/common.json";
 import agentsES from "./es/agents.json";
@@ -80,6 +88,8 @@ import inboxES from "./es/inbox.json";
 import settingsES from "./es/settings.json";
 import adaptersES from "./es/adapters.json";
 import onboardingES from "./es/onboarding.json";
+import transcriptES from "./es/transcript.json";
+import commentsES from "./es/comments.json";
 
 import commonZH from "./zh/common.json";
 import agentsZH from "./zh/agents.json";
@@ -96,6 +106,8 @@ import inboxZH from "./zh/inbox.json";
 import settingsZH from "./zh/settings.json";
 import adaptersZH from "./zh/adapters.json";
 import onboardingZH from "./zh/onboarding.json";
+import transcriptZH from "./zh/transcript.json";
+import commentsZH from "./zh/comments.json";
 
 import commonPT from "./pt/common.json";
 import agentsPT from "./pt/agents.json";
@@ -112,6 +124,8 @@ import inboxPT from "./pt/inbox.json";
 import settingsPT from "./pt/settings.json";
 import adaptersPT from "./pt/adapters.json";
 import onboardingPT from "./pt/onboarding.json";
+import transcriptPT from "./pt/transcript.json";
+import commentsPT from "./pt/comments.json";
 
 import commonEL from "./el/common.json";
 import agentsEL from "./el/agents.json";
@@ -128,6 +142,8 @@ import inboxEL from "./el/inbox.json";
 import settingsEL from "./el/settings.json";
 import adaptersEL from "./el/adapters.json";
 import onboardingEL from "./el/onboarding.json";
+import transcriptEL from "./el/transcript.json";
+import commentsEL from "./el/comments.json";
 
 const LANGUAGE_KEY = "paperclip_language";
 
@@ -170,6 +186,8 @@ i18n.use(initReactI18next).init({
       settings: settingsEN,
       adapters: adaptersEN,
       onboarding: onboardingEN,
+      transcript: transcriptEN,
+      comments: commentsEN,
     },
     ru: {
       common: commonRU,
@@ -187,6 +205,8 @@ i18n.use(initReactI18next).init({
       settings: settingsRU,
       adapters: adaptersRU,
       onboarding: onboardingRU,
+      transcript: transcriptRU,
+      comments: commentsRU,
     },
     uk: {
       common: commonUK,
@@ -204,6 +224,8 @@ i18n.use(initReactI18next).init({
       settings: settingsUK,
       adapters: adaptersUK,
       onboarding: onboardingUK,
+      transcript: transcriptUK,
+      comments: commentsUK,
     },
     es: {
       common: commonES,
@@ -221,6 +243,8 @@ i18n.use(initReactI18next).init({
       settings: settingsES,
       adapters: adaptersES,
       onboarding: onboardingES,
+      transcript: transcriptES,
+      comments: commentsES,
     },
     de: {
       common: commonDE,
@@ -238,6 +262,8 @@ i18n.use(initReactI18next).init({
       settings: settingsDE,
       adapters: adaptersDE,
       onboarding: onboardingDE,
+      transcript: transcriptDE,
+      comments: commentsDE,
     },
     zh: {
       common: commonZH,
@@ -255,6 +281,8 @@ i18n.use(initReactI18next).init({
       settings: settingsZH,
       adapters: adaptersZH,
       onboarding: onboardingZH,
+      transcript: transcriptZH,
+      comments: commentsZH,
     },
     pt: {
       common: commonPT,
@@ -272,6 +300,8 @@ i18n.use(initReactI18next).init({
       settings: settingsPT,
       adapters: adaptersPT,
       onboarding: onboardingPT,
+      transcript: transcriptPT,
+      comments: commentsPT,
     },
     el: {
       common: commonEL,
@@ -289,6 +319,8 @@ i18n.use(initReactI18next).init({
       settings: settingsEL,
       adapters: adaptersEL,
       onboarding: onboardingEL,
+      transcript: transcriptEL,
+      comments: commentsEL,
     },
   },
   lng: getInitialLanguage(),
