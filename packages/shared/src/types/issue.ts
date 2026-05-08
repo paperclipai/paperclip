@@ -322,6 +322,33 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export type OutcomeContractKind = "merged_pr" | "signed_off_decision";
+
+export type OutcomeContractSignerKind = "agent" | "user" | "role";
+
+export interface OutcomeContractSigner {
+  kind: OutcomeContractSignerKind;
+  id: string;
+}
+
+export interface OutcomeContract {
+  kind: OutcomeContractKind;
+  description?: string;
+  signers?: OutcomeContractSigner[];
+  allowHumanOverride?: boolean;
+  params?: Record<string, unknown>;
+}
+
+export interface OutcomeEvaluationMissing {
+  code: string;
+  message: string;
+  hint?: string;
+}
+
+export type OutcomeEvaluation =
+  | { satisfied: true }
+  | { satisfied: false; missing: OutcomeEvaluationMissing[] };
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -354,6 +381,7 @@ export interface Issue {
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
+  outcomeContract?: OutcomeContract | null;
   monitorNextCheckAt?: Date | null;
   monitorLastTriggeredAt?: Date | null;
   monitorAttemptCount?: number;

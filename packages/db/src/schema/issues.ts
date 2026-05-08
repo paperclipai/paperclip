@@ -51,6 +51,7 @@ export const issues = pgTable(
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
     executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
+    outcomeContract: jsonb("outcome_contract").$type<Record<string, unknown>>(),
     monitorNextCheckAt: timestamp("monitor_next_check_at", { withTimezone: true }),
     monitorWakeRequestedAt: timestamp("monitor_wake_requested_at", { withTimezone: true }),
     monitorLastTriggeredAt: timestamp("monitor_last_triggered_at", { withTimezone: true }),
