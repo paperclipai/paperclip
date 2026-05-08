@@ -24,7 +24,11 @@ import {
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { deriveExecutionGateView } from "../lib/issue-execution-state";
+import {
+  deriveExecutionGateView,
+  stickyExecutionGateView,
+  type ExecutionGateView,
+} from "../lib/issue-execution-state";
 import { ExecutionPolicyGate } from "./ExecutionPolicyGate";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { formatMonitorOffset } from "../lib/issue-monitor";
@@ -864,10 +868,29 @@ export function IssueProperties({
     agentName,
     userLabel,
   });
+  // Track in-flight execution decisions so the optimistic mutation update —
+  // which momentarily flips issue.status to "done"/"in_progress" and would
+  // therefore unmount the gate — does not throw away the gate's typed
+  // comment and inline error before the server response lands.
+  const [executionDecisionInFlight, setExecutionDecisionInFlight] = useState(false);
+  const lastSelfExecutionViewRef = useRef<ExecutionGateView | null>(null);
+  if (executionGateView.kind === "self") {
+    lastSelfExecutionViewRef.current = executionGateView;
+  }
+  const stickyGateView = stickyExecutionGateView({
+    current: executionGateView,
+    inFlight: executionDecisionInFlight,
+    lastSelf: lastSelfExecutionViewRef.current,
+  });
   const handleExecutionDecisionSubmit = useCallback(
     async ({ decision, comment }: { decision: "approve" | "request_changes"; comment: string }) => {
       const status = decision === "approve" ? "done" : "in_progress";
-      await onSubmitExecutionDecision({ status, comment });
+      setExecutionDecisionInFlight(true);
+      try {
+        await onSubmitExecutionDecision({ status, comment });
+      } finally {
+        setExecutionDecisionInFlight(false);
+      }
     },
     [onSubmitExecutionDecision],
   );
@@ -1984,14 +2007,18 @@ export function IssueProperties({
         </PropertyPicker>
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
-        {executionGateView.kind === "self" ? (
+        {stickyGateView?.kind === "self" ? (
           // Render outside PropertyRow so the gate spans the full panel width:
           // PropertyRow's 80px label column would otherwise crowd the textarea
           // and button row in the sidebar. The gate's own heading carries the
-          // stage context that the row label would normally provide.
+          // stage context that the row label would normally provide. The view
+          // is sourced from `stickyGateView` so the gate stays mounted (and
+          // therefore retains its typed comment / error state) across the
+          // optimistic cache update window when issue.status briefly flips to
+          // "done"/"in_progress" before the server response.
           <div className="py-1.5">
             <ExecutionPolicyGate
-              view={executionGateView}
+              view={stickyGateView}
               onSubmitDecision={handleExecutionDecisionSubmit}
             />
           </div>

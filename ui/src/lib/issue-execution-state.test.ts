@@ -3,6 +3,8 @@ import type { IssueExecutionState } from "@paperclipai/shared";
 import {
   deriveExecutionGateView,
   isViewerActiveExecutionParticipant,
+  stickyExecutionGateView,
+  type ExecutionGateView,
 } from "./issue-execution-state";
 
 const noopAgentName = (id: string | null) => (id ? `Agent ${id}` : null);
@@ -191,5 +193,56 @@ describe("isViewerActiveExecutionParticipant", () => {
         executionState: { ...baseState, status: "changes_requested" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("stickyExecutionGateView", () => {
+  const selfView: ExecutionGateView = { kind: "self", stageLabel: "Approval" };
+  const passiveView: ExecutionGateView = {
+    kind: "passive",
+    stageLabel: "Approval",
+    participantLabel: "Alice",
+    passiveText: "Approval pending with Alice",
+  };
+  const noneView: ExecutionGateView = { kind: "none" };
+
+  it("returns the current self view as-is", () => {
+    expect(
+      stickyExecutionGateView({ current: selfView, inFlight: false, lastSelf: null }),
+    ).toEqual(selfView);
+  });
+
+  it("returns the current passive view as-is so non-participants still see the label", () => {
+    expect(
+      stickyExecutionGateView({ current: passiveView, inFlight: false, lastSelf: selfView }),
+    ).toEqual(passiveView);
+  });
+
+  it("returns null when current is none and nothing is in flight", () => {
+    expect(
+      stickyExecutionGateView({ current: noneView, inFlight: false, lastSelf: selfView }),
+    ).toBeNull();
+  });
+
+  it("falls back to the last-known self view while a submit is in flight, even when current is none", () => {
+    // This covers the optimistic-update race: PATCH onMutate flips
+    // issue.status to "done" before the server response, which makes the
+    // current derive return `none`. The gate must stay mounted with its
+    // typed comment + inline error preserved.
+    expect(
+      stickyExecutionGateView({ current: noneView, inFlight: true, lastSelf: selfView }),
+    ).toEqual(selfView);
+  });
+
+  it("returns null when in flight but no prior self view was ever recorded", () => {
+    expect(
+      stickyExecutionGateView({ current: noneView, inFlight: true, lastSelf: null }),
+    ).toBeNull();
+  });
+
+  it("does not surface a stale lastSelf when current is passive (someone else is now the participant)", () => {
+    expect(
+      stickyExecutionGateView({ current: passiveView, inFlight: true, lastSelf: selfView }),
+    ).toEqual(passiveView);
   });
 });

@@ -52,6 +52,26 @@ export function isViewerActiveExecutionParticipant(input: {
   );
 }
 
+/**
+ * Keep the gate visible while a decision submit is in flight even if the issue
+ * cache momentarily reports a non-self view. This protects the gate's local
+ * state (typed comment, inline error, pending flag) from being thrown away
+ * when an optimistic mutation flips `issue.status` to `done`/`in_progress`
+ * — and therefore `kind` to `none` — before the server response lands.
+ *
+ * Returns the view to render, or `null` when the gate should not be mounted.
+ */
+export function stickyExecutionGateView(args: {
+  current: ExecutionGateView;
+  inFlight: boolean;
+  lastSelf: ExecutionGateView | null;
+}): ExecutionGateView | null {
+  if (args.current.kind === "self") return args.current;
+  if (args.current.kind === "passive") return args.current;
+  if (args.inFlight && args.lastSelf?.kind === "self") return args.lastSelf;
+  return null;
+}
+
 export function deriveExecutionGateView(input: DeriveInput): ExecutionGateView {
   if (input.issueStatus !== "in_review") return { kind: "none" };
 
