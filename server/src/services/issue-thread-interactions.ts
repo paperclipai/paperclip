@@ -753,8 +753,8 @@ export function issueThreadInteractionService(db: Db) {
       // (`request_confirmation`), and the issue is currently `in_progress`,
       // automatically transition it to `awaiting_human` so AI agents do not
       // try to keep working on it. The interaction-resolution paths above
-      // wake the assignee back up and (for confirmations) re-set status to
-      // `todo` unless the issue is parked for another reason.
+      // wake the assignee back up and re-set status to `todo` when the
+      // parked-for-human state should be cleared.
       if (
         actor.agentId
         && (data.kind === "ask_user_questions" || data.kind === "request_confirmation")
@@ -1200,7 +1200,30 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
-      await touchIssue(db, issue.id);
+      const issueContext = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issueContext || issueContext.companyId !== issue.companyId) {
+        throw notFound("Issue not found");
+      }
+
+      if (issueContext.status === "awaiting_human") {
+        await issueService(db).update(issue.id, {
+          status: "todo",
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.userId ?? null,
+        });
+      } else {
+        await touchIssue(db, issue.id);
+      }
+
       return hydrateInteraction(updated);
     },
   };

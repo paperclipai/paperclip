@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreateChild = vi.fn();
+const mockIssueUpdate = vi.fn();
 
 vi.mock("./issues.js", () => ({
   issueService: () => ({
     createChild: mockCreateChild,
+    update: mockIssueUpdate,
   }),
 }));
 
@@ -28,17 +30,25 @@ function createSelectChain(rows: SelectRow[]) {
 
 function createFakeDb(args: {
   interactionRow: Record<string, unknown>;
+  issueRow?: SelectRow;
   parentRows?: SelectRow[];
 }) {
   let interactionRow = { ...args.interactionRow };
   const issueTouches: Array<Record<string, unknown>> = [];
   const interactionUpdates: Array<Record<string, unknown>> = [];
   let selectCallCount = 0;
+  const issueRow = args.issueRow ?? {
+    id: interactionRow.issueId,
+    companyId: interactionRow.companyId,
+    status: "in_progress",
+  };
 
   const db: any = {
     select: vi.fn(() => {
       selectCallCount += 1;
-      return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
+      if (selectCallCount === 1) return createSelectChain([interactionRow]);
+      if (selectCallCount === 2) return createSelectChain([issueRow]);
+      return createSelectChain(args.parentRows ?? []);
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
@@ -211,5 +221,74 @@ describe("issueThreadInteractionService", () => {
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
+    expect(mockIssueUpdate).not.toHaveBeenCalled();
+  });
+
+  it("answerQuestions moves awaiting_human issues back to todo", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-3",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "none",
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Pick one scope",
+            selectionMode: "single",
+            required: true,
+            options: [
+              { id: "phase-1", label: "Phase 1" },
+              { id: "phase-2", label: "Phase 2" },
+            ],
+          },
+        ],
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-04-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+    };
+
+    const state = createFakeDb({
+      interactionRow,
+      issueRow: {
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        status: "awaiting_human",
+      },
+    });
+    const svc = issueThreadInteractionService(state.db as never);
+
+    await svc.answerQuestions({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, "interaction-3", {
+      answers: [
+        { questionId: "scope", optionIds: ["phase-1"] },
+      ],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(mockIssueUpdate).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", {
+      status: "todo",
+      actorAgentId: null,
+      actorUserId: "local-board",
+    });
+    expect(state.issueTouches).toHaveLength(0);
   });
 });

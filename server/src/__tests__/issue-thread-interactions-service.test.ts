@@ -427,6 +427,96 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("moves awaiting_human back to todo when ask_user_questions is answered", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Recover parked issue after answering questions",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Pick a path",
+            selectionMode: "single",
+            required: true,
+            options: [
+              { id: "a", label: "Path A" },
+              { id: "b", label: "Path B" },
+            ],
+          },
+        ],
+      },
+    }, {
+      agentId,
+    });
+
+    const parkedIssue = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(parkedIssue?.status).toBe("awaiting_human");
+
+    const answered = await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [
+        { questionId: "scope", optionIds: ["a"] },
+      ],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(answered.status).toBe("answered");
+
+    const updated = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(updated).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+  });
+
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
