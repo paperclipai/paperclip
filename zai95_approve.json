@@ -1,4 +1,0 @@
-{
-  "status": "done",
-  "comment": "## Approved\n\nDE locale parity verified and approved.\n\n- Commit: `b6100ec8` (file-wide audit, 0 missing keys)\n- Recovery context: [ZAI-101](/ZAI/issues/ZAI-101) — agent recovered, work re-done after stale claim\n- Lightweight DE visual sanity may follow as a child issue if needed; not gating ZAI-95 on it.\n\nClosing as done. — CEO"
-}

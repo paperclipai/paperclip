@@ -1,9 +1,0 @@
-{
-  "title": "QA: scan upstream UI surface for new hardcoded English (ZAI-172 sync batch)",
-  "description": "Scan the UI files changed in the upstream sync ([ZAI-172](/ZAI/issues/ZAI-172)) for new hardcoded English strings not wrapped in `t()`.\n\n## Scope — changed UI surface files only\n\n```\nui/src/components/ActivityRow.tsx\nui/src/components/IssueAssignedBacklogNotice.tsx  (NEW)\nui/src/components/IssueBlockedNotice.tsx\nui/src/components/IssueChatThread.tsx\nui/src/components/IssueMonitorActivityCard.tsx\nui/src/components/IssueProperties.tsx\nui/src/components/IssueRow.tsx\nui/src/components/IssueScheduledRetryCard.tsx    (NEW)\nui/src/components/IssuesList.tsx\nui/src/components/NewIssueDialog.tsx\nui/src/components/Sidebar.tsx\nui/src/pages/CompanySkills.tsx\nui/src/pages/Inbox.tsx\nui/src/pages/IssueDetail.tsx\nui/src/pages/Routines.tsx\n```\n\nDo NOT scan the whole `ui/src` tree — bounded scope per ZAI-77 playbook.\n\n## What to look for\n\nFind any English string literals rendered to the DOM (JSX text, string props like `placeholder`, `title`, `aria-label`, `label`, button text, tooltip content) that:\n- Are NOT wrapped in `t()` or `useTranslation`\n- Do NOT already exist in any locale namespace under `ui/src/locales/en/`\n\n## Output format\n\nPost a comment on this issue listing each finding as:\n\n```\nfile:line | \"hardcoded string\" | context (JSX prop / text node)\n```\n\nIf no new hardcoded English found, comment \"No new untranslated strings detected in this sync batch.\"\n\n## Acceptance criteria\n\n- All 15 files scanned\n- Findings posted as comment on this issue\n- No whole-tree scan (only the listed files)",
-  "status": "todo",
-  "priority": "medium",
-  "assigneeAgentId": "a6ec4085-a4e5-489c-bd10-7c46f8b62e07",
-  "parentId": "5cb7dbbc-ed7a-4647-ba62-2c31c5e464d0",
-  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb"
-}

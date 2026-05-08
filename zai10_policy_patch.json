@@ -1,1 +1,0 @@
-{"executionPolicy": {"mode": "normal", "commentRequired": true, "stages": [{"type": "review", "approvalsNeeded": 1, "participants": [{"type": "user", "userId": "local-board"}]}, {"type": "approval", "approvalsNeeded": 1, "participants": [{"type": "user", "userId": "local-board"}]}]}}
