@@ -101,6 +101,7 @@ export function dashboardService(db: Db) {
         .select({
           date: runActivityDayExpr,
           status: heartbeatRuns.status,
+          sleepBoundaryCrossed: heartbeatRuns.sleepBoundaryCrossed,
           count: sql<number>`count(*)::double precision`,
         })
         .from(heartbeatRuns)
@@ -110,21 +111,27 @@ export function dashboardService(db: Db) {
             gte(heartbeatRuns.createdAt, runActivityStart),
           ),
         )
-        .groupBy(runActivityDayExpr, heartbeatRuns.status);
+        .groupBy(runActivityDayExpr, heartbeatRuns.status, heartbeatRuns.sleepBoundaryCrossed);
 
       const runActivity = new Map(
         runActivityDays.map((date) => [
           date,
-          { date, succeeded: 0, failed: 0, other: 0, total: 0 },
+          { date, succeeded: 0, failed: 0, sleepBoundaryFailed: 0, other: 0, total: 0 },
         ]),
       );
       for (const row of runActivityRows) {
         const bucket = runActivity.get(row.date);
         if (!bucket) continue;
         const count = Number(row.count);
-        if (row.status === "succeeded") bucket.succeeded += count;
-        else if (row.status === "failed" || row.status === "timed_out") bucket.failed += count;
-        else bucket.other += count;
+        const isFailureStatus = row.status === "failed" || row.status === "timed_out";
+        if (row.status === "succeeded") {
+          bucket.succeeded += count;
+        } else if (isFailureStatus) {
+          bucket.failed += count;
+          if (row.sleepBoundaryCrossed) bucket.sleepBoundaryFailed += count;
+        } else {
+          bucket.other += count;
+        }
         bucket.total += count;
       }
 

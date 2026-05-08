@@ -55,3 +55,12 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  createSleepBoundaryTracker,
+  getSleepBoundaryTracker,
+  setSleepBoundaryTrackerForTest,
+  type SleepBoundary,
+  type SleepBoundaryStats,
+  type SleepBoundaryTracker,
+  type SleepBoundaryTrackerOptions,
+} from "./sleep-boundary-tracker.js";

@@ -163,6 +163,10 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  getSleepBoundaryTracker,
+  type SleepBoundaryTracker,
+} from "./sleep-boundary-tracker.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -706,6 +710,7 @@ const heartbeatRunListColumns = {
   continuationAttempt: heartbeatRuns.continuationAttempt,
   lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
   nextAction: heartbeatRuns.nextAction,
+  sleepBoundaryCrossed: heartbeatRuns.sleepBoundaryCrossed,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
 } as const;
@@ -821,6 +826,7 @@ const heartbeatRunIssueSummaryColumns = {
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
+  sleepBoundaryCrossed: heartbeatRuns.sleepBoundaryCrossed,
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
@@ -2275,7 +2281,15 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  sleepBoundaryTracker?: SleepBoundaryTracker;
 }
+
+const TERMINAL_RUN_STATUSES_FOR_SLEEP_TAG = new Set([
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+]);
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
@@ -2304,6 +2318,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+  const sleepBoundaryTracker = options.sleepBoundaryTracker ?? getSleepBoundaryTracker();
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -3683,9 +3698,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const sleepPatch = await maybeBuildSleepBoundaryPatch(runId, status, patch);
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...patch, ...sleepPatch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -3704,12 +3720,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorCode: updated.errorCode ?? null,
           startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+          sleepBoundaryCrossed: updated.sleepBoundaryCrossed === true,
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      if (sleepPatch?.sleepBoundaryCrossed) {
+        const stats = sleepBoundaryTracker.getStats();
+        logger.warn(
+          {
+            runId: updated.id,
+            agentId: updated.agentId,
+            companyId: updated.companyId,
+            status: updated.status,
+            startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+            finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+            lastBoundaryAt: stats.lastBoundary?.wokeAt.toISOString() ?? null,
+            lastBoundaryGapMs: stats.lastBoundary?.gapMs ?? null,
+          },
+          "heartbeat run wall-clock spans a host sleep boundary; tagged sleepBoundaryCrossed=true",
+        );
+      }
     }
 
     return updated;
+  }
+
+  async function maybeBuildSleepBoundaryPatch(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ): Promise<{ sleepBoundaryCrossed: true } | null> {
+    if (!TERMINAL_RUN_STATUSES_FOR_SLEEP_TAG.has(status)) return null;
+    // Skip if explicitly set in the patch already.
+    if (patch && Object.prototype.hasOwnProperty.call(patch, "sleepBoundaryCrossed")) {
+      return null;
+    }
+
+    const finishedAt = (patch?.finishedAt as Date | string | null | undefined) ?? null;
+    const finishedDate = finishedAt instanceof Date
+      ? finishedAt
+      : typeof finishedAt === "string"
+        ? new Date(finishedAt)
+        : null;
+    const finishedReady = finishedDate && !Number.isNaN(finishedDate.getTime()) ? finishedDate : new Date();
+
+    let startedAtSource: Date | null = null;
+    try {
+      const [row] = await db
+        .select({
+          startedAt: heartbeatRuns.startedAt,
+          processStartedAt: heartbeatRuns.processStartedAt,
+          createdAt: heartbeatRuns.createdAt,
+          sleepBoundaryCrossed: heartbeatRuns.sleepBoundaryCrossed,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      if (!row || row.sleepBoundaryCrossed) return null;
+      startedAtSource = row.startedAt ?? row.processStartedAt ?? row.createdAt ?? null;
+    } catch (err) {
+      logger.warn({ err, runId }, "sleep boundary lookup query failed; skipping tag");
+      return null;
+    }
+
+    if (!startedAtSource) return null;
+    if (!sleepBoundaryTracker.wasAsleepBetween(startedAtSource, finishedReady)) {
+      return null;
+    }
+    return { sleepBoundaryCrossed: true };
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
@@ -4263,12 +4340,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     meta: { pid: number; processGroupId: number | null; startedAt: string },
   ) {
     const startedAt = new Date(meta.startedAt);
+    const effectiveStartedAt = Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
+    if (sleepBoundaryTracker.recentlyWoke(effectiveStartedAt)) {
+      const stats = sleepBoundaryTracker.getStats();
+      logger.warn(
+        {
+          runId,
+          pid: meta.pid,
+          processGroupId: meta.processGroupId,
+          processStartedAt: effectiveStartedAt.toISOString(),
+          lastWakeAt: stats.lastBoundary?.wokeAt.toISOString() ?? null,
+          lastSleepGapMs: stats.lastBoundary?.gapMs ?? null,
+        },
+        "heartbeat run started inside DarkWake window (host just woke from sleep)",
+      );
+    }
     return db
       .update(heartbeatRuns)
       .set({
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
-        processStartedAt: Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
+        processStartedAt: effectiveStartedAt,
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, runId))
