@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -9,9 +9,12 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { githubIntegrationApi } from "../api/github-integration";
+import { secretsApi } from "../api/secrets";
+import { goalsApi } from "../api/goals";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, Github } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -537,6 +540,9 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* GitHub Sync */}
+      <GitHubSyncSection companyId={selectedCompanyId!} />
+
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
@@ -587,6 +593,257 @@ export function CompanySettings() {
               </span>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GitHubSyncSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+
+  const { data: config, isLoading } = useQuery({
+    queryKey: ["github-integration", companyId],
+    queryFn: () => githubIntegrationApi.get(companyId),
+    enabled: !!companyId,
+  });
+
+  const { data: secretsList } = useQuery({
+    queryKey: ["secrets", companyId],
+    queryFn: () => secretsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const { data: goalsList } = useQuery({
+    queryKey: queryKeys.goals.list(companyId),
+    queryFn: () => goalsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const [repo, setRepo] = useState("");
+  const [host, setHost] = useState("github.com");
+  const [secretRef, setSecretRef] = useState("");
+  const [newPatName, setNewPatName] = useState("github-pat");
+  const [newPatValue, setNewPatValue] = useState("");
+  const [syncedGoalIds, setSyncedGoalIds] = useState<string[]>([]);
+  const [dryRun, setDryRun] = useState(true);
+  const [patMode, setPatMode] = useState<"existing" | "new">("existing");
+
+  useEffect(() => {
+    if (!config?.configured) return;
+    setRepo(config.repo ?? "");
+    setHost(config.host ?? "github.com");
+    setSecretRef(config.secretRef ?? "");
+    setSyncedGoalIds(config.syncedGoalIds ?? []);
+    setDryRun(config.dryRun !== false);
+  }, [config]);
+
+  const createSecretMutation = useMutation({
+    mutationFn: async () => {
+      const secret = await secretsApi.create(companyId, {
+        name: newPatName.trim() || "github-pat",
+        value: newPatValue,
+        description: "GitHub PAT for Paperclip sync",
+      });
+      return secret.id;
+    },
+    onSuccess: (newSecretRef) => {
+      setSecretRef(newSecretRef);
+      setNewPatValue("");
+      setPatMode("existing");
+      void queryClient.invalidateQueries({ queryKey: ["secrets", companyId] });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const ref = patMode === "new" ? await createSecretMutation.mutateAsync() : secretRef;
+      return githubIntegrationApi.set(companyId, {
+        repo: repo.trim(),
+        host: host.trim() || "github.com",
+        secretRef: ref,
+        syncedGoalIds,
+        dryRun,
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["github-integration", companyId] });
+    },
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: () => githubIntegrationApi.remove(companyId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["github-integration", companyId] });
+    },
+  });
+
+  const canSave =
+    repo.trim().length > 0 &&
+    /^[^/]+\/[^/]+$/.test(repo.trim()) &&
+    (patMode === "new" ? newPatValue.trim().length > 0 && newPatName.trim().length > 0 : secretRef.length > 0);
+
+  if (isLoading) return null;
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+        <Github className="h-3.5 w-3.5" />
+        GitHub Sync (one-way, beta)
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        {config?.configured && config.enabled && (
+          <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-xs">
+            <span className="text-muted-foreground">
+              Syncing to <span className="font-mono text-foreground">{config.repo}</span>
+              {config.dryRun && <span className="ml-2 rounded bg-yellow-100 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300">dry-run</span>}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-xs text-destructive"
+              onClick={() => disableMutation.mutate()}
+              disabled={disableMutation.isPending}
+            >
+              {disableMutation.isPending ? "Disabling..." : "Disable"}
+            </Button>
+          </div>
+        )}
+        {config?.lastError && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            Last error: {config.lastError}
+          </div>
+        )}
+        {config?.lastSyncAt && (
+          <div className="text-xs text-muted-foreground">
+            Last sync: {new Date(config.lastSyncAt).toLocaleString()} — {config.lastSyncMessage ?? ""}
+          </div>
+        )}
+
+        <Field label="Repository" hint='GitHub repository in "owner/repo" format.'>
+          <input
+            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+            type="text"
+            placeholder="owner/repo"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+          />
+        </Field>
+
+        <Field label="Host" hint='GitHub host — "github.com" or a GitHub Enterprise hostname.'>
+          <input
+            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+            type="text"
+            placeholder="github.com"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+          />
+        </Field>
+
+        <Field label="PAT (Personal Access Token)" hint="Write-only. Stored as a Paperclip secret — never returned by the API.">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                className={`rounded px-2 py-1 border ${patMode === "existing" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
+                onClick={() => setPatMode("existing")}
+              >
+                Use existing secret
+              </button>
+              <button
+                type="button"
+                className={`rounded px-2 py-1 border ${patMode === "new" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
+                onClick={() => setPatMode("new")}
+              >
+                Enter new PAT
+              </button>
+            </div>
+            {patMode === "existing" ? (
+              <select
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                value={secretRef}
+                onChange={(e) => setSecretRef(e.target.value)}
+              >
+                <option value="">Select a secret…</option>
+                {(secretsList ?? []).map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="space-y-1.5">
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  type="text"
+                  placeholder="Secret name (e.g. github-pat)"
+                  value={newPatName}
+                  onChange={(e) => setNewPatName(e.target.value)}
+                />
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="password"
+                  placeholder="ghp_xxxx… (write-only)"
+                  value={newPatValue}
+                  onChange={(e) => setNewPatValue(e.target.value)}
+                  autoComplete="new-password"
+                />
+              </div>
+            )}
+            {config?.secretRef && patMode === "existing" && (
+              <div className="text-xs text-muted-foreground">
+                Current secret ref: <span className="font-mono">{config.secretRef.slice(0, 8)}…</span>
+              </div>
+            )}
+          </div>
+        </Field>
+
+        <Field label="Synced goals" hint="Only issues under these goal subtrees are synced. Leave empty to sync all goals.">
+          <div className="space-y-1">
+            {(goalsList ?? []).map((g) => (
+              <label key={g.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={syncedGoalIds.includes(g.id)}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSyncedGoalIds((prev) => [...prev, g.id]);
+                    } else {
+                      setSyncedGoalIds((prev) => prev.filter((id) => id !== g.id));
+                    }
+                  }}
+                  className="rounded border-border"
+                />
+                <span className="text-foreground">{g.title}</span>
+              </label>
+            ))}
+            {(goalsList ?? []).length === 0 && (
+              <div className="text-xs text-muted-foreground">No goals configured.</div>
+            )}
+          </div>
+        </Field>
+
+        <ToggleField
+          label="Dry-run mode"
+          hint="When on, sync actions are logged but no GitHub API calls are made. Disable once you're ready to go live."
+          checked={dryRun}
+          onChange={setDryRun}
+        />
+
+        <div className="flex items-center gap-2 pt-1">
+          <Button
+            size="sm"
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !canSave}
+          >
+            {saveMutation.isPending ? "Saving…" : config?.configured ? "Update config" : "Enable GitHub sync"}
+          </Button>
+          {saveMutation.isSuccess && (
+            <span className="text-xs text-muted-foreground">Saved</span>
+          )}
+          {saveMutation.isError && (
+            <span className="text-xs text-destructive">
+              {saveMutation.error instanceof Error ? saveMutation.error.message : "Failed to save"}
+            </span>
+          )}
         </div>
       </div>
     </div>
