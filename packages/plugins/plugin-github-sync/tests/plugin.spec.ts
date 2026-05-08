@@ -79,9 +79,17 @@ describe("paperclip-github-sync plugin", () => {
     await harness.emit("issue.updated", {}, { entityId: "iss-3", entityType: "issue", companyId: "co-1" });
     await harness.emit("goal.updated", {}, { entityId: "goal-1", entityType: "goal", companyId: "co-1" });
 
-    const infoLogs = harness.logs.filter(
+    // issue.updated routes through the generic no-op handler
+    const issueLog = harness.logs.find(
       (l) => l.level === "info" && l.message === "github-sync: received event (no-op)",
     );
-    expect(infoLogs).toHaveLength(2);
+    expect(issueLog).toBeDefined();
+
+    // goal.updated invalidates the cache — it has its own log message
+    const goalLog = harness.logs.find(
+      (l) => l.level === "info" && l.message === "github-sync: goal.updated — cache invalidated",
+    );
+    expect(goalLog).toBeDefined();
+    expect((goalLog?.meta as Record<string, unknown>)?.["entityId"]).toBe("goal-1");
   });
 });
