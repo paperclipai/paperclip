@@ -104,11 +104,13 @@ describe("redaction", () => {
     const input = [
       `jwt_secret: ${jwtSecret}`,
       `dsn: postgres://paperclip:${dbPassword}@db.example.test/app`,
+      "slash_dsn: postgres://paperclip:p/a@db.example.test/app",
     ].join("\n");
     const out = redactSensitiveText(input);
 
     expect(out).not.toContain(jwtSecret);
     expect(out).not.toContain(dbPassword);
+    expect(out).not.toContain("p/a");
     expect(out).toContain(`jwt_secret: ${REDACTED_EVENT_VALUE}`);
     expect(out).toContain(`postgres://paperclip:${REDACTED_EVENT_VALUE}@db.example.test/app`);
   });

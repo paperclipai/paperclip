@@ -42,10 +42,12 @@ describe("command redaction", () => {
     const output = redactCommandText([
       `jwt_secret: ${jwtSecret}`,
       `database_url=postgres://paperclip:${dbPassword}@db.example.test/app`,
+      "slash_password=postgres://paperclip:p/a@db.example.test/app",
     ].join("\n"));
 
     expect(output).not.toContain(jwtSecret);
     expect(output).not.toContain(dbPassword);
+    expect(output).not.toContain("p/a");
     expect(output).toContain(`jwt_secret: ${REDACTED_COMMAND_TEXT_VALUE}`);
     expect(output).toContain(`postgres://paperclip:${REDACTED_COMMAND_TEXT_VALUE}@db.example.test/app`);
   });
