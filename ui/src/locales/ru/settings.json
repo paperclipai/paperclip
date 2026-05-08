@@ -340,6 +340,14 @@
     "toast_enabled": "Плагин включён",
     "toast_enable_failed": "Не удалось включить плагин",
     "toast_disabled": "Плагин отключён",
-    "toast_disable_failed": "Не удалось отключить плагин"
+    "toast_disable_failed": "Не удалось отключить плагин",
+    "status": {
+      "installed": "Установлен",
+      "ready": "Активен",
+      "disabled": "Отключён",
+      "error": "Ошибка",
+      "upgrade_pending": "Ожидает обновления",
+      "uninstalled": "Удалён"
+    }
   }
 }

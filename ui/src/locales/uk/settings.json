@@ -343,6 +343,14 @@
     "toast_enabled": "Плагін увімкнено",
     "toast_enable_failed": "Не вдалося увімкнути плагін",
     "toast_disabled": "Плагін вимкнено",
-    "toast_disable_failed": "Не вдалося вимкнути плагін"
+    "toast_disable_failed": "Не вдалося вимкнути плагін",
+    "status": {
+      "installed": "Встановлено",
+      "ready": "Активний",
+      "disabled": "Вимкнено",
+      "error": "Помилка",
+      "upgrade_pending": "Очікує оновлення",
+      "uninstalled": "Видалено"
+    }
   }
 }

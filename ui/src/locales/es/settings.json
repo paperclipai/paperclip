@@ -325,6 +325,14 @@
     "toast_enabled": "Plugin habilitado",
     "toast_enable_failed": "Error al habilitar el plugin",
     "toast_disabled": "Plugin deshabilitado",
-    "toast_disable_failed": "Error al deshabilitar el plugin"
+    "toast_disable_failed": "Error al deshabilitar el plugin",
+    "status": {
+      "installed": "Instalado",
+      "ready": "Listo",
+      "disabled": "Desactivado",
+      "error": "Error",
+      "upgrade_pending": "Actualización pendiente",
+      "uninstalled": "Desinstalado"
+    }
   }
 }

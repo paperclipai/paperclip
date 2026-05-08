@@ -325,6 +325,14 @@
     "toast_enabled": "插件已启用",
     "toast_enable_failed": "启用插件失败",
     "toast_disabled": "插件已禁用",
-    "toast_disable_failed": "禁用插件失败"
+    "toast_disable_failed": "禁用插件失败",
+    "status": {
+      "installed": "已安装",
+      "ready": "运行中",
+      "disabled": "已禁用",
+      "error": "错误",
+      "upgrade_pending": "待升级",
+      "uninstalled": "已卸载"
+    }
   }
 }

@@ -254,7 +254,7 @@ export function PluginManager() {
                             variant={installedPlugin.status === "ready" ? "default" : "secondary"}
                             className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
                           >
-                            {installedPlugin.status}
+                            {t(`plugins.status.${installedPlugin.status}`)}
                           </Badge>
                         ) : (
                           <Badge variant="secondary">{t("plugins.not_installed")}</Badge>
@@ -390,7 +390,7 @@ export function PluginManager() {
                             plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
                           )}
                         >
-                          {plugin.status}
+                          {t(`plugins.status.${plugin.status}`)}
                         </Badge>
                         <Button
                           variant="outline"

@@ -325,6 +325,14 @@
     "toast_enabled": "Plugin aktiviert",
     "toast_enable_failed": "Plugin konnte nicht aktiviert werden",
     "toast_disabled": "Plugin deaktiviert",
-    "toast_disable_failed": "Plugin konnte nicht deaktiviert werden"
+    "toast_disable_failed": "Plugin konnte nicht deaktiviert werden",
+    "status": {
+      "installed": "Installiert",
+      "ready": "Bereit",
+      "disabled": "Deaktiviert",
+      "error": "Fehler",
+      "upgrade_pending": "Update ausstehend",
+      "uninstalled": "Deinstalliert"
+    }
   }
 }
