@@ -82,9 +82,36 @@
   "claude_local": {
     "instructions_file": "智能体指令文件",
     "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md",
     "enable_chrome": "启用 Chrome",
     "skip_permissions": "跳过权限检查",
     "max_turns": "每次运行最大轮数"
+  },
+  "codex_local": {
+    "instructions_file": "智能体指令文件",
+    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。注意：Codex 也可能自动应用工作目录中的 AGENTS.md 文件。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md",
+    "bypass_sandbox": "绕过沙箱",
+    "enable_search": "启用搜索",
+    "fast_mode": "快速模式",
+    "fast_mode_manual": "快速模式将传递给此手动模型。如果 Codex 拒绝，请关闭此开关。",
+    "fast_mode_supported": "快速模式消耗积分/token 的速度远快于普通 Codex 运行。",
+    "fast_mode_unsupported": "快速模式目前仅适用于 {{models}} 或手动模型 ID。在切换模型之前，Paperclip 将忽略此开关。"
+  },
+  "cursor": {
+    "instructions_file": "智能体指令文件",
+    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入提示。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
+  },
+  "gemini_local": {
+    "instructions_file": "智能体指令文件",
+    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将插入 Gemini 提示开头。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
+  },
+  "hermes_local": {
+    "instructions_file": "智能体指令文件",
+    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
   },
   "openclaw": {
     "gateway_url": "网关 URL",
@@ -104,7 +131,22 @@
     "scopes_placeholder": "operator.admin",
     "wait_timeout": "等待超时（毫秒）",
     "wait_timeout_placeholder": "120000",
-    "device_auth": "设备认证"
+    "device_auth": "设备认证",
+    "device_auth_desc": "网关智能体始终启用。Paperclip 在引导期间保存设备密钥，以使配对确认在运行之间保持稳定。",
+    "session_strategy_fixed": "固定",
+    "session_strategy_issue": "按任务",
+    "session_strategy_run": "按运行"
+  },
+  "opencode_local": {
+    "instructions_file": "智能体指令文件",
+    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md",
+    "skip_permissions": "跳过权限检查"
+  },
+  "pi_local": {
+    "instructions_file": "智能体指令文件",
+    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
   },
   "http": {
     "webhook_url": "Webhook URL",
@@ -115,5 +157,31 @@
     "command_placeholder": "例如：node、python",
     "args": "参数（逗号分隔）",
     "args_placeholder": "例如：script.js、--flag"
+  },
+  "runtime_json": {
+    "runtime_services_json": "运行时服务 JSON",
+    "payload_template_json": "载荷模板 JSON"
+  },
+  "path_instructions": {
+    "choose": "选择平台",
+    "title": "如何获取完整路径",
+    "description_prefix": "请粘贴绝对路径（例如",
+    "description_suffix": "）到输入框。",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "打开 Finder 并导航到文件夹。",
+    "mac_step_2": "右键（或 Ctrl+点击）文件夹。",
+    "mac_step_3": "按住 Option (⌥) 键——"复制"选项会变为"复制路径"。",
+    "mac_step_4": "点击"复制路径"并粘贴到此处。",
+    "mac_tip": "提示：也可以打开终端，输入 cd，将文件夹拖入终端窗口并按 Enter，然后输入 pwd 查看完整路径。",
+    "windows_step_1": "打开文件资源管理器并导航到文件夹。",
+    "windows_step_2": "点击顶部地址栏——完整路径将显示出来。",
+    "windows_step_3": "复制路径并粘贴到此处。",
+    "windows_tip": "提示：也可以按住 Shift 右键点击文件夹，选择"复制为路径"。",
+    "linux_step_1": "打开终端并用 cd 导航到目录。",
+    "linux_step_2": "运行 pwd 以打印完整路径。",
+    "linux_step_3": "复制输出并粘贴到此处。",
+    "linux_tip": "提示：大多数文件管理器中，按 Ctrl+L 可在地址栏显示完整路径。"
   }
 }

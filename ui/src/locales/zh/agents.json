@@ -471,6 +471,7 @@
     "failed_clear_sessions": "清除会话失败",
     "failed_load_run_log": "加载运行日志失败",
     "failed_load_workspace_log": "加载工作空间日志失败",
+    "failure_details": "失败详情",
     "clear_session_text": "清除与这些任务关联的会话状态？",
     "clearing_session": "清除中...",
     "jump_to_live": "跳转到实时",
