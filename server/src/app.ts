@@ -354,6 +354,14 @@ export async function createApp(
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
+      app.get("/", (_req, res) => {
+        res.status(200).json({
+          name: "Paperclip API",
+          message:
+            "This is the Paperclip API server. The UI bundle was not found — build the ui package first (pnpm build).",
+          api: "/api",
+        });
+      });
     }
   }
 
@@ -398,6 +406,19 @@ export async function createApp(
       }
     });
     app.use(vite.middlewares);
+  }
+
+  // In API-only mode (no uiMode set) there is no catch-all SPA handler, so GET /
+  // falls through to Express's default 404 "Cannot GET /". Return a helpful JSON
+  // response instead so operators know they are hitting the API server, not the UI.
+  if (opts.uiMode === "none") {
+    app.get("/", (_req, res) => {
+      res.status(200).json({
+        name: "Paperclip API",
+        message: "This is the Paperclip API server. Open the web UI in your browser to use Paperclip.",
+        api: "/api",
+      });
+    });
   }
 
   app.use(errorHandler);
