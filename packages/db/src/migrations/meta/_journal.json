@@ -575,6 +575,13 @@
       "when": 1778067785040,
       "tag": "0081_optimal_dormammu",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1778712000000,
+      "tag": "0082_heartbeat_runs_company_created_at_idx",
+      "breakpoints": true
     }
   ]
 }
