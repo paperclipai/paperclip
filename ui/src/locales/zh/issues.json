@@ -98,6 +98,7 @@
     "remove_blocker_title": "移除阻塞项？",
     "remove_blocker_desc": "将 {{label}} 从此任务的阻塞项中移除。",
     "remove_blocker_btn": "移除阻塞项",
+    "issue_chip_label": "任务",
     "user": "用户",
     "schedule": "调度",
     "clear": "清除",
@@ -422,7 +423,22 @@
     "called_tools_one": "调用了 {{count}} 个工具",
     "called_tools_other": "调用了 {{count}} 个工具",
     "no_assignee_selected": "未选择负责人",
-    "no_assignee_body": "请选择负责人，或再次点击发送以在没有负责人的情况下发布。"
+    "no_assignee_body": "请选择负责人，或再次点击发送以在没有负责人的情况下发布。",
+    "attachment_unsupported_file_type": "不支持的附件类型",
+    "duration": {
+      "hours_one": "{{count}} 小时",
+      "hours_other": "{{count}} 小时",
+      "minutes_one": "{{count}} 分钟",
+      "minutes_other": "{{count}} 分钟",
+      "seconds_one": "{{count}} 秒",
+      "seconds_other": "{{count}} 秒"
+    },
+    "more_composer_options": "更多编辑选项",
+    "planning_label": "规划",
+    "planning_mode_active_title": "规划模式已激活",
+    "run_word": "运行",
+    "switch_to_planning": "切换至规划模式",
+    "switch_to_standard": "切换至标准模式"
   },
   "columns": {
     "button": "列",
@@ -570,7 +586,9 @@
     "open_issue": "打开 {{issueRef}}",
     "work_mode_standard": "标准",
     "work_mode_planning": "规划",
-    "assignee_backlog_note": "分配意味着可执行意图 — 仅在有意停放时才将状态保留为待办事项。受托人在状态变为待办或进行中之前不会被唤醒。"
+    "assignee_backlog_note": "分配意味着可执行意图 — 仅在有意停放时才将状态保留为待办事项。受托人在状态变为待办或进行中之前不会被唤醒。",
+    "no_assignee": "无负责人",
+    "search_assignees": "搜索负责人..."
   },
   "workspace_close_dialog": {
     "action_retry_close": "重试关闭",
@@ -709,7 +727,9 @@
     "queued": "排队中",
     "queued_ellipsis": "排队中...",
     "working": "工作中...",
-    "run_finished": "运行已完成"
+    "run_finished": "运行已完成",
+    "paused_by_board": "由系统用户暂停",
+    "paused_by_board_after": "{{duration}} 后由系统用户暂停"
   },
   "ledger": {
     "liveness_completed_label": "已完成",
@@ -1141,5 +1161,34 @@
     "minimal": "最低",
     "xhigh": "极高",
     "max": "最大"
-  }
+  },
+  "already_promoted_run_starting": "已提升——运行中",
+  "attach_image": "附加图片",
+  "called_tool_one": "已调用 {{count}} 个工具",
+  "called_tool_other": "已调用 {{count}} 个工具",
+  "choose_existing_workspace": "选择现有工作空间",
+  "copy": "复制",
+  "copy_comment_as_markdown": "复制评论为 Markdown",
+  "copy_failed": "复制失败",
+  "environment": "环境",
+  "executable_assignee_will_be_woken": "可执行的负责人将被唤醒。",
+  "failure": "失败",
+  "interrupt": "中断",
+  "interrupting": "中断中...",
+  "last_attempt_failed": "上次尝试失败",
+  "lease": "租约",
+  "leave_a_comment": "留下评论",
+  "no_issues_match_filters": "没有任务匹配当前筛选条件。",
+  "parked_assignee_will_not_be_woken": "已停驻的负责人不会被唤醒。",
+  "posting": "发布中...",
+  "promoted_run_starting": "运行启动中",
+  "provider": "提供商",
+  "queued_comments": "排队评论",
+  "ran_command_one": "已运行 {{count}} 条命令",
+  "ran_command_other": "已运行 {{count}} 条命令",
+  "remove_blocker_q": "移除此阻塞项？",
+  "rendering_n_of_m": "渲染 {{n}} / {{m}}",
+  "scroll_to_load_more": "滚动以加载更多",
+  "status_label": "状态",
+  "what_should_the_agent_recheck": "智能体应重新检查什么？"
 }
