@@ -19,6 +19,7 @@ interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
   userProfileMap?: Map<string, CompanyUserProfile>;
   currentUserId?: string | null;
+  t?: (key: string, options?: Record<string, unknown>) => string;
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
@@ -143,11 +144,11 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
 }
 
 function formatUserLabel(userId: string | null | undefined, options: ActivityFormatOptions = {}): string {
-  if (!userId || userId === "local-board") return "Board";
-  if (options.currentUserId && userId === options.currentUserId) return "You";
+  if (!userId || userId === "local-board") return options.t ? options.t("actor.board") : "Board";
+  if (options.currentUserId && userId === options.currentUserId) return options.t ? options.t("actor.you") : "You";
   const profile = options.userProfileMap?.get(userId);
   if (profile) return profile.label;
-  return `user ${userId.slice(0, 5)}`;
+  return options.t ? options.t("actor.user_short", { id: userId.slice(0, 5) }) : `user ${userId.slice(0, 5)}`;
 }
 
 function formatParticipantLabel(participant: ActivityParticipant, options: ActivityFormatOptions): string {
@@ -297,6 +298,11 @@ export function formatActivityVerb(
   });
   if (structuredChange) return structuredChange;
 
+  if (options.t) {
+    const localeKey = `verbs.${action.replace(/\./g, "_")}`;
+    const localized = options.t(localeKey);
+    if (localized !== localeKey) return localized;
+  }
   return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
 }
 
@@ -333,6 +339,12 @@ export function formatIssueActivityAction(
     const key = typeof details.key === "string" ? details.key : "document";
     const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
     return `${ISSUE_ACTIVITY_LABELS[action] ?? action} ${key}${title}`;
+  }
+
+  if (options.t) {
+    const localeKey = `issue_labels.${action.replace(/\./g, "_")}`;
+    const localized = options.t(localeKey);
+    if (localized !== localeKey) return localized;
   }
 
   return ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");

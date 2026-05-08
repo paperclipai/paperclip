@@ -816,6 +816,38 @@ export function routineService(
       }
     }
 
+    // Fallback: any routine still missing an active issue may have an open issue
+    // whose heartbeat run has already completed. Include those so the UI reflects
+    // the real open-issue state rather than showing nothing.
+    const stillMissingRoutineIds = routineIds.filter((routineId) => !rowsByOriginId.has(routineId));
+    if (stillMissingRoutineIds.length > 0) {
+      const openRows = await db
+        .selectDistinctOn([issues.originId], {
+          originId: issues.originId,
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "routine_execution"),
+            inArray(issues.originId, stillMissingRoutineIds),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
+      for (const row of openRows) {
+        if (!row.originId) continue;
+        rowsByOriginId.set(row.originId, row);
+      }
+    }
+
     const map = new Map<string, RoutineListItem["activeIssue"]>();
     for (const row of rowsByOriginId.values()) {
       if (!row.originId) continue;
@@ -929,6 +961,25 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+
+    // Fallback: find any open routine execution issue even when no heartbeat run is
+    // currently active. This handles the case where a heartbeat completed without
+    // closing the issue, leaving it open between heartbeat intervals.
+    const openIssueCondition = and(
+      eq(issues.companyId, routine.companyId),
+      eq(issues.originKind, originKind),
+      eq(issues.originId, originId),
+      inArray(issues.status, OPEN_ISSUE_STATUSES),
+      isNull(issues.hiddenAt),
+      fingerprintCondition ?? undefined,
+    );
+    return executor
+      .select()
+      .from(issues)
+      .where(openIssueCondition)
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {

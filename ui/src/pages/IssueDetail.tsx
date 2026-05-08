@@ -938,6 +938,7 @@ function IssueDetailActivityTab({
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
   const { t } = useTranslation("issues");
+  const { t: tActivity, i18n } = useTranslation("activity");
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1129,8 +1130,8 @@ function IssueDetailActivityTab({
                     <AlertTriangle className={cn("h-3.5 w-3.5 shrink-0", tone.iconClassName)} />
                   ) : null}
                   <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
-                  <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId })}</span>
-                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                  <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId, t: tActivity })}</span>
+                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt, i18n.language)}</span>
                 </div>
                 <IssueReferenceActivitySummary event={evt} />
               </div>
@@ -1169,7 +1170,7 @@ function IssueDetailActivityTab({
 }
 
 export function IssueDetail() {
-  const { t } = useTranslation("issues");
+  const { t, i18n } = useTranslation("issues");
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -3101,7 +3102,7 @@ export function IssueDetail() {
                 {childIssues.length === 0
                   ? "1 issue held"
                   : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
-                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt, i18n.language)}` : ""}
               </div>
               {canShowSubtreeControls || canResumeLeafWork ? (
                 <div className="flex flex-wrap items-center gap-2">

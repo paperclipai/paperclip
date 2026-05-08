@@ -39,7 +39,7 @@ export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { t } = useTranslation("dashboard");
+  const { t, i18n } = useTranslation("dashboard");
   const { t: tc } = useTranslation("common");
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -377,7 +377,7 @@ export function Dashboard() {
                             })()}
                             <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
-                              {timeAgo(issue.updatedAt)}
+                              {timeAgo(issue.updatedAt, i18n.language)}
                             </span>
                           </span>
                         </span>

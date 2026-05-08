@@ -132,5 +132,13 @@
     "updated_on": "обновил {{plural}} в",
     "updated": "обновил {{plural}}",
     "none": "нет"
+  },
+  "timeline": {
+    "unassigned": "Не назначено",
+    "status_label": "Статус",
+    "assignee_label": "Исполнитель",
+    "updated_task": "обновил задачу",
+    "requested_follow_up": "запросил продолжение",
+    "system": "Система"
   }
 }

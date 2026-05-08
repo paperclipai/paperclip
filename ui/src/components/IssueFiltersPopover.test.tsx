@@ -10,6 +10,12 @@ import { defaultIssueFilterState } from "../lib/issue-filters";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string) => key,
+  }),
+}));
+
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -79,6 +85,6 @@ describe("IssueFiltersPopover", () => {
       element.className.includes("md:grid-cols-3"),
     );
     expect(layoutGrid?.className).toContain("grid-cols-1");
-    expect(popoverContent?.textContent).toContain("Live runs only");
+    expect(popoverContent?.textContent).toContain("filters.live_runs_only");
   });
 });

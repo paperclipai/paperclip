@@ -1,4 +1,5 @@
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
@@ -201,19 +202,12 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const statuses = [
-  { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
-  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
-  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
-  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
-];
 
-const priorities = [
-  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
-  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
-  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
-  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
+const PRIORITY_CONFIG = [
+  { value: "critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+  { value: "high", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+  { value: "medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+  { value: "low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
 
 const EXECUTION_WORKSPACE_MODES = [
@@ -373,7 +367,16 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 }
 
 export function NewIssueDialog() {
+  const { t } = useTranslation("issues");
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
+  const statuses = [
+    { value: "backlog", label: t("status_labels.backlog"), color: issueStatusText.backlog ?? issueStatusTextDefault },
+    { value: "todo", label: t("status_labels.todo"), color: issueStatusText.todo ?? issueStatusTextDefault },
+    { value: "in_progress", label: t("status_labels.in_progress"), color: issueStatusText.in_progress ?? issueStatusTextDefault },
+    { value: "in_review", label: t("status_labels.in_review"), color: issueStatusText.in_review ?? issueStatusTextDefault },
+    { value: "done", label: t("status_labels.done"), color: issueStatusText.done ?? issueStatusTextDefault },
+  ];
+  const priorities = PRIORITY_CONFIG.map((p) => ({ ...p, label: t(`priority_labels.${p.value}`) }));
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();

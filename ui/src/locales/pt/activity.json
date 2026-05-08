@@ -132,5 +132,13 @@
     "updated_on": "atualizou {{plural}} em",
     "updated": "atualizou {{plural}}",
     "none": "nenhum"
+  },
+  "timeline": {
+    "unassigned": "Não atribuído",
+    "status_label": "Estado",
+    "assignee_label": "Responsável",
+    "updated_task": "atualizou esta tarefa",
+    "requested_follow_up": "solicitou acompanhamento",
+    "system": "Sistema"
   }
 }

@@ -164,7 +164,10 @@
     "exit_code": "Код выхода",
     "action_failed": "Действие не выполнено",
     "failed_reset_session": "Не удалось сбросить сессию",
-    "failed_update_permissions": "Не удалось обновить разрешения"
+    "failed_update_permissions": "Не удалось обновить разрешения",
+    "live_now": "В эфире",
+    "more_active_runs": "{{count}} запуск ещё",
+    "more_active_runs_plural": "{{count}} запусков ещё"
   },
   "action_buttons": {
     "pause": "Пауза"

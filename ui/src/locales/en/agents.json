@@ -164,7 +164,10 @@
     "exit_code": "Exit code",
     "action_failed": "Action failed",
     "failed_reset_session": "Failed to reset session",
-    "failed_update_permissions": "Failed to update permissions"
+    "failed_update_permissions": "Failed to update permissions",
+    "live_now": "Live now",
+    "more_active_runs": "{{count}} more run",
+    "more_active_runs_plural": "{{count}} more runs"
   },
   "action_buttons": {
     "pause": "Pause"

@@ -132,5 +132,13 @@
     "updated_on": "actualizó {{plural}} en",
     "updated": "actualizó {{plural}}",
     "none": "ninguno"
+  },
+  "timeline": {
+    "unassigned": "Sin asignar",
+    "status_label": "Estado",
+    "assignee_label": "Asignado",
+    "updated_task": "actualizó esta tarea",
+    "requested_follow_up": "solicitó seguimiento",
+    "system": "Sistema"
   }
 }

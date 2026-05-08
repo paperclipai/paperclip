@@ -134,5 +134,13 @@
     "updated_on": "hat {{plural}} aktualisiert auf",
     "updated": "hat {{plural}} aktualisiert",
     "none": "keine"
+  },
+  "timeline": {
+    "unassigned": "Nicht zugewiesen",
+    "status_label": "Status",
+    "assignee_label": "Zugewiesen",
+    "updated_task": "hat diese Aufgabe aktualisiert",
+    "requested_follow_up": "bat um Rückverfolgung",
+    "system": "System"
   }
 }

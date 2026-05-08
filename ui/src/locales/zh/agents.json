@@ -164,7 +164,10 @@
     "exit_code": "退出码",
     "action_failed": "操作失败",
     "failed_reset_session": "重置会话失败",
-    "failed_update_permissions": "更新权限失败"
+    "failed_update_permissions": "更新权限失败",
+    "live_now": "直播中",
+    "more_active_runs": "另外 {{count}} 次运行",
+    "more_active_runs_plural": "另外 {{count}} 次运行"
   },
   "action_buttons": {
     "pause": "暂停"

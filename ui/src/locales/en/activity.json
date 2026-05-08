@@ -132,5 +132,13 @@
     "updated_on": "updated {{plural}} on",
     "updated": "updated {{plural}}",
     "none": "none"
+  },
+  "timeline": {
+    "unassigned": "Unassigned",
+    "status_label": "Status",
+    "assignee_label": "Assignee",
+    "updated_task": "updated this task",
+    "requested_follow_up": "requested follow-up",
+    "system": "System"
   }
 }

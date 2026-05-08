@@ -132,5 +132,13 @@
     "updated_on": "ενημέρωσε {{plural}} σε",
     "updated": "ενημέρωσε {{plural}}",
     "none": "κανένα"
+  },
+  "timeline": {
+    "unassigned": "Μη ανατεθειμένο",
+    "status_label": "Κατάσταση",
+    "assignee_label": "Ανατεθειμένο σε",
+    "updated_task": "ενημέρωσε αυτή την εργασία",
+    "requested_follow_up": "ζήτησε παρακολούθηση",
+    "system": "Σύστημα"
   }
 }

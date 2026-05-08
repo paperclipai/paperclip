@@ -2066,32 +2066,43 @@ export function issueService(db: Db) {
     if (!stale) return null;
 
     const now = new Date();
-    const adopted = await db
-      .update(issues)
-      .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
-        executionLockedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.id, input.issueId),
-          eq(issues.status, "in_progress"),
-          eq(issues.assigneeAgentId, input.actorAgentId),
-          eq(issues.checkoutRunId, input.expectedCheckoutRunId),
-        ),
-      )
-      .returning({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .then((rows) => rows[0] ?? null);
+    try {
+      const adopted = await db
+        .update(issues)
+        .set({
+          checkoutRunId: input.actorRunId,
+          executionRunId: input.actorRunId,
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+          ),
+        )
+        .returning({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .then((rows) => rows[0] ?? null);
 
-    return adopted;
+      return adopted;
+    } catch (err) {
+      // A unique constraint violation here means another open routine execution
+      // issue already holds the executionRunId slot (duplicate-issue scenario).
+      // Return null so the caller falls through to a normal conflict response
+      // instead of surfacing a 500.
+      const isUniqueViolation =
+        !!err && typeof err === "object" && "code" in err && (err as { code?: string }).code === "23505";
+      if (isUniqueViolation) return null;
+      throw err;
+    }
   }
 
   async function adoptUnownedCheckoutRun(input: {

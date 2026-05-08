@@ -164,7 +164,10 @@
     "exit_code": "Exitcode",
     "action_failed": "Aktion fehlgeschlagen",
     "failed_reset_session": "Sitzung konnte nicht zurückgesetzt werden",
-    "failed_update_permissions": "Berechtigungen konnten nicht aktualisiert werden"
+    "failed_update_permissions": "Berechtigungen konnten nicht aktualisiert werden",
+    "live_now": "Gerade live",
+    "more_active_runs": "{{count}} weiterer Lauf",
+    "more_active_runs_plural": "{{count}} weitere Läufe"
   },
   "action_buttons": {
     "pause": "Pausieren"

@@ -134,5 +134,13 @@
     "updated_on": "更新了…上的 {{plural}}",
     "updated": "更新了 {{plural}}",
     "none": "无"
+  },
+  "timeline": {
+    "unassigned": "未分配",
+    "status_label": "状态",
+    "assignee_label": "负责人",
+    "updated_task": "已更新此任务",
+    "requested_follow_up": "已请求跟进",
+    "system": "系统"
   }
 }

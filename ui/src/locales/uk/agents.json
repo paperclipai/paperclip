@@ -164,7 +164,10 @@
     "exit_code": "Код виходу",
     "action_failed": "Дія не вдалась",
     "failed_reset_session": "Не вдалося скинути сесію",
-    "failed_update_permissions": "Не вдалося оновити дозволи"
+    "failed_update_permissions": "Не вдалося оновити дозволи",
+    "live_now": "Зараз у прямому ефірі",
+    "more_active_runs": "{{count}} запуск ще",
+    "more_active_runs_plural": "{{count}} запусків ще"
   },
   "action_buttons": {
     "pause": "Призупинити"

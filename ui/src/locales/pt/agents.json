@@ -164,7 +164,10 @@
     "exit_code": "Código de saída",
     "action_failed": "Ação falhou",
     "failed_reset_session": "Falha ao redefinir sessão",
-    "failed_update_permissions": "Falha ao atualizar permissões"
+    "failed_update_permissions": "Falha ao atualizar permissões",
+    "live_now": "Ao vivo agora",
+    "more_active_runs": "{{count}} execução a mais",
+    "more_active_runs_plural": "{{count}} execuções a mais"
   },
   "action_buttons": {
     "pause": "Pausar"

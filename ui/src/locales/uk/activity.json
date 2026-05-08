@@ -134,5 +134,13 @@
     "updated_on": "оновив {{plural}} у",
     "updated": "оновив {{plural}}",
     "none": "немає"
+  },
+  "timeline": {
+    "unassigned": "Не призначено",
+    "status_label": "Статус",
+    "assignee_label": "Виконавець",
+    "updated_task": "оновив цю задачу",
+    "requested_follow_up": "запросив подальші дії",
+    "system": "Система"
   }
 }
