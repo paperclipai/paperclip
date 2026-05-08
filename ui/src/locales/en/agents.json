@@ -218,6 +218,7 @@
     "secret_name_prompt": "Secret name",
     "failed_create_secret": "Failed to create secret",
     "key_placeholder": "KEY",
+    "value_placeholder": "value",
     "plain": "Plain",
     "secret": "Secret",
     "select_secret": "Select secret...",

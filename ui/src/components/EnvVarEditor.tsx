@@ -185,8 +185,8 @@ export function EnvVarEditor({
                 })
               }
             >
-              <option value="plain">Plain</option>
-              <option value="secret">Secret</option>
+              <option value="plain">{t("env_var_editor.plain")}</option>
+              <option value="secret">{t("env_var_editor.secret")}</option>
             </select>
             {row.source === "secret" ? (
               <>
@@ -195,7 +195,7 @@ export function EnvVarEditor({
                   value={row.secretId}
                   onChange={(event) => updateRow(index, { secretId: event.target.value })}
                 >
-                  <option value="">Select secret...</option>
+                  <option value="">{t("env_var_editor.select_secret")}</option>
                   {secrets.map((secret) => (
                     <option key={secret.id} value={secret.id}>
                       {secret.name}
@@ -209,14 +209,14 @@ export function EnvVarEditor({
                   disabled={!row.key.trim() || !row.plainValue}
                   title={t("env_var_editor.create_secret_title")}
                 >
-                  New
+                  {t("env_var_editor.new_secret")}
                 </button>
               </>
             ) : (
               <>
                 <input
                   className={cn(inputClass, "flex-[3]")}
-                  placeholder="value"
+                  placeholder={t("env_var_editor.value_placeholder")}
                   value={row.plainValue}
                   onChange={(event) => updateRow(index, { plainValue: event.target.value })}
                 />
@@ -227,7 +227,7 @@ export function EnvVarEditor({
                   disabled={!row.key.trim() || !row.plainValue}
                   title={t("env_var_editor.seal_title")}
                 >
-                  Seal
+                  {t("env_var_editor.seal")}
                 </button>
               </>
             )}
@@ -247,7 +247,7 @@ export function EnvVarEditor({
       })}
       {sealError && <p className="text-[11px] text-destructive">{sealError}</p>}
       <p className="text-[11px] text-muted-foreground/60">
-        PAPERCLIP_* variables are injected automatically at runtime.
+        {t("env_var_editor.paperclip_vars_note")}
       </p>
     </div>
   );

@@ -67,6 +67,7 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { t } = useTranslation("common");
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -75,21 +76,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("projects.overview_placeholder")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("projects.overview_status")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("projects.overview_target_date")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -659,7 +660,7 @@ export function ProjectDetail() {
           {project.managedByPlugin ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
-              Managed by {project.managedByPlugin.pluginDisplayName}
+              {t("projects.managed_by", { plugin: project.managedByPlugin.pluginDisplayName })}
             </div>
           ) : null}
         </div>
@@ -699,12 +700,12 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
+            { value: "list", label: t("projects.tab_issues") },
+            { value: "overview", label: t("projects.tab_overview") },
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("projects.tab_workspaces") }] : []),
+            { value: "configuration", label: t("projects.tab_configuration") },
+            { value: "budget", label: t("projects.tab_budget") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
