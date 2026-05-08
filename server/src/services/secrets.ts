@@ -5,6 +5,14 @@ import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/sh
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
+import { logger } from "../middleware/logger.js";
+import {
+  ALLOW_INSECURE_WEBHOOK_URLS_ENV,
+  isProductionLikeRuntime,
+  isSlackWebhookSecretName,
+  parseBooleanFlag,
+  validateSlackWebhookUrl,
+} from "../security/slack-webhook-url.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -152,6 +160,33 @@ export function secretService(db: Db) {
     return normalized;
   }
 
+  function assertSlackWebhookSecretPolicy(secretName: string, secretValue: string, action: "create" | "rotate") {
+    if (!isSlackWebhookSecretName(secretName)) return;
+    let validated;
+    try {
+      validated = validateSlackWebhookUrl(secretValue, {
+        allowInsecureWebhookUrls: parseBooleanFlag(process.env[ALLOW_INSECURE_WEBHOOK_URLS_ENV]),
+        isProductionLike: isProductionLikeRuntime(),
+      });
+    } catch (error) {
+      throw unprocessable(
+        error instanceof Error ? error.message : "Invalid Slack webhook URL",
+      );
+    }
+
+    if (validated.usedInsecureException) {
+      logger.warn(
+        {
+          action,
+          secretName,
+          hostname: validated.hostname,
+          envFlag: ALLOW_INSECURE_WEBHOOK_URLS_ENV,
+        },
+        "Insecure Slack webhook URL exception is active (loopback + non-production only)",
+      );
+    }
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -177,6 +212,7 @@ export function secretService(db: Db) {
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
+      assertSlackWebhookSecretPolicy(input.name, input.value, "create");
       const existing = await getByName(companyId, input.name);
       if (existing) throw conflict(`Secret already exists: ${input.name}`);
 
@@ -222,6 +258,7 @@ export function secretService(db: Db) {
     ) => {
       const secret = await getById(secretId);
       if (!secret) throw notFound("Secret not found");
+      assertSlackWebhookSecretPolicy(secret.name, input.value, "rotate");
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const nextVersion = secret.latestVersion + 1;
       const prepared = await provider.createVersion({

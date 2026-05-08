@@ -29,6 +29,12 @@ import {
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
+import {
+  ALLOW_INSECURE_WEBHOOK_URLS_ENV,
+  isProductionLikeRuntime,
+  parseBooleanFlag,
+  validateSlackWebhookUrl,
+} from "./security/slack-webhook-url.js";
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
@@ -161,6 +167,19 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_TOKEN?.trim() ||
     undefined;
+  const configuredSlackWebhookUrl = process.env.PAPERCLIP_SLACK_WEBHOOK_URL?.trim() || undefined;
+  if (configuredSlackWebhookUrl) {
+    const validated = validateSlackWebhookUrl(configuredSlackWebhookUrl, {
+      allowInsecureWebhookUrls: parseBooleanFlag(process.env[ALLOW_INSECURE_WEBHOOK_URLS_ENV]),
+      isProductionLike: isProductionLikeRuntime(),
+    });
+    if (validated.usedInsecureException) {
+      console.warn(
+        `[SECURITY] Insecure Slack webhook exception active for loopback host "${validated.hostname}". ` +
+          `Disable ${ALLOW_INSECURE_WEBHOOK_URLS_ENV} before production/staging use.`,
+      );
+    }
+  }
 
   const deploymentModeFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_MODE;
   const deploymentModeFromEnv =
