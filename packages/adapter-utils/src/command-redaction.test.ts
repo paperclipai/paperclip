@@ -35,4 +35,18 @@ describe("command redaction", () => {
     expect(output).not.toContain(secret);
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
   });
+
+  it("redacts bare secret key-value text and URL userinfo passwords", () => {
+    const jwtSecret = "a".repeat(88);
+    const dbPassword = "b".repeat(33);
+    const output = redactCommandText([
+      `jwt_secret: ${jwtSecret}`,
+      `database_url=postgres://paperclip:${dbPassword}@db.example.test/app`,
+    ].join("\n"));
+
+    expect(output).not.toContain(jwtSecret);
+    expect(output).not.toContain(dbPassword);
+    expect(output).toContain(`jwt_secret: ${REDACTED_COMMAND_TEXT_VALUE}`);
+    expect(output).toContain(`postgres://paperclip:${REDACTED_COMMAND_TEXT_VALUE}@db.example.test/app`);
+  });
 });

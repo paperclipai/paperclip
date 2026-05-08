@@ -98,6 +98,21 @@ describe("redaction", () => {
     expect(out).toContain(REDACTED_EVENT_VALUE);
   });
 
+  it("redacts bare YAML-style secret fields and URL userinfo passwords", () => {
+    const jwtSecret = "a".repeat(88);
+    const dbPassword = "b".repeat(33);
+    const input = [
+      `jwt_secret: ${jwtSecret}`,
+      `dsn: postgres://paperclip:${dbPassword}@db.example.test/app`,
+    ].join("\n");
+    const out = redactSensitiveText(input);
+
+    expect(out).not.toContain(jwtSecret);
+    expect(out).not.toContain(dbPassword);
+    expect(out).toContain(`jwt_secret: ${REDACTED_EVENT_VALUE}`);
+    expect(out).toContain(`postgres://paperclip:${REDACTED_EVENT_VALUE}@db.example.test/app`);
+  });
+
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
     const input = {
       command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",
