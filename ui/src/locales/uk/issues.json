@@ -119,6 +119,11 @@
     "execution_approval_changes": "Запрошено зміни для погодження",
     "execution_approval_changes_by": "Зміни для погодження запрошено від {{name}}"
   },
+  "monitor": {
+    "scheduled": "Моніторинг запланований",
+    "checking": "Перевірка...",
+    "check_now": "Перевірити зараз"
+  },
   "detail": {
     "back_to_inbox": "До вхідних",
     "archive_from_inbox": "Архівувати з вхідних",
@@ -809,6 +814,25 @@
     "model_profile_applied": "Застосовано: {{model}}",
     "model_profile_source": "Джерело: {{source}}",
     "model_profile_fallback": "Відкат: {{reason}}"
+  },
+  "blocked_notice": {
+    "needs_next_step": "This issue still needs a next step.",
+    "run_finished_in": "A run finished successfully, but this issue is still open in ",
+    "no_clear_owner": "with no clear owner for the next action.",
+    "action_done_or_cancelled": "Mark it done or cancelled.",
+    "action_send_review": "Send it for review or ask for input.",
+    "action_mark_blocked": "Mark it blocked with a blocker owner.",
+    "action_delegate": "Delegate follow-up work or queue a continuation.",
+    "run_label": "run ",
+    "corrective_wake": "Corrective wake queued for ",
+    "detected_progress": "Detected progress: ",
+    "blocked_stalled_multi": "Work on this issue is blocked by {{blockerLabel}}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.",
+    "blocked_stalled_one": "Work on this issue is blocked by {{blockerLabel}}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.",
+    "blocked_until_it_is": "Work on this issue is blocked by {{blockerLabel}} until it is complete. Comments still wake the assignee for questions or triage.",
+    "blocked_until_they_are": "Work on this issue is blocked by {{blockerLabel}} until they are complete. Comments still wake the assignee for questions or triage.",
+    "blocked_no_status": "Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.",
+    "stalled_in_review": "Stalled in review",
+    "ultimately_waiting": "Ultimately waiting on"
   },
   "interaction": {
     "unknown": "Невідомо",

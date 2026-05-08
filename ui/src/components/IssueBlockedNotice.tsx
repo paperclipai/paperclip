@@ -1,4 +1,5 @@
 import type { IssueBlockerAttention, IssueRelationIssueSummary, SuccessfulRunHandoffState } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
@@ -17,6 +18,7 @@ export function IssueBlockedNotice({
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   agentName?: string | null;
 }) {
+  const { t } = useTranslation("issues");
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
@@ -76,19 +78,19 @@ export function IssueBlockedNotice({
         <div className="min-w-0 space-y-1.5">
           {showSuccessfulRunHandoff ? (
             <>
-              <p className="font-medium leading-5">This issue still needs a next step.</p>
+              <p className="font-medium leading-5">{t("blocked_notice.needs_next_step")}</p>
               <p className="leading-5">
-                A run finished successfully, but this issue is still open in{" "}
+                {t("blocked_notice.run_finished_in")}
                 <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
                   in_progress
                 </code>{" "}
-                with no clear owner for the next action.
+                {t("blocked_notice.no_clear_owner")}
               </p>
               <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
-                <li>Mark it done or cancelled.</li>
-                <li>Send it for review or ask for input.</li>
-                <li>Mark it blocked with a blocker owner.</li>
-                <li>Delegate follow-up work or queue a continuation.</li>
+                <li>{t("blocked_notice.action_done_or_cancelled")}</li>
+                <li>{t("blocked_notice.action_send_review")}</li>
+                <li>{t("blocked_notice.action_mark_blocked")}</li>
+                <li>{t("blocked_notice.action_delegate")}</li>
               </ul>
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {successfulRunHandoff.sourceRunId && successfulRunHandoff.assigneeAgentId ? (
@@ -96,20 +98,20 @@ export function IssueBlockedNotice({
                     to={`/agents/${successfulRunHandoff.assigneeAgentId}/runs/${successfulRunHandoff.sourceRunId}`}
                     className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
                   >
-                    run {successfulRunHandoff.sourceRunId.slice(0, 8)}
+                    {t("blocked_notice.run_label")}{successfulRunHandoff.sourceRunId.slice(0, 8)}
                   </Link>
                 ) : successfulRunHandoff.sourceRunId ? (
                   <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                    run {successfulRunHandoff.sourceRunId.slice(0, 8)}
+                    {t("blocked_notice.run_label")}{successfulRunHandoff.sourceRunId.slice(0, 8)}
                   </span>
                 ) : null}
                 <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  Corrective wake queued for {agentName ?? "the assignee"}
+                  {t("blocked_notice.corrective_wake")}{agentName ?? "the assignee"}
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
                 <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
-                  Detected progress: {successfulRunHandoff.detectedProgressSummary}
+                  {t("blocked_notice.detected_progress")}{successfulRunHandoff.detectedProgressSummary}
                 </p>
               ) : null}
             </>
@@ -123,10 +125,28 @@ export function IssueBlockedNotice({
                 {blockers.length > 0
                   ? isStalled
                     ? stalledLeafBlockers.length > 1
-                      ? <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
-                      : <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
-                  : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+                      ? <>
+                          {t("blocked_notice.blocked_stalled_multi", {
+                            blockerLabel,
+                          })}
+                        </>
+                      : <>
+                          {t("blocked_notice.blocked_stalled_one", {
+                            blockerLabel,
+                          })}
+                        </>
+                    : <>
+                        {blockers.length === 1
+                          ? t("blocked_notice.blocked_until_it_is", {
+                              blockerLabel,
+                            })
+                          : t("blocked_notice.blocked_until_they_are", {
+                              blockerLabel,
+                            })}
+                      </>
+                  : <>
+                      {t("blocked_notice.blocked_no_status")}
+                    </>}
               </p>
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -136,14 +156,14 @@ export function IssueBlockedNotice({
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Stalled in review
+                    {t("blocked_notice.stalled_in_review")}
                   </span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
               ) : terminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Ultimately waiting on
+                    {t("blocked_notice.ultimately_waiting")}
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
                 </div>
