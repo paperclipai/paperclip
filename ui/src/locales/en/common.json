@@ -788,6 +788,7 @@
     "no_cap_configured": "No cap configured",
     "disabled": "Disabled",
     "soft_alert_at": "Soft alert at {{percent}}%",
+    "of_limit": "{{percent}}% of limit",
     "remaining": "Remaining",
     "unlimited": "Unlimited",
     "budget_usd": "Budget (USD)",
@@ -798,6 +799,8 @@
     "warning": "Warning",
     "hard_stop": "Hard stop",
     "paused": "Paused",
+    "project_paused": "Execution is paused for this project until the budget is raised or the incident is dismissed.",
+    "scope_paused": "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed.",
     "enter_valid_amount": "Enter a valid non-negative dollar amount.",
     "scope_type_agent": "Agent",
     "scope_type_project": "Project"

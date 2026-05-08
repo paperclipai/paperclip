@@ -62,7 +62,7 @@ export function BudgetPolicyCard({
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("budgets.observed")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : t("budgets.no_cap_configured")}
+          {summary.amount > 0 ? t("budgets.of_limit", { percent: summary.utilizationPercent }) : t("budgets.no_cap_configured")}
         </div>
       </div>
       <div>
@@ -81,7 +81,7 @@ export function BudgetPolicyCard({
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("budgets.observed")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : t("budgets.no_cap_configured")}
+          {summary.amount > 0 ? t("budgets.of_limit", { percent: summary.utilizationPercent }) : t("budgets.no_cap_configured")}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
@@ -123,8 +123,8 @@ export function BudgetPolicyCard({
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"
-          ? "Execution is paused for this project until the budget is raised or the incident is dismissed."
-          : "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed."}
+          ? t("budgets.project_paused")
+          : t("budgets.scope_paused")}
       </div>
     </div>
   ) : null;
@@ -214,7 +214,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{t("budgets.enter_valid_amount")}</p>
         ) : null}
       </CardContent>
     </Card>
