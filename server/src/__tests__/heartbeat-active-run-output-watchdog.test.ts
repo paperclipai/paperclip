@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { resolvePaperclipInstanceRoot } from "../home-paths.ts";
 import {
   agents,
   companies,
@@ -220,7 +223,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const leakedGithubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
-    const { companyId } = await seedRunningRun({
+    const seeded = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
       logChunk: [
@@ -229,6 +232,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         `GITHUB_TOKEN=${leakedGithubToken}`,
       ].join("\n"),
     });
+    const { companyId } = seeded;
+    const [seededRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+    const absLogPath = path.resolve(basePath, seededRun!.logRef!);
+    const staleMtime = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 5 * 60_000);
+    await fs.utimes(absLogPath, staleMtime, staleMtime);
     const heartbeat = heartbeatService(db);
 
     await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -546,5 +555,82 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("treats a recently-written ndjson log file as fresh activity even when lastOutputAt is stale", async () => {
+    const now = new Date();
+    const seeded = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 5 * 60_000,
+      logChunk: "tool_use {}\ntool_result {}\n",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId: seeded.companyId });
+
+    expect(result.scanned).toBe(1);
+    expect(result.freshLog).toBe(1);
+    expect(result.created).toBe(0);
+    expect(result.evaluationIssueIds).toEqual([]);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, seeded.companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("still flags a run whose ndjson log file mtime is older than the suspicion window", async () => {
+    const now = new Date();
+    const seeded = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 5 * 60_000,
+      logChunk: "tool_use {}\ntool_result {}\n",
+    });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+    const absLogPath = path.resolve(basePath, run!.logRef!);
+    const staleMtime = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 5 * 60_000);
+    await fs.utimes(absLogPath, staleMtime, staleMtime);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId: seeded.companyId });
+
+    expect(result.freshLog).toBe(0);
+    expect(result.created).toBe(1);
+  });
+
+  it("does not spawn a meta-review when the source issue is itself a stale_active_run_evaluation", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 5 * 60_000,
+    });
+    const phantomRunId = randomUUID();
+    await db
+      .update(issues)
+      .set({
+        originKind: "stale_active_run_evaluation",
+        originId: phantomRunId,
+        originFingerprint: `stale_active_run:${seeded.companyId}:${phantomRunId}`,
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId: seeded.companyId });
+
+    expect(result.metaReviewSkipped).toBe(1);
+    expect(result.created).toBe(0);
+    expect(result.evaluationIssueIds).toEqual([]);
+    const otherEvaluations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, seeded.companyId),
+          eq(issues.originKind, "stale_active_run_evaluation"),
+          eq(issues.originId, seeded.runId),
+        ),
+      );
+    expect(otherEvaluations).toHaveLength(0);
   });
 });

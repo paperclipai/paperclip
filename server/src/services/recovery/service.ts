@@ -752,6 +752,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
+  async function readRunLogMtimeMs(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "logStore" | "logRef">,
+  ): Promise<number | null> {
+    if (!run.logStore || !run.logRef) return null;
+    try {
+      const stat = await runLogStore.stat({ store: run.logStore as "local_file", logRef: run.logRef });
+      return stat?.mtimeMs ?? null;
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "failed to stat run log for liveness check");
+      return null;
+    }
+  }
+
   async function resolveStaleRunSourceIssue(run: typeof heartbeatRuns.$inferSelect) {
     const issueId = issueIdFromRunContext(run.contextSnapshot);
     if (!issueId) return null;
@@ -1139,12 +1152,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       snoozed: 0,
       skipped: 0,
+      freshLog: 0,
+      metaReviewSkipped: 0,
       evaluationIssueIds: [] as string[],
     };
 
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      const logMtimeMs = await readRunLogMtimeMs(run);
+      if (logMtimeMs !== null && logMtimeMs > suspicionBefore.getTime()) {
+        result.freshLog += 1;
+        continue;
+      }
+      const sourceIssue = await resolveStaleRunSourceIssue(run);
+      if (sourceIssue?.originKind === STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND) {
+        result.metaReviewSkipped += 1;
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });

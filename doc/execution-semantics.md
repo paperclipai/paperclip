@@ -323,6 +323,10 @@ The recovery service owns this contract:
 - honor active snooze decisions before creating more review work
 - build the `outputSilence` summary shown by live-run and active-run API responses
 
+Liveness signals are layered. The `lastOutputAt` and `lastOutputSeq` columns track structured streaming events the heartbeat pipeline observed. Some adapters (notably `claude_local`) can keep appending the per-run ndjson at `data/run-logs/{companyId}/{agentId}/{runId}.ndjson` while the structured sequence counter pauses, so a candidate flagged by the SQL filter is also re-evaluated against the on-disk log mtime before any review work is created. A run-log mtime within the suspicion window is treated as proof of activity even when `lastOutputAt` is stale.
+
+Meta-review chains are excluded by design. A run whose triggering source issue itself has `originKind=stale_active_run_evaluation` is the watchdog reviewing another silent run; the periodic scan does not spawn another `stale_active_run_evaluation` for that meta-review, so the watchdog cannot recursively review itself.
+
 Suspicious silence creates a medium-priority review issue for the selected recovery owner. Critical silence raises that review issue to high priority and blocks the source issue on the explicit evaluation task without cancelling the active process.
 
 Watchdog decisions are explicit operator/recovery-owner decisions:

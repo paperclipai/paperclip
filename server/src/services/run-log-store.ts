@@ -27,6 +27,11 @@ export interface RunLogFinalizeSummary {
   compressed: boolean;
 }
 
+export interface RunLogStat {
+  mtimeMs: number;
+  size: number;
+}
+
 export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
@@ -35,6 +40,7 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  stat(handle: RunLogHandle): Promise<RunLogStat | null>;
 }
 
 function safeSegments(...segments: string[]) {
@@ -143,6 +149,14 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const offset = opts?.offset ?? 0;
       const limitBytes = opts?.limitBytes ?? 256_000;
       return readFileRange(absPath, offset, limitBytes);
+    },
+
+    async stat(handle) {
+      if (handle.store !== "local_file") return null;
+      const absPath = resolveWithin(basePath, handle.logRef);
+      const stat = await fs.stat(absPath).catch(() => null);
+      if (!stat) return null;
+      return { mtimeMs: stat.mtimeMs, size: stat.size };
     },
   };
 }
