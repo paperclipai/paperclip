@@ -4,8 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
+const otherCompanyId = "99999999-9999-4999-8999-999999999999";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
-const securityAgentId = "44444444-4444-4444-8444-444444444444";
+// Allow-listed SafeguardReviewer (GLA-444 SAFEGUARD_COMMENT_ALLOWLIST entry).
+const securityAgentId = "e65d2e79-f984-43a0-883b-9054611916d4";
+// role=security but NOT in the allowlist (e.g. SecurityEngineer).
+const otherSecurityAgentId = "274b7764-4444-4444-8444-444444444444";
 const engineerAgentId = "55555555-5555-4555-8555-555555555555";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -217,12 +221,14 @@ describe("role=security cross-assignee comment exception (GLA-441)", () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === ownerAgentId) return makeAgent(ownerAgentId);
       if (id === securityAgentId) return makeAgent(securityAgentId, { role: "security" });
+      if (id === otherSecurityAgentId) return makeAgent(otherSecurityAgentId, { role: "security" });
       if (id === engineerAgentId) return makeAgent(engineerAgentId, { role: "engineer" });
       return null;
     });
     mockAgentService.list.mockResolvedValue([
       makeAgent(ownerAgentId),
       makeAgent(securityAgentId, { role: "security" }),
+      makeAgent(otherSecurityAgentId, { role: "security" }),
       makeAgent(engineerAgentId, { role: "engineer" }),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
@@ -252,7 +258,7 @@ describe("role=security cross-assignee comment exception (GLA-441)", () => {
     mockIssueService.listComments.mockResolvedValue([]);
   });
 
-  it("allows security agent to POST /comments on cross-assignee high-priority issue", async () => {
+  it("allows allow-listed SafeguardReviewer to POST /comments on cross-assignee high-priority issue and stamps safeguardBypass metadata", async () => {
     const app = await createApp(agentActor(securityAgentId));
 
     const res = await request(app)
@@ -261,6 +267,11 @@ describe("role=security cross-assignee comment exception (GLA-441)", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    const addCommentArgs = mockIssueService.addComment.mock.calls[0];
+    const stampedMetadata = (addCommentArgs[3] as any)?.metadata;
+    expect(stampedMetadata?.safeguardBypass).toBe(true);
+    expect(stampedMetadata?.version).toBe(1);
+    expect(Array.isArray(stampedMetadata?.sections)).toBe(true);
 
     const auditCall = mockLogActivity.mock.calls.find(
       (call) => (call[1] as any)?.action === "cross_assignee_security_comment",
@@ -272,7 +283,7 @@ describe("role=security cross-assignee comment exception (GLA-441)", () => {
     expect(auditDetails.issueId).toBe(issueId);
   });
 
-  it("allows security agent to POST /comments on cross-assignee critical-priority issue", async () => {
+  it("allows allow-listed SafeguardReviewer to POST /comments on cross-assignee critical-priority issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ priority: "critical" }));
     const app = await createApp(agentActor(securityAgentId));
 
@@ -282,6 +293,53 @@ describe("role=security cross-assignee comment exception (GLA-441)", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    const stampedMetadata = (mockIssueService.addComment.mock.calls[0][3] as any)?.metadata;
+    expect(stampedMetadata?.safeguardBypass).toBe(true);
+  });
+
+  it("rejects non-allow-listed role=security agent on cross-assignee high-priority issue", async () => {
+    const app = await createApp(agentActor(otherSecurityAgentId));
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "should be blocked — not in allowlist" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    const auditCall = mockLogActivity.mock.calls.find(
+      (call) => (call[1] as any)?.action === "cross_assignee_security_comment",
+    );
+    expect(auditCall).toBeFalsy();
+  });
+
+  it("rejects allow-listed SafeguardReviewer when issue belongs to another company", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ companyId: otherCompanyId }));
+    const app = await createApp(agentActor(securityAgentId));
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "wrong company" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp safeguardBypass when the assignee posts on their own issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    const app = await createApp(agentActor(ownerAgentId));
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "owner note" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    const stampedMetadata = (mockIssueService.addComment.mock.calls[0][3] as any)?.metadata;
+    expect(stampedMetadata).toBeNull();
+    const auditCall = mockLogActivity.mock.calls.find(
+      (call) => (call[1] as any)?.action === "cross_assignee_security_comment",
+    );
+    expect(auditCall).toBeFalsy();
   });
 
   it("rejects security agent POST /comments on cross-assignee medium-priority issue", async () => {

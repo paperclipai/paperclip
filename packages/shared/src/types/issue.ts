@@ -464,6 +464,7 @@ export interface IssueCommentMetadataSection {
 export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
+  safeguardBypass?: boolean;
   sections: IssueCommentMetadataSection[];
 }
 

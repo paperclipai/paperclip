@@ -407,6 +407,13 @@ async function listSuccessfulRunHandoffStates(
 
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 
+// GLA-444: agents allow-listed for the role=security cross-assignee comment
+// bypass on critical/high-priority issues. Only the SafeguardReviewer is in
+// scope; other security-role agents (e.g. SecurityEngineer) still 403.
+const SAFEGUARD_COMMENT_ALLOWLIST: ReadonlySet<string> = new Set([
+  "e65d2e79-f984-43a0-883b-9054611916d4",
+]);
+
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
@@ -1049,6 +1056,7 @@ export function issueRoutes(
       if (
         options?.allowSecurityRoleBypass
         && (issue.priority === "critical" || issue.priority === "high")
+        && SAFEGUARD_COMMENT_ALLOWLIST.has(actorAgentId)
       ) {
         const actorAgent = await agentsSvc.getById(actorAgentId);
         if (actorAgent && actorAgent.companyId === issue.companyId && actorAgent.role === "security") {
@@ -1070,6 +1078,7 @@ export function issueRoutes(
               assigneeAgentId: issue.assigneeAgentId,
             },
           });
+          (req as Request & { safeguardCommentBypass?: boolean }).safeguardCommentBypass = true;
           return true;
         }
       }
@@ -4271,6 +4280,23 @@ export function issueRoutes(
       }
     }
 
+    const safeguardBypassUsed = (req as Request & { safeguardCommentBypass?: boolean }).safeguardCommentBypass === true;
+    const commentMetadata = safeguardBypassUsed
+      ? {
+          version: 1 as const,
+          safeguardBypass: true,
+          sections: [
+            {
+              rows: [
+                {
+                  type: "text" as const,
+                  text: "Posted via SafeguardReviewer cross-assignee allowlist bypass.",
+                },
+              ],
+            },
+          ],
+        }
+      : (req.body.metadata ?? null);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -4278,7 +4304,7 @@ export function issueRoutes(
     }, {
       authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
       presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
+      metadata: commentMetadata,
     });
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
