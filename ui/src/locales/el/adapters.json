@@ -82,9 +82,36 @@
   "claude_local": {
     "instructions_file": "Αρχείο οδηγιών πράκτορα",
     "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Εισάγεται στο prompt συστήματος κατά την εκτέλεση.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md",
     "enable_chrome": "Ενεργοποίηση Chrome",
     "skip_permissions": "Παράλειψη δικαιωμάτων",
     "max_turns": "Μέγ. στροφές ανά εκτέλεση"
+  },
+  "codex_local": {
+    "instructions_file": "Αρχείο οδηγιών πράκτορα",
+    "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Εισάγεται στο prompt συστήματος κατά την εκτέλεση. Σημείωση: Ο Codex μπορεί επίσης να εφαρμόζει αυτόματα αρχεία AGENTS.md από τον κατάλογο εργασίας.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md",
+    "bypass_sandbox": "Παράκαμψη sandbox",
+    "enable_search": "Ενεργοποίηση αναζήτησης",
+    "fast_mode": "Γρήγορη λειτουργία",
+    "fast_mode_manual": "Η γρήγορη λειτουργία θα μεταβιβαστεί για αυτό το χειροκίνητο μοντέλο. Εάν ο Codex την απορρίψει, απενεργοποιήστε την.",
+    "fast_mode_supported": "Η γρήγορη λειτουργία καταναλώνει credits/tokens σημαντικά πιο γρήγορα από τις κανονικές εκτελέσεις Codex.",
+    "fast_mode_unsupported": "Η γρήγορη λειτουργία λειτουργεί αυτή τη στιγμή μόνο σε {{models}} ή χειροκίνητα αναγνωριστικά μοντέλων. Το Paperclip θα αγνοεί αυτόν τον διακόπτη μέχρι να αλλάξει το μοντέλο."
+  },
+  "cursor": {
+    "instructions_file": "Αρχείο οδηγιών πράκτορα",
+    "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Εισάγεται στο prompt κατά την εκτέλεση.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md"
+  },
+  "gemini_local": {
+    "instructions_file": "Αρχείο οδηγιών πράκτορα",
+    "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Προστίθεται στην αρχή του prompt Gemini κατά την εκτέλεση.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md"
+  },
+  "hermes_local": {
+    "instructions_file": "Αρχείο οδηγιών πράκτορα",
+    "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Εισάγεται στο prompt συστήματος κατά την εκτέλεση.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md"
   },
   "openclaw": {
     "gateway_url": "URL πύλης",
@@ -94,6 +121,9 @@
     "claimed_api_key_path": "Διαδρομή αποκτηθέντος κλειδιού API",
     "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
     "session_strategy": "Στρατηγική συνεδρίας",
+    "session_strategy_fixed": "Σταθερή",
+    "session_strategy_issue": "Ανά ζήτημα",
+    "session_strategy_run": "Ανά εκτέλεση",
     "session_key": "Κλειδί συνεδρίας",
     "session_key_placeholder": "paperclip",
     "gateway_auth_token": "Κωδικός πιστοποίησης πύλης (x-openclaw-token)",
@@ -104,7 +134,19 @@
     "scopes_placeholder": "operator.admin",
     "wait_timeout": "Χρονικό όριο αναμονής (ms)",
     "wait_timeout_placeholder": "120000",
-    "device_auth": "Πιστοποίηση συσκευής"
+    "device_auth": "Πιστοποίηση συσκευής",
+    "device_auth_desc": "Είναι πάντα ενεργή για πράκτορες πύλης. Το Paperclip αποθηκεύει το κλειδί συσκευής κατά την ενσωμάτωση, ώστε οι επιβεβαιώσεις σύζευξης να παραμένουν σταθερές μεταξύ εκτελέσεων."
+  },
+  "opencode_local": {
+    "instructions_file": "Αρχείο οδηγιών πράκτορα",
+    "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Εισάγεται στο prompt συστήματος κατά την εκτέλεση.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md",
+    "skip_permissions": "Παράλειψη δικαιωμάτων"
+  },
+  "pi_local": {
+    "instructions_file": "Αρχείο οδηγιών πράκτορα",
+    "instructions_file_hint": "Απόλυτη διαδρομή σε ένα αρχείο markdown (π.χ. AGENTS.md) που ορίζει τη συμπεριφορά αυτού του πράκτορα. Εισάγεται στο prompt συστήματος κατά την εκτέλεση.",
+    "instructions_placeholder": "/απόλυτη/διαδρομή/προς/AGENTS.md"
   },
   "http": {
     "webhook_url": "URL webhook",
@@ -115,5 +157,31 @@
     "command_placeholder": "π.χ. node, python",
     "args": "Ορίσματα (διαχωρισμένα με κόμμα)",
     "args_placeholder": "π.χ. script.js, --flag"
+  },
+  "runtime_json": {
+    "runtime_services_json": "JSON υπηρεσιών χρόνου εκτέλεσης",
+    "payload_template_json": "JSON προτύπου ωφέλιμου φορτίου"
+  },
+  "path_instructions": {
+    "choose": "Επιλογή",
+    "title": "Πώς να βρείτε την πλήρη διαδρομή",
+    "description_prefix": "Επικολλήστε την απόλυτη διαδρομή (π.χ.",
+    "description_suffix": ") στο πεδίο εισαγωγής.",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "Ανοίξτε το Finder και μεταβείτε στον φάκελο.",
+    "mac_step_2": "Κάντε δεξί κλικ (ή Ctrl+κλικ) στον φάκελο.",
+    "mac_step_3": "Κρατήστε πατημένο το Option (⌥) — το «Αντιγραφή» θα μετατραπεί σε «Αντιγραφή ως διαδρομή».",
+    "mac_step_4": "Κάντε κλικ στο «Αντιγραφή ως διαδρομή» και επικολλήστε εδώ.",
+    "mac_tip": "Εναλλακτικά, ανοίξτε Terminal, πληκτρολογήστε cd, σύρετε τον φάκελο στο παράθυρο τερματικού και πατήστε Enter. Στη συνέχεια πληκτρολογήστε pwd για να δείτε την πλήρη διαδρομή.",
+    "windows_step_1": "Ανοίξτε την Εξερεύνηση αρχείων και μεταβείτε στον φάκελο.",
+    "windows_step_2": "Κάντε κλικ στη γραμμή διευθύνσεων στην κορυφή — θα εμφανιστεί η πλήρης διαδρομή.",
+    "windows_step_3": "Αντιγράψτε τη διαδρομή και επικολλήστε εδώ.",
+    "windows_tip": "Εναλλακτικά: κρατώντας Shift, κάντε δεξί κλικ στον φάκελο και επιλέξτε «Αντιγραφή ως διαδρομή».",
+    "linux_step_1": "Ανοίξτε τερματικό και μεταβείτε στον κατάλογο με cd.",
+    "linux_step_2": "Εκτελέστε pwd για να εμφανιστεί η πλήρης διαδρομή.",
+    "linux_step_3": "Αντιγράψτε την έξοδο και επικολλήστε εδώ.",
+    "linux_tip": "Στους περισσότερους διαχειριστές αρχείων, Ctrl+L ανοίγει την πλήρη διαδρομή στη γραμμή διευθύνσεων."
   }
 }
