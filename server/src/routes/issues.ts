@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { recordComment, traceHumanCommentPosted } from "../otel.js";
 import type { Db } from "@paperclipai/db";
 import { issueExecutionDecisions } from "@paperclipai/db";
 import {
@@ -3268,32 +3267,6 @@ export function issueRoutes(
       commentReferenceSummaryBefore,
       commentReferenceSummaryAfter,
     );
-
-    // Emit OTel metric for all comments.
-    recordComment({
-      company_id: currentIssue.companyId,
-      project_id: currentIssue.projectId ?? undefined,
-      issue_status: currentIssue.status,
-      actor_type: actor.actorType,
-      commenter_id: actor.actorId,
-      assignee_agent_id: currentIssue.assigneeAgentId ?? undefined,
-      assignee_user_id: currentIssue.assigneeUserId ?? undefined,
-    });
-
-    if (actor.actorType === "user") {
-      traceHumanCommentPosted({
-        company_id: currentIssue.companyId,
-        project_id: currentIssue.projectId ?? undefined,
-        issue_id: currentIssue.id,
-        issue_identifier: currentIssue.identifier ?? undefined,
-        issue_status: currentIssue.status,
-        comment_id: comment.id,
-        commenter_id: actor.actorId,
-        assignee_agent_id: currentIssue.assigneeAgentId ?? undefined,
-        assignee_user_id: currentIssue.assigneeUserId ?? undefined,
-        body_length: comment.body.length,
-      });
-    }
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>

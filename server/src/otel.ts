@@ -34,7 +34,9 @@ let _tracerProvider: NodeTracerProvider | null = null;
 // time without worrying about init order.
 let _commentsCounter: Counter | null = null;
 let _humanIntervenedCounter: Counter | null = null;
+let _issuesCreatedCounter: Counter | null = null;
 let _issuesStatusChangedCounter: Counter | null = null;
+let _runsStatusCounter: Counter | null = null;
 let _issuesCountByStatusGauge: ObservableGauge | null = null;
 const _issuesCountByStatusByCompanyAndProject = new Map<string, Map<string, Map<string, number>>>();
 
@@ -111,7 +113,9 @@ export async function shutdownOtel(): Promise<void> {
     _tracerProvider = null;
     _commentsCounter = null;
     _humanIntervenedCounter = null;
+    _issuesCreatedCounter = null;
     _issuesStatusChangedCounter = null;
+    _runsStatusCounter = null;
     _issuesCountByStatusGauge = null;
     _issuesCountByStatusByCompanyAndProject.clear();
   }
@@ -145,6 +149,17 @@ function getHumanIntervenedCounter(): Counter {
   return _humanIntervenedCounter;
 }
 
+function getIssuesCreatedCounter(): Counter {
+  if (!_issuesCreatedCounter) {
+    const meter = metrics.getMeter("bizbox");
+    _issuesCreatedCounter = meter.createCounter("bizbox.issues.created", {
+      description: "Total number of created issues.",
+      unit: "{issue}",
+    });
+  }
+  return _issuesCreatedCounter;
+}
+
 function getIssuesStatusChangedCounter(): Counter {
   if (!_issuesStatusChangedCounter) {
     const meter = metrics.getMeter("bizbox");
@@ -154,6 +169,21 @@ function getIssuesStatusChangedCounter(): Counter {
     });
   }
   return _issuesStatusChangedCounter;
+}
+
+function getRunsStatusCounter(): Counter {
+  if (!_runsStatusCounter) {
+    const meter = metrics.getMeter("bizbox");
+    _runsStatusCounter = meter.createCounter("bizbox.runs.status", {
+      description: "Total number of run terminal status events.",
+      unit: "{run}",
+    });
+  }
+  return _runsStatusCounter;
+}
+
+function normalizeRunStatus(status: string): string {
+  return status === "canceled" ? "cancelled" : status;
 }
 
 /**
@@ -190,6 +220,22 @@ export function recordHumanIntervened(attributes: {
 }
 
 /**
+ * Increment `bizbox.issues.created`.
+ */
+export function recordIssueCreated(attributes: {
+  company_id: string;
+  project_id: string | undefined;
+  actor_type: string;
+  actor_id: string;
+  initial_status: string;
+  assignee_agent_id: string | undefined;
+  assignee_user_id: string | undefined;
+  origin_kind: string;
+}): void {
+  getIssuesCreatedCounter().add(1, attributes);
+}
+
+/**
  * Increment `bizbox.issues.status_changed`.
  */
 export function recordIssueStatusChanged(attributes: {
@@ -201,6 +247,22 @@ export function recordIssueStatusChanged(attributes: {
   actor_id: string;
 }): void {
   getIssuesStatusChangedCounter().add(1, attributes);
+}
+
+/**
+ * Increment `bizbox.runs.status`.
+ */
+export function recordRunStatus(attributes: {
+  company_id: string;
+  agent_id: string;
+  status: string;
+  invocation_source: string;
+  trigger_detail: string | undefined;
+}): void {
+  getRunsStatusCounter().add(1, {
+    ...attributes,
+    status: normalizeRunStatus(attributes.status),
+  });
 }
 
 /**

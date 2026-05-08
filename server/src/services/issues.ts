@@ -28,9 +28,12 @@ import { ISSUE_STATUSES, extractAgentMentionIds, extractProjectMentionIds, isUui
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   clearIssueStatusCountsForCompany,
+  recordComment,
   recordHumanIntervened,
+  recordIssueCreated,
   recordIssueStatusChanged,
   recordIssueStatusCounts,
+  traceHumanCommentPosted,
 } from "../otel.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1938,7 +1941,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const created = await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -2096,9 +2099,25 @@ export function issueService(db: Db) {
             tx,
           );
         }
+
         const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
+        return {
+          enriched,
+          metricAttributes: {
+            company_id: issue.companyId,
+            project_id: issue.projectId ?? undefined,
+            actor_type: issue.createdByUserId ? "user" : issue.createdByAgentId ? "agent" : "system",
+            actor_id: issue.createdByUserId ?? issue.createdByAgentId ?? "system",
+            initial_status: issue.status,
+            assignee_agent_id: issue.assigneeAgentId ?? undefined,
+            assignee_user_id: issue.assigneeUserId ?? undefined,
+            origin_kind: issue.originKind,
+          },
+        };
       });
+
+      recordIssueCreated(created.metricAttributes);
+      return created.enriched;
     },
 
     update: async (
@@ -2778,6 +2797,7 @@ export function issueService(db: Db) {
         .select({
           companyId: issues.companyId,
           projectId: issues.projectId,
+          identifier: issues.identifier,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -2809,6 +2829,33 @@ export function issueService(db: Db) {
         .update(issues)
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
+
+      const actorType = actor.userId ? "user" : actor.agentId ? "agent" : "system";
+      const commenterId = actor.userId ?? actor.agentId ?? actor.runId ?? "system";
+      recordComment({
+        company_id: issue.companyId,
+        project_id: issue.projectId ?? undefined,
+        issue_status: issue.status,
+        actor_type: actorType,
+        commenter_id: commenterId,
+        assignee_agent_id: issue.assigneeAgentId ?? undefined,
+        assignee_user_id: issue.assigneeUserId ?? undefined,
+      });
+
+      if (actor.userId) {
+        traceHumanCommentPosted({
+          company_id: issue.companyId,
+          project_id: issue.projectId ?? undefined,
+          issue_id: issueId,
+          issue_identifier: issue.identifier ?? undefined,
+          issue_status: issue.status,
+          comment_id: comment.id,
+          commenter_id: actor.userId,
+          assignee_agent_id: issue.assigneeAgentId ?? undefined,
+          assignee_user_id: issue.assigneeUserId ?? undefined,
+          body_length: comment.body.length,
+        });
+      }
 
       if (actor.userId) {
         // Track human intervention only for agent-managed issues.

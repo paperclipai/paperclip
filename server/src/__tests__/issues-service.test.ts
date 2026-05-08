@@ -23,7 +23,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 vi.mock("../otel.js", () => ({
+  recordComment: vi.fn(),
   recordHumanIntervened: vi.fn(),
+  recordIssueCreated: vi.fn(),
   recordIssueStatusChanged: vi.fn(),
   recordIssueStatusCounts: vi.fn(),
   clearIssueStatusCountsForCompany: vi.fn(),
@@ -32,7 +34,7 @@ vi.mock("../otel.js", () => ({
 
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { clampIssueListLimit, ISSUE_LIST_MAX_LIMIT, issueService } from "../services/issues.ts";
-import { recordHumanIntervened } from "../otel.js";
+import { recordHumanIntervened, recordIssueCreated } from "../otel.js";
 import { buildProjectMentionHref } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -248,6 +250,17 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       priority: "medium",
       createdByUserId: userId,
     });
+
+    expect(recordIssueCreated).toHaveBeenCalledWith(expect.objectContaining({
+      company_id: companyId,
+      project_id: undefined,
+      actor_type: "user",
+      actor_id: userId,
+      initial_status: "todo",
+      assignee_agent_id: undefined,
+      assignee_user_id: undefined,
+      origin_kind: "manual",
+    }));
 
     await svc.addComment(created.id, "human comment", { userId });
     await svc.update(created.id, {

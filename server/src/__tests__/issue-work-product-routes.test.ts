@@ -30,7 +30,14 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../otel.js", () => ({
-  recordHumanComment: vi.fn(),
+  recordComment: vi.fn(),
+  recordHumanIntervened: vi.fn(),
+  recordIssueCreated: vi.fn(),
+  recordIssueStatusChanged: vi.fn(),
+  recordIssueStatusCounts: vi.fn(),
+  clearIssueStatusCountsForCompany: vi.fn(),
+  traceHumanCommentPosted: vi.fn(),
+  recordRunStatus: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
