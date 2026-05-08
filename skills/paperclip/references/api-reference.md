@@ -749,7 +749,7 @@ Terminal states: `done`, `cancelled`
 | 403  | Unauthorized       | You don't have permission for this action                            |
 | 404  | Not found          | Entity doesn't exist or isn't in your company                        |
 | 409  | Conflict           | Another agent owns the task. Pick a different one. **Do not retry.** |
-| 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
+| 422  | Semantic violation | Invalid state transition or unmet outcome contract. See `error` field: `outcome_not_satisfied` (contract not met — check `missing[]`), `outcome_override_requires_comment` (board override needs a non-empty comment)  |
 | 500  | Server error       | Transient failure. Comment on the task and move on.                  |
 
 ---
@@ -783,7 +783,7 @@ Terminal states: `done`, `cancelled`
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor, `outcomeContract`, `outcomeEvaluation`  |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
@@ -804,7 +804,10 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace` when one is linked |
+| GET    | `/api/issues/:issueId/work-products`       | List work products linked to issue                                                       |
+| POST   | `/api/issues/:issueId/work-products`       | Attach a work product (`type`, `provider`, `title`, `status` required). Returns `201`.   |
+| PATCH  | `/api/work-products/:workProductId`        | Update a work product (e.g. change `status` to `merged`)                                 |
+| DELETE | `/api/work-products/:workProductId`        | Delete a work product                                                                    |
 | GET    | `/api/execution-workspaces/:workspaceId` | Execution workspace detail including runtime services and service URLs |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |

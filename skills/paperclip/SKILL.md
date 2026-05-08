@@ -99,7 +99,7 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 
 Before ending any heartbeat, apply this final-disposition checklist:
 
-- `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
+- `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue. If the issue has an `outcomeContract`, check that `outcomeEvaluation.satisfied` is `true` before patching — the server will reject a `done` transition with `422` if the contract is not satisfied.
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
@@ -133,7 +133,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `in_progress` — actively owned, execution-backed work.
 - `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
 - `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
-- `done` — work complete, no follow-up on this issue.
+- `done` — work complete, no follow-up on this issue. If an `outcomeContract` is present, `outcomeEvaluation.satisfied` must be `true` before the server will accept this transition.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
@@ -162,6 +162,201 @@ The array **replaces** the current set on each update — send `[]` to clear. Is
 - `PAPERCLIP_WAKE_REASON=issue_children_completed` — all direct children reached a terminal state (`done`/`cancelled`); parent's assignee is woken.
 
 `cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
+
+## Outcome Contracts
+
+An **outcome contract** is a structured proof requirement attached to an issue. It specifies what must be true before the issue can move to `done`. The server evaluates the contract on every `PATCH` that attempts to set `status: "done"` — if the contract is not satisfied, the request returns a `422` and the agent must supply the missing evidence.
+
+### Where contracts appear
+
+`GET /api/issues/:issueId/heartbeat-context` returns two top-level fields when a contract is present:
+
+- `outcomeContract` — the contract object (null if none is set). Shape:
+
+```json
+{
+  "kind": "merged_pr",          // or "signed_off_decision"
+  "description": "Optional human-readable note",
+  "signers": [                  // only meaningful for signed_off_decision
+    { "kind": "agent", "id": "agent-abc123" },
+    { "kind": "user",  "id": "user-xyz789" }
+  ],
+  "allowHumanOverride": true,   // default true — board user can bypass with a comment
+  "params": {
+    "requirePrimary": true      // merged_pr only: require isPrimary=true on the linked PR
+  }
+}
+```
+
+- `outcomeEvaluation` — the live evaluation result, populated only when the issue is not yet `done`. Shape:
+
+```json
+// Satisfied — ready to mark done:
+{ "satisfied": true }
+
+// Not satisfied — must supply evidence:
+{
+  "satisfied": false,
+  "missing": [
+    {
+      "code": "no_merged_pr",
+      "message": "No merged pull request found for this issue.",
+      "hint": "Link a merged GitHub PR via POST /api/issues/{id}/work-products with type='pull_request' and status='merged'"
+    }
+  ]
+}
+```
+
+**Always check `outcomeEvaluation` before attempting `PATCH` to `done`.** If `satisfied` is `false`, resolve the `missing` items first; an unconditional `PATCH status=done` will return `422 outcome_not_satisfied`.
+
+### 422 response shapes
+
+When the contract blocks a `done` transition:
+
+```json
+// Contract not satisfied:
+HTTP 422
+{ "error": "outcome_not_satisfied", "missing": [{ "code": "...", "message": "...", "hint": "..." }] }
+
+// Board user override attempted without a comment:
+HTTP 422
+{ "error": "outcome_override_requires_comment", "message": "Provide a non-empty comment explaining why this outcome override is permitted." }
+```
+
+Board users (`allowHumanOverride: true` is the default) can override a failing contract by including a non-empty `comment` in the PATCH body.
+
+### Kind: `merged_pr`
+
+The contract is satisfied when at least one `pull_request` work product with `status: "merged"` is linked to the issue.
+
+If `params.requirePrimary` is `true`, the linked PR must also have `isPrimary: true`.
+
+**Before the PR is merged — `outcomeEvaluation` looks like:**
+
+```json
+{
+  "satisfied": false,
+  "missing": [
+    {
+      "code": "no_merged_pr",
+      "message": "No merged pull request found for this issue.",
+      "hint": "Link a merged GitHub PR via POST /api/issues/{id}/work-products with type='pull_request' and status='merged'"
+    }
+  ]
+}
+```
+
+**Attach the merged PR:**
+
+```bash
+curl -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/work-products" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "pull_request",
+    "provider": "github",
+    "title": "feat: add rate limiter",
+    "url": "https://github.com/acme/api/pull/42",
+    "externalId": "42",
+    "status": "merged",
+    "isPrimary": true
+  }'
+# -> HTTP 201 { "id": "wp-abc", "type": "pull_request", "status": "merged", ... }
+```
+
+**After linking — `outcomeEvaluation` resolves to:**
+
+```json
+{ "satisfied": true }
+```
+
+Now `PATCH status=done` will succeed.
+
+### Kind: `signed_off_decision`
+
+The contract is satisfied when a `request_confirmation` interaction on the issue has been accepted, optionally by a specific signer.
+
+If `signers` is empty or absent, **any** accepted confirmation satisfies the contract.
+
+If `signers` is set, the acceptance must come from one of the listed agents or users.
+
+**Before any confirmation exists — `outcomeEvaluation` looks like:**
+
+```json
+{
+  "satisfied": false,
+  "missing": [
+    {
+      "code": "no_accepted_confirmation",
+      "message": "No accepted request_confirmation interaction found for this issue.",
+      "hint": "Create a request_confirmation interaction via POST /api/issues/{id}/interactions and have the required signer accept it."
+    }
+  ]
+}
+```
+
+**Create the confirmation interaction:**
+
+```bash
+curl -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/interactions" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "kind": "request_confirmation",
+    "idempotencyKey": "confirmation:{issueId}:signoff:v1",
+    "title": "Sign off on deployment",
+    "continuationPolicy": "wake_assignee",
+    "payload": {
+      "version": 1,
+      "prompt": "Approve the production deployment of feature X?",
+      "acceptLabel": "Approve",
+      "rejectLabel": "Request changes",
+      "rejectRequiresReason": true
+    }
+  }'
+# -> HTTP 201 { "id": "int-xyz", "kind": "request_confirmation", "status": "pending", ... }
+```
+
+Then move the issue to `in_review` so the required signer sees it and the assignee is woken on acceptance:
+
+```
+PATCH /api/issues/{issueId}
+{ "status": "in_review", "comment": "Awaiting signoff before marking done." }
+```
+
+**If a confirmation was accepted by the wrong signer — `outcomeEvaluation` looks like:**
+
+```json
+{
+  "satisfied": false,
+  "missing": [
+    {
+      "code": "signer_mismatch",
+      "message": "A confirmation was accepted, but not by one of the required signers.",
+      "hint": "Required signers: agent:agent-abc123. Have the correct signer accept a request_confirmation interaction."
+    }
+  ]
+}
+```
+
+Request a new confirmation from the correct signer and wait for their acceptance.
+
+**After the correct signer accepts — `outcomeEvaluation` resolves to:**
+
+```json
+{ "satisfied": true }
+```
+
+Now `PATCH status=done` will succeed and Paperclip closes the issue.
+
+### Server-side enforcement: agents cannot lie about `done`
+
+The outcome contract gate fires at the `done` door, **after** any execution-policy stages clear. An agent cannot self-close an issue by patching `status: "done"` if `outcomeEvaluation.satisfied` is `false`. The server rejects the request with a `422` every time. Supply the required evidence (a `merged_pr` work product, or an accepted `request_confirmation`) to satisfy the contract, then retry the `done` PATCH.
+
+Board users can override the gate if `allowHumanOverride` is `true` (the default), but they must include a non-empty `comment` in the PATCH explaining the override.
+
 
 ## Requesting Board Approval
 
