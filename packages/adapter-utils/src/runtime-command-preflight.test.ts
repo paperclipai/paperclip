@@ -37,8 +37,14 @@ describe("runtime command preflight", () => {
     expect(blocked("bash", ["-lc", "export -p | grep PAPERCLIP_"])).toMatchObject({
       code: "broad_runtime_env_inspection",
     });
+    expect(blocked("sh", ["-lc", "command env"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "command bash -lc env"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "exec env"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "eval 'printenv'"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("bash", ["-lc", "builtin set"])).toMatchObject({ code: "broad_runtime_env_inspection" });
     expect(blocked("bash", ["-lc", "set -euo pipefail; echo ok"])).toBeNull();
     expect(blocked("bash", ["-lc", "export SAFE_VALUE=ok; echo ok"])).toBeNull();
+    expect(blocked("bash", ["-lc", "command -v env"])).toBeNull();
   });
 
   it("blocks proc environ reads before command execution", () => {
@@ -62,6 +68,9 @@ describe("runtime command preflight", () => {
       code: "broad_runtime_env_inspection",
     });
     expect(blocked("sh", ["-lc", "cat /proc/$(printf 1)/environ"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
+    expect(blocked("sh", ["-lc", "cat $(printf /proc/self/environ)"])).toMatchObject({
       code: "broad_runtime_env_inspection",
     });
   });

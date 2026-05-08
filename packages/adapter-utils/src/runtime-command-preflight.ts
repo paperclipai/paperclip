@@ -11,7 +11,7 @@ export const RUNTIME_COMMAND_PREFLIGHT_REFUSAL_MESSAGE = [
 ].join(" ");
 
 const SHELL_COMMANDS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
-const PROC_ENVIRON_RE = /(?:^|[\s"'`<>=:])\/proc\/(?:\$\([^)]*\)|[^/\s"'`<>;&|]+)\/environ(?:$|[\s"'`>;&|])/;
+const PROC_ENVIRON_RE = /(?:^|[\s"'`<>=:])\/proc\/(?:\$\([^)]*\)|[^/\s"'`<>;&|]+)\/environ(?:$|[\s"'`>)};&|])/;
 
 function commandBasename(command: string): string {
   const normalized = command.trim().replaceAll("\\", "/");
@@ -163,6 +163,56 @@ function firstCommandWord(words: string[]): { command: string; args: string[] } 
   return { command, args: words.slice(index + 1) };
 }
 
+function childAfterShellPrecommand(
+  base: string,
+  args: string[],
+): { command: string; args: string[] } | null | "lookup-only" {
+  if (base === "builtin") {
+    return args[0] ? { command: args[0]!, args: args.slice(1) } : null;
+  }
+
+  if (base === "exec") {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index] ?? "";
+      if (arg === "--") {
+        return args[index + 1]
+          ? { command: args[index + 1]!, args: args.slice(index + 2) }
+          : null;
+      }
+      if (arg === "-a") {
+        index += 1;
+        continue;
+      }
+      if (/^-[cl]+$/.test(arg)) continue;
+      if (arg.startsWith("-")) continue;
+      return { command: arg, args: args.slice(index + 1) };
+    }
+    return null;
+  }
+
+  if (base === "command") {
+    let sawLookupOnly = false;
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index] ?? "";
+      if (arg === "--") {
+        return args[index + 1]
+          ? { command: args[index + 1]!, args: args.slice(index + 2) }
+          : null;
+      }
+      if (/^-[pVv]+$/.test(arg)) {
+        if (/[Vv]/.test(arg)) sawLookupOnly = true;
+        continue;
+      }
+      if (arg.startsWith("-")) continue;
+      if (sawLookupOnly) return "lookup-only";
+      return { command: arg, args: args.slice(index + 1) };
+    }
+    return sawLookupOnly ? "lookup-only" : null;
+  }
+
+  return null;
+}
+
 function violation(reason: string): RuntimeCommandPreflightViolation {
   return {
     code: "broad_runtime_env_inspection",
@@ -173,6 +223,20 @@ function violation(reason: string): RuntimeCommandPreflightViolation {
 
 function inspectCommandWords(command: string, args: string[]): RuntimeCommandPreflightViolation | null {
   const base = commandBasename(command);
+  const nestedShellScript = isShellCommand(command) ? extractShellScriptArg(args) : null;
+  if (nestedShellScript !== null) {
+    return inspectShellScript(nestedShellScript);
+  }
+  if (base === "eval" && args.length > 0) {
+    return inspectShellScript(args.join(" "));
+  }
+  const shellPrecommandChild = childAfterShellPrecommand(base, args);
+  if (shellPrecommandChild === "lookup-only") {
+    return null;
+  }
+  if (shellPrecommandChild) {
+    return inspectCommandWords(shellPrecommandChild.command, shellPrecommandChild.args);
+  }
   if (base === "printenv") {
     return violation("printenv can expose runtime environment values");
   }
