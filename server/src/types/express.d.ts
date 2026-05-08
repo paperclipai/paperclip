@@ -19,7 +19,14 @@ declare global {
         isInstanceAdmin?: boolean;
         keyId?: string;
         runId?: string;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "none";
+        source?:
+          | "local_implicit"
+          | "session"
+          | "board_key"
+          | "agent_key"
+          | "agent_jwt"
+          | "telegram_chat_id"
+          | "none";
       };
     }
   }

@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { telegramChatActorMiddleware } from "./middleware/telegram-chat-actor.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
@@ -167,6 +168,10 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // Upgrade actor when bot acts on-behalf-of a linked Telegram user
+  // (closes THE-343 contract gap; without it createdByUserId stays null
+  // and bot-created issues never reach the user's `touchedByUserId=me` inbox).
+  app.use(telegramChatActorMiddleware(db));
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
