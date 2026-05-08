@@ -248,5 +248,13 @@
   "finance_direction": {
     "credit": "Credit",
     "debit": "Debit"
+  },
+  "billing_type": {
+    "metered_api": "Metered API",
+    "subscription_included": "Subscription",
+    "subscription_overage": "Subscription overage",
+    "credits": "Credits",
+    "fixed": "Fixed",
+    "unknown": "Unknown"
   }
 }

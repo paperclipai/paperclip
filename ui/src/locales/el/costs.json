@@ -211,5 +211,13 @@
   "finance_direction": {
     "credit": "Πίστωση",
     "debit": "Χρέωση"
+  },
+  "billing_type": {
+    "metered_api": "Metered API",
+    "subscription_included": "Συνδρομή",
+    "subscription_overage": "Υπέρβαση συνδρομής",
+    "credits": "Πιστώσεις",
+    "fixed": "Σταθερή",
+    "unknown": "Άγνωστο"
   }
 }

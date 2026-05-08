@@ -211,5 +211,13 @@
   "finance_direction": {
     "credit": "Gutschrift",
     "debit": "Belastung"
+  },
+  "billing_type": {
+    "metered_api": "Metered API",
+    "subscription_included": "Abonnement",
+    "subscription_overage": "Abonnement-Überschreitung",
+    "credits": "Guthaben",
+    "fixed": "Fest",
+    "unknown": "Unbekannt"
   }
 }

@@ -250,5 +250,13 @@
   "finance_direction": {
     "credit": "Кредит",
     "debit": "Дебет"
+  },
+  "billing_type": {
+    "metered_api": "Оплата за использование",
+    "subscription_included": "Подписка",
+    "subscription_overage": "Превышение подписки",
+    "credits": "Кредиты",
+    "fixed": "Фиксированная",
+    "unknown": "Неизвестно"
   }
 }

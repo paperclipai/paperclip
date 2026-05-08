@@ -219,5 +219,13 @@
   "finance_direction": {
     "credit": "Кредит",
     "debit": "Дебет"
+  },
+  "billing_type": {
+    "metered_api": "Оплата за використання",
+    "subscription_included": "Підписка",
+    "subscription_overage": "Перевищення підписки",
+    "credits": "Кредити",
+    "fixed": "Фіксована",
+    "unknown": "Невідомо"
   }
 }

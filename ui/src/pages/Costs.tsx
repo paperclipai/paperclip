@@ -29,7 +29,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -778,7 +778,7 @@ export function Costs() {
                                           <span className="font-mono">{modelRow.model}</span>
                                         </div>
                                         <div className="truncate text-muted-foreground">
-                                          {providerDisplayName(modelRow.biller)} · {billingTypeDisplayName(modelRow.billingType)}
+                                          {providerDisplayName(modelRow.biller)} · {t(`billing_type.${modelRow.billingType}`)}
                                         </div>
                                       </div>
                                       <div className="text-right tabular-nums">

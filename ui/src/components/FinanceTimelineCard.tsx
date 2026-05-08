@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  financeDirectionDisplayName,
-  financeEventKindDisplayName,
   formatCents,
   formatDateTime,
   providerDisplayName,
@@ -40,9 +38,9 @@ export function FinanceTimelineCard({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{financeEventKindDisplayName(row.eventKind)}</Badge>
+                    <Badge variant="secondary">{t(`finance_event_kind.${row.eventKind}`)}</Badge>
                     <Badge variant={row.direction === "credit" ? "outline" : "secondary"}>
-                      {financeDirectionDisplayName(row.direction)}
+                      {t(`finance_direction.${row.direction}`)}
                     </Badge>
                     <span className="text-xs text-muted-foreground">{formatDateTime(row.occurredAt)}</span>
                   </div>
@@ -54,16 +52,16 @@ export function FinanceTimelineCard({
                   {(row.description || row.externalInvoiceId || row.region || row.pricingTier) && (
                     <div className="space-y-1 text-xs text-muted-foreground">
                       {row.description ? <div>{row.description}</div> : null}
-                      {row.externalInvoiceId ? <div>invoice {row.externalInvoiceId}</div> : null}
-                      {row.region ? <div>region {row.region}</div> : null}
-                      {row.pricingTier ? <div>tier {row.pricingTier}</div> : null}
+                      {row.externalInvoiceId ? <div>{t("finance_timeline.invoice", { id: row.externalInvoiceId })}</div> : null}
+                      {row.region ? <div>{t("finance_timeline.region", { region: row.region })}</div> : null}
+                      {row.pricingTier ? <div>{t("finance_timeline.tier", { tier: row.pricingTier })}</div> : null}
                     </div>
                   )}
                 </div>
                 <div className="text-right tabular-nums">
                   <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
-                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div> : null}
+                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">{t("finance_timeline.estimated")}</div> : null}
                 </div>
               </div>
             </div>

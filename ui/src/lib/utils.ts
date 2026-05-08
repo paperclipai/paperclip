@@ -1,7 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
-import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import type { BillingType } from "@paperclipai/shared";
 import i18n from "../locales/i18n";
 
 export function cn(...inputs: ClassValue[]) {
@@ -111,18 +111,6 @@ export function providerDisplayName(provider: string): string {
   return map[provider.toLowerCase()] ?? provider;
 }
 
-export function billingTypeDisplayName(billingType: BillingType): string {
-  const map: Record<BillingType, string> = {
-    metered_api: "Metered API",
-    subscription_included: "Subscription",
-    subscription_overage: "Subscription overage",
-    credits: "Credits",
-    fixed: "Fixed",
-    unknown: "Unknown",
-  };
-  return map[billingType];
-}
-
 export function quotaSourceDisplayName(source: string): string {
   const map: Record<string, string> = {
     "anthropic-oauth": "Anthropic OAuth",
@@ -166,29 +154,6 @@ export function visibleRunCostUsd(
   return readRunCostUsd(usage) || readRunCostUsd(result);
 }
 
-export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
-  const map: Record<FinanceEventKind, string> = {
-    inference_charge: "Inference charge",
-    platform_fee: "Platform fee",
-    credit_purchase: "Credit purchase",
-    credit_refund: "Credit refund",
-    credit_expiry: "Credit expiry",
-    byok_fee: "BYOK fee",
-    gateway_overhead: "Gateway overhead",
-    log_storage_charge: "Log storage",
-    logpush_charge: "Logpush",
-    provisioned_capacity_charge: "Provisioned capacity",
-    training_charge: "Training",
-    custom_model_import_charge: "Custom model import",
-    custom_model_storage_charge: "Custom model storage",
-    manual_adjustment: "Manual adjustment",
-  };
-  return map[eventKind];
-}
-
-export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
-}
 
 /** Build an issue URL using the human-readable identifier when available. */
 export function issueUrl(issue: { id: string; identifier?: string | null }): string {

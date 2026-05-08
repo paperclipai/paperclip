@@ -7,7 +7,6 @@ import { QuotaBar } from "./QuotaBar";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
 import {
-  billingTypeDisplayName,
   formatCents,
   formatTokens,
   providerDisplayName,
@@ -276,7 +275,7 @@ export function ProviderQuotaCard({
                           {row.model}
                         </span>
                         <span className="text-[11px] text-muted-foreground truncate block">
-                          {providerDisplayName(row.biller)} · {billingTypeDisplayName(row.billingType)}
+                          {providerDisplayName(row.biller)} · {t(`billing_type.${row.billingType}`)}
                         </span>
                       </div>
                       <div className="flex items-center gap-3 shrink-0 tabular-nums text-xs">

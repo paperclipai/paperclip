@@ -211,5 +211,13 @@
   "finance_direction": {
     "credit": "贷项",
     "debit": "借项"
+  },
+  "billing_type": {
+    "metered_api": "计量 API",
+    "subscription_included": "订阅",
+    "subscription_overage": "订阅超额",
+    "credits": "积分",
+    "fixed": "固定",
+    "unknown": "未知"
   }
 }

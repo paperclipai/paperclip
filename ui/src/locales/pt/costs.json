@@ -211,5 +211,13 @@
   "finance_direction": {
     "credit": "Crédito",
     "debit": "Débito"
+  },
+  "billing_type": {
+    "metered_api": "API medida",
+    "subscription_included": "Assinatura",
+    "subscription_overage": "Excesso de assinatura",
+    "credits": "Créditos",
+    "fixed": "Fixo",
+    "unknown": "Desconhecido"
   }
 }
