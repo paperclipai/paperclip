@@ -476,6 +476,8 @@
     "clear_session_text": "Sitzung für diese Probleme zurücksetzen",
     "clearing_session": "Sitzung wird zurückgesetzt...",
     "failed_load_workspace_log": "Arbeitsbereich-Betriebsprotokoll konnte nicht geladen werden",
+    "failure_details": "Fehlerdetails",
+    "jump_to_live": "Zur Live-Ansicht springen",
     "no_log_events": "Keine Protokollereignisse.",
     "no_persisted_log_lines": "Keine gespeicherten Protokollzeilen.",
     "load_more_log": "Mehr Protokolle laden",
