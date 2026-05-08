@@ -140,6 +140,14 @@ export const issuesApi = {
       resolutionNote?: string | null;
     },
   ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
+  batchUpdate: (
+    companyId: string,
+    issueIds: string[],
+    update: { status?: string; priority?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null },
+  ) =>
+    api.post<{
+      results: { id: string; success: boolean; issue?: Issue; error?: string }[];
+    }>(`/companies/${companyId}/issues/batch`, { issueIds, update }),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>

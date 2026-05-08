@@ -3633,6 +3633,66 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  const batchUpdateIssuesSchema = z.object({
+    issueIds: z.array(z.string().uuid()).min(1).max(100),
+    update: z.object({
+      status: z.enum(["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"]).optional(),
+      priority: z.enum(["none", "low", "medium", "high", "urgent"]).optional(),
+      assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+      assigneeUserId: z.string().trim().min(1).optional().nullable(),
+    }).refine((u) => Object.keys(u).length > 0, { message: "At least one update field is required" }),
+  });
+
+  router.post("/companies/:companyId/issues/batch", validate(batchUpdateIssuesSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const { issueIds, update } = req.body as z.infer<typeof batchUpdateIssuesSchema>;
+
+    const results: { id: string; success: boolean; issue?: unknown; error?: string }[] = [];
+    for (const issueId of issueIds) {
+      try {
+        const existing = await svc.getById(issueId);
+        if (!existing || existing.companyId !== companyId) {
+          results.push({ id: issueId, success: false, error: "Issue not found" });
+          continue;
+        }
+        const updated = await svc.update(issueId, {
+          ...update,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        if (!updated) {
+          results.push({ id: issueId, success: false, error: "Update failed" });
+          continue;
+        }
+        results.push({ id: issueId, success: true, issue: updated });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        results.push({ id: issueId, success: false, error: message });
+      }
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.batch_updated",
+      entityType: "issue",
+      entityId: companyId,
+      details: {
+        issueCount: issueIds.length,
+        successCount: results.filter((r) => r.success).length,
+        update,
+      },
+    });
+
+    res.json({ results });
+  });
+
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

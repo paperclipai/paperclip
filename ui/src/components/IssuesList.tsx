@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -60,7 +60,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse, X, CheckSquare } from "lucide-react";
 import {
   KanbanBoard,
   KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
@@ -594,6 +595,71 @@ function SubIssueProgressSummaryStrip({
   );
 }
 
+function BatchActionBar({
+  selectedCount,
+  onStatusChange,
+  onPriorityChange,
+  onClearSelection,
+  isBusy,
+}: {
+  selectedCount: number;
+  onStatusChange: (status: string) => void;
+  onPriorityChange: (priority: string) => void;
+  onClearSelection: () => void;
+  isBusy: boolean;
+}) {
+  if (selectedCount === 0) return null;
+  return (
+    <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 shadow-lg">
+      <span className="text-sm font-medium text-foreground tabular-nums">
+        {selectedCount} selected
+      </span>
+      <div className="mx-1 h-5 w-px bg-border" />
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" disabled={isBusy}>
+            Status
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="center" side="top" className="w-40 p-1">
+          {(["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] as const).map((s) => (
+            <button
+              key={s}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent/50"
+              onClick={() => onStatusChange(s)}
+            >
+              <StatusIcon status={s} />
+              <span>{issueStatusLabels[s]}</span>
+            </button>
+          ))}
+        </PopoverContent>
+      </Popover>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" disabled={isBusy}>
+            Priority
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="center" side="top" className="w-36 p-1">
+          {(["urgent", "high", "medium", "low", "none"] as const).map((p) => (
+            <button
+              key={p}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm capitalize hover:bg-accent/50"
+              onClick={() => onPriorityChange(p)}
+            >
+              {p}
+            </button>
+          ))}
+        </PopoverContent>
+      </Popover>
+      <div className="mx-1 h-5 w-px bg-border" />
+      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClearSelection} title="Clear selection">
+        <X className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
 export function IssuesList({
   issues,
   isLoading,
@@ -660,6 +726,49 @@ export function IssuesList({
   const initialServerFillRequestedRef = useRef(false);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
+  const queryClient = useQueryClient();
+  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
+  const [isBatchBusy, setIsBatchBusy] = useState(false);
+  const lastClickedIssueIdRef = useRef<string | null>(null);
+
+  const toggleIssueSelection = useCallback((issueId: string, shiftKey: boolean, flatIssueIds: string[]) => {
+    setSelectedIssueIds((prev) => {
+      const next = new Set(prev);
+      if (shiftKey && lastClickedIssueIdRef.current) {
+        const lastIdx = flatIssueIds.indexOf(lastClickedIssueIdRef.current);
+        const currIdx = flatIssueIds.indexOf(issueId);
+        if (lastIdx !== -1 && currIdx !== -1) {
+          const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx];
+          for (let i = start; i <= end; i++) {
+            next.add(flatIssueIds[i]);
+          }
+          lastClickedIssueIdRef.current = issueId;
+          return next;
+        }
+      }
+      if (next.has(issueId)) next.delete(issueId);
+      else next.add(issueId);
+      lastClickedIssueIdRef.current = issueId;
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIssueIds(new Set());
+    lastClickedIssueIdRef.current = null;
+  }, []);
+
+  const handleBatchAction = useCallback(async (update: { status?: string; priority?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null }) => {
+    if (!selectedCompanyId || selectedIssueIds.size === 0) return;
+    setIsBatchBusy(true);
+    try {
+      await issuesApi.batchUpdate(selectedCompanyId, [...selectedIssueIds], update);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      clearSelection();
+    } finally {
+      setIsBatchBusy(false);
+    }
+  }, [selectedCompanyId, selectedIssueIds, queryClient, clearSelection]);
 
   useEffect(() => {
     setIssueSearch(initialSearch ?? "");
@@ -989,6 +1098,17 @@ export function IssuesList({
     liveIssueIds,
     issueFilterWorkspaceContext,
   ]);
+
+  const filteredIssueIds = useMemo(() => filtered.map((i) => i.id), [filtered]);
+
+  useEffect(() => {
+    setSelectedIssueIds((prev) => {
+      if (prev.size === 0) return prev;
+      const currentIds = new Set(filteredIssueIds);
+      const pruned = new Set([...prev].filter((id) => currentIds.has(id)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }, [filteredIssueIds]);
 
   const progressSummary = useMemo(
     () => shouldRenderSubIssueProgressSummary(showProgressSummary, issues.length)
@@ -1338,6 +1458,26 @@ export function IssuesList({
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">{createButtonLabel}</span>
           </Button>
+          {viewState.viewMode === "list" && filtered.length > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn("hidden sm:inline-flex", selectedIssueIds.size > 0 && "bg-accent")}
+              onClick={() => {
+                if (selectedIssueIds.size === filtered.length) {
+                  clearSelection();
+                } else {
+                  setSelectedIssueIds(new Set(filteredIssueIds));
+                }
+              }}
+              title={selectedIssueIds.size === filtered.length ? "Deselect all" : "Select all"}
+            >
+              <CheckSquare className="h-3.5 w-3.5 sm:mr-1" />
+              <span className="hidden sm:inline">
+                {selectedIssueIds.size > 0 ? `${selectedIssueIds.size}/${filtered.length}` : "Select"}
+              </span>
+            </Button>
+          )}
           <IssueSearchInput
             value={issueSearch}
             onDebouncedChange={(nextSearch) => {
@@ -1723,9 +1863,12 @@ export function IssuesList({
                     </button>
                   ) : null;
 
+                  const isSelected = selectedIssueIds.has(issue.id);
+
                   return (
                     <div
                       key={issue.id}
+                      className={cn("group/select flex items-center", isSelected && "bg-accent/40")}
                       style={{
                         ...(depth > 0 ? { paddingLeft: `${depth * 16}px` } : {}),
                         ...(useDeferredRowRendering
@@ -1736,9 +1879,27 @@ export function IssuesList({
                           : {}),
                       }}
                     >
+                      <span
+                        className={cn(
+                          "flex shrink-0 items-center pl-1 opacity-0 transition-opacity group-hover/select:opacity-100",
+                          (selectedIssueIds.size > 0 || isSelected) && "opacity-100",
+                        )}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleIssueSelection(issue.id, e.shiftKey, filteredIssueIds);
+                        }}
+                      >
+                        <Checkbox
+                          checked={isSelected}
+                          tabIndex={-1}
+                          aria-label={`Select ${issue.identifier ?? issue.title}`}
+                        />
+                      </span>
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        selected={isSelected}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}
@@ -1967,6 +2128,16 @@ export function IssuesList({
             </div>
           )}
         </>
+      )}
+
+      {viewState.viewMode === "list" && (
+        <BatchActionBar
+          selectedCount={selectedIssueIds.size}
+          onStatusChange={(status) => handleBatchAction({ status })}
+          onPriorityChange={(priority) => handleBatchAction({ priority })}
+          onClearSelection={clearSelection}
+          isBusy={isBatchBusy}
+        />
       )}
     </div>
   );
