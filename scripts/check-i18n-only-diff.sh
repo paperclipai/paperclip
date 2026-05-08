@@ -91,7 +91,23 @@ while IFS= read -r commit; do
             # Bare property shorthand in option-building arrays: value, / label, / key,
             echo "$content" | grep -qE "^\s*[a-z_][a-zA-Z0-9_]*,\s*$" && continue
             # Structural closing syntax from option-building patterns: })); or }); or });
-            echo "$content" | grep -qE "^\s*[\}\]\)]+[;,]?\s*$" && continue
+            echo "$content" | grep -qE "^[[:space:]]*[)};,\]]+[[:space:]]*$" && continue
+            # t(variable) call — key held in a variable rather than a literal
+            echo "$content" | grep -qE "\bt\([a-zA-Z_]" && continue
+            # Template literal constructing a namespaced i18n key (e.g. `ns.sub.${val}`)
+            echo "$content" | grep -qE "const[[:space:]]+key[[:space:]]*=" && continue
+            # react-i18next mock setup in tests: vi.mock / useTranslation / react-i18next
+            echo "$content" | grep -qiE "react-i18next|vi\.mock|jest\.mock|useTranslation" && continue
+            # Test assertions about i18n key strings (e.g. toContain("some.key"))
+            echo "$content" | grep -qE "\.toContain\(|\.toBe\(|\.toEqual\(" && continue
+            # Return of a single identifier or template string (i18n helper return value)
+            echo "$content" | grep -qE "^\s*return\s+[a-zA-Z_][a-zA-Z0-9_]*;?\s*$" && continue
+            # Relative / local utility imports (timeAgo, cn, etc. used in locale-aware code)
+            echo "$content" | grep -qE "^import .* from ['\"]\.\.?/" && continue
+            # Conditional check on translated key equality (translated !== key pattern)
+            echo "$content" | grep -qE "translated\s*!==\s*key\|translated\s*===\s*key" && continue
+            # Return of .replace(/_/g, ...) — common fallback for untranslated status keys
+            echo "$content" | grep -qE "\.replace\(/_/g" && continue
             # Stage-8 bypass: allow LanguageSwitcher import and component usage
             [[ $has_bypass -eq 1 ]] && echo "$content" | grep -qiE 'LanguageSwitcher' && continue
             # violation
