@@ -31,7 +31,7 @@ export function formatNumber(n: number): string {
 }
 
 export function formatDate(date: Date | string, locale?: string): string {
-  return new Date(date).toLocaleDateString(locale ?? "en-US", {
+  return new Date(date).toLocaleDateString(locale ?? i18n.language, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -39,7 +39,7 @@ export function formatDate(date: Date | string, locale?: string): string {
 }
 
 export function formatDateTime(date: Date | string, locale?: string): string {
-  return new Date(date).toLocaleString(locale ?? "en-US", {
+  return new Date(date).toLocaleString(locale ?? i18n.language, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -49,7 +49,7 @@ export function formatDateTime(date: Date | string, locale?: string): string {
 }
 
 export function formatShortDate(date: Date | string, locale?: string): string {
-  return new Date(date).toLocaleString(locale ?? "en-US", {
+  return new Date(date).toLocaleString(locale ?? i18n.language, {
     month: "short",
     day: "numeric",
   });
