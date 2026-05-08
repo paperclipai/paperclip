@@ -1177,5 +1177,8 @@
   },
   "documents": {
     "loading_revisions": "Загрузка редакций..."
+  },
+  "language_switcher": {
+    "change_language": "Изменить язык"
   }
 }

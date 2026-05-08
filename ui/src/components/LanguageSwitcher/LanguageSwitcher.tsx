@@ -10,7 +10,7 @@ import {
 import styles from "./LanguageSwitcher.module.css";
 
 export function LanguageSwitcher() {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation("common");
   const current = i18n.language as SupportedLanguage;
   return (
     <div className={`language-switcher ${styles.languageSwitcher}`}>
@@ -18,7 +18,7 @@ export function LanguageSwitcher() {
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label="Change language"
+            aria-label={t("language_switcher.change_language")}
             className={styles.trigger}
           >
             <Languages className={styles.icon} />

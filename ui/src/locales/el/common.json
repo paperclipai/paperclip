@@ -1175,5 +1175,8 @@
   },
   "documents": {
     "loading_revisions": "Loading revisions..."
+  },
+  "language_switcher": {
+    "change_language": "Αλλαγή γλώσσας"
   }
 }
