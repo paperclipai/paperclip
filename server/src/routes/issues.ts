@@ -1915,6 +1915,26 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
 
+    if (req.actor.type === "agent" && updateFields.status === "blocked") {
+      const blockerIssueIds = Array.isArray(req.body.blockedByIssueIds)
+        ? req.body.blockedByIssueIds
+        : (await svc.getRelationSummaries(existing.id)).blockedBy.map((relation) => relation.id);
+      if (blockerIssueIds.length > 0) {
+        const blockers = await Promise.all(
+          blockerIssueIds.map((blockerId) => svc.getById(blockerId)),
+        );
+        const hasHumanOwnedBlocker = blockers.some((blocker) => (
+          blocker
+          && blocker.companyId === existing.companyId
+          && typeof blocker.assigneeUserId === "string"
+          && blocker.assigneeUserId.length > 0
+        ));
+        if (hasHumanOwnedBlocker) {
+          updateFields.status = "awaiting_human";
+        }
+      }
+    }
+
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,

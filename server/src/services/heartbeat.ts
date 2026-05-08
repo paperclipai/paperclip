@@ -4546,6 +4546,7 @@ export function heartbeatService(db: Db) {
       dispatchRequeued: 0,
       continuationRequeued: 0,
       orphanBlockersAssigned: 0,
+      awaitingHumanParked: 0,
       escalated: 0,
       skippedRoutineExecutions: 0,
       skipped: 0,
@@ -4578,6 +4579,41 @@ export function heartbeatService(db: Db) {
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
+      }
+
+      if (issue.status === "todo") {
+        const relations = await issuesSvc.getRelationSummaries(issue.id);
+        const hasHumanOwnedBlocker = relations.blockedBy.some((blocker) =>
+          typeof blocker.assigneeUserId === "string" && blocker.assigneeUserId.length > 0,
+        );
+        if (hasHumanOwnedBlocker) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "awaiting_human",
+          });
+          if (updated) {
+            result.awaitingHumanParked += 1;
+            result.issueIds.push(issue.id);
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: null,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issue.identifier,
+                status: "awaiting_human",
+                previousStatus: "todo",
+                source: "heartbeat.reconcile_human_blocked_todo_issue",
+              },
+            });
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
