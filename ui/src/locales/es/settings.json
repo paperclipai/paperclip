@@ -326,6 +326,8 @@
     "toast_enable_failed": "Error al habilitar el plugin",
     "toast_disabled": "Plugin deshabilitado",
     "toast_disable_failed": "Error al deshabilitar el plugin",
+    "breadcrumb_company_fallback": "Empresa",
+    "fallback_plugin_label": "Plugin",
     "status": {
       "installed": "Instalado",
       "ready": "Listo",

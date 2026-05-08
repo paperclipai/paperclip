@@ -326,6 +326,8 @@
     "toast_enable_failed": "启用插件失败",
     "toast_disabled": "插件已禁用",
     "toast_disable_failed": "禁用插件失败",
+    "breadcrumb_company_fallback": "公司",
+    "fallback_plugin_label": "插件",
     "status": {
       "installed": "已安装",
       "ready": "运行中",

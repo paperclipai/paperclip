@@ -326,6 +326,8 @@
     "toast_enable_failed": "Plugin konnte nicht aktiviert werden",
     "toast_disabled": "Plugin deaktiviert",
     "toast_disable_failed": "Plugin konnte nicht deaktiviert werden",
+    "breadcrumb_company_fallback": "Unternehmen",
+    "fallback_plugin_label": "Plugin",
     "status": {
       "installed": "Installiert",
       "ready": "Bereit",

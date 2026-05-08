@@ -326,6 +326,8 @@
     "toast_enable_failed": "Αποτυχία ενεργοποίησης πρόσθετου",
     "toast_disabled": "Το πρόσθετο απενεργοποιήθηκε",
     "toast_disable_failed": "Αποτυχία απενεργοποίησης πρόσθετου",
+    "breadcrumb_company_fallback": "Εταιρία",
+    "fallback_plugin_label": "Άρθρωμα",
     "status": {
       "installed": "Εγκατεστημένο",
       "ready": "Έτοιμο",

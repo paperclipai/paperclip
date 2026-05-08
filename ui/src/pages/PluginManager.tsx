@@ -76,7 +76,7 @@ export function PluginManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? t("plugins.breadcrumb_company_fallback"), href: "/dashboard" },
       { label: t("plugins.breadcrumb_settings"), href: "/instance/settings/heartbeats" },
       { label: t("plugins.breadcrumb") },
     ]);
@@ -476,7 +476,7 @@ export function PluginManager() {
             <DialogTitle>{t("plugins.error_dialog_title")}</DialogTitle>
             <DialogDescription>
               {t("plugins.error_dialog_desc", {
-                name: errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin",
+                name: errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? t("plugins.fallback_plugin_label"),
               })}
             </DialogDescription>
           </DialogHeader>

@@ -344,6 +344,8 @@
     "toast_enable_failed": "Не вдалося увімкнути плагін",
     "toast_disabled": "Плагін вимкнено",
     "toast_disable_failed": "Не вдалося вимкнути плагін",
+    "breadcrumb_company_fallback": "Компанія",
+    "fallback_plugin_label": "Плагін",
     "status": {
       "installed": "Встановлено",
       "ready": "Активний",
