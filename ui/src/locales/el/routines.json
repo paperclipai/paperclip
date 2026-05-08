@@ -240,5 +240,20 @@
     "default_option_field": "Προεπιλεγμένη επιλογή",
     "default_value_placeholder": "Προεπιλεγμένη τιμή",
     "hint": "Χρησιμοποιήστε σύμβολα κράτησης θέσης `{{code}}` στις οδηγίες για να ζητήσετε εισόδους κατά την εκτέλεση ρουτίνας."
-  }
+  },
+  "routines": "Routines",
+  "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Recurring work definitions that materialize into auditable execution issues.",
+  "create_routine": "Create routine",
+  "recent_runs": "Recent Runs",
+  "n_routine": "N routine(s)",
+  "new_routine": "New routine",
+  "routine_title": "Routine title",
+  "for": "For",
+  "in": "in",
+  "add_instructions": "Add instructions...",
+  "advanced_delivery_settings": "Advanced delivery settings",
+  "concurrency": "Concurrency",
+  "catch_up": "Catch-up",
+  "creating": "Creating...",
+  "no_routines_yet": "No routines yet."
 }

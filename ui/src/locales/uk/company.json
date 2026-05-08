@@ -800,5 +800,27 @@
       "last30": "Останні 30 днів",
       "all": "За весь час"
     }
-  }
+  },
+  "no_skills_match_this_filter": "No skills match this filter.",
+  "select_a_skill_to_inspect_its_files": "Select a skill to inspect its files.",
+  "removing": "Removing...",
+  "remove": "Remove",
+  "stop_editing": "Stop editing",
+  "edit": "Edit",
+  "check_for_updates": "Check for updates",
+  "install_update": "Install update",
+  "up_to_date": "Up to date",
+  "editable": "Editable",
+  "read_only": "Read only",
+  "no_agents_attached": "No agents attached",
+  "view": "View",
+  "code": "Code",
+  "cancel": "Cancel",
+  "saving": "Saving...",
+  "save": "Save",
+  "select_a_file_to_inspect": "Select a file to inspect.",
+  "remove_skill": "Remove skill",
+  "filter_skills": "Filter skills",
+  "paste_path_github_url_or_skills_sh_command": "Paste path, GitHub URL, or skills.sh command",
+  "add": "Add"
 }

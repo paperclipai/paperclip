@@ -147,5 +147,8 @@
     "updated_task": "оновив цю задачу",
     "requested_follow_up": "запросив подальші дії",
     "system": "Система"
-  }
+  },
+  "system": "System",
+  "board": "Board",
+  "unknown": "Unknown"
 }

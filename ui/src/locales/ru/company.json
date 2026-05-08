@@ -869,5 +869,27 @@
       "status_healthy": "В норме",
       "error_invalid_amount": "Введите корректную неотрицательную сумму в долларах."
     }
-  }
+  },
+  "no_skills_match_this_filter": "No skills match this filter.",
+  "select_a_skill_to_inspect_its_files": "Select a skill to inspect its files.",
+  "removing": "Removing...",
+  "remove": "Удалить",
+  "stop_editing": "Stop editing",
+  "edit": "Редактировать",
+  "check_for_updates": "Check for updates",
+  "install_update": "Install update",
+  "up_to_date": "Up to date",
+  "editable": "Editable",
+  "read_only": "Read only",
+  "no_agents_attached": "No agents attached",
+  "view": "Просмотр",
+  "code": "Code",
+  "cancel": "Отмена",
+  "saving": "Saving...",
+  "save": "Сохранить",
+  "select_a_file_to_inspect": "Select a file to inspect.",
+  "remove_skill": "Remove skill",
+  "filter_skills": "Filter skills",
+  "paste_path_github_url_or_skills_sh_command": "Paste path, GitHub URL, or skills.sh command",
+  "add": "Добавить"
 }

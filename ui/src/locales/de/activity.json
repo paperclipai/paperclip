@@ -147,5 +147,8 @@
     "updated_task": "hat diese Aufgabe aktualisiert",
     "requested_follow_up": "bat um Rückverfolgung",
     "system": "System"
-  }
+  },
+  "system": "System",
+  "board": "Tafel",
+  "unknown": "Unbekannt"
 }

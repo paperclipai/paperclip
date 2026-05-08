@@ -147,5 +147,8 @@
     "updated_task": "atualizou esta tarefa",
     "requested_follow_up": "solicitou acompanhamento",
     "system": "Sistema"
-  }
+  },
+  "system": "System",
+  "board": "Board",
+  "unknown": "Unknown"
 }

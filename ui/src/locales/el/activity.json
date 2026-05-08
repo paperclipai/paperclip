@@ -147,5 +147,8 @@
     "updated_task": "ενημέρωσε αυτή την εργασία",
     "requested_follow_up": "ζήτησε παρακολούθηση",
     "system": "Σύστημα"
-  }
+  },
+  "system": "System",
+  "board": "Board",
+  "unknown": "Unknown"
 }

@@ -147,5 +147,8 @@
     "updated_task": "actualizó esta tarea",
     "requested_follow_up": "solicitó seguimiento",
     "system": "Sistema"
-  }
+  },
+  "system": "Sistema",
+  "board": "Junta",
+  "unknown": "Desconocido"
 }

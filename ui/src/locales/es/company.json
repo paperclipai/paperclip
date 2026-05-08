@@ -792,5 +792,27 @@
       "last30": "Últimos 30 días",
       "all": "Todo el tiempo"
     }
-  }
+  },
+  "no_skills_match_this_filter": "No skills match this filter.",
+  "select_a_skill_to_inspect_its_files": "Select a skill to inspect its files.",
+  "removing": "Removing...",
+  "remove": "Eliminar",
+  "stop_editing": "Stop editing",
+  "edit": "Editar",
+  "check_for_updates": "Check for updates",
+  "install_update": "Install update",
+  "up_to_date": "Up to date",
+  "editable": "Editable",
+  "read_only": "Read only",
+  "no_agents_attached": "No agents attached",
+  "view": "Ver",
+  "code": "Code",
+  "cancel": "Cancelar",
+  "saving": "Saving...",
+  "save": "Guardar",
+  "select_a_file_to_inspect": "Select a file to inspect.",
+  "remove_skill": "Remove skill",
+  "filter_skills": "Filter skills",
+  "paste_path_github_url_or_skills_sh_command": "Paste path, GitHub URL, or skills.sh command",
+  "add": "Añadir"
 }

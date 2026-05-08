@@ -147,5 +147,8 @@
     "updated_task": "已更新此任务",
     "requested_follow_up": "已请求跟进",
     "system": "系统"
-  }
+  },
+  "system": "System",
+  "board": "Board",
+  "unknown": "Unknown"
 }
