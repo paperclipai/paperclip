@@ -800,7 +800,9 @@
     "warning": "Предупреждение",
     "hard_stop": "Жёсткая остановка",
     "paused": "Приостановлено",
-    "enter_valid_amount": "Введите допустимую сумму в долларах."
+    "enter_valid_amount": "Введите допустимую сумму в долларах.",
+    "scope_type_agent": "Агент",
+    "scope_type_project": "Проект"
   },
   "search": {
     "title": "Поиск",

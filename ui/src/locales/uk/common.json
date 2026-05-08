@@ -798,7 +798,9 @@
     "warning": "Попередження",
     "hard_stop": "Жорстка зупинка",
     "paused": "Призупинено",
-    "enter_valid_amount": "Введіть дійсну невід'ємну суму в доларах США."
+    "enter_valid_amount": "Введіть дійсну невід'ємну суму в доларах США.",
+    "scope_type_agent": "Агент",
+    "scope_type_project": "Проект"
   },
   "search": {
     "title": "Пошук",

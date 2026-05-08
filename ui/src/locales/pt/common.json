@@ -798,7 +798,9 @@
     "warning": "Aviso",
     "hard_stop": "Parada permanente",
     "paused": "Pausado",
-    "enter_valid_amount": "Insira um valor em dólares válido e não negativo."
+    "enter_valid_amount": "Insira um valor em dólares válido e não negativo.",
+    "scope_type_agent": "Agente",
+    "scope_type_project": "Projeto"
   },
   "search": {
     "title": "Pesquisa",

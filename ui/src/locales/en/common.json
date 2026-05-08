@@ -798,7 +798,9 @@
     "warning": "Warning",
     "hard_stop": "Hard stop",
     "paused": "Paused",
-    "enter_valid_amount": "Enter a valid non-negative dollar amount."
+    "enter_valid_amount": "Enter a valid non-negative dollar amount.",
+    "scope_type_agent": "Agent",
+    "scope_type_project": "Project"
   },
   "search": {
     "title": "Search",

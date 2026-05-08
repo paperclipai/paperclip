@@ -798,7 +798,9 @@
     "warning": "警告",
     "hard_stop": "硬停止",
     "paused": "已暂停",
-    "enter_valid_amount": "输入有效的非负美元金额。"
+    "enter_valid_amount": "输入有效的非负美元金额。",
+    "scope_type_agent": "代理",
+    "scope_type_project": "项目"
   },
   "search": {
     "title": "搜索",

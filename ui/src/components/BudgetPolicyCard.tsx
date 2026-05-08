@@ -39,6 +39,10 @@ export function BudgetPolicyCard({
   variant?: "card" | "plain";
 }) {
   const { t } = useTranslation("common");
+  const getScopeTypeLabel = (scopeType: string) => {
+    const key = `budgets.scope_type_${scopeType}`;
+    return t(key);
+  };
   const [draftBudget, setDraftBudget] = useState(centsInputValue(summary.amount));
 
   useEffect(() => {
@@ -156,7 +160,7 @@ export function BudgetPolicyCard({
         <div className="flex items-start justify-between gap-6">
           <div>
             <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-              {summary.scopeType}
+              {getScopeTypeLabel(summary.scopeType)}
             </div>
             <div className="mt-2 text-xl font-semibold">{summary.scopeName}</div>
             <div className="mt-2 text-sm text-muted-foreground">{windowLabel}</div>
@@ -193,7 +197,7 @@ export function BudgetPolicyCard({
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-              {summary.scopeType}
+              {getScopeTypeLabel(summary.scopeType)}
             </div>
             <CardTitle className="mt-1 text-base">{summary.scopeName}</CardTitle>
             <CardDescription className="mt-1">{windowLabel}</CardDescription>
