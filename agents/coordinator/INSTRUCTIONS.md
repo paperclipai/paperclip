@@ -187,7 +187,7 @@ own changed files, fixes or passes.
 Architects who commit fixes leave a `needs-reverify` comment on their
 task. Your next fire collects those tasks back into Q and runs Phase 2
 again. Loop until every task reports clean. Hard stop after 3 cycles
-per task → escalate to board.
+per task → escalate to user.
 
 ### Architect cap removed
 
@@ -209,7 +209,7 @@ the main checkout (Step 0 cwd violation), dropped 10 files of edits in
 the wrong tree, exited cleanly, server marked task done. Six other
 tasks (AA-700, AA-725, AA-730, AA-731, AA-734, AA-735) hit a different
 flavor of the same failure mode and stranded their work for ~36h
-before the board manually pushed and PR'd.
+before the user manually pushed and PR'd.
 
 ### Audit step
 
@@ -225,10 +225,10 @@ parents):
    - PR exists and `OPEN` → leave task `done`; §Merge sweep will pick it up.
    - **No PR** → run the **on-main pre-check** (step 4) before re-opening.
 
-4. **On-main pre-check** (run before re-opening — guards against false positives where the board cherry-picked the work):
+4. **On-main pre-check** (run before re-opening — guards against false positives where the user cherry-picked the work):
    a. Pull SHA references from the task: scan task body + comments for `[a-f0-9]{7,40}` patterns, plus any commit hashes Worker may have left in `Stage: worker` trailer comments.
    b. For each candidate SHA: `git -C $PAPERCLIP_PROJECT branch --contains <sha> origin/main` (run in the project repo). Non-empty output means the commit landed on main — accept the task as `done`, comment `"PR-evidence audit: matched commit <sha> on origin/main, accepting."` Skip re-open.
-   c. If the candidate SHA shows up only as a *dangling object* (`git fsck --dangling | grep <sha>`) and is NOT on main, surface to board: comment `"Dangling commit <sha> '<subject>' references this task but isn't on main. Board: cherry-pick to recover, or comment to close out."` Leave task `done`, do NOT re-open (re-opening would create a duplicate Worker run).
+   c. If the candidate SHA shows up only as a *dangling object* (`git fsck --dangling | grep <sha>`) and is NOT on main, surface to user: comment `"Dangling commit <sha> '<subject>' references this task but isn't on main. User: cherry-pick to recover, or comment to close out."` Leave task `done`, do NOT re-open (re-opening would create a duplicate Worker run).
    d. If no SHA references anywhere in the task, also try `git log origin/main --since={createdAt} --grep="{task-id}"` for commit messages mentioning the task ID. Match → accept as in (b).
    e. Still no evidence after a-d → fall through to step 5 (re-open).
 
@@ -237,19 +237,19 @@ parents):
 **Re-opening is mandatory once step 4 fails. Do not rationalize.** The audit
 exists for the "work committed in worktree, never pushed, never PR'd"
 case. The Architect's next run pushes and opens the PR — that's why it
-has `gh` access. The board's only manual git role is merging PRs and
+has `gh` access. The user's only manual git role is merging PRs and
 occasional cherry-picks; if step 4 found a cherry-pick the audit
 accepts that as the merge path. Same reflex applies to "the work
-exists, why churn?", "the board will catch up", and "this is a known
+exists, why churn?", "the user will catch up", and "this is a known
 bottleneck": those are descriptions of the disease the audit cures —
 but step 4 is the cure for false positives.
 
 The only real risk is a re-open loop on a permanent Step 0 failure.
 Mitigation: track the re-open count in a comment trailer; if a task is
 auto-reopened 3 cycles in a row without producing a PR or matching a
-cherry-pick on main, stop and escalate to the board.
+cherry-pick on main, stop and escalate to the user.
 
-6. If the worktree is already GC'd AND step 4 found nothing, the work may be unrecoverable. Don't promote backlog or create subtasks; comment and escalate to the board for triage.
+6. If the worktree is already GC'd AND step 4 found nothing, the work may be unrecoverable. Don't promote backlog or create subtasks; comment and escalate to the user for triage.
 
 ### What this catches
 
@@ -304,7 +304,7 @@ If a role is already at cap, **do not create another** — and do not
 delete the existing one to make room (kept agents may have in-flight
 runs you can't see). If multiple already exist (e.g. 3 Architects from
 a prior over-creation), accept the current state, but do not add a
-fourth — leave decommissioning of the excess to the board.
+fourth — leave decommissioning of the excess to the user.
 
 The `paperclip-create-agent` skill does not enforce this cap itself;
 the check belongs to the caller. Skipping it produces the
@@ -319,4 +319,4 @@ shared target dir).
 
 ## Never
 
-Commit · retry 409 · create without `parentId` (except top-level) or `assigneeAgentId` · give Workers skills · exit mid-run · repeat a blocked comment · run destructive / secrets-exfil commands (unless board explicitly requests).
+Commit · retry 409 · create without `parentId` (except top-level) or `assigneeAgentId` · give Workers skills · exit mid-run · repeat a blocked comment · run destructive / secrets-exfil commands (unless user explicitly requests).

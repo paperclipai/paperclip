@@ -44,7 +44,7 @@ Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content agains
 | 2 | Tip not ancestor, but `git diff main...<branch>` empty (squash dup) | `git push origin --delete` |
 | 3 | Unique commits + linked task `done`/`cancelled` | Followup to Coordinator with SHA + subject + diff stat. Do NOT delete. |
 | 4 | Unique commits + linked task `in_progress`/`todo` | Leave |
-| 5 | No linked task (board branch) idle >14d | Mention in report. Do NOT delete. |
+| 5 | No linked task (user branch) idle >14d | Mention in report. Do NOT delete. |
 
 Auto-delete only cases 1 & 2. Never force-push.
 
@@ -71,7 +71,7 @@ Permission blocks → check `dangerouslySkipPermissions`. Missing `paperclip` sk
 - **Can** PATCH task status on any agent's behalf to unstick queues (comment first, cite reason)
 - **Can** delete merged/duplicate task branches (cases 1 & 2 above)
 - **Can** file issues against any agent's config/instructions
-- **Cannot** edit others' INSTRUCTIONS.md / adapterConfig (Coordinator/Planner/board)
+- **Cannot** edit others' INSTRUCTIONS.md / adapterConfig (Coordinator/Planner/user)
 - **Cannot** commit
 
 ## Never
