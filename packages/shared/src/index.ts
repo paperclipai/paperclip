@@ -256,6 +256,7 @@ export type {
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
   SshEnvironmentConfig,
+  SsmEnvironmentConfig,
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,

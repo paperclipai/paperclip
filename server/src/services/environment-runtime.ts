@@ -18,6 +18,11 @@ import type {
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
 import {
+  assertSsmCliAvailable,
+  buildSsmProxyCommand,
+  resolveSsmInstanceByTag,
+} from "./aws-ssm.js";
+import {
   parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
   stripSandboxProviderEnvelope,
@@ -249,6 +254,94 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           host: parsed.config.host,
           port: parsed.config.port,
           username: parsed.config.username,
+          remoteWorkspacePath: parsed.config.remoteWorkspacePath,
+          remoteCwd,
+        },
+      });
+    },
+
+    async releaseRunLease(input) {
+      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+    },
+
+    async realizeWorkspace(input) {
+      const record = buildWorkspaceRealizationRecordFromDriverInput({
+        environment: input.environment,
+        lease: input.lease,
+        workspace: input.workspace,
+        cwd:
+          typeof input.lease.metadata?.remoteCwd === "string" && input.lease.metadata.remoteCwd.trim().length > 0
+            ? input.lease.metadata.remoteCwd.trim()
+            : input.workspace.remotePath ?? input.workspace.localPath ?? null,
+      });
+      return {
+        cwd: record.remote.path ?? record.local.path,
+        metadata: {
+          workspaceRealization: record,
+        },
+      };
+    },
+  };
+}
+
+function createSsmEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
+  const environmentsSvc = environmentService(db);
+
+  return {
+    driver: "ssm",
+
+    async acquireRunLease(input) {
+      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment);
+      if (parsed.driver !== "ssm") {
+        throw new Error(`Expected SSM environment config for driver "${input.environment.driver}".`);
+      }
+
+      // Verify the AWS CLI + session-manager-plugin are present on this host
+      // before resolving the tag; surfacing this as the first failure is much
+      // friendlier than a cryptic ssh-side ProxyCommand error.
+      await assertSsmCliAvailable();
+
+      const resolved = await resolveSsmInstanceByTag({
+        region: parsed.config.region,
+        awsProfile: parsed.config.awsProfile,
+        tagKey: parsed.config.tagKey,
+        tagValue: parsed.config.tagValue,
+      });
+      const proxyCommand = buildSsmProxyCommand({
+        region: parsed.config.region,
+        awsProfile: parsed.config.awsProfile,
+        instanceId: resolved.instanceId,
+      });
+
+      const { remoteCwd } = await ensureSshWorkspaceReady({
+        host: resolved.instanceId,
+        port: parsed.config.port,
+        username: parsed.config.username,
+        remoteWorkspacePath: parsed.config.remoteWorkspacePath,
+        privateKey: parsed.config.privateKey,
+        knownHosts: parsed.config.knownHosts,
+        strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+        proxyCommand,
+      });
+
+      return await environmentsSvc.acquireLease({
+        companyId: input.companyId,
+        environmentId: input.environment.id,
+        executionWorkspaceId: input.executionWorkspaceId,
+        issueId: input.issueId,
+        heartbeatRunId: input.heartbeatRunId,
+        leasePolicy: "ephemeral",
+        provider: "ssm",
+        providerLeaseId: `ssm://${parsed.config.region}/${resolved.instanceId}${remoteCwd}`,
+        metadata: {
+          driver: input.environment.driver,
+          executionWorkspaceMode: input.executionWorkspaceMode,
+          region: parsed.config.region,
+          instanceId: resolved.instanceId,
+          tagKey: parsed.config.tagKey,
+          tagValue: parsed.config.tagValue,
+          username: parsed.config.username,
+          port: parsed.config.port,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
         },
@@ -1026,6 +1119,7 @@ export function environmentRuntimeService(
   const defaultDrivers = [
     createLocalEnvironmentDriver(db),
     createSshEnvironmentDriver(db),
+    createSsmEnvironmentDriver(db),
     createSandboxEnvironmentDriver(db, {
       pluginWorkerManager: options.pluginWorkerManager,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,

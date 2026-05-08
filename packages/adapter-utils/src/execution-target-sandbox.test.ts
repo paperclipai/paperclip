@@ -252,6 +252,7 @@ describe("sandbox adapter execution targets", () => {
       port: 22,
       username: "paperclip",
       remoteCwd: "/workspace",
+      proxyCommand: "",
     });
   });
 

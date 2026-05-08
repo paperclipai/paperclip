@@ -21,7 +21,12 @@ jobs:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
-        if: github.head_ref != 'chore/refresh-lockfile'
+        # Fork-only carve-out: this fork is used as a pre-review staging area
+        # for upstream contributions, and feature PRs that add deps need the
+        # lockfile committed for verify/e2e (they use --frozen-lockfile). The
+        # upstream policy (paperclipai/paperclip) is unaffected. Drop this
+        # condition before opening the upstream contribution PR.
+        if: github.head_ref != 'chore/refresh-lockfile' && github.repository_owner != 'tylerwalters-crx'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.

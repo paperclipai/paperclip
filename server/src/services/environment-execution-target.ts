@@ -7,8 +7,22 @@ import {
 import { parseObject } from "../adapters/utils.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { buildSsmProxyCommand, resolveSsmInstanceByTag } from "./aws-ssm.js";
 
 export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
+
+// Adapter types that know how to dispatch through AdapterExecutionTarget for
+// remote drivers (ssh, ssm, sandbox). Kept as a single source of truth so the
+// list does not drift between branches.
+const REMOTE_CAPABLE_ADAPTER_TYPES = new Set([
+  "acpx_local",
+  "codex_local",
+  "claude_local",
+  "gemini_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+]);
 
 export async function resolveEnvironmentExecutionTarget(input: {
   db: Db;
@@ -33,15 +47,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   }
 
   if (input.environment.driver === "sandbox") {
-    if (
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) {
+    if (!REMOTE_CAPABLE_ADAPTER_TYPES.has(input.adapterType)) {
       return null;
     }
 
@@ -103,51 +109,100 @@ export async function resolveEnvironmentExecutionTarget(input: {
     };
   }
 
-  if (
-    (
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) ||
-    input.environment.driver !== "ssh"
-  ) {
+  if (!REMOTE_CAPABLE_ADAPTER_TYPES.has(input.adapterType)) {
     return null;
   }
 
-  const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
-    driver: input.environment.driver as "ssh",
-    config: parseObject(input.environment.config),
-  });
-  if (parsed.driver !== "ssh") {
-    return null;
-  }
+  if (input.environment.driver === "ssh") {
+    const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
+      driver: "ssh",
+      config: parseObject(input.environment.config),
+    });
+    if (parsed.driver !== "ssh") {
+      return null;
+    }
 
-  const remoteCwd =
-    typeof input.leaseMetadata?.remoteCwd === "string" && input.leaseMetadata.remoteCwd.trim().length > 0
-      ? input.leaseMetadata.remoteCwd.trim()
-      : parsed.config.remoteWorkspacePath;
+    const remoteCwd =
+      typeof input.leaseMetadata?.remoteCwd === "string" && input.leaseMetadata.remoteCwd.trim().length > 0
+        ? input.leaseMetadata.remoteCwd.trim()
+        : parsed.config.remoteWorkspacePath;
 
-  return {
-    kind: "remote",
-    transport: "ssh",
-    environmentId: input.environment.id ?? null,
-    leaseId: input.leaseId ?? null,
-    remoteCwd,
-    spec: {
-      host: parsed.config.host,
-      port: parsed.config.port,
-      username: parsed.config.username,
-      remoteWorkspacePath: parsed.config.remoteWorkspacePath,
-      privateKey: parsed.config.privateKey,
-      knownHosts: parsed.config.knownHosts,
-      strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+    return {
+      kind: "remote",
+      transport: "ssh",
+      environmentId: input.environment.id ?? null,
+      leaseId: input.leaseId ?? null,
       remoteCwd,
-    },
-  };
+      spec: {
+        host: parsed.config.host,
+        port: parsed.config.port,
+        username: parsed.config.username,
+        remoteWorkspacePath: parsed.config.remoteWorkspacePath,
+        privateKey: parsed.config.privateKey,
+        knownHosts: parsed.config.knownHosts,
+        strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+        remoteCwd,
+      },
+    };
+  }
+
+  if (input.environment.driver === "ssm") {
+    const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
+      driver: "ssm",
+      config: parseObject(input.environment.config),
+    });
+    if (parsed.driver !== "ssm") {
+      return null;
+    }
+
+    // The lease metadata may already carry a resolved instanceId from acquire
+    // time. Prefer it so a single agent run pins to the same host even if the
+    // tag fleet changes mid-run; otherwise re-resolve now.
+    const cachedInstanceId =
+      typeof input.leaseMetadata?.instanceId === "string" && input.leaseMetadata.instanceId.trim().length > 0
+        ? input.leaseMetadata.instanceId.trim()
+        : null;
+    const instanceId =
+      cachedInstanceId ??
+      (await resolveSsmInstanceByTag({
+        region: parsed.config.region,
+        awsProfile: parsed.config.awsProfile,
+        tagKey: parsed.config.tagKey,
+        tagValue: parsed.config.tagValue,
+      })).instanceId;
+
+    const proxyCommand = buildSsmProxyCommand({
+      region: parsed.config.region,
+      awsProfile: parsed.config.awsProfile,
+      instanceId,
+    });
+
+    const remoteCwd =
+      typeof input.leaseMetadata?.remoteCwd === "string" && input.leaseMetadata.remoteCwd.trim().length > 0
+        ? input.leaseMetadata.remoteCwd.trim()
+        : parsed.config.remoteWorkspacePath;
+
+    return {
+      kind: "remote",
+      transport: "ssh",
+      environmentId: input.environment.id ?? null,
+      leaseId: input.leaseId ?? null,
+      remoteCwd,
+      spec: {
+        host: instanceId,
+        port: parsed.config.port,
+        username: parsed.config.username,
+        remoteWorkspacePath: parsed.config.remoteWorkspacePath,
+        privateKey: parsed.config.privateKey,
+        knownHosts: parsed.config.knownHosts,
+        strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+        remoteCwd,
+        proxyCommand,
+      },
+    };
+  }
+
+  return null;
 }
 
 export async function resolveEnvironmentExecutionTransport(

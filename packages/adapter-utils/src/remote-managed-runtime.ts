@@ -45,6 +45,10 @@ export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec
     port: spec.port,
     username: spec.username,
     remoteCwd: spec.remoteCwd,
+    // Differentiates ssh-direct from ssh-over-ssm sessions whose host/port/user
+    // happen to coincide. Empty string when absent so identities written before
+    // SSM existed still compare equal under remoteExecutionSessionMatches.
+    proxyCommand: spec.proxyCommand ?? "",
   } as const;
 }
 
@@ -58,7 +62,8 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
     asString(parsedSaved.host) === currentIdentity.host &&
     asNumber(parsedSaved.port) === currentIdentity.port &&
     asString(parsedSaved.username) === currentIdentity.username &&
-    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd
+    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd &&
+    asString(parsedSaved.proxyCommand) === currentIdentity.proxyCommand
   );
 }
 

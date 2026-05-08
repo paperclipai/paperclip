@@ -17,6 +17,10 @@ export interface SshConnectionConfig {
   privateKey: string | null;
   knownHosts: string | null;
   strictHostKeyChecking: boolean;
+  // Optional OpenSSH ProxyCommand. The SSM driver sets this to tunnel through
+  // `aws ssm start-session` so the EC2 target does not need an exposed port.
+  // Null/undefined = direct TCP connection.
+  proxyCommand?: string | null;
 }
 
 export interface SshCommandResult {
@@ -176,6 +180,8 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     knownHosts: typeof parsed.knownHosts === "string" && parsed.knownHosts.length > 0 ? parsed.knownHosts : null,
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
+    proxyCommand:
+      typeof parsed.proxyCommand === "string" && parsed.proxyCommand.length > 0 ? parsed.proxyCommand : null,
   };
 }
 
@@ -362,7 +368,10 @@ async function withTempFile(
 }
 
 async function createSshAuthArgs(
-  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking">,
+  config: Pick<
+    SshConnectionConfig,
+    "privateKey" | "knownHosts" | "strictHostKeyChecking" | "proxyCommand"
+  >,
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
   const tempFiles: Array<() => Promise<void>> = [];
   const sshArgs = [
@@ -388,6 +397,14 @@ async function createSshAuthArgs(
     const privateKey = await withTempFile("paperclip-ssh-key-", config.privateKey, 0o600);
     tempFiles.push(privateKey.cleanup);
     sshArgs.push("-i", privateKey.path);
+  }
+
+  // ProxyCommand support: when set, OpenSSH spawns the given command and
+  // tunnels the SSH session through its stdio. Used by the SSM driver to
+  // route through `aws ssm start-session --document-name AWS-StartSSHSession`.
+  // OpenSSH expands %h (host) and %p (port) tokens in the command itself.
+  if (config.proxyCommand && config.proxyCommand.trim().length > 0) {
+    sshArgs.push("-o", `ProxyCommand=${config.proxyCommand.trim()}`);
   }
 
   return {
