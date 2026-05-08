@@ -1075,6 +1075,71 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
   });
+
+  it("filters by createdByUserId strictly (creator only, not commenters or assignees)", async () => {
+    const companyId = randomUUID();
+    const userId = "user-creator";
+    const otherUserId = "user-other";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const createdByUserIssueId = randomUUID();
+    const assignedToUserIssueId = randomUUID();
+    const commentedByUserIssueId = randomUUID();
+    const otherUserIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: createdByUserIssueId,
+        companyId,
+        title: "Created by target user",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+      },
+      {
+        id: assignedToUserIssueId,
+        companyId,
+        title: "Assigned to target user but created by other",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: otherUserId,
+        assigneeUserId: userId,
+      },
+      {
+        id: commentedByUserIssueId,
+        companyId,
+        title: "Commented by target user but created by other",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: otherUserId,
+      },
+      {
+        id: otherUserIssueId,
+        companyId,
+        title: "Created by other user",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: otherUserId,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: commentedByUserIssueId,
+      authorUserId: userId,
+      body: "I commented but did not create the issue.",
+    });
+
+    const result = await svc.list(companyId, { createdByUserId: userId });
+
+    expect(result.map((issue) => issue.id)).toEqual([createdByUserIssueId]);
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

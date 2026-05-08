@@ -336,4 +336,43 @@ describe("approval routes idempotent retries", () => {
       }),
     );
   });
+
+  it("forwards the requestedByUserId query filter to approvalService.list", async () => {
+    mockApprovalService.list.mockResolvedValue([]);
+
+    const res = await request(await createApp())
+      .get("/api/companies/company-1/approvals")
+      .query({ status: "pending", requestedByUserId: "user-42" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.list).toHaveBeenCalledWith("company-1", {
+      status: "pending",
+      requestedByUserId: "user-42",
+    });
+  });
+
+  it("resolves requestedByUserId=me to the authenticated board user", async () => {
+    mockApprovalService.list.mockResolvedValue([]);
+
+    const res = await request(await createApp())
+      .get("/api/companies/company-1/approvals")
+      .query({ requestedByUserId: "me" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.list).toHaveBeenCalledWith("company-1", {
+      status: undefined,
+      requestedByUserId: "user-1",
+    });
+  });
+
+  it("rejects requestedByUserId=me for non-board callers", async () => {
+    mockApprovalService.list.mockResolvedValue([]);
+
+    const res = await request(await createAgentApp())
+      .get("/api/companies/company-1/approvals")
+      .query({ requestedByUserId: "me" });
+
+    expect(res.status).toBe(403);
+    expect(mockApprovalService.list).not.toHaveBeenCalled();
+  });
 });

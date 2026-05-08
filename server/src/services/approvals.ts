@@ -79,9 +79,15 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    list: (
+      companyId: string,
+      filters?: { status?: string; requestedByUserId?: string },
+    ) => {
       const conditions = [eq(approvals.companyId, companyId)];
-      if (status) conditions.push(eq(approvals.status, status));
+      if (filters?.status) conditions.push(eq(approvals.status, filters.status));
+      if (filters?.requestedByUserId) {
+        conditions.push(eq(approvals.requestedByUserId, filters.requestedByUserId));
+      }
       return db.select().from(approvals).where(and(...conditions));
     },
 

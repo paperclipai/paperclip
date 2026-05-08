@@ -105,3 +105,30 @@ describe("approvalService resolution idempotency", () => {
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("approvalService.list filters", () => {
+  function createListDbStub() {
+    const where = vi.fn(async () => [] as ApprovalRecord[]);
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    return {
+      db: { select, update: vi.fn() },
+      where,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("accepts the new filters object signature without throwing", async () => {
+    const dbStub = createListDbStub();
+    const svc = approvalService(dbStub.db as any);
+
+    await svc.list("company-1", { status: "pending", requestedByUserId: "user-1" });
+    await svc.list("company-1", { requestedByUserId: "user-1" });
+    await svc.list("company-1");
+
+    expect(dbStub.where).toHaveBeenCalledTimes(3);
+  });
+});

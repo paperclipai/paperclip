@@ -53,7 +53,18 @@ export function approvalRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    const requestedByUserIdRaw = req.query.requestedByUserId as string | undefined;
+    const requestedByUserId =
+      requestedByUserIdRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : requestedByUserIdRaw;
+
+    if (requestedByUserIdRaw === "me" && (!requestedByUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "requestedByUserId=me requires board authentication" });
+      return;
+    }
+
+    const result = await svc.list(companyId, { status, requestedByUserId });
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 
