@@ -12,6 +12,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueRetryNowResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -43,6 +44,7 @@ export const issuesApi = {
       workspaceId?: string;
       executionWorkspaceId?: string;
       originKind?: string;
+      originKindPrefix?: string;
       originId?: string;
       descendantOf?: string;
       includeRoutineExecutions?: boolean;
@@ -66,6 +68,7 @@ export const issuesApi = {
     if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
@@ -127,6 +130,8 @@ export const issuesApi = {
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
     api.post<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}/release`, data),
   checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
+  retryScheduledRetryNow: (id: string) =>
+    api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
@@ -172,7 +177,10 @@ export const issuesApi = {
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
-  getCostSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
+  getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {
+    const qs = options.excludeRoot ? "?excludeRoot=true" : "";
+    return api.get<IssueCostSummary>(`/issues/${id}/cost-summary${qs}`);
+  },
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters ?? {})) {

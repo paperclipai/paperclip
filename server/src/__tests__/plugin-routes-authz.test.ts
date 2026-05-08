@@ -6,6 +6,8 @@ const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
   upsertConfig: vi.fn(),
+  getCompanySettings: vi.fn(),
+  upsertCompanySettings: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -315,6 +317,61 @@ describe.sequential("scoped plugin API routes", () => {
       }),
     );
   }, 20_000);
+});
+
+describe.sequential("plugin local folder routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+  });
+
+  function readyLocalFolderPlugin() {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["local.folders"],
+        localFolders: [
+          {
+            folderKey: "content-root",
+            displayName: "Content root",
+            access: "readWrite",
+            requiredDirectories: ["docs"],
+            requiredFiles: ["README.md"],
+          },
+        ],
+      },
+    });
+  }
+
+  it("rejects validation for undeclared local folder keys", async () => {
+    readyLocalFolderPlugin();
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/ssh/validate`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Local folder key is not declared");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects saving undeclared local folder keys", async () => {
+    readyLocalFolderPlugin();
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/ssh`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Local folder key is not declared");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
 });
 
 describe.sequential("plugin tool and bridge authz", () => {
