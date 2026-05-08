@@ -778,6 +778,7 @@ function IssueChatChainOfThought({
   message: ThreadMessage;
   cotParts: readonly IssueChatCoTPart[];
 }) {
+  const { t } = useTranslation("issues");
   const { agentMap } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
@@ -815,15 +816,15 @@ function IssueChatChainOfThought({
   let headerVerb: string;
   let headerSuffix: string | null = null;
   if (isActive) {
-    headerVerb = "Working";
+    headerVerb = t("chat.working");
     if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;
     const durationText = formatDurationWords(durationMs);
-    headerVerb = "Worked";
+    headerVerb = t("chat.worked");
     if (durationText) headerSuffix = `for ${durationText}`;
   } else {
-    headerVerb = "Worked";
+    headerVerb = t("chat.worked");
   }
 
   const toolSummary = toolCountSummary(toolParts);
