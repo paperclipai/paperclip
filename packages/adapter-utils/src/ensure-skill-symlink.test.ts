@@ -46,6 +46,24 @@ describe("ensurePaperclipSkillSymlink", () => {
     expect(result).toBe("skipped");
   });
 
+  it("skips if the paths are lexically different but physically identical (canonical comparison)", async () => {
+    const realSource = path.join(skillsDir, "real-source");
+    await fs.mkdir(realSource, { recursive: true });
+    
+    // Create a symlink that acts as a secondary path to the same source
+    const aliasedSource = path.join(tempDir, "aliased-source");
+    await fs.symlink(realSource, aliasedSource);
+
+    const target = path.join(skillsHome, "my-skill");
+
+    // Point the target symlink to the aliased path
+    await fs.symlink(aliasedSource, target);
+    
+    // ensurePaperclipSkillSymlink should see through the alias and skip repair
+    const result = await ensurePaperclipSkillSymlink(realSource, target);
+    expect(result).toBe("skipped");
+  });
+
   it("repairs the symlink if it points to a different source (even if it exists)", async () => {
     const sourceA = path.join(skillsDir, "skill-a");
     const sourceB = path.join(skillsDir, "skill-b");

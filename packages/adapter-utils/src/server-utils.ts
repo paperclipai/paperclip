@@ -1625,7 +1625,9 @@ export async function ensurePaperclipSkillSymlink(
   if (!linkedPath) return "skipped";
 
   const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) {
+  const realLinked = await fs.realpath(resolvedLinkedPath).catch(() => resolvedLinkedPath);
+  const realSource = await fs.realpath(source).catch(() => source);
+  if (realLinked === realSource) {
     return "skipped";
   }
 
