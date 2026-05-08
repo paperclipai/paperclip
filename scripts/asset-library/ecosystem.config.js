@@ -30,17 +30,20 @@ function loadNotifierEnv() {
 
 const notifierEnv = loadNotifierEnv();
 
-// Pin to node@20 — Next 14 currently mis-prerenders error pages on node 25.
-const NODE_BIN = "/opt/homebrew/opt/node@20/bin/node";
+// `start.sh` runs `next build` if `.next/` is missing or stale, then execs
+// `next start`. This avoids the ENOENT loop pm2 hit on first deploy and after
+// `pm2 resurrect` on a fresh login (no `.next/` yet).
+//
+// Pinned to node@20 inside start.sh — Next 14 mis-prerenders error pages on
+// system node 25.
 
 module.exports = {
   apps: [
     {
       name: "asset-library",
       cwd: path.resolve(__dirname),
-      script: "node_modules/.bin/next",
-      args: "start",
-      interpreter: NODE_BIN,
+      script: path.resolve(__dirname, "start.sh"),
+      interpreter: "bash",
       autorestart: true,
       max_restarts: 10,
       env: {
