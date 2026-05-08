@@ -823,7 +823,17 @@
     "no_results_desc": "Não conseguimos encontrar uma correspondência em {{scope}}. Tente ampliar o escopo ou reformule sua consulta.",
     "search_all_scopes": "Pesquisar em todos os escopos",
     "create_issue_from_query": "Criar problema a partir desta consulta",
-    "no_results_help": "Tente menos tokens ou um único termo distintivo."
+    "no_results_help": "Tente menos tokens ou um único termo distintivo.",
+    "result_count_one": "1 resultado",
+    "result_count": "{{count}} resultados",
+    "sorted_by_relevance": "ordenado por relevância",
+    "updating": "Atualizando…",
+    "tab_all": "Todos",
+    "tab_issues": "Problemas",
+    "tab_comments": "Comentários",
+    "tab_documents": "Documentos",
+    "tab_agents": "Agentes",
+    "tab_projects": "Projetos"
   },
   "access_roles": {
     "viewer": "Viewer",

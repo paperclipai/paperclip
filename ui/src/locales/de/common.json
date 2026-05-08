@@ -823,7 +823,17 @@
     "no_results_desc": "Wir konnten keine Entsprechung in {{scope}} finden. Versuchen Sie, den Bereich zu erweitern oder Ihre Abfrage umzuformulieren.",
     "search_all_scopes": "In allen Bereichen suchen",
     "create_issue_from_query": "Aufgabe aus dieser Abfrage erstellen",
-    "no_results_help": "Versuchen Sie weniger Token oder einen einzelnen charakteristischen Begriff."
+    "no_results_help": "Versuchen Sie weniger Token oder einen einzelnen charakteristischen Begriff.",
+    "result_count_one": "1 Ergebnis",
+    "result_count": "{{count}} Ergebnisse",
+    "sorted_by_relevance": "sortiert nach Relevanz",
+    "updating": "Wird aktualisiert…",
+    "tab_all": "Alle",
+    "tab_issues": "Aufgaben",
+    "tab_comments": "Kommentare",
+    "tab_documents": "Dokumente",
+    "tab_agents": "Agenten",
+    "tab_projects": "Projekte"
   },
   "access_roles": {
     "viewer": "Viewer",

@@ -823,7 +823,17 @@
     "no_results_desc": "我们无法在 {{scope}} 中找到匹配项。尝试扩大范围或重新表述查询。",
     "search_all_scopes": "搜索所有范围",
     "create_issue_from_query": "从此查询创建问题",
-    "no_results_help": "尝试更少的令牌或单个独特的术语。"
+    "no_results_help": "尝试更少的令牌或单个独特的术语。",
+    "result_count_one": "1 个结果",
+    "result_count": "{{count}} 个结果",
+    "sorted_by_relevance": "按相关性排序",
+    "updating": "更新中…",
+    "tab_all": "全部",
+    "tab_issues": "问题",
+    "tab_comments": "评论",
+    "tab_documents": "文档",
+    "tab_agents": "代理",
+    "tab_projects": "项目"
   },
   "access_roles": {
     "viewer": "Viewer",

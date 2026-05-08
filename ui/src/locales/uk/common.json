@@ -823,7 +823,17 @@
     "no_results_desc": "Нам не вдалось знайти збіг у {{scope}}. Спробуйте розширити область або переформулювати запит.",
     "search_all_scopes": "Пошук у всіх областях",
     "create_issue_from_query": "Створити проблему з цього запиту",
-    "no_results_help": "Спробуйте менше токенів або один характеристичний термін."
+    "no_results_help": "Спробуйте менше токенів або один характеристичний термін.",
+    "result_count_one": "1 результат",
+    "result_count": "{{count}} результатів",
+    "sorted_by_relevance": "відсортовано за релевантністю",
+    "updating": "Оновлення…",
+    "tab_all": "Все",
+    "tab_issues": "Проблеми",
+    "tab_comments": "Коментарі",
+    "tab_documents": "Документи",
+    "tab_agents": "Агенти",
+    "tab_projects": "Проекти"
   },
   "access_roles": {
     "viewer": "Viewer",

@@ -823,7 +823,17 @@
     "no_results_desc": "No pudimos encontrar una coincidencia en {{scope}}. Intente ampliar el alcance o reformular su consulta.",
     "search_all_scopes": "Buscar en todos los alcances",
     "create_issue_from_query": "Crear problema a partir de esta consulta",
-    "no_results_help": "Intente menos tokens o un término único y distintivo."
+    "no_results_help": "Intente menos tokens o un término único y distintivo.",
+    "result_count_one": "1 resultado",
+    "result_count": "{{count}} resultados",
+    "sorted_by_relevance": "ordenado por relevancia",
+    "updating": "Actualizando…",
+    "tab_all": "Todos",
+    "tab_issues": "Problemas",
+    "tab_comments": "Comentarios",
+    "tab_documents": "Documentos",
+    "tab_agents": "Agentes",
+    "tab_projects": "Proyectos"
   },
   "access_roles": {
     "viewer": "Viewer",
