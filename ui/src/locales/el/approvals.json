@@ -21,6 +21,7 @@
   },
   "status": {
     "approved": "Εγκρίθηκε",
+    "cancelled": "Ακυρώθηκε",
     "pending": "Σε εκκρεμότητα",
     "rejected": "Απορρίφθηκε",
     "revision_requested": "Ζητήθηκε αναθεώρηση"
