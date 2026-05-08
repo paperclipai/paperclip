@@ -32,7 +32,9 @@
       "remove_logo": "移除 Logo",
       "removing_logo": "移除中...",
       "clear_color": "清除",
-      "uploading_logo": "上传 Logo 中..."
+      "uploading_logo": "上传 Logo 中...",
+      "saving": "保存中...",
+      "failed_to_save": "保存失败"
     },
     "status": {
       "saved": "已保存",
@@ -47,7 +49,12 @@
       "allow_sharing_hint": "只有您明确投票的 AI 生成输出才有资格进行反馈分享。",
       "votes_saved_locally": "投票始终保存在本地。此设置控制已投票的 AI 输出是否可以被标记为与 Paperclip Labs 共享。",
       "terms_version": "条款版本：",
-      "enabled_at": "已启用",
+      "enabled_at": "已于 {{date}} 启用",
+      "enabled_at_by": "已于 {{date}} 由 {{user}} 启用",
+      "sharing_enabled": "反馈分享已启用",
+      "sharing_disabled": "反馈分享已禁用",
+      "sharing_update_failed": "更新反馈分享设置失败",
+      "unknown_error": "未知错误",
       "currently_disabled": "共享当前已禁用。",
       "read_tos": "阅读我们的服务条款"
     },
@@ -58,7 +65,9 @@
       "snippet_label": "OpenClaw 邀请提示",
       "copied": "已复制",
       "copy_snippet": "复制代码片段",
-      "copied_snippet": "已复制代码片段"
+      "copied_snippet": "已复制代码片段",
+      "generate_snippet_hint": "生成短期 OpenClaw 智能体邀请，并显示可复制的提示。",
+      "failed_to_create": "创建邀请失败"
     },
     "packages": {
       "moved_notice": "导入和导出已移至专用页面，可从",
@@ -71,7 +80,9 @@
       "archive_notice": "归档此公司可将其从侧边栏隐藏。此操作会持久化到数据库。",
       "archive_button": "归档公司",
       "archiving": "归档中...",
-      "confirm_archive": "归档公司"
+      "confirm_archive": "归档公司",
+      "already_archived": "已归档",
+      "archive_failed": "归档公司失败"
     }
   },
   "import": {
@@ -146,7 +157,22 @@
     "export_button": "导出",
     "loading_data": "加载导出数据中...",
     "select_company": "请选择要导出的公司。",
-    "company_export_title": "{{name}} 导出"
+    "company_export_title": "{{name}} 导出",
+    "binary_not_available": "此类型不支持二进制文件预览。",
+    "org_chart_breadcrumb": "组织架构",
+    "selection_count_one": "已选 {{selected}} / {{total}} 个文件",
+    "selection_count_other": "已选 {{selected}} / {{total}} 个文件",
+    "warnings_count_one": "{{count}} 个警告",
+    "warnings_count_other": "{{count}} 个警告",
+    "export_count_one": "导出 {{count}} 个文件",
+    "export_count_other": "导出 {{count}} 个文件",
+    "show_more_issues_count": "显示更多任务（{{visible}} / {{total}}）",
+    "toast_failed_title": "导出失败",
+    "toast_failed_load": "加载导出数据失败。",
+    "toast_failed_build": "生成导出包失败。",
+    "toast_downloaded_title": "导出已下载",
+    "toast_downloaded_body_one": "已将 {{count}} 个文件导出为 {{path}}.zip",
+    "toast_downloaded_body_other": "已将 {{count}} 个文件导出为 {{path}}.zip"
   },
   "invites": {
     "no_company": "请选择公司以管理邀请。",
@@ -240,6 +266,8 @@
       "edit": "编辑",
       "stop_editing": "停止编辑",
       "source": "来源",
+      "copy_source_path": "复制源路径",
+      "copied_path": "路径已复制",
       "pin": "固定",
       "untracked": "未跟踪",
       "tracking": "跟踪中",
@@ -428,7 +456,9 @@
     "open_assigned_issues_one": "{{count}} 个开放的已分配任务",
     "open_assigned_issues_other": "{{count}} 个开放的已分配任务",
     "more_issues_one": "还有 {{count}} 个任务",
-    "more_issues_other": "还有 {{count}} 个任务"
+    "more_issues_other": "还有 {{count}} 个任务",
+    "member_fallback_name": "该成员",
+    "agent_option_label": "{{name}}（{{role}}）"
   },
   "companies": {
     "breadcrumb": "公司",
@@ -483,7 +513,10 @@
     "toast_approved": "加入请求已批准",
     "toast_rejected": "加入请求已拒绝",
     "unknown_human": "未知的人员申请者",
-    "unknown_agent": "未知的智能体申请者"
+    "unknown_agent": "未知的智能体申请者",
+    "breadcrumb_inbox": "收件箱",
+    "company_fallback": "公司",
+    "description_extra": "此队列使用与内置收件箱卡片相同的审批操作。"
   },
   "invite": {
     "invalid_token": "无效的邀请令牌。",
@@ -790,7 +823,42 @@
       "last7": "最近7天",
       "last30": "最近30天",
       "all": "所有时间"
-    }
+    },
+    "breadcrumb_users": "用户",
+    "select_company": "请选择公司以查看用户档案。",
+    "not_found": "未找到此公司的用户档案。",
+    "last_14_days": "近 14 天",
+    "tokens_total": "总 token 数",
+    "tokens_per_day": "token 数/天",
+    "completions": "完成次数",
+    "done": "已完成",
+    "stat_touched": "涉及",
+    "stat_completed": "已完成",
+    "stat_comments": "评论",
+    "stat_actions": "操作",
+    "stat_tokens": "Token",
+    "stat_spend": "消耗",
+    "stat_created": "创建",
+    "stat_open": "开放",
+    "issue_linked_usage": "按任务的使用量",
+    "billed_through": "通过 {{provider}} 计费",
+    "hero_all_time_tokens": "历史总 Token",
+    "hero_completed": "已完成",
+    "hero_open_assigned": "开放且已分配",
+    "hero_7day_actions": "7 天操作数",
+    "hero_spent": "已消耗 {{amount}}",
+    "hero_rate": "频率 {{rate}}",
+    "hero_created": "已创建 {{n}}",
+    "hero_comments": "{{n}} 条评论",
+    "recent_tasks": "最近任务",
+    "no_recent_tasks": "暂无已涉及的任务。",
+    "recent_activity": "最近动态",
+    "no_recent_activity": "暂无用户直接操作记录。",
+    "agent_attribution": "智能体归因",
+    "no_agent_usage": "暂无按任务的 Token 使用记录。",
+    "provider_mix": "提供商分布",
+    "no_provider_usage": "暂无提供商使用归因。",
+    "joined": "加入于 {{date}}"
   },
   "no_skills_match_this_filter": "No skills match this filter.",
   "select_a_skill_to_inspect_its_files": "Select a skill to inspect its files.",
