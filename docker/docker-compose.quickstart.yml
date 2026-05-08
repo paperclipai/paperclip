@@ -1,7 +1,7 @@
 services:
   paperclip:
     build:
-      context: /home/luis/projetos/paperclip-gh-integration
+      context: /home/luis/projetos/paperclip
       dockerfile: Dockerfile
     expose:
       - "3100"
