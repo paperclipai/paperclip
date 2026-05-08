@@ -21,6 +21,15 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   approval_approved: "approval.decided",
   approval_rejected: "approval.decided",
   approval_revision_requested: "approval.decided",
+  // Thread interactions (suggest_tasks / ask_user_questions /
+  // request_confirmation) reuse the approval event lane so plugins can
+  // surface them with the existing approval pipeline. The plugin filters
+  // by `interactionKind` in the payload to render the right UI.
+  issue_thread_interaction_created: "approval.created",
+  issue_thread_interaction_accepted: "approval.decided",
+  issue_thread_interaction_rejected: "approval.decided",
+  issue_thread_interaction_cancelled: "approval.decided",
+  issue_thread_interaction_expired: "approval.decided",
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",
   budget_incident_resolved: "budget.incident.resolved",

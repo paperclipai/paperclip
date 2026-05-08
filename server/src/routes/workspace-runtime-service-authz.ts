@@ -10,6 +10,7 @@ const WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES: string[] = [
   "todo",
   "in_progress",
   "in_review",
+  "ready_for_qa",
   "blocked",
 ];
 
