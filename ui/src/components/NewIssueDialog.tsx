@@ -270,6 +270,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation("issues");
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
