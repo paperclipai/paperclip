@@ -37,6 +37,8 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type OutcomeContract,
+  type OutcomeEvaluation,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -98,6 +100,7 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { evaluateOutcomeContract } from "../services/issue-outcome-enforcement.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -1529,6 +1532,11 @@ export function issueRoutes(
     const currentExecutionWorkspacePromise = issue.executionWorkspaceId
       ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : Promise.resolve(null);
+    const outcomeContractData = (issue.outcomeContract as OutcomeContract | null | undefined) ?? null;
+    const outcomeEvaluationPromise: Promise<OutcomeEvaluation | null> =
+      outcomeContractData && issue.status !== "done"
+        ? evaluateOutcomeContract(db, issue.id, outcomeContractData)
+        : Promise.resolve(null);
     const [
       { project, goal },
       ancestors,
@@ -1541,6 +1549,7 @@ export function issueRoutes(
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
+      outcomeEvaluation,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -1554,6 +1563,7 @@ export function issueRoutes(
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
+        outcomeEvaluationPromise,
       ]);
 
     res.json({
@@ -1627,6 +1637,8 @@ export function issueRoutes(
           }
         : null,
       currentExecutionWorkspace,
+      outcomeContract: outcomeContractData,
+      outcomeEvaluation,
     });
   });
 
@@ -2730,6 +2742,31 @@ export function issueRoutes(
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+
+    // Outcome contract gate: fires after execution policy stages clear, at the "done" door.
+    const effectiveNextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    const outcomeContract = existing.outcomeContract as import("@paperclipai/shared").OutcomeContract | null | undefined;
+    let outcomeOverride = false;
+    if (effectiveNextStatus === "done" && outcomeContract) {
+      const isBoardUser = actor.actorType === "user";
+      const allowOverride = outcomeContract.allowHumanOverride !== false;
+      if (isBoardUser && allowOverride) {
+        if (!commentBody) {
+          res.status(422).json({
+            error: "outcome_override_requires_comment",
+            message: "Provide a non-empty comment explaining why this outcome override is permitted.",
+          });
+          return;
+        }
+        outcomeOverride = true;
+      } else {
+        const evaluation = await evaluateOutcomeContract(db, existing.id, outcomeContract);
+        if (!evaluation.satisfied) {
+          res.status(422).json({ error: "outcome_not_satisfied", missing: evaluation.missing });
+          return;
+        }
       }
     }
 
