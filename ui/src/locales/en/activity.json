@@ -77,7 +77,10 @@
     "invite_created": "created an invite",
     "invite_accepted": "accepted an invite",
     "invite_cancelled": "cancelled an invite",
-    "invite_expired": "invite expired"
+    "invite_expired": "invite expired",
+    "issue_read_marked": "marked as read",
+    "environment_lease_acquired": "acquired environment",
+    "environment_lease_released": "released environment"
   },
   "issue_labels": {
     "issue_created": "created the issue",
@@ -102,7 +105,10 @@
     "heartbeat_cancelled": "cancelled a heartbeat",
     "approval_created": "requested approval",
     "approval_approved": "approved",
-    "approval_rejected": "rejected"
+    "approval_rejected": "rejected",
+    "issue_read_marked": "marked issue as read",
+    "environment_lease_acquired": "acquired an environment",
+    "environment_lease_released": "released an environment"
   },
   "changes": {
     "changed_status_from": "changed status from {{from}} to {{to}} on",

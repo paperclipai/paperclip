@@ -78,7 +78,9 @@
     "invite_created": "створив запрошення",
     "invite_accepted": "прийняв запрошення",
     "invite_cancelled": "скасував запрошення",
-    "invite_expired": "запрошення вийшло"
+    "invite_expired": "запрошення вийшло",
+    "environment_lease_acquired": "отримав середовище",
+    "environment_lease_released": "звільнив середовище"
   },
   "issue_labels": {
     "issue_created": "створив задачу",
@@ -104,7 +106,9 @@
     "heartbeat_cancelled": "скасував моніторинг",
     "approval_created": "запросив погодження",
     "approval_approved": "погодив",
-    "approval_rejected": "відхилив"
+    "approval_rejected": "відхилив",
+    "environment_lease_acquired": "отримав середовище",
+    "environment_lease_released": "звільнив середовище"
   },
   "changes": {
     "changed_status_from": "змінив статус з {{from}} на {{to}} у",

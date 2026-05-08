@@ -78,7 +78,9 @@
     "invite_created": "hat eine Einladung erstellt",
     "invite_accepted": "hat eine Einladung angenommen",
     "invite_cancelled": "hat eine Einladung storniert",
-    "invite_expired": "Einladung abgelaufen"
+    "invite_expired": "Einladung abgelaufen",
+    "environment_lease_acquired": "Umgebung übernommen",
+    "environment_lease_released": "Umgebung freigegeben"
   },
   "issue_labels": {
     "issue_created": "hat die Aufgabe erstellt",
@@ -104,7 +106,9 @@
     "heartbeat_cancelled": "hat einen Heartbeat storniert",
     "approval_created": "hat Genehmigung angefordert",
     "approval_approved": "genehmigt",
-    "approval_rejected": "abgelehnt"
+    "approval_rejected": "abgelehnt",
+    "environment_lease_acquired": "hat eine Umgebung übernommen",
+    "environment_lease_released": "hat eine Umgebung freigegeben"
   },
   "changes": {
     "changed_status_from": "hat Status geändert von {{from}} zu {{to}} auf",

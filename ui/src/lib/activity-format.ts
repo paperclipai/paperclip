@@ -72,6 +72,9 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.updated": "updated company",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
+  "environment.lease_acquired": "acquired environment",
+  "environment.lease_released": "released environment",
+  "issue.read_marked": "marked as read",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -109,6 +112,9 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "issue.read_marked": "marked issue as read",
+  "environment.lease_acquired": "acquired an environment",
+  "environment.lease_released": "released an environment",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {

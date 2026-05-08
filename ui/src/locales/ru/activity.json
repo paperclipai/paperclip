@@ -77,7 +77,10 @@
     "invite_created": "создал приглашение",
     "invite_accepted": "принял приглашение",
     "invite_cancelled": "отменил приглашение",
-    "invite_expired": "приглашение истекло"
+    "invite_expired": "приглашение истекло",
+    "issue_read_marked": "пометил как прочитанное",
+    "environment_lease_acquired": "получил окружение",
+    "environment_lease_released": "освободил окружение"
   },
   "issue_labels": {
     "issue_created": "создал задачу",
@@ -102,7 +105,10 @@
     "heartbeat_cancelled": "отменил heartbeat",
     "approval_created": "запросил согласование",
     "approval_approved": "согласовал",
-    "approval_rejected": "отклонил"
+    "approval_rejected": "отклонил",
+    "issue_read_marked": "пометил задачу как прочитанную",
+    "environment_lease_acquired": "получил окружение",
+    "environment_lease_released": "освободил окружение"
   },
   "changes": {
     "changed_status_from": "изменил статус с {{from}} на {{to}} в",

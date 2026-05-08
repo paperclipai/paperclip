@@ -78,7 +78,9 @@
     "invite_created": "已创建邀请",
     "invite_accepted": "已接受邀请",
     "invite_cancelled": "已取消邀请",
-    "invite_expired": "邀请已过期"
+    "invite_expired": "邀请已过期",
+    "environment_lease_acquired": "获取了环境",
+    "environment_lease_released": "释放了环境"
   },
   "issue_labels": {
     "issue_created": "创建了任务",
@@ -104,7 +106,9 @@
     "heartbeat_cancelled": "取消了心跳检测",
     "approval_created": "请求了审批",
     "approval_approved": "已批准",
-    "approval_rejected": "已拒绝"
+    "approval_rejected": "已拒绝",
+    "environment_lease_acquired": "获取了环境",
+    "environment_lease_released": "释放了环境"
   },
   "changes": {
     "changed_status_from": "将…的状态从 {{from}} 改为 {{to}}",

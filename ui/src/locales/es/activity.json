@@ -77,7 +77,10 @@
     "invite_created": "creó una invitación",
     "invite_accepted": "aceptó una invitación",
     "invite_cancelled": "canceló una invitación",
-    "invite_expired": "invitación expirada"
+    "invite_expired": "invitación expirada",
+    "issue_read_marked": "marcó como leído",
+    "environment_lease_acquired": "adquirió entorno",
+    "environment_lease_released": "liberó entorno"
   },
   "issue_labels": {
     "issue_created": "creó la tarea",
@@ -102,7 +105,10 @@
     "heartbeat_cancelled": "canceló un heartbeat",
     "approval_created": "solicitó aprobación",
     "approval_approved": "aprobó",
-    "approval_rejected": "rechazó"
+    "approval_rejected": "rechazó",
+    "issue_read_marked": "marcó la tarea como leída",
+    "environment_lease_acquired": "adquirió un entorno",
+    "environment_lease_released": "liberó un entorno"
   },
   "changes": {
     "changed_status_from": "cambió el estado de {{from}} a {{to}} en",

@@ -77,7 +77,10 @@
     "invite_created": "δημιούργησε πρόσκληση",
     "invite_accepted": "αποδέχτηκε πρόσκληση",
     "invite_cancelled": "ακύρωσε πρόσκληση",
-    "invite_expired": "η πρόσκληση έληξε"
+    "invite_expired": "η πρόσκληση έληξε",
+    "issue_read_marked": "επισήμανε ως αναγνωσμένο",
+    "environment_lease_acquired": "απέκτησε περιβάλλον",
+    "environment_lease_released": "αποδέσμευσε περιβάλλον"
   },
   "issue_labels": {
     "issue_created": "δημιούργησε το ζήτημα",
@@ -102,7 +105,10 @@
     "heartbeat_cancelled": "ακύρωσε heartbeat",
     "approval_created": "ζήτησε έγκριση",
     "approval_approved": "ενέκρινε",
-    "approval_rejected": "απέρριψε"
+    "approval_rejected": "απέρριψε",
+    "issue_read_marked": "επισήμανε το ζήτημα ως αναγνωσμένο",
+    "environment_lease_acquired": "απέκτησε ένα περιβάλλον",
+    "environment_lease_released": "αποδέσμευσε ένα περιβάλλον"
   },
   "changes": {
     "changed_status_from": "άλλαξε κατάσταση από {{from}} σε {{to}} σε",
