@@ -60,6 +60,13 @@ export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
 } from "./command-redaction.js";
+export {
+  detectRuntimeCommandPreflightViolation,
+  RUNTIME_COMMAND_PREFLIGHT_REFUSAL_MESSAGE,
+} from "./runtime-command-preflight.js";
+export type {
+  RuntimeCommandPreflightViolation,
+} from "./runtime-command-preflight.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.

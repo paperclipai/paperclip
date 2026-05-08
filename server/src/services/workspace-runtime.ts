@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
+import { detectRuntimeCommandPreflightViolation } from "@paperclipai/adapter-utils/runtime-command-preflight";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
@@ -478,6 +479,23 @@ async function executeProcess(input: {
   stdoutBytes: number;
   stderrBytes: number;
 }> {
+  const preflightViolation = detectRuntimeCommandPreflightViolation({
+    command: input.command,
+    args: input.args,
+  });
+  if (preflightViolation) {
+    const stderr = `${preflightViolation.safeMessage}\n`;
+    return {
+      stdout: "",
+      stderr,
+      code: 126,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutBytes: 0,
+      stderrBytes: Buffer.byteLength(stderr, "utf8"),
+    };
+  }
+
   const proc = await new Promise<{
     stdout: ProcessOutputAccumulator;
     stderr: ProcessOutputAccumulator;

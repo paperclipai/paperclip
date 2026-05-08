@@ -85,7 +85,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
           strictHostKeyChecking: true,
         },
       },
-      "env",
+      "printf ok",
       {
         cwd: "/tmp/local",
         env: {
@@ -105,6 +105,52 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         },
       }),
     );
+  });
+
+  it("refuses broad environment shell commands before invoking SSH", async () => {
+    const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+      stdout: "PAPERCLIP_SENTINEL_SECRET=should-not-appear",
+      stderr: "",
+    });
+    const onLog = vi.fn(async () => {});
+
+    const result = await runAdapterExecutionTargetShellCommand(
+      "run-refuse-ssh-shell",
+      {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      "env | rg '^PAPERCLIP_'",
+      {
+        cwd: "/tmp/local",
+        env: {
+          PAPERCLIP_SENTINEL_SECRET: "should-not-appear",
+        },
+        onLog,
+      },
+    );
+
+    expect(runSshCommandSpy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      exitCode: 126,
+      timedOut: false,
+      stdout: "",
+    });
+    expect(result.stderr).toContain("Runtime command refused before execution");
+    expect(result.stderr).not.toContain("should-not-appear");
+    expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("heartbeat context"));
+    expect(JSON.stringify(onLog.mock.calls)).not.toContain("should-not-appear");
   });
 
   it("returns a timedOut result when the SSH shell command times out", async () => {
@@ -279,6 +325,73 @@ describe("runAdapterExecutionTargetProcess", () => {
         },
       }),
     );
+  });
+
+  it("refuses broad environment process commands before execution", async () => {
+    const onLog = vi.fn(async () => {});
+
+    const result = await runAdapterExecutionTargetProcess(
+      "run-refuse-process",
+      null,
+      "printenv",
+      [],
+      {
+        cwd: "/tmp/local",
+        env: {
+          PAPERCLIP_SENTINEL_SECRET: "should-not-appear",
+        },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog,
+      },
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 126,
+      timedOut: false,
+      stdout: "",
+    });
+    expect(result.stderr).toContain("Runtime command refused before execution");
+    expect(result.stderr).not.toContain("should-not-appear");
+    expect(JSON.stringify(onLog.mock.calls)).not.toContain("should-not-appear");
+  });
+
+  it("refuses broad environment sandbox commands before provider execution", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "PAPERCLIP_SENTINEL_SECRET=should-not-appear",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    const result = await runAdapterExecutionTargetProcess(
+      "run-refuse-sandbox",
+      {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "test-sandbox",
+        remoteCwd: "/remote/workspace",
+        runner,
+      },
+      "sh",
+      ["-lc", "cat /proc/self/environ"],
+      {
+        cwd: "/tmp/local",
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(runner.execute).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(126);
+    expect(result.stderr).not.toContain("should-not-appear");
   });
 });
 

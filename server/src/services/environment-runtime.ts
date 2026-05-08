@@ -15,6 +15,7 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
+import { detectRuntimeCommandPreflightViolation } from "@paperclipai/adapter-utils/runtime-command-preflight";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
 import {
@@ -160,6 +161,25 @@ export interface EnvironmentRuntimeLeaseRecord {
 }
 
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
+
+function runtimeCommandPreflightExecuteResult(input: {
+  command: string;
+  args?: string[];
+}): PluginEnvironmentExecuteResult | null {
+  const violation = detectRuntimeCommandPreflightViolation(input);
+  if (!violation) return null;
+  return {
+    exitCode: 126,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: `${violation.safeMessage}\n`,
+    metadata: {
+      preflightBlocked: true,
+      preflightCode: violation.code,
+    },
+  };
+}
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
 
 function delay(ms: number): Promise<void> {
@@ -637,6 +657,9 @@ function createSandboxEnvironmentDriver(
     },
 
     async execute(input) {
+      const preflightResult = runtimeCommandPreflightExecuteResult(input);
+      if (preflightResult) return preflightResult;
+
       // Plugin-backed sandbox providers: delegate command execution.
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {
         const pluginId = readString(input.lease.metadata?.pluginId);
@@ -975,6 +998,9 @@ function createPluginEnvironmentDriver(
     },
 
     async execute(input) {
+      const preflightResult = runtimeCommandPreflightExecuteResult(input);
+      if (preflightResult) return preflightResult;
+
       const { plugin, pluginKey, driverKey, driverConfig } = await resolvePluginDriverForRelease({
         environment: input.environment,
         lease: input.lease,
