@@ -93,10 +93,13 @@ export const issues = pgTable(
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
       .on(table.companyId, table.originKind, table.originId, table.originFingerprint)
       .where(
+        // Predicate intentionally excludes executionRunId — siblings must collide
+        // at INSERT time, before the heartbeat dispatcher populates executionRunId.
+        // Otherwise a later UPDATE that admitted both rows into the index would
+        // wedge every subsequent write (including the reaper). See GLA-291.
         sql`${table.originKind} = 'routine_execution'
           and ${table.originId} is not null
           and ${table.hiddenAt} is null
-          and ${table.executionRunId} is not null
           and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
       ),
     activeLivenessRecoveryIncidentIdx: uniqueIndex("issues_active_liveness_recovery_incident_uq")

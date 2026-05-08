@@ -931,6 +931,41 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  // Coalesce fallback for the partial-unique conflict path. After GLA-291 the
+  // partial index gates duplicate routine_execution siblings at INSERT time,
+  // so the conflict can fire BEFORE executionRunId is populated and before any
+  // heartbeat run is queued. findLiveExecutionIssue requires a live heartbeat
+  // join and would miss that row, leaving the dispatcher with nothing to
+  // coalesce into. This finder accepts any open routine_execution sibling
+  // matching the origin tuple — exactly the row that the partial index just
+  // protected.
+  async function findOpenRoutineExecutionSibling(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1221,10 +1256,15 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-            kind: issueOriginKind,
-            id: issueOriginId,
-          });
+          const existingIssue =
+            (await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+              kind: issueOriginKind,
+              id: issueOriginId,
+            })) ??
+            (await findOpenRoutineExecutionSibling(input.routine, txDb, dispatchFingerprint, {
+              kind: issueOriginKind,
+              id: issueOriginId,
+            }));
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {

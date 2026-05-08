@@ -2791,6 +2791,36 @@ export function issueRoutes(
           },
           "issue update rejected with 422",
         );
+      } else if (!(err instanceof HttpError)) {
+        // GLA-291: surface the failing call site + DB constraint context when an
+        // unexpected error escapes svc.update. The bare postgres@3.4.8 stack
+        // hides which route handler triggered the conflict (e.g.
+        // `issues_open_routine_execution_uq` on a routine_execution PATCH).
+        const pgErr = err as { code?: string; constraint?: string; detail?: string; table?: string };
+        logger.error(
+          {
+            issueId: id,
+            companyId: existing.companyId,
+            originKind: existing.originKind,
+            originId: existing.originId,
+            originFingerprint: existing.originFingerprint,
+            executionRunId: existing.executionRunId,
+            statusBefore: existing.status,
+            statusPatch: updateFields.status,
+            assigneePatch: {
+              assigneeAgentId:
+                normalizedAssigneeAgentId === undefined ? "__omitted__" : normalizedAssigneeAgentId,
+              assigneeUserId:
+                req.body.assigneeUserId === undefined ? "__omitted__" : req.body.assigneeUserId,
+            },
+            pgCode: pgErr.code,
+            pgConstraint: pgErr.constraint,
+            pgDetail: pgErr.detail,
+            pgTable: pgErr.table,
+            err,
+          },
+          "issue update unexpected error from svc.update",
+        );
       }
       throw err;
     }

@@ -5,12 +5,61 @@ import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 
 export interface ErrorContext {
-  error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
+  error: {
+    message: string;
+    stack?: string;
+    name?: string;
+    details?: unknown;
+    raw?: unknown;
+    pg?: PostgresErrorFields;
+  };
   method: string;
   url: string;
   reqBody?: unknown;
   reqParams?: unknown;
   reqQuery?: unknown;
+}
+
+interface PostgresErrorFields {
+  code?: string;
+  constraint?: string;
+  table?: string;
+  schema?: string;
+  column?: string;
+  detail?: string;
+  hint?: string;
+  severity?: string;
+  routine?: string;
+  where?: string;
+}
+
+// Surface postgres-js error fields when present. The driver does not put the
+// constraint name or table into err.message or err.stack, so they would be
+// lost without explicit lifting. See GLA-291 for the failure mode this guards
+// against (a 23505 with only postgres@3.4.8 driver frames in the stack).
+function extractPostgresErrorFields(err: unknown): PostgresErrorFields | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as Record<string, unknown>;
+  if (typeof e.code !== "string") return undefined;
+  const out: PostgresErrorFields = { code: e.code };
+  for (const key of [
+    "constraint_name",
+    "table_name",
+    "schema_name",
+    "column_name",
+    "detail",
+    "hint",
+    "severity",
+    "routine",
+    "where",
+  ] as const) {
+    const v = e[key];
+    if (typeof v === "string" && v.length > 0) {
+      const outKey = key.replace(/_name$/, "") as keyof PostgresErrorFields;
+      (out as Record<string, string>)[outKey] = v;
+    }
+  }
+  return out;
 }
 
 function attachErrorContext(
@@ -62,17 +111,18 @@ export function errorHandler(
   }
 
   const rootError = err instanceof Error ? err : new Error(String(err));
+  const pg = extractPostgresErrorFields(err);
   attachErrorContext(
     req,
     res,
     err instanceof Error
-      ? { message: err.message, stack: err.stack, name: err.name }
-      : { message: String(err), raw: err, stack: rootError.stack, name: rootError.name },
+      ? { message: err.message, stack: err.stack, name: err.name, ...(pg ? { pg } : {}) }
+      : { message: String(err), raw: err, stack: rootError.stack, name: rootError.name, ...(pg ? { pg } : {}) },
     rootError,
   );
 
   const tc = getTelemetryClient();
-  if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
+  if (tc) trackErrorHandlerCrash(tc, { errorCode: pg?.code ?? rootError.name });
 
   res.status(500).json({ error: "Internal server error" });
 }
