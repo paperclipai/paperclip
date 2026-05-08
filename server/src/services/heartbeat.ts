@@ -92,6 +92,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { adapterFailureHookService } from "./adapter-failure-hook.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -2287,6 +2288,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const adapterFailureHook = adapterFailureHookService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -7877,6 +7879,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+      await adapterFailureHook.executeHook({
+        runId: run.id,
+        agentId: agent.id,
+        companyId: run.companyId,
+        status,
+        errorCode: runErrorCode,
+        errorMessage: runErrorMessage,
+        errorFamily: adapterResult.errorFamily ?? null,
+      }).catch((hookErr) => {
+        logger.warn({ err: hookErr, runId: run.id }, "adapter-failure-hook: post-run hook failed (non-fatal)");
+      });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -7955,6 +7968,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+      await adapterFailureHook.executeHook({
+        runId: run.id,
+        agentId: agent.id,
+        companyId: run.companyId,
+        status: "failed",
+        errorCode: "adapter_failed",
+        errorMessage: message,
+        errorFamily: null,
+      }).catch((hookErr) => {
+        logger.warn({ err: hookErr, runId: run.id }, "adapter-failure-hook: post-run hook failed (non-fatal)");
+      });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -7998,6 +8022,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await adapterFailureHook.executeHook({
+            runId: run.id,
+            agentId: run.agentId,
+            companyId: run.companyId,
+            status: "failed",
+            errorCode: "adapter_failed",
+            errorMessage: message,
+            errorFamily: null,
+          }).catch(() => undefined);
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
           await releaseEnvironmentLeasesForRun({

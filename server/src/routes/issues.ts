@@ -10,6 +10,7 @@ import {
   acceptIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
+  expireIssueThreadInteractionSchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
@@ -80,6 +81,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { adapterFailureHookService } from "../services/adapter-failure-hook.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -805,6 +807,7 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  const adapterFailureHook = adapterFailureHookService(db);
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -3380,6 +3383,14 @@ export function issueRoutes(
         }
       }
 
+      if (becameTerminal && issue.idempotencyKey?.startsWith("auto-adapter-failure:")) {
+        try {
+          await adapterFailureHook.clearSlotOnIssueClosed(issue.id);
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "adapter-failure-hook: failed to clear openAutoIssueId on issue close");
+        }
+      }
+
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
@@ -3931,6 +3942,92 @@ export function issueRoutes(
         actor,
         source: "issue.interaction.cancel",
       });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/expire",
+    validate(expireIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+
+      const actor = getActorInfo(req);
+
+      if (req.actor.type === "agent") {
+        const current = await issueThreadInteractionService(db).getById(interactionId);
+        if (!current || current.createdByAgentId !== req.actor.agentId) {
+          throw forbidden("Only the creator agent can expire this interaction");
+        }
+      } else {
+        assertBoard(req);
+      }
+
+      const interaction = await issueThreadInteractionService(db).expireInteraction(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_expired",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          outcome: "agent_expired",
+        },
+      });
+
+      if (
+        interaction.status === "expired"
+        && interaction.continuationPolicy === "wake_assignee"
+        && issue.assigneeAgentId
+        && !isClosedIssueStatus(issue.status)
+      ) {
+        void heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          payload: {
+            issueId: issue.id,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            mutation: "interaction",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            wakeReason: "issue_commented",
+            source: "issue.interaction.expire",
+          },
+        }).catch((err) => logger.warn({
+          err,
+          issueId: issue.id,
+          interactionId: interaction.id,
+          agentId: issue.assigneeAgentId,
+        }, "failed to wake assignee on interaction expire"));
+      }
 
       res.json(interaction);
     },

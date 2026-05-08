@@ -575,6 +575,27 @@
       "when": 1778067785040,
       "tag": "0081_optimal_dormammu",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1777900800000,
+      "tag": "0082_agent_failure_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1746000000000,
+      "tag": "0083_auto_close_consecutive_successes",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1746100000000,
+      "tag": "0084_active_adapter_failure_dedup",
+      "breakpoints": true
     }
   ]
 }
