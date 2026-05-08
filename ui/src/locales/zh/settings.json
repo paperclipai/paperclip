@@ -36,6 +36,7 @@
   "instance": {
     "title": "常规",
     "instance_breadcrumb": "实例设置",
+    "loading": "正在加载通用设置...",
     "error_sign_out_failed": "退出登录失败。",
     "error_update_failed": "更新常规设置失败。",
     "error_load_failed": "加载常规设置失败。",

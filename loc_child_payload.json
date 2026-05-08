@@ -1,0 +1,10 @@
+{
+  "title": "Localization: append upstream sync findings to UNTRANSLATED_ENGLISH_TEXT_MAP.md (ZAI-172 batch)",
+  "description": "Append the hardcoded-English findings from [ZAI-173](/ZAI/issues/ZAI-173) to the translation matrix.\n\n## Blocked by\n\n[ZAI-173](/ZAI/issues/ZAI-173) — QA scan must complete and post findings first.\n\n## Steps\n\n1. Read the findings comment posted on [ZAI-173](/ZAI/issues/ZAI-173) by the QA agent.\n2. If QA found \"No new untranslated strings\" — comment that on this issue and close as `done`.\n3. Otherwise, **append** (do not rewrite) to `ui/src/locales/~temp/UNTRANSLATED_ENGLISH_TEXT_MAP.md`:\n   - A new section header for this sync date (2026-05-08)\n   - One row per finding with columns: File | Line | String | Namespaces missing from\n4. Commit the matrix update with message format:\n   `i18n: append upstream sync findings 2026-05-08 (ZAI-172)`\n   No Co-Authored-By trailers per AGENTS.md §5a.\n5. Push to the `vib-1171-2652-2760-3582-localization` branch (i18n-only diff, no DOM changes).\n6. Close this issue as `done` and post a summary comment with row count added.\n\n## Acceptance criteria\n\n- Matrix file `ui/src/locales/~temp/UNTRANSLATED_ENGLISH_TEXT_MAP.md` updated with additive append\n- Commit is i18n-only (no component/DOM changes)\n- No Co-Authored-By trailers in commit",
+  "status": "blocked",
+  "priority": "medium",
+  "assigneeAgentId": "2c35ae09-781d-4a7c-880b-8abd833fd682",
+  "parentId": "5cb7dbbc-ed7a-4647-ba62-2c31c5e464d0",
+  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb",
+  "blockedByIssueIds": ["fdfc960b-d834-41c8-b842-3921dbe00499"]
+}

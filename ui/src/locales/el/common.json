@@ -1,9 +1,9 @@
-﻿{
+{
   "nav": {
     "activity": "Δραστηριότητα",
     "agents": "Πράκτορες",
     "issues": "Ζητήματα",
-    "search": "Αναζήτηση",
+    "search": "GREEK_NAV_SEARCH_TEST",
     "my_issues": "Τα Ζητήματά μου",
     "costs": "Κόστη",
     "goals": "Στόχοι",

@@ -36,6 +36,7 @@
   "instance": {
     "title": "Γενικά",
     "instance_breadcrumb": "Ρυθμίσεις instance",
+    "loading": "Φόρτωση γενικών ρυθμίσεων...",
     "error_sign_out_failed": "Αποτυχία αποσύνδεσης.",
     "error_update_failed": "Αποτυχία ενημέρωσης γενικών ρυθμίσεων.",
     "error_load_failed": "Αποτυχία φόρτωσης γενικών ρυθμίσεων.",

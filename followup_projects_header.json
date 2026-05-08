@@ -1,0 +1,10 @@
+{
+  "title": "i18n: 'PROJECTS' sidebar section header untranslated",
+  "description": "## Source\n\nDiscovered during ZAI-89 visual QA — see [ZAI-115](/ZAI/issues/ZAI-115) inbox-mine-ru.png. Out-of-scope for [ZAI-89](/ZAI/issues/ZAI-89) (which targeted SidebarAgents — the `Agents` heading was translated to `АГЕНТЫ`; the parallel `Projects` heading was missed).\n\n## Symptom\n\nIn the left sidebar under `ru` locale, the section header renders as `PROJECTS` (English, all-caps) while sibling sections (`АГЕНТЫ`, `КОМПАНИЯ`, `РАБОТА`) are correctly translated.\n\n## Reproduction\n\n1. `pnpm -C ui dev`\n2. Open any route under `/SDF/`, switch language to `ru`.\n3. Inspect the sidebar — `PROJECTS` heading is the only English label.\n\n## Suspected root cause\n\n`SidebarProjects.tsx` (or equivalent) — the section heading is likely a literal `\"Projects\"` rendered through the `text-[10px] uppercase tracking-widest` className that produces the all-caps English word. Mirror the fix from `SidebarAgents.tsx` (key `sidebar.agents_heading` — add `sidebar.projects_heading`).\n\n## Acceptance\n\n- `sidebar.projects_heading` key in `en`/`ru` `common.json`.\n- Sidebar projects section header renders in Russian under `ru`.\n- i18n-only diff per `scripts/check-i18n-only-diff.sh`.\n- No DOM/feature changes.",
+  "priority": "medium",
+  "status": "todo",
+  "assigneeAgentId": "2c35ae09-781d-4a7c-880b-8abd833fd682",
+  "parentId": "7f74f30e-8995-4023-bca8-fe2531f4e12f",
+  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb",
+  "billingCode": "ZAI-88"
+}

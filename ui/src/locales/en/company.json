@@ -439,7 +439,18 @@
     "remove_member_group_humans": "Humans",
     "remove_member_group_agents": "Agents",
     "remove_member_cancel": "Cancel",
-    "remove_member_removing": "Removing..."
+    "remove_member_removing": "Removing...",
+    "remove_btn": "Remove",
+    "removal_reason": {
+      "cannot_remove_self": "You cannot remove yourself.",
+      "non_human_member": "Only human members can be removed.",
+      "board_access_required": "Board access is required to remove members.",
+      "instance_admin_protected": "Instance admins cannot be removed from company access.",
+      "owner_protected": "Board owners cannot be removed from company access.",
+      "admin_protected": "Company admins cannot be removed from company access.",
+      "actor_not_member": "Only active company members can remove users.",
+      "target_role_too_high": "You can only remove users below your company role."
+    }
   },
   "companies": {
     "breadcrumb": "Companies",
@@ -816,6 +827,24 @@
     "no_agent_usage": "No issue-linked token usage yet.",
     "provider_mix": "Provider mix",
     "no_provider_usage": "No provider usage attributed yet.",
-    "joined": "joined {{date}}"
+    "joined": "joined {{date}}",
+    "role": {
+      "owner": "owner",
+      "admin": "admin",
+      "member": "member",
+      "operator": "operator",
+      "viewer": "viewer"
+    },
+    "status": {
+      "active": "active",
+      "invited": "invited",
+      "suspended": "suspended",
+      "pending": "pending"
+    },
+    "window": {
+      "last7": "Last 7 days",
+      "last30": "Last 30 days",
+      "all": "All time"
+    }
   }
 }

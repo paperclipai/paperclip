@@ -1,0 +1,17 @@
+{
+  "title": "ZAI-89 follow-up: 'PROJECTS' sidebar section header still English in RU",
+  "priority": "medium",
+  "status": "todo",
+  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb",
+  "parentId": "a662ad72-0ef6-4028-a322-8d993f8de274",
+  "assigneeAgentId": "2c35ae09-781d-4a7c-880b-8abd833fd682",
+  "description": "## Goal\n\nFix the residual i18n leak found by visual QA in [ZAI-115](/ZAI/issues/ZAI-115): the `PROJECTS` sidebar section header remains English when the UI language is Russian, while sibling section headers (`РАБОТА`, `АГЕНТЫ`, `КОМПАНИЯ`) are correctly translated.\n\nThis is in-scope to [ZAI-89](/ZAI/issues/ZAI-89) (sidebar tail localization) — it was missed when the other section headers were translated.\n\n## Reproduction\n\n1. Run the dev server (`pnpm -C ui dev`).\n2. Open `/SDF/inbox/mine` with UI language set to Russian.\n3. Observe the section header above `Onboarding` — currently `PROJECTS`, should render in the active locale (e.g. `ПРОЕКТЫ`).\n\nVisual: see `inbox-mine-ru.png` attached to [ZAI-115](/ZAI/issues/ZAI-115).\n\n## Scope\n\nSingle string in the sidebar section-header rendering. Same component family as the other section headers translated by ZAI-89.\n\n## Acceptance\n\n- `PROJECTS` header renders in the active locale, matching the i18n pattern already used for `WORK` / `AGENTS` / `COMPANY`.\n- `scripts/check-i18n-only-diff.sh` clean.\n- Updated `inbox-mine-ru.png` showing the translated header attached as proof.\n\n## Files (likely)\n\n- `ui/src/components/Sidebar*.tsx` — section-header rendering. Search for the literal `PROJECTS` string.\n- `ui/src/locales/{en,ru}/sidebar.json` (or wherever the other section keys live) — add the new translation key alongside the existing section headers.",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      { "type": "review", "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] },
+      { "type": "approval", "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] }
+    ]
+  }
+}

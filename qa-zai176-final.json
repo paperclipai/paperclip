@@ -1,0 +1,130 @@
+{
+  "de": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "Browser Tester Agent": 28,
+          "CEO": 76,
+          "System": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "el": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "Σύστημα": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "es": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "Sistema": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "fr": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "System": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "pt": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "Sistema": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "ru": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "Система": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "uk": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "Система": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  },
+  "zh": {
+    "boardLeaks": [
+      {
+        "route": "activity",
+        "actorDist": {
+          "CEO": 76,
+          "Browser Tester Agent": 28,
+          "系统": 2,
+          "Localization Agent": 33,
+          "CTO": 36,
+          "Board": 25
+        }
+      }
+    ],
+    "searchLeaks": []
+  }
+}

@@ -1,0 +1,1 @@
+{"body":"Delegated to Localization Agent as ZAI-166: localize Search/Goals/Projects pages across all 8 locales. Acceptance: no hardcoded English on the listed routes; verified in-browser at the SDF company. Work scoped to the fork repo per the ZAI-163/164 leak post-mortem."}

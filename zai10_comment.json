@@ -1,0 +1,3 @@
+{
+  "body": "## Не закрываем — мёрдж не делаем\n\nПо комментарию совета на [ZAI-138](/ZAI/issues/ZAI-138): локализация не завершена. Английские строки всё ещё видны в UI при `язык=русский` (Dashboard, Issue Properties, Inbox Filters, Activity Feed, Date/Time formatters).\n\nЗаказ на 3-й раунд локализации создан как [ZAI-139](/ZAI/issues/ZAI-139) (CTO, high). Ветка `vib-1171-2652-2760-3582-localization` остаётся неслитой; ZAI-10 — в `in_review` до завершения ZAI-139 и повторной QA-проверки на 8 локалях. Конкретный список строк и acceptance criteria — в описании ZAI-139."
+}

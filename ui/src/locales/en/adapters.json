@@ -70,7 +70,11 @@
     "reinstalled_body": "\"{{type}}\" updated from npm.{{versionSuffix}}",
     "company_fallback": "Company",
     "tooltip_local_path": "Installed from local path",
-    "tooltip_npm": "Installed from npm"
+    "tooltip_npm": "Installed from npm",
+    "reinstall_btn": "Reinstall",
+    "reinstalling_btn": "Reinstalling...",
+    "remove_btn": "Remove",
+    "removing_btn": "Removing..."
   },
   "claude_local": {
     "instructions_file": "Agent instructions file",

@@ -69,7 +69,11 @@
     "reinstalled_body": "«{{type}}» ενημερώθηκε από npm.{{versionSuffix}}",
     "company_fallback": "Εταιρία",
     "tooltip_local_path": "Εγκαταστάθηκε από τοπική διαδρομή",
-    "tooltip_npm": "Εγκαταστάθηκε από npm"
+    "tooltip_npm": "Εγκαταστάθηκε από npm",
+    "reinstall_btn": "Επανεγκατάσταση",
+    "reinstalling_btn": "Γίνεται επανεγκατάσταση...",
+    "remove_btn": "Αφαίρεση",
+    "removing_btn": "Αφαίρεση σε εξέλιξη..."
   },
   "claude_local": {
     "instructions_file": "Αρχείο οδηγιών πράκτορα",

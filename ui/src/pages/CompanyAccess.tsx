@@ -367,14 +367,14 @@ export function CompanyAccess() {
                         variant="outline"
                         onClick={() => setRemovingMemberId(member.id)}
                         disabled={!canArchive}
-                        title={removalReason ?? undefined}
+                        title={removalReason ? t(`access.removal_reason.${removalReason}`, { defaultValue: removalReason }) : undefined}
                       >
                         <Trash2 className="mr-1 h-3.5 w-3.5" />
-                        Remove
+                        {t("access.remove_btn")}
                       </Button>
                     </div>
                     {removalReason ? (
-                      <div className="text-xs text-muted-foreground">{removalReason}</div>
+                      <div className="text-xs text-muted-foreground">{t(`access.removal_reason.${removalReason}`, { defaultValue: removalReason })}</div>
                     ) : null}
                   </div>
                 </div>

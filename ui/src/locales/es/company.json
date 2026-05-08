@@ -413,7 +413,18 @@
     "remove_member_group_humans": "Personas",
     "remove_member_group_agents": "Agentes",
     "remove_member_cancel": "Cancelar",
-    "remove_member_removing": "Eliminando..."
+    "remove_member_removing": "Eliminando...",
+    "remove_btn": "Eliminar",
+    "removal_reason": {
+      "cannot_remove_self": "No puede eliminarse a usted mismo.",
+      "non_human_member": "Solo se pueden eliminar miembros humanos.",
+      "board_access_required": "Se requiere acceso de junta para eliminar miembros.",
+      "instance_admin_protected": "Los administradores de instancia no pueden eliminarse del acceso a la empresa.",
+      "owner_protected": "Los propietarios de la junta no pueden eliminarse del acceso a la empresa.",
+      "admin_protected": "Los administradores de la empresa no pueden eliminarse del acceso a la empresa.",
+      "actor_not_member": "Solo los miembros activos de la empresa pueden eliminar usuarios.",
+      "target_role_too_high": "Solo puede eliminar usuarios con un rol de empresa inferior al suyo."
+    }
   },
   "companies": {
     "breadcrumb": "Empresas",
@@ -751,6 +762,26 @@
       "status_hard_stop": "Parada completa",
       "status_healthy": "Saludable",
       "error_invalid_amount": "Introduce una cantidad en dólares válida y no negativa."
+    }
+  },
+  "user_profile": {
+    "role": {
+      "owner": "propietario",
+      "admin": "administrador",
+      "member": "miembro",
+      "operator": "operador",
+      "viewer": "espectador"
+    },
+    "status": {
+      "active": "activo",
+      "invited": "invitado",
+      "suspended": "suspendido",
+      "pending": "pendiente"
+    },
+    "window": {
+      "last7": "Últimos 7 días",
+      "last30": "Últimos 30 días",
+      "all": "Todo el tiempo"
     }
   }
 }

@@ -70,7 +70,11 @@
     "reinstalled_body": "«{{type}}» обновлён из npm.{{versionSuffix}}",
     "company_fallback": "Компания",
     "tooltip_local_path": "Установлен из локального пути",
-    "tooltip_npm": "Установлен из npm"
+    "tooltip_npm": "Установлен из npm",
+    "reinstall_btn": "Переустановить",
+    "reinstalling_btn": "Переустановка...",
+    "remove_btn": "Удалить",
+    "removing_btn": "Удаление..."
   },
   "claude_local": {
     "instructions_file": "Файл инструкций агента",

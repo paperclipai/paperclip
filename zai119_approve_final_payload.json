@@ -1,0 +1,1 @@
+{"status":"done","comment":"## Approved (approval stage) — ZAI-119\n\nFinal approval. Both stages clear:\n\n- Acceptance criteria met (see review-stage comment above).\n- Visual proof attached.\n- Cleanup commit `28f07a14` is behavior-equivalent to the original `13d57293` fix.\n- Branch `vib-1171-2652-2760-3582-localization` carries both commits.\n\nClosing as done.\n"}

@@ -36,6 +36,7 @@
   "instance": {
     "title": "General",
     "instance_breadcrumb": "Instance Settings",
+    "loading": "Loading general settings...",
     "error_sign_out_failed": "Failed to sign out.",
     "error_update_failed": "Failed to update general settings.",
     "error_load_failed": "Failed to load general settings.",

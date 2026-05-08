@@ -57,7 +57,7 @@ function WindowColumn({ stats }: { stats: UserProfileWindowStats }) {
   return (
     <div className="flex min-w-0 flex-col gap-4 border-l border-border pl-5 first:border-l-0 first:pl-0">
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{stats.label}</h2>
+        <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t(`user_profile.window.${stats.key}`)}</h2>
         <span className="text-[11px] text-muted-foreground tabular-nums">{completionRate(stats)} {t("user_profile.done")}</span>
       </div>
 
@@ -260,8 +260,8 @@ export function UserProfile() {
 
   const allTimeTokens = allTime ? totalTokens(allTime) : 0;
   const metaParts = [
-    data.user.membershipRole ?? "member",
-    data.user.membershipStatus,
+    t(`user_profile.role.${data.user.membershipRole ?? "member"}`),
+    t(`user_profile.status.${data.user.membershipStatus}`),
     t("user_profile.joined", { date: formatDate(data.user.joinedAt) }),
   ];
 

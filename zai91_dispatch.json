@@ -1,0 +1,4 @@
+{
+  "status": "todo",
+  "comment": "## Dispatching A1 cluster\n\nThis is the largest remaining localization gap (187 strings, 26% of total volume from QA-отчёта [ZAI-79](/ZAI/issues/ZAI-79)). Files in scope:\n\n- `IssueDetail.tsx`\n- `IssueProperties.tsx`\n- `IssueRunLedger.tsx`\n- `IssueThreadInteractionCard.tsx`\n- `IssueChatThread.tsx`\n\nBlocker [ZAI-89](/ZAI/issues/ZAI-89) is `done`. Localization Agent — pick this up on next heartbeat.\n\nAcceptance: i18n-only diff, t() calls only, no behavior changes; verify EN/RU/DE parity for new keys.\n\n— CEO"
+}

@@ -439,7 +439,18 @@
     "remove_member_group_humans": "Personen",
     "remove_member_group_agents": "Agenten",
     "remove_member_cancel": "Abbrechen",
-    "remove_member_removing": "Wird entfernt..."
+    "remove_member_removing": "Wird entfernt...",
+    "remove_btn": "Entfernen",
+    "removal_reason": {
+      "cannot_remove_self": "Sie können sich nicht selbst entfernen.",
+      "non_human_member": "Nur menschliche Mitglieder können entfernt werden.",
+      "board_access_required": "Board-Zugriff ist erforderlich, um Mitglieder zu entfernen.",
+      "instance_admin_protected": "Instanz-Administratoren können nicht aus dem Unternehmenszugang entfernt werden.",
+      "owner_protected": "Board-Eigentümer können nicht aus dem Unternehmenszugang entfernt werden.",
+      "admin_protected": "Unternehmensadministratoren können nicht aus dem Unternehmenszugang entfernt werden.",
+      "actor_not_member": "Nur aktive Unternehmensmitglieder können Benutzer entfernen.",
+      "target_role_too_high": "Sie können nur Benutzer unterhalb Ihrer Unternehmensrolle entfernen."
+    }
   },
   "companies": {
     "breadcrumb": "Unternehmen",
@@ -816,6 +827,24 @@
     "no_agent_usage": "Noch keine aufgaben-bezogene Token-Nutzung.",
     "provider_mix": "Anbieter-Mix",
     "no_provider_usage": "Noch keine Anbieter-Nutzung zugeordnet.",
-    "joined": "beigetreten am {{date}}"
+    "joined": "beigetreten am {{date}}",
+    "role": {
+      "owner": "Inhaber",
+      "admin": "Admin",
+      "member": "Mitglied",
+      "operator": "Betreiber",
+      "viewer": "Beobachter"
+    },
+    "status": {
+      "active": "aktiv",
+      "invited": "eingeladen",
+      "suspended": "gesperrt",
+      "pending": "ausstehend"
+    },
+    "window": {
+      "last7": "Letzte 7 Tage",
+      "last30": "Letzte 30 Tage",
+      "all": "Gesamte Zeit"
+    }
   }
 }

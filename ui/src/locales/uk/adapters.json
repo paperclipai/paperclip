@@ -69,7 +69,11 @@
     "reinstalled_body": "«{{type}}» оновлено з npm.{{versionSuffix}}",
     "company_fallback": "Компанія",
     "tooltip_local_path": "Встановлено з локального шляху",
-    "tooltip_npm": "Встановлено з npm"
+    "tooltip_npm": "Встановлено з npm",
+    "reinstall_btn": "Перевстановити",
+    "reinstalling_btn": "Перевстановлення...",
+    "remove_btn": "Видалити",
+    "removing_btn": "Видалення..."
   },
   "claude_local": {
     "instructions_file": "Файл інструкцій агента",

@@ -1,0 +1,68 @@
+{
+  "route": "/instance/settings/access",
+  "timestamp": "2026-05-08T01:38:46.687Z",
+  "localesTested": [
+    "en",
+    "ru",
+    "de",
+    "es",
+    "pt",
+    "el",
+    "uk",
+    "zh"
+  ],
+  "totalLeaks": 0,
+  "passing": 8,
+  "failing": 0,
+  "verdict": "PASS",
+  "results": {
+    "en": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true
+    },
+    "ru": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    },
+    "de": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    },
+    "es": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    },
+    "pt": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    },
+    "el": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    },
+    "uk": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    },
+    "zh": {
+      "leakCount": 0,
+      "textCount": 51,
+      "pass": true,
+      "leaks": []
+    }
+  },
+  "leaks": []
+}

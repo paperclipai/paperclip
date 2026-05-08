@@ -36,6 +36,7 @@
   "instance": {
     "title": "Geral",
     "instance_breadcrumb": "Configurações da Instância",
+    "loading": "Carregando configurações gerais...",
     "error_sign_out_failed": "Falha ao sair.",
     "error_update_failed": "Falha ao atualizar as configurações gerais.",
     "error_load_failed": "Falha ao carregar as configurações gerais.",

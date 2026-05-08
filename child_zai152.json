@@ -1,0 +1,128 @@
+{
+  "id": "88c226a3-2a5f-4ae2-82a8-dd5f57f0a6c2",
+  "companyId": "13e61789-5895-451b-95a8-a7457a310c9e",
+  "projectId": null,
+  "projectWorkspaceId": null,
+  "goalId": "9db92b35-5e38-432a-ad36-f4cc199f644d",
+  "parentId": null,
+  "title": "i18n: localize Instance Settings \u2192 General page (ZAI-152)",
+  "description": "## Scope\nThe Instance Settings \u2192 General page (http://127.0.0.1:3105/instance/settings/general) is rendered in Russian locale but most strings are still English. The user specifically asked for ru localization (Eng \u2192 Rus). Per project_localization_round3 memory, please cover all 8 locales (en, ru, de, es, pt, uk, zh, el) so we do not regress the round-3 8-locale sweep.\n\n## File to wire through i18n\n-  \u2014 currently has hardcoded English strings. Needs a new namespace (e.g., ) wired through  / .\n\n## Strings observed un-translated on the page (non-exhaustive)\nSection headers and labels still in English:\n-  (h1), , , , , , , , \n- , , \n- , , \n- , , , , , , , , , , , , , \n- , , , , , , , , \n- , , \n\nConfirmed by grep: ui/src/pages/InstanceGeneralSettings.tsx lines 90, 107, 115, 126, 130, 140, 159, 177, 186, 215, 245, 279, 305, 310, 355, 357, 367.\n\n## Acceptance criteria\n1. All visible strings on  resolved through  (no hardcoded English literals in JSX).\n2. Translation files updated for all 8 locales: en, ru, de, es, pt, uk, zh, el.\n3. Manual sweep in Russian locale shows zero English leaks on the page (header, sub-pages? no \u2014 scope is only this page).\n4. No regressions on the page in English locale.\n5. Per board memory: \"WARN with leakage = FAIL\" \u2014 open the sweep report file and confirm zero leaks before marking done.\n\n## Notes\n- Parent ZAI-152 is the user-facing report (in Russian). User screenshot only shows /instance/settings/general; do not balloon scope to other pages.\n- Use the same translation conventions established in ZAI-138/ZAI-139 round 3.\n- When done, leave a summary comment on the child and reassign to CEO for review.\n\n## Verification (required before marking done)\n- Run a Playwright/QA sweep in  locale across the page.\n- Attach the sweep report.\n\nThis issue was opened by CEO on behalf of board issue ZAI-152.",
+  "status": "backlog",
+  "priority": "medium",
+  "assigneeAgentId": "2c35ae09-781d-4a7c-880b-8abd833fd682",
+  "assigneeUserId": null,
+  "checkoutRunId": null,
+  "executionRunId": null,
+  "executionAgentNameKey": null,
+  "executionLockedAt": null,
+  "createdByAgentId": "db69a3af-4281-40f9-9612-00d9c9c80315",
+  "createdByUserId": null,
+  "issueNumber": 157,
+  "identifier": "ZAI-157",
+  "originKind": "manual",
+  "originId": null,
+  "originRunId": null,
+  "originFingerprint": "default",
+  "requestDepth": 0,
+  "billingCode": null,
+  "assigneeAdapterOverrides": null,
+  "executionPolicy": {
+    "mode": "normal",
+    "stages": [
+      {
+        "id": "e3b495f5-642b-4de6-878a-fa80e2533b06",
+        "type": "review",
+        "participants": [
+          {
+            "id": "f4215ab8-6c23-47ef-8356-f9b43402a8e6",
+            "type": "agent",
+            "userId": null,
+            "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315"
+          }
+        ],
+        "approvalsNeeded": 1
+      },
+      {
+        "id": "6959ca93-01d2-4db8-89a4-9a6d6119ebdf",
+        "type": "approval",
+        "participants": [
+          {
+            "id": "7f165d3f-2a55-4423-a739-75cffcb4b2ad",
+            "type": "agent",
+            "userId": null,
+            "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315"
+          }
+        ],
+        "approvalsNeeded": 1
+      }
+    ],
+    "commentRequired": true
+  },
+  "executionState": null,
+  "executionWorkspaceId": null,
+  "executionWorkspacePreference": null,
+  "executionWorkspaceSettings": null,
+  "startedAt": null,
+  "completedAt": null,
+  "cancelledAt": null,
+  "hiddenAt": null,
+  "createdAt": "2026-05-08T01:09:59.881Z",
+  "updatedAt": "2026-05-08T01:09:59.881Z",
+  "labels": [],
+  "labelIds": [],
+  "relatedWork": {
+    "outbound": [
+      {
+        "issue": {
+          "id": "f3b5d7c5-8e9a-46f6-a30c-4e947f7d8eb1",
+          "identifier": "ZAI-152",
+          "title": "\u043d\u0435\u0434\u043e\u043f\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043d\u043e",
+          "status": "in_progress",
+          "priority": "medium",
+          "assigneeAgentId": "db69a3af-4281-40f9-9612-00d9c9c80315",
+          "assigneeUserId": null
+        },
+        "mentionCount": 2,
+        "sources": [
+          {
+            "kind": "title",
+            "sourceRecordId": null,
+            "label": "title",
+            "matchedText": "ZAI-152"
+          },
+          {
+            "kind": "description",
+            "sourceRecordId": null,
+            "label": "description",
+            "matchedText": "ZAI-152"
+          }
+        ]
+      },
+      {
+        "issue": {
+          "id": "4107b7a4-67de-4bc0-aa63-8f4e9dddc1a2",
+          "identifier": "ZAI-138",
+          "title": "\u043e\u0442\u0432\u0435\u0442 \u0432 http://127.0.0.1:3100/ZAI/issues/ZAI-10",
+          "status": "in_progress",
+          "priority": "medium",
+          "assigneeAgentId": "db69a3af-4281-40f9-9612-00d9c9c80315",
+          "assigneeUserId": null
+        },
+        "mentionCount": 1,
+        "sources": [
+          {
+            "kind": "description",
+            "sourceRecordId": null,
+            "label": "description",
+            "matchedText": "ZAI-138"
+          }
+        ]
+      }
+    ],
+    "inbound": []
+  },
+  "referencedIssueIdentifiers": [
+    "ZAI-152",
+    "ZAI-138"
+  ]
+}

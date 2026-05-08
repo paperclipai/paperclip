@@ -36,6 +36,7 @@
   "instance": {
     "title": "Allgemein",
     "instance_breadcrumb": "Instanzeinstellungen",
+    "loading": "Allgemeine Einstellungen werden geladen...",
     "error_sign_out_failed": "Abmelden fehlgeschlagen.",
     "error_update_failed": "Allgemeine Einstellungen konnten nicht aktualisiert werden.",
     "error_load_failed": "Allgemeine Einstellungen konnten nicht geladen werden.",

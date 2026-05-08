@@ -70,7 +70,11 @@
     "reinstalled_body": "\"{{type}}\" von npm aktualisiert.{{versionSuffix}}",
     "company_fallback": "Unternehmen",
     "tooltip_local_path": "Vom lokalen Pfad installiert",
-    "tooltip_npm": "Von npm installiert"
+    "tooltip_npm": "Von npm installiert",
+    "reinstall_btn": "Neu installieren",
+    "reinstalling_btn": "Wird neu installiert...",
+    "remove_btn": "Entfernen",
+    "removing_btn": "Wird entfernt..."
   },
   "claude_local": {
     "instructions_file": "Agenten-Anweisungsdatei",

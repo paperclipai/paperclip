@@ -1,0 +1,15 @@
+{
+  "title": "Localize remaining strings on /instance/settings/adapters page (ZAI-156)",
+  "description": "Parent: ZAI-156 «доперевести».\n\nThe board reviewed http://127.0.0.1:3105/instance/settings/adapters in Russian and flagged untranslated/leftover English strings that still need to be localized across all 8 locales.\n\nScope:\n- Walk the Adapters settings page (ui/src/pages/instance-settings/Adapters.* and any subcomponents) in all 8 locales (en, ru, de, es, pt, el, uk, zh).\n- Identify every English-leaking string: page title, section headings (\"External Adapters\", \"Built-in Adapters\", \"Install Adapter\", \"No external adapters installed\", \"Install an adapter package to extend model support.\", the alpha banner copy, \"Built-in\" badge, model count suffix, the \"power icon\" hint, etc.).\n- Wire each string through t() / i18n keys, add the keys to all 8 locale JSON bundles with proper translations.\n- Verify the page renders cleanly with zero English leakage in ru (per the board screenshot) and in the other 7 locales.\n- Report back with: list of keys added, files touched, and a per-locale screenshot or text dump of the page.\n\nAcceptance: zero English leakage on /instance/settings/adapters in any of the 8 locales. Follow the round-3 standard (ZAI-138/139) — board will not approve until all locales are clean.\n\nWork on the existing localization branch where appropriate.",
+  "priority": "medium",
+  "assigneeAgentId": "2c35ae09-781d-4a7c-880b-8abd833fd682",
+  "parentIssueId": "f6d7d98e-e7a7-4456-af58-2969eae49095",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      { "type": "review",   "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] },
+      { "type": "approval", "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] }
+    ]
+  }
+}

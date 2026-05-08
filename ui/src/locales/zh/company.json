@@ -413,7 +413,18 @@
     "remove_member_group_humans": "人员",
     "remove_member_group_agents": "代理",
     "remove_member_cancel": "取消",
-    "remove_member_removing": "正在移除..."
+    "remove_member_removing": "正在移除...",
+    "remove_btn": "移除",
+    "removal_reason": {
+      "cannot_remove_self": "您不能移除自己。",
+      "non_human_member": "只能移除人类成员。",
+      "board_access_required": "移除成员需要董事会权限。",
+      "instance_admin_protected": "实例管理员不能从公司访问中移除。",
+      "owner_protected": "董事会所有者不能从公司访问中移除。",
+      "admin_protected": "公司管理员不能从公司访问中移除。",
+      "actor_not_member": "只有活跃的公司成员才能移除用户。",
+      "target_role_too_high": "您只能移除公司角色低于您的用户。"
+    }
   },
   "companies": {
     "breadcrumb": "公司",
@@ -750,6 +761,26 @@
       "status_hard_stop": "强制停止",
       "status_healthy": "正常",
       "error_invalid_amount": "请输入有效的非负美元金额。"
+    }
+  },
+  "user_profile": {
+    "role": {
+      "owner": "所有者",
+      "admin": "管理员",
+      "member": "成员",
+      "operator": "操作员",
+      "viewer": "查看者"
+    },
+    "status": {
+      "active": "活跃",
+      "invited": "已邀请",
+      "suspended": "已暂停",
+      "pending": "待处理"
+    },
+    "window": {
+      "last7": "最近7天",
+      "last30": "最近30天",
+      "all": "所有时间"
     }
   }
 }

@@ -1,0 +1,384 @@
+[1/40] Processing: dashboard (/ZAI/dashboard)
+  → en: 234 elements, leaks: 29
+  → ru: 233 elements, leaks: 13
+  → de: 232 elements, leaks: 13
+  → el: 232 elements, leaks: 17
+  → es: 231 elements, leaks: 17
+  → pt: 231 elements, leaks: 17
+  → uk: 231 elements, leaks: 17
+  → zh: 228 elements, leaks: 17
+[2/40] Processing: dashboard-live (/ZAI/dashboard/live)
+  → en: 220 elements, leaks: 27
+  → ru: 222 elements, leaks: 13
+  → de: 222 elements, leaks: 13
+  → el: 224 elements, leaks: 17
+  → es: 221 elements, leaks: 16
+  → pt: 219 elements, leaks: 16
+  → uk: 218 elements, leaks: 16
+  → zh: 220 elements, leaks: 16
+[3/40] Processing: inbox-mine (/ZAI/inbox/mine)
+  → en: 220 elements, leaks: 22
+  → ru: 220 elements, leaks: 4
+  → de: 220 elements, leaks: 4
+  → el: 220 elements, leaks: 8
+  → es: 220 elements, leaks: 8
+  → pt: 220 elements, leaks: 8
+  → uk: 220 elements, leaks: 8
+  → zh: 219 elements, leaks: 8
+[4/40] Processing: inbox-recent (/ZAI/inbox/recent)
+  → en: 217 elements, leaks: 20
+  → ru: 217 elements, leaks: 3
+  → de: 217 elements, leaks: 3
+  → el: 217 elements, leaks: 7
+  → es: 217 elements, leaks: 7
+  → pt: 217 elements, leaks: 7
+  → uk: 217 elements, leaks: 7
+  → zh: 216 elements, leaks: 7
+[5/40] Processing: inbox-unread (/ZAI/inbox/unread)
+  → en: 137 elements, leaks: 16
+  → ru: 137 elements, leaks: 0
+  → de: 137 elements, leaks: 0
+  → el: 137 elements, leaks: 4
+  → es: 137 elements, leaks: 4
+  → pt: 137 elements, leaks: 4
+  → uk: 137 elements, leaks: 4
+  → zh: 136 elements, leaks: 4
+[6/40] Processing: inbox-all (/ZAI/inbox/all)
+  → en: 219 elements, leaks: 21
+  → ru: 219 elements, leaks: 3
+  → de: 219 elements, leaks: 3
+  → el: 219 elements, leaks: 7
+  → es: 219 elements, leaks: 7
+  → pt: 219 elements, leaks: 7
+  → uk: 219 elements, leaks: 7
+  → zh: 218 elements, leaks: 7
+[7/40] Processing: inbox-requests (/ZAI/inbox/requests)
+  → en: 53 elements, leaks: 15
+  → ru: 53 elements, leaks: 0
+  → de: 53 elements, leaks: 0
+  → el: 57 elements, leaks: 8
+  → es: 53 elements, leaks: 5
+  → pt: 53 elements, leaks: 5
+  → uk: 53 elements, leaks: 5
+  → zh: 53 elements, leaks: 5
+[8/40] Processing: issues-list (/ZAI/issues)
+  → en: 292 elements, leaks: 15
+  → ru: 449 elements, leaks: 0
+  → de: 292 elements, leaks: 0
+  → el: 448 elements, leaks: 4
+  → es: 293 elements, leaks: 4
+  → pt: 293 elements, leaks: 4
+  → uk: 293 elements, leaks: 4
+  → zh: 291 elements, leaks: 4
+[9/40] Processing: search (/ZAI/search)
+  → en: 65 elements, leaks: 17
+  → ru: 65 elements, leaks: 7
+  → de: 65 elements, leaks: 7
+  → el: 65 elements, leaks: 11
+  → es: 65 elements, leaks: 11
+  → pt: 65 elements, leaks: 11
+  → uk: 69 elements, leaks: 15
+  → zh: 65 elements, leaks: 11
+[10/40] Processing: routines (/ZAI/routines)
+  → en: 77 elements, leaks: 16
+  → ru: 77 elements, leaks: 4
+  → de: 77 elements, leaks: 4
+  → el: 77 elements, leaks: 8
+  → es: 77 elements, leaks: 8
+  → pt: 77 elements, leaks: 8
+  → uk: 77 elements, leaks: 8
+  → zh: 76 elements, leaks: 8
+[11/40] Processing: goals (/ZAI/goals)
+  → en: 48 elements, leaks: 11
+  → ru: 48 elements, leaks: 1
+  → de: 48 elements, leaks: 2
+  → el: 48 elements, leaks: 6
+  → es: 48 elements, leaks: 6
+  → pt: 48 elements, leaks: 6
+  → uk: 48 elements, leaks: 6
+  → zh: 48 elements, leaks: 6
+[12/40] Processing: goal-detail (/ZAI/goals/9db92b35-5e38-432a-ad36-f4cc199f644d)
+  → en: 67 elements, leaks: 19
+  → ru: 67 elements, leaks: 6
+  → de: 67 elements, leaks: 8
+  → el: 67 elements, leaks: 12
+  → es: 67 elements, leaks: 12
+  → pt: 67 elements, leaks: 12
+  → uk: 67 elements, leaks: 12
+  → zh: 69 elements, leaks: 11
+[13/40] Processing: projects (/ZAI/projects)
+  → en: 50 elements, leaks: 12
+  → ru: 50 elements, leaks: 1
+  → de: 50 elements, leaks: 1
+  → el: 50 elements, leaks: 6
+  → es: 50 elements, leaks: 6
+  → pt: 50 elements, leaks: 6
+  → uk: 50 elements, leaks: 6
+  → zh: 50 elements, leaks: 6
+[14/40] Processing: project-detail (/ZAI/projects/localization)
+  → en: 277 elements, leaks: 18
+  → ru: 277 elements, leaks: 5
+  → de: 282 elements, leaks: 6
+  → el: 278 elements, leaks: 7
+  → es: 279 elements, leaks: 7
+  → pt: 279 elements, leaks: 7
+  → uk: 279 elements, leaks: 7
+  → zh: 278 elements, leaks: 7
+[15/40] Processing: project-issues (/ZAI/projects/localization/issues)
+  → en: 279 elements, leaks: 18
+  → ru: 279 elements, leaks: 3
+  → de: 279 elements, leaks: 5
+  → el: 279 elements, leaks: 7
+  → es: 279 elements, leaks: 7
+  → pt: 349 elements, leaks: 8
+  → uk: 349 elements, leaks: 8
+  → zh: 278 elements, leaks: 7
+[16/40] Processing: project-workspaces (/ZAI/projects/localization/workspaces)
+  → en: 279 elements, leaks: 18
+  → ru: 279 elements, leaks: 3
+  → de: 282 elements, leaks: 6
+  → el: 278 elements, leaks: 7
+  → es: 278 elements, leaks: 7
+  → pt: 278 elements, leaks: 7
+  → uk: 278 elements, leaks: 7
+  → zh: 277 elements, leaks: 7
+[17/40] Processing: project-config (/ZAI/projects/localization/configuration)
+  → en: 163 elements, leaks: 31
+  → ru: 163 elements, leaks: 10
+  → de: 163 elements, leaks: 19
+  → el: 163 elements, leaks: 24
+  → es: 163 elements, leaks: 24
+  → pt: 163 elements, leaks: 24
+  → uk: 163 elements, leaks: 24
+  → zh: 163 elements, leaks: 24
+[18/40] Processing: project-localization (/ZAI/projects/localization)
+  → en: 278 elements, leaks: 18
+  → ru: 278 elements, leaks: 3
+  → de: 348 elements, leaks: 3
+  → el: 278 elements, leaks: 7
+  → es: 279 elements, leaks: 7
+  → pt: 348 elements, leaks: 7
+  → uk: 278 elements, leaks: 7
+  → zh: 277 elements, leaks: 7
+[19/40] Processing: agents-detail (/ZAI/agents/ceo)
+  → en: 189 elements, leaks: 18
+  → ru: 189 elements, leaks: 7
+  → de: 189 elements, leaks: 9
+  → el: 189 elements, leaks: 12
+  → es: 189 elements, leaks: 12
+  → pt: 189 elements, leaks: 12
+  → uk: 189 elements, leaks: 12
+  → zh: 179 elements, leaks: 11
+[20/40] Processing: agents-all (/ZAI/agents/all)
+  → en: 75 elements, leaks: 16
+  → ru: 75 elements, leaks: 3
+  → de: 75 elements, leaks: 3
+  → el: 75 elements, leaks: 7
+  → es: 75 elements, leaks: 8
+  → pt: 75 elements, leaks: 7
+  → uk: 75 elements, leaks: 7
+  → zh: 75 elements, leaks: 7
+[21/40] Processing: agents-active (/ZAI/agents/active)
+  → en: 74 elements, leaks: 16
+  → ru: 74 elements, leaks: 3
+  → de: 74 elements, leaks: 3
+  → el: 74 elements, leaks: 7
+  → es: 74 elements, leaks: 8
+  → pt: 74 elements, leaks: 7
+  → uk: 74 elements, leaks: 7
+  → zh: 74 elements, leaks: 7
+[22/40] Processing: approvals-pending (/ZAI/approvals/pending)
+  → en: 47 elements, leaks: 13
+  → ru: 47 elements, leaks: 0
+  → de: 47 elements, leaks: 0
+  → el: 47 elements, leaks: 4
+  → es: 47 elements, leaks: 4
+  → pt: 47 elements, leaks: 4
+  → uk: 47 elements, leaks: 4
+  → zh: 47 elements, leaks: 4
+[23/40] Processing: approvals-all (/ZAI/approvals/all)
+  → en: 101 elements, leaks: 17
+  → ru: 101 elements, leaks: 3
+  → de: 101 elements, leaks: 3
+  → el: 101 elements, leaks: 7
+  → es: 101 elements, leaks: 7
+  → pt: 101 elements, leaks: 7
+  → uk: 101 elements, leaks: 7
+  → zh: 101 elements, leaks: 7
+[24/40] Processing: org (/ZAI/org)
+  → en: 61 elements, leaks: 12
+  → ru: 61 elements, leaks: 2
+  → de: 61 elements, leaks: 2
+  → el: 61 elements, leaks: 6
+  → es: 61 elements, leaks: 6
+  → pt: 61 elements, leaks: 6
+  → uk: 61 elements, leaks: 6
+  → zh: 61 elements, leaks: 6
+[25/40] Processing: costs (/ZAI/costs)
+  → en: 115 elements, leaks: 17
+  → ru: 115 elements, leaks: 7
+  → de: 115 elements, leaks: 7
+  → el: 115 elements, leaks: 11
+  → es: 115 elements, leaks: 11
+  → pt: 115 elements, leaks: 11
+  → uk: 115 elements, leaks: 11
+  → zh: 115 elements, leaks: 11
+[26/40] Processing: activity (/ZAI/activity)
+  → en: 224 elements, leaks: 14
+  → ru: 227 elements, leaks: 4
+  → de: 228 elements, leaks: 4
+  → el: 229 elements, leaks: 8
+  → es: 231 elements, leaks: 8
+  → pt: 230 elements, leaks: 8
+  → uk: 231 elements, leaks: 8
+  → zh: 232 elements, leaks: 8
+[27/40] Processing: company-settings (/ZAI/company/settings)
+  → en: 41 elements, leaks: 12
+  → ru: 45 elements, leaks: 3
+  → de: 41 elements, leaks: 0
+  → el: 41 elements, leaks: 0
+  → es: 41 elements, leaks: 0
+  → pt: 41 elements, leaks: 0
+  → uk: 41 elements, leaks: 0
+  → zh: 41 elements, leaks: 0
+[28/40] Processing: company-access (/ZAI/company/settings/access)
+  → en: 36 elements, leaks: 14
+  → ru: 36 elements, leaks: 3
+  → de: 36 elements, leaks: 3
+  → el: 36 elements, leaks: 3
+  → es: 36 elements, leaks: 3
+  → pt: 36 elements, leaks: 3
+  → uk: 36 elements, leaks: 3
+  → zh: 36 elements, leaks: 3
+[29/40] Processing: company-environments (/ZAI/company/settings/environments)
+  → en: 20 elements, leaks: 6
+  → ru: 20 elements, leaks: 0
+  → de: 20 elements, leaks: 0
+  → el: 20 elements, leaks: 0
+  → es: 20 elements, leaks: 0
+  → pt: 20 elements, leaks: 0
+  → uk: 20 elements, leaks: 0
+  → zh: 20 elements, leaks: 0
+[30/40] Processing: workspaces (/ZAI/workspaces)
+  → en: 288 elements, leaks: 15
+  → ru: 445 elements, leaks: 0
+  → de: 288 elements, leaks: 0
+  → el: 288 elements, leaks: 4
+  → es: 288 elements, leaks: 2
+  → pt: 288 elements, leaks: 4
+  → uk: 445 elements, leaks: 3
+  → zh: 287 elements, leaks: 4
+[31/40] Processing: design-guide (/ZAI/design-guide)
+  → en: 498 elements, leaks: 52
+  → ru: 498 elements, leaks: 42
+  → de: 498 elements, leaks: 42
+  → el: 498 elements, leaks: 46
+  → es: 498 elements, leaks: 46
+  → pt: 498 elements, leaks: 46
+  → uk: 498 elements, leaks: 46
+  → zh: 498 elements, leaks: 46
+[32/40] Processing: instance-general (/instance/settings/general)
+  → en: 67 elements, leaks: 15
+  → ru: 67 elements, leaks: 11
+  → de: 67 elements, leaks: 11
+  → el: 67 elements, leaks: 11
+  → es: 67 elements, leaks: 11
+  → pt: 67 elements, leaks: 11
+  → uk: 67 elements, leaks: 11
+  → zh: 67 elements, leaks: 11
+[33/40] Processing: instance-profile (/instance/settings/profile)
+  → en: 32 elements, leaks: 12
+  → ru: 32 elements, leaks: 0
+  → de: 32 elements, leaks: 0
+  → el: 32 elements, leaks: 1
+  → es: 32 elements, leaks: 0
+  → pt: 32 elements, leaks: 1
+  → uk: 32 elements, leaks: 1
+  → zh: 32 elements, leaks: 1
+[34/40] Processing: instance-access (/instance/settings/access)
+  → en: 51 elements, leaks: 15
+  → ru: 51 elements, leaks: 11
+  → de: 51 elements, leaks: 11
+  → el: 51 elements, leaks: 11
+  → es: 51 elements, leaks: 11
+  → pt: 51 elements, leaks: 11
+  → uk: 51 elements, leaks: 11
+  → zh: 51 elements, leaks: 11
+[35/40] Processing: instance-experimental (/instance/settings/experimental)
+  → en: 40 elements, leaks: 8
+  → ru: 40 elements, leaks: 4
+  → de: 40 elements, leaks: 4
+  → el: 40 elements, leaks: 4
+  → es: 40 elements, leaks: 4
+  → pt: 40 elements, leaks: 4
+  → uk: 40 elements, leaks: 4
+  → zh: 40 elements, leaks: 4
+[36/40] Processing: instance-adapters (/instance/settings/adapters)
+  → en: 54 elements, leaks: 9
+  → ru: 54 elements, leaks: 5
+  → de: 54 elements, leaks: 5
+  → el: 54 elements, leaks: 5
+  → es: 54 elements, leaks: 5
+  → pt: 54 elements, leaks: 5
+  → uk: 54 elements, leaks: 5
+  → zh: 54 elements, leaks: 5
+[37/40] Processing: user-board (/ZAI/u/board)
+  → en: 179 elements, leaks: 18
+  → ru: 178 elements, leaks: 3
+  → de: 178 elements, leaks: 3
+  → el: 178 elements, leaks: 12
+  → es: 178 elements, leaks: 12
+  → pt: 178 elements, leaks: 12
+  → uk: 178 elements, leaks: 12
+  → zh: 178 elements, leaks: 12
+[38/40] Processing: onboarding (/onboarding)
+  → en: 16 elements, leaks: 10
+  → ru: 16 elements, leaks: 2
+  → de: 16 elements, leaks: 2
+  → el: 16 elements, leaks: 4
+  → es: 16 elements, leaks: 4
+  → pt: 16 elements, leaks: 4
+  → uk: 16 elements, leaks: 4
+  → zh: 16 elements, leaks: 4
+[39/40] Processing: issue-detail (/ZAI/issues/ZAI-79)
+  → en: 3317 elements, leaks: 94
+  → ru: 3316 elements, leaks: 39
+  → de: 3317 elements, leaks: 40
+  → el: 3317 elements, leaks: 42
+  → es: 3317 elements, leaks: 42
+  → pt: 3317 elements, leaks: 42
+  → uk: 3316 elements, leaks: 42
+  → zh: 3315 elements, leaks: 39
+[40/40] Processing: project-onboarding (/ZAI/projects/onboarding)
+  → en: 69 elements, leaks: 21
+  → ru: 69 elements, leaks: 8
+  → de: 69 elements, leaks: 6
+  → el: 69 elements, leaks: 10
+  → es: 69 elements, leaks: 10
+  → pt: 69 elements, leaks: 10
+  → uk: 69 elements, leaks: 10
+  → zh: 68 elements, leaks: 10
+
+=== SUMMARY ===
+Routes processed: 40/40
+Total DOM leaks found: 3154
+Locales tested: en, ru, de, el, es, pt, uk, zh
+Findings written to: C:\Users\vibecoder_blogger\PycharmProjects\paperclip_fork_Enterprise\qa-dom-leaks.json
+Screenshots saved to: C:\Users\vibecoder_blogger\PycharmProjects\paperclip_fork_Enterprise\qa-screenshots-2026-05-06/
+
+Top offender routes:
+  380 leaks — issue-detail (/ZAI/issues/ZAI-79) [en:94 ru:39 de:40 el:42 es:42 pt:42 uk:42 zh:39]
+  366 leaks — design-guide (/ZAI/design-guide) [en:52 ru:42 de:42 el:46 es:46 pt:46 uk:46 zh:46]
+  180 leaks — project-config (/ZAI/projects/localization/configuration) [en:31 ru:10 de:19 el:24 es:24 pt:24 uk:24 zh:24]
+  140 leaks — dashboard (/ZAI/dashboard) [en:29 ru:13 de:13 el:17 es:17 pt:17 uk:17 zh:17]
+  134 leaks — dashboard-live (/ZAI/dashboard/live) [en:27 ru:13 de:13 el:17 es:16 pt:16 uk:16 zh:16]
+  93 leaks — agents-detail (/ZAI/agents/ceo) [en:18 ru:7 de:9 el:12 es:12 pt:12 uk:12 zh:11]
+  92 leaks — goal-detail (/ZAI/goals/9db92b35-5e38-432a-ad36-f4cc199f644d) [en:19 ru:6 de:8 el:12 es:12 pt:12 uk:12 zh:11]
+  92 leaks — instance-general (/instance/settings/general) [en:15 ru:11 de:11 el:11 es:11 pt:11 uk:11 zh:11]
+  92 leaks — instance-access (/instance/settings/access) [en:15 ru:11 de:11 el:11 es:11 pt:11 uk:11 zh:11]
+  90 leaks — search (/ZAI/search) [en:17 ru:7 de:7 el:11 es:11 pt:11 uk:15 zh:11]
+  86 leaks — costs (/ZAI/costs) [en:17 ru:7 de:7 el:11 es:11 pt:11 uk:11 zh:11]
+  85 leaks — project-onboarding (/ZAI/projects/onboarding) [en:21 ru:8 de:6 el:10 es:10 pt:10 uk:10 zh:10]
+  84 leaks — user-board (/ZAI/u/board) [en:18 ru:3 de:3 el:12 es:12 pt:12 uk:12 zh:12]
+  70 leaks — inbox-mine (/ZAI/inbox/mine) [en:22 ru:4 de:4 el:8 es:8 pt:8 uk:8 zh:8]
+  64 leaks — routines (/ZAI/routines) [en:16 ru:4 de:4 el:8 es:8 pt:8 uk:8 zh:8]

@@ -1,0 +1,714 @@
+{
+  "timestamp": "2026-05-06T20:56:38.764Z",
+  "routesProcessed": 39,
+  "totalRoutes": 39,
+  "totalLeaks": 1371,
+  "localesTested": [
+    "ru",
+    "de"
+  ],
+  "routeSummaries": [
+    {
+      "route": "/ZAI/dashboard",
+      "name": "dashboard",
+      "enTextCount": 215,
+      "locales": {
+        "ru": {
+          "textCount": 215,
+          "leakCount": 29,
+          "screenshot": "dashboard_ru.png"
+        },
+        "de": {
+          "textCount": 215,
+          "leakCount": 29,
+          "screenshot": "dashboard_de.png"
+        }
+      },
+      "screenshotEn": "dashboard_en.png"
+    },
+    {
+      "route": "/ZAI/dashboard/live",
+      "name": "dashboard-live",
+      "enTextCount": 243,
+      "locales": {
+        "ru": {
+          "textCount": 260,
+          "leakCount": 31,
+          "screenshot": "dashboard-live_ru.png"
+        },
+        "de": {
+          "textCount": 224,
+          "leakCount": 30,
+          "screenshot": "dashboard-live_de.png"
+        }
+      },
+      "screenshotEn": "dashboard-live_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/mine",
+      "name": "inbox-mine",
+      "enTextCount": 63,
+      "locales": {
+        "ru": {
+          "textCount": 63,
+          "leakCount": 17,
+          "screenshot": "inbox-mine_ru.png"
+        },
+        "de": {
+          "textCount": 47,
+          "leakCount": 14,
+          "screenshot": "inbox-mine_de.png"
+        }
+      },
+      "screenshotEn": "inbox-mine_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/recent",
+      "name": "inbox-recent",
+      "enTextCount": 37,
+      "locales": {
+        "ru": {
+          "textCount": 36,
+          "leakCount": 10,
+          "screenshot": "inbox-recent_ru.png"
+        },
+        "de": {
+          "textCount": 39,
+          "leakCount": 10,
+          "screenshot": "inbox-recent_de.png"
+        }
+      },
+      "screenshotEn": "inbox-recent_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/unread",
+      "name": "inbox-unread",
+      "enTextCount": 47,
+      "locales": {
+        "ru": {
+          "textCount": 88,
+          "leakCount": 16,
+          "screenshot": "inbox-unread_ru.png"
+        },
+        "de": {
+          "textCount": 47,
+          "leakCount": 14,
+          "screenshot": "inbox-unread_de.png"
+        }
+      },
+      "screenshotEn": "inbox-unread_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/all",
+      "name": "inbox-all",
+      "enTextCount": 41,
+      "locales": {
+        "ru": {
+          "textCount": 155,
+          "leakCount": 19,
+          "screenshot": "inbox-all_ru.png"
+        },
+        "de": {
+          "textCount": 155,
+          "leakCount": 19,
+          "screenshot": "inbox-all_de.png"
+        }
+      },
+      "screenshotEn": "inbox-all_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/requests",
+      "name": "inbox-requests",
+      "enTextCount": 34,
+      "locales": {
+        "ru": {
+          "textCount": 47,
+          "leakCount": 15,
+          "screenshot": "inbox-requests_ru.png"
+        },
+        "de": {
+          "textCount": 42,
+          "leakCount": 12,
+          "screenshot": "inbox-requests_de.png"
+        }
+      },
+      "screenshotEn": "inbox-requests_en.png"
+    },
+    {
+      "route": "/ZAI/issues",
+      "name": "issues-list",
+      "enTextCount": 285,
+      "locales": {
+        "ru": {
+          "textCount": 285,
+          "leakCount": 16,
+          "screenshot": "issues-list_ru.png"
+        },
+        "de": {
+          "textCount": 285,
+          "leakCount": 16,
+          "screenshot": "issues-list_de.png"
+        }
+      },
+      "screenshotEn": "issues-list_en.png"
+    },
+    {
+      "route": "/ZAI/search",
+      "name": "search",
+      "enTextCount": 45,
+      "locales": {
+        "ru": {
+          "textCount": 44,
+          "leakCount": 13,
+          "screenshot": "search_ru.png"
+        },
+        "de": {
+          "textCount": 45,
+          "leakCount": 13,
+          "screenshot": "search_de.png"
+        }
+      },
+      "screenshotEn": "search_en.png"
+    },
+    {
+      "route": "/ZAI/routines",
+      "name": "routines",
+      "enTextCount": 38,
+      "locales": {
+        "ru": {
+          "textCount": 66,
+          "leakCount": 17,
+          "screenshot": "routines_ru.png"
+        },
+        "de": {
+          "textCount": 66,
+          "leakCount": 17,
+          "screenshot": "routines_de.png"
+        }
+      },
+      "screenshotEn": "routines_en.png"
+    },
+    {
+      "route": "/ZAI/goals",
+      "name": "goals",
+      "enTextCount": 43,
+      "locales": {
+        "ru": {
+          "textCount": 43,
+          "leakCount": 11,
+          "screenshot": "goals_ru.png"
+        },
+        "de": {
+          "textCount": 43,
+          "leakCount": 11,
+          "screenshot": "goals_de.png"
+        }
+      },
+      "screenshotEn": "goals_en.png"
+    },
+    {
+      "route": "/ZAI/goals/9db92b35-5e38-432a-ad36-f4cc199f644d",
+      "name": "goal-detail",
+      "enTextCount": 62,
+      "locales": {
+        "ru": {
+          "textCount": 62,
+          "leakCount": 19,
+          "screenshot": "goal-detail_ru.png"
+        },
+        "de": {
+          "textCount": 62,
+          "leakCount": 19,
+          "screenshot": "goal-detail_de.png"
+        }
+      },
+      "screenshotEn": "goal-detail_en.png"
+    },
+    {
+      "route": "/ZAI/projects",
+      "name": "projects",
+      "enTextCount": 45,
+      "locales": {
+        "ru": {
+          "textCount": 45,
+          "leakCount": 12,
+          "screenshot": "projects_ru.png"
+        },
+        "de": {
+          "textCount": 45,
+          "leakCount": 12,
+          "screenshot": "projects_de.png"
+        }
+      },
+      "screenshotEn": "projects_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization",
+      "name": "project-detail",
+      "enTextCount": 57,
+      "locales": {
+        "ru": {
+          "textCount": 57,
+          "leakCount": 18,
+          "screenshot": "project-detail_ru.png"
+        },
+        "de": {
+          "textCount": 258,
+          "leakCount": 19,
+          "screenshot": "project-detail_de.png"
+        }
+      },
+      "screenshotEn": "project-detail_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization/issues",
+      "name": "project-issues",
+      "enTextCount": 258,
+      "locales": {
+        "ru": {
+          "textCount": 258,
+          "leakCount": 19,
+          "screenshot": "project-issues_ru.png"
+        },
+        "de": {
+          "textCount": 258,
+          "leakCount": 19,
+          "screenshot": "project-issues_de.png"
+        }
+      },
+      "screenshotEn": "project-issues_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization/workspaces",
+      "name": "project-workspaces",
+      "enTextCount": 258,
+      "locales": {
+        "ru": {
+          "textCount": 57,
+          "leakCount": 18,
+          "screenshot": "project-workspaces_ru.png"
+        },
+        "de": {
+          "textCount": 259,
+          "leakCount": 19,
+          "screenshot": "project-workspaces_de.png"
+        }
+      },
+      "screenshotEn": "project-workspaces_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization/configuration",
+      "name": "project-config",
+      "enTextCount": 155,
+      "locales": {
+        "ru": {
+          "textCount": 155,
+          "leakCount": 28,
+          "screenshot": "project-config_ru.png"
+        },
+        "de": {
+          "textCount": 155,
+          "leakCount": 28,
+          "screenshot": "project-config_de.png"
+        }
+      },
+      "screenshotEn": "project-config_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization",
+      "name": "project-localization",
+      "enTextCount": 258,
+      "locales": {
+        "ru": {
+          "textCount": 258,
+          "leakCount": 19,
+          "screenshot": "project-localization_ru.png"
+        },
+        "de": {
+          "textCount": 258,
+          "leakCount": 19,
+          "screenshot": "project-localization_de.png"
+        }
+      },
+      "screenshotEn": "project-localization_en.png"
+    },
+    {
+      "route": "/ZAI/agents/ceo",
+      "name": "agents-detail",
+      "enTextCount": 72,
+      "locales": {
+        "ru": {
+          "textCount": 186,
+          "leakCount": 15,
+          "screenshot": "agents-detail_ru.png"
+        },
+        "de": {
+          "textCount": 186,
+          "leakCount": 15,
+          "screenshot": "agents-detail_de.png"
+        }
+      },
+      "screenshotEn": "agents-detail_en.png"
+    },
+    {
+      "route": "/ZAI/agents/all",
+      "name": "agents-all",
+      "enTextCount": 67,
+      "locales": {
+        "ru": {
+          "textCount": 67,
+          "leakCount": 16,
+          "screenshot": "agents-all_ru.png"
+        },
+        "de": {
+          "textCount": 67,
+          "leakCount": 16,
+          "screenshot": "agents-all_de.png"
+        }
+      },
+      "screenshotEn": "agents-all_en.png"
+    },
+    {
+      "route": "/ZAI/agents/active",
+      "name": "agents-active",
+      "enTextCount": 62,
+      "locales": {
+        "ru": {
+          "textCount": 62,
+          "leakCount": 16,
+          "screenshot": "agents-active_ru.png"
+        },
+        "de": {
+          "textCount": 62,
+          "leakCount": 16,
+          "screenshot": "agents-active_de.png"
+        }
+      },
+      "screenshotEn": "agents-active_en.png"
+    },
+    {
+      "route": "/ZAI/approvals/pending",
+      "name": "approvals-pending",
+      "enTextCount": 42,
+      "locales": {
+        "ru": {
+          "textCount": 42,
+          "leakCount": 13,
+          "screenshot": "approvals-pending_ru.png"
+        },
+        "de": {
+          "textCount": 42,
+          "leakCount": 13,
+          "screenshot": "approvals-pending_de.png"
+        }
+      },
+      "screenshotEn": "approvals-pending_en.png"
+    },
+    {
+      "route": "/ZAI/approvals/all",
+      "name": "approvals-all",
+      "enTextCount": 77,
+      "locales": {
+        "ru": {
+          "textCount": 77,
+          "leakCount": 17,
+          "screenshot": "approvals-all_ru.png"
+        },
+        "de": {
+          "textCount": 77,
+          "leakCount": 17,
+          "screenshot": "approvals-all_de.png"
+        }
+      },
+      "screenshotEn": "approvals-all_en.png"
+    },
+    {
+      "route": "/ZAI/org",
+      "name": "org",
+      "enTextCount": 56,
+      "locales": {
+        "ru": {
+          "textCount": 56,
+          "leakCount": 12,
+          "screenshot": "org_ru.png"
+        },
+        "de": {
+          "textCount": 56,
+          "leakCount": 12,
+          "screenshot": "org_de.png"
+        }
+      },
+      "screenshotEn": "org_en.png"
+    },
+    {
+      "route": "/ZAI/costs",
+      "name": "costs",
+      "enTextCount": 111,
+      "locales": {
+        "ru": {
+          "textCount": 111,
+          "leakCount": 17,
+          "screenshot": "costs_ru.png"
+        },
+        "de": {
+          "textCount": 111,
+          "leakCount": 17,
+          "screenshot": "costs_de.png"
+        }
+      },
+      "screenshotEn": "costs_en.png"
+    },
+    {
+      "route": "/ZAI/activity",
+      "name": "activity",
+      "enTextCount": 243,
+      "locales": {
+        "ru": {
+          "textCount": 241,
+          "leakCount": 14,
+          "screenshot": "activity_ru.png"
+        },
+        "de": {
+          "textCount": 241,
+          "leakCount": 14,
+          "screenshot": "activity_de.png"
+        }
+      },
+      "screenshotEn": "activity_en.png"
+    },
+    {
+      "route": "/ZAI/company/settings",
+      "name": "company-settings",
+      "enTextCount": 0,
+      "locales": {
+        "ru": {
+          "textCount": 0,
+          "leakCount": 0,
+          "screenshot": "company-settings_ru.png"
+        },
+        "de": {
+          "textCount": 0,
+          "leakCount": 0,
+          "screenshot": "company-settings_de.png"
+        }
+      },
+      "screenshotEn": "company-settings_en.png"
+    },
+    {
+      "route": "/ZAI/company/settings/access",
+      "name": "company-access",
+      "enTextCount": 35,
+      "locales": {
+        "ru": {
+          "textCount": 35,
+          "leakCount": 13,
+          "screenshot": "company-access_ru.png"
+        },
+        "de": {
+          "textCount": 35,
+          "leakCount": 13,
+          "screenshot": "company-access_de.png"
+        }
+      },
+      "screenshotEn": "company-access_en.png"
+    },
+    {
+      "route": "/ZAI/company/settings/environments",
+      "name": "company-environments",
+      "enTextCount": 19,
+      "locales": {
+        "ru": {
+          "textCount": 19,
+          "leakCount": 7,
+          "screenshot": "company-environments_ru.png"
+        },
+        "de": {
+          "textCount": 19,
+          "leakCount": 7,
+          "screenshot": "company-environments_de.png"
+        }
+      },
+      "screenshotEn": "company-environments_en.png"
+    },
+    {
+      "route": "/ZAI/workspaces",
+      "name": "workspaces",
+      "enTextCount": 282,
+      "locales": {
+        "ru": {
+          "textCount": 282,
+          "leakCount": 15,
+          "screenshot": "workspaces_ru.png"
+        },
+        "de": {
+          "textCount": 282,
+          "leakCount": 15,
+          "screenshot": "workspaces_de.png"
+        }
+      },
+      "screenshotEn": "workspaces_en.png"
+    },
+    {
+      "route": "/ZAI/design-guide",
+      "name": "design-guide",
+      "enTextCount": 493,
+      "locales": {
+        "ru": {
+          "textCount": 493,
+          "leakCount": 52,
+          "screenshot": "design-guide_ru.png"
+        },
+        "de": {
+          "textCount": 493,
+          "leakCount": 52,
+          "screenshot": "design-guide_de.png"
+        }
+      },
+      "screenshotEn": "design-guide_en.png"
+    },
+    {
+      "route": "/instance/settings/general",
+      "name": "instance-general",
+      "enTextCount": 66,
+      "locales": {
+        "ru": {
+          "textCount": 66,
+          "leakCount": 15,
+          "screenshot": "instance-general_ru.png"
+        },
+        "de": {
+          "textCount": 66,
+          "leakCount": 15,
+          "screenshot": "instance-general_de.png"
+        }
+      },
+      "screenshotEn": "instance-general_en.png"
+    },
+    {
+      "route": "/instance/settings/profile",
+      "name": "instance-profile",
+      "enTextCount": 31,
+      "locales": {
+        "ru": {
+          "textCount": 31,
+          "leakCount": 12,
+          "screenshot": "instance-profile_ru.png"
+        },
+        "de": {
+          "textCount": 31,
+          "leakCount": 12,
+          "screenshot": "instance-profile_de.png"
+        }
+      },
+      "screenshotEn": "instance-profile_en.png"
+    },
+    {
+      "route": "/instance/settings/access",
+      "name": "instance-access",
+      "enTextCount": 50,
+      "locales": {
+        "ru": {
+          "textCount": 50,
+          "leakCount": 15,
+          "screenshot": "instance-access_ru.png"
+        },
+        "de": {
+          "textCount": 50,
+          "leakCount": 15,
+          "screenshot": "instance-access_de.png"
+        }
+      },
+      "screenshotEn": "instance-access_en.png"
+    },
+    {
+      "route": "/instance/settings/experimental",
+      "name": "instance-experimental",
+      "enTextCount": 39,
+      "locales": {
+        "ru": {
+          "textCount": 39,
+          "leakCount": 8,
+          "screenshot": "instance-experimental_ru.png"
+        },
+        "de": {
+          "textCount": 39,
+          "leakCount": 8,
+          "screenshot": "instance-experimental_de.png"
+        }
+      },
+      "screenshotEn": "instance-experimental_en.png"
+    },
+    {
+      "route": "/instance/settings/adapters",
+      "name": "instance-adapters",
+      "enTextCount": 53,
+      "locales": {
+        "ru": {
+          "textCount": 53,
+          "leakCount": 9,
+          "screenshot": "instance-adapters_ru.png"
+        },
+        "de": {
+          "textCount": 53,
+          "leakCount": 9,
+          "screenshot": "instance-adapters_de.png"
+        }
+      },
+      "screenshotEn": "instance-adapters_en.png"
+    },
+    {
+      "route": "/onboarding",
+      "name": "onboarding",
+      "enTextCount": 16,
+      "locales": {
+        "ru": {
+          "textCount": 16,
+          "leakCount": 10,
+          "screenshot": "onboarding_ru.png"
+        },
+        "de": {
+          "textCount": 16,
+          "leakCount": 10,
+          "screenshot": "onboarding_de.png"
+        }
+      },
+      "screenshotEn": "onboarding_en.png"
+    },
+    {
+      "route": "/ZAI/issues/ZAI-79",
+      "name": "issue-detail",
+      "enTextCount": 2877,
+      "locales": {
+        "ru": {
+          "textCount": 2877,
+          "leakCount": 67,
+          "screenshot": "issue-detail_ru.png"
+        },
+        "de": {
+          "textCount": 2847,
+          "leakCount": 63,
+          "screenshot": "issue-detail_de.png"
+        }
+      },
+      "screenshotEn": "issue-detail_en.png"
+    },
+    {
+      "route": "/ZAI/projects/onboarding",
+      "name": "project-onboarding",
+      "enTextCount": 64,
+      "locales": {
+        "ru": {
+          "textCount": 64,
+          "leakCount": 21,
+          "screenshot": "project-onboarding_ru.png"
+        },
+        "de": {
+          "textCount": 64,
+          "leakCount": 21,
+          "screenshot": "project-onboarding_de.png"
+        }
+      },
+      "screenshotEn": "project-onboarding_en.png"
+    }
+  ]
+}

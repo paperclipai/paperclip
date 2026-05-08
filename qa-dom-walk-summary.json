@@ -1,0 +1,1938 @@
+{
+  "timestamp": "2026-05-08T04:55:19.701Z",
+  "routesProcessed": 40,
+  "totalRoutes": 40,
+  "totalLeaks": 3154,
+  "localesTested": [
+    "en",
+    "ru",
+    "de",
+    "el",
+    "es",
+    "pt",
+    "uk",
+    "zh"
+  ],
+  "routeSummaries": [
+    {
+      "route": "/ZAI/dashboard",
+      "name": "dashboard",
+      "enTextCount": 234,
+      "locales": {
+        "en": {
+          "textCount": 234,
+          "leakCount": 29,
+          "screenshot": "dashboard_en.png"
+        },
+        "ru": {
+          "textCount": 233,
+          "leakCount": 13,
+          "screenshot": "dashboard_ru.png"
+        },
+        "de": {
+          "textCount": 232,
+          "leakCount": 13,
+          "screenshot": "dashboard_de.png"
+        },
+        "el": {
+          "textCount": 232,
+          "leakCount": 17,
+          "screenshot": "dashboard_el.png"
+        },
+        "es": {
+          "textCount": 231,
+          "leakCount": 17,
+          "screenshot": "dashboard_es.png"
+        },
+        "pt": {
+          "textCount": 231,
+          "leakCount": 17,
+          "screenshot": "dashboard_pt.png"
+        },
+        "uk": {
+          "textCount": 231,
+          "leakCount": 17,
+          "screenshot": "dashboard_uk.png"
+        },
+        "zh": {
+          "textCount": 228,
+          "leakCount": 17,
+          "screenshot": "dashboard_zh.png"
+        }
+      },
+      "screenshotEn": "dashboard_en.png"
+    },
+    {
+      "route": "/ZAI/dashboard/live",
+      "name": "dashboard-live",
+      "enTextCount": 224,
+      "locales": {
+        "en": {
+          "textCount": 220,
+          "leakCount": 27,
+          "screenshot": "dashboard-live_en.png"
+        },
+        "ru": {
+          "textCount": 222,
+          "leakCount": 13,
+          "screenshot": "dashboard-live_ru.png"
+        },
+        "de": {
+          "textCount": 222,
+          "leakCount": 13,
+          "screenshot": "dashboard-live_de.png"
+        },
+        "el": {
+          "textCount": 224,
+          "leakCount": 17,
+          "screenshot": "dashboard-live_el.png"
+        },
+        "es": {
+          "textCount": 221,
+          "leakCount": 16,
+          "screenshot": "dashboard-live_es.png"
+        },
+        "pt": {
+          "textCount": 219,
+          "leakCount": 16,
+          "screenshot": "dashboard-live_pt.png"
+        },
+        "uk": {
+          "textCount": 218,
+          "leakCount": 16,
+          "screenshot": "dashboard-live_uk.png"
+        },
+        "zh": {
+          "textCount": 220,
+          "leakCount": 16,
+          "screenshot": "dashboard-live_zh.png"
+        }
+      },
+      "screenshotEn": "dashboard-live_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/mine",
+      "name": "inbox-mine",
+      "enTextCount": 220,
+      "locales": {
+        "en": {
+          "textCount": 220,
+          "leakCount": 22,
+          "screenshot": "inbox-mine_en.png"
+        },
+        "ru": {
+          "textCount": 220,
+          "leakCount": 4,
+          "screenshot": "inbox-mine_ru.png"
+        },
+        "de": {
+          "textCount": 220,
+          "leakCount": 4,
+          "screenshot": "inbox-mine_de.png"
+        },
+        "el": {
+          "textCount": 220,
+          "leakCount": 8,
+          "screenshot": "inbox-mine_el.png"
+        },
+        "es": {
+          "textCount": 220,
+          "leakCount": 8,
+          "screenshot": "inbox-mine_es.png"
+        },
+        "pt": {
+          "textCount": 220,
+          "leakCount": 8,
+          "screenshot": "inbox-mine_pt.png"
+        },
+        "uk": {
+          "textCount": 220,
+          "leakCount": 8,
+          "screenshot": "inbox-mine_uk.png"
+        },
+        "zh": {
+          "textCount": 219,
+          "leakCount": 8,
+          "screenshot": "inbox-mine_zh.png"
+        }
+      },
+      "screenshotEn": "inbox-mine_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/recent",
+      "name": "inbox-recent",
+      "enTextCount": 217,
+      "locales": {
+        "en": {
+          "textCount": 217,
+          "leakCount": 20,
+          "screenshot": "inbox-recent_en.png"
+        },
+        "ru": {
+          "textCount": 217,
+          "leakCount": 3,
+          "screenshot": "inbox-recent_ru.png"
+        },
+        "de": {
+          "textCount": 217,
+          "leakCount": 3,
+          "screenshot": "inbox-recent_de.png"
+        },
+        "el": {
+          "textCount": 217,
+          "leakCount": 7,
+          "screenshot": "inbox-recent_el.png"
+        },
+        "es": {
+          "textCount": 217,
+          "leakCount": 7,
+          "screenshot": "inbox-recent_es.png"
+        },
+        "pt": {
+          "textCount": 217,
+          "leakCount": 7,
+          "screenshot": "inbox-recent_pt.png"
+        },
+        "uk": {
+          "textCount": 217,
+          "leakCount": 7,
+          "screenshot": "inbox-recent_uk.png"
+        },
+        "zh": {
+          "textCount": 216,
+          "leakCount": 7,
+          "screenshot": "inbox-recent_zh.png"
+        }
+      },
+      "screenshotEn": "inbox-recent_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/unread",
+      "name": "inbox-unread",
+      "enTextCount": 137,
+      "locales": {
+        "en": {
+          "textCount": 137,
+          "leakCount": 16,
+          "screenshot": "inbox-unread_en.png"
+        },
+        "ru": {
+          "textCount": 137,
+          "leakCount": 0,
+          "screenshot": "inbox-unread_ru.png"
+        },
+        "de": {
+          "textCount": 137,
+          "leakCount": 0,
+          "screenshot": "inbox-unread_de.png"
+        },
+        "el": {
+          "textCount": 137,
+          "leakCount": 4,
+          "screenshot": "inbox-unread_el.png"
+        },
+        "es": {
+          "textCount": 137,
+          "leakCount": 4,
+          "screenshot": "inbox-unread_es.png"
+        },
+        "pt": {
+          "textCount": 137,
+          "leakCount": 4,
+          "screenshot": "inbox-unread_pt.png"
+        },
+        "uk": {
+          "textCount": 137,
+          "leakCount": 4,
+          "screenshot": "inbox-unread_uk.png"
+        },
+        "zh": {
+          "textCount": 136,
+          "leakCount": 4,
+          "screenshot": "inbox-unread_zh.png"
+        }
+      },
+      "screenshotEn": "inbox-unread_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/all",
+      "name": "inbox-all",
+      "enTextCount": 219,
+      "locales": {
+        "en": {
+          "textCount": 219,
+          "leakCount": 21,
+          "screenshot": "inbox-all_en.png"
+        },
+        "ru": {
+          "textCount": 219,
+          "leakCount": 3,
+          "screenshot": "inbox-all_ru.png"
+        },
+        "de": {
+          "textCount": 219,
+          "leakCount": 3,
+          "screenshot": "inbox-all_de.png"
+        },
+        "el": {
+          "textCount": 219,
+          "leakCount": 7,
+          "screenshot": "inbox-all_el.png"
+        },
+        "es": {
+          "textCount": 219,
+          "leakCount": 7,
+          "screenshot": "inbox-all_es.png"
+        },
+        "pt": {
+          "textCount": 219,
+          "leakCount": 7,
+          "screenshot": "inbox-all_pt.png"
+        },
+        "uk": {
+          "textCount": 219,
+          "leakCount": 7,
+          "screenshot": "inbox-all_uk.png"
+        },
+        "zh": {
+          "textCount": 218,
+          "leakCount": 7,
+          "screenshot": "inbox-all_zh.png"
+        }
+      },
+      "screenshotEn": "inbox-all_en.png"
+    },
+    {
+      "route": "/ZAI/inbox/requests",
+      "name": "inbox-requests",
+      "enTextCount": 53,
+      "locales": {
+        "en": {
+          "textCount": 53,
+          "leakCount": 15,
+          "screenshot": "inbox-requests_en.png"
+        },
+        "ru": {
+          "textCount": 53,
+          "leakCount": 0,
+          "screenshot": "inbox-requests_ru.png"
+        },
+        "de": {
+          "textCount": 53,
+          "leakCount": 0,
+          "screenshot": "inbox-requests_de.png"
+        },
+        "el": {
+          "textCount": 57,
+          "leakCount": 8,
+          "screenshot": "inbox-requests_el.png"
+        },
+        "es": {
+          "textCount": 53,
+          "leakCount": 5,
+          "screenshot": "inbox-requests_es.png"
+        },
+        "pt": {
+          "textCount": 53,
+          "leakCount": 5,
+          "screenshot": "inbox-requests_pt.png"
+        },
+        "uk": {
+          "textCount": 53,
+          "leakCount": 5,
+          "screenshot": "inbox-requests_uk.png"
+        },
+        "zh": {
+          "textCount": 53,
+          "leakCount": 5,
+          "screenshot": "inbox-requests_zh.png"
+        }
+      },
+      "screenshotEn": "inbox-requests_en.png"
+    },
+    {
+      "route": "/ZAI/issues",
+      "name": "issues-list",
+      "enTextCount": 293,
+      "locales": {
+        "en": {
+          "textCount": 292,
+          "leakCount": 15,
+          "screenshot": "issues-list_en.png"
+        },
+        "ru": {
+          "textCount": 449,
+          "leakCount": 0,
+          "screenshot": "issues-list_ru.png"
+        },
+        "de": {
+          "textCount": 292,
+          "leakCount": 0,
+          "screenshot": "issues-list_de.png"
+        },
+        "el": {
+          "textCount": 448,
+          "leakCount": 4,
+          "screenshot": "issues-list_el.png"
+        },
+        "es": {
+          "textCount": 293,
+          "leakCount": 4,
+          "screenshot": "issues-list_es.png"
+        },
+        "pt": {
+          "textCount": 293,
+          "leakCount": 4,
+          "screenshot": "issues-list_pt.png"
+        },
+        "uk": {
+          "textCount": 293,
+          "leakCount": 4,
+          "screenshot": "issues-list_uk.png"
+        },
+        "zh": {
+          "textCount": 291,
+          "leakCount": 4,
+          "screenshot": "issues-list_zh.png"
+        }
+      },
+      "screenshotEn": "issues-list_en.png"
+    },
+    {
+      "route": "/ZAI/search",
+      "name": "search",
+      "enTextCount": 65,
+      "locales": {
+        "en": {
+          "textCount": 65,
+          "leakCount": 17,
+          "screenshot": "search_en.png"
+        },
+        "ru": {
+          "textCount": 65,
+          "leakCount": 7,
+          "screenshot": "search_ru.png"
+        },
+        "de": {
+          "textCount": 65,
+          "leakCount": 7,
+          "screenshot": "search_de.png"
+        },
+        "el": {
+          "textCount": 65,
+          "leakCount": 11,
+          "screenshot": "search_el.png"
+        },
+        "es": {
+          "textCount": 65,
+          "leakCount": 11,
+          "screenshot": "search_es.png"
+        },
+        "pt": {
+          "textCount": 65,
+          "leakCount": 11,
+          "screenshot": "search_pt.png"
+        },
+        "uk": {
+          "textCount": 69,
+          "leakCount": 15,
+          "screenshot": "search_uk.png"
+        },
+        "zh": {
+          "textCount": 65,
+          "leakCount": 11,
+          "screenshot": "search_zh.png"
+        }
+      },
+      "screenshotEn": "search_en.png"
+    },
+    {
+      "route": "/ZAI/routines",
+      "name": "routines",
+      "enTextCount": 77,
+      "locales": {
+        "en": {
+          "textCount": 77,
+          "leakCount": 16,
+          "screenshot": "routines_en.png"
+        },
+        "ru": {
+          "textCount": 77,
+          "leakCount": 4,
+          "screenshot": "routines_ru.png"
+        },
+        "de": {
+          "textCount": 77,
+          "leakCount": 4,
+          "screenshot": "routines_de.png"
+        },
+        "el": {
+          "textCount": 77,
+          "leakCount": 8,
+          "screenshot": "routines_el.png"
+        },
+        "es": {
+          "textCount": 77,
+          "leakCount": 8,
+          "screenshot": "routines_es.png"
+        },
+        "pt": {
+          "textCount": 77,
+          "leakCount": 8,
+          "screenshot": "routines_pt.png"
+        },
+        "uk": {
+          "textCount": 77,
+          "leakCount": 8,
+          "screenshot": "routines_uk.png"
+        },
+        "zh": {
+          "textCount": 76,
+          "leakCount": 8,
+          "screenshot": "routines_zh.png"
+        }
+      },
+      "screenshotEn": "routines_en.png"
+    },
+    {
+      "route": "/ZAI/goals",
+      "name": "goals",
+      "enTextCount": 48,
+      "locales": {
+        "en": {
+          "textCount": 48,
+          "leakCount": 11,
+          "screenshot": "goals_en.png"
+        },
+        "ru": {
+          "textCount": 48,
+          "leakCount": 1,
+          "screenshot": "goals_ru.png"
+        },
+        "de": {
+          "textCount": 48,
+          "leakCount": 2,
+          "screenshot": "goals_de.png"
+        },
+        "el": {
+          "textCount": 48,
+          "leakCount": 6,
+          "screenshot": "goals_el.png"
+        },
+        "es": {
+          "textCount": 48,
+          "leakCount": 6,
+          "screenshot": "goals_es.png"
+        },
+        "pt": {
+          "textCount": 48,
+          "leakCount": 6,
+          "screenshot": "goals_pt.png"
+        },
+        "uk": {
+          "textCount": 48,
+          "leakCount": 6,
+          "screenshot": "goals_uk.png"
+        },
+        "zh": {
+          "textCount": 48,
+          "leakCount": 6,
+          "screenshot": "goals_zh.png"
+        }
+      },
+      "screenshotEn": "goals_en.png"
+    },
+    {
+      "route": "/ZAI/goals/9db92b35-5e38-432a-ad36-f4cc199f644d",
+      "name": "goal-detail",
+      "enTextCount": 67,
+      "locales": {
+        "en": {
+          "textCount": 67,
+          "leakCount": 19,
+          "screenshot": "goal-detail_en.png"
+        },
+        "ru": {
+          "textCount": 67,
+          "leakCount": 6,
+          "screenshot": "goal-detail_ru.png"
+        },
+        "de": {
+          "textCount": 67,
+          "leakCount": 8,
+          "screenshot": "goal-detail_de.png"
+        },
+        "el": {
+          "textCount": 67,
+          "leakCount": 12,
+          "screenshot": "goal-detail_el.png"
+        },
+        "es": {
+          "textCount": 67,
+          "leakCount": 12,
+          "screenshot": "goal-detail_es.png"
+        },
+        "pt": {
+          "textCount": 67,
+          "leakCount": 12,
+          "screenshot": "goal-detail_pt.png"
+        },
+        "uk": {
+          "textCount": 67,
+          "leakCount": 12,
+          "screenshot": "goal-detail_uk.png"
+        },
+        "zh": {
+          "textCount": 69,
+          "leakCount": 11,
+          "screenshot": "goal-detail_zh.png"
+        }
+      },
+      "screenshotEn": "goal-detail_en.png"
+    },
+    {
+      "route": "/ZAI/projects",
+      "name": "projects",
+      "enTextCount": 50,
+      "locales": {
+        "en": {
+          "textCount": 50,
+          "leakCount": 12,
+          "screenshot": "projects_en.png"
+        },
+        "ru": {
+          "textCount": 50,
+          "leakCount": 1,
+          "screenshot": "projects_ru.png"
+        },
+        "de": {
+          "textCount": 50,
+          "leakCount": 1,
+          "screenshot": "projects_de.png"
+        },
+        "el": {
+          "textCount": 50,
+          "leakCount": 6,
+          "screenshot": "projects_el.png"
+        },
+        "es": {
+          "textCount": 50,
+          "leakCount": 6,
+          "screenshot": "projects_es.png"
+        },
+        "pt": {
+          "textCount": 50,
+          "leakCount": 6,
+          "screenshot": "projects_pt.png"
+        },
+        "uk": {
+          "textCount": 50,
+          "leakCount": 6,
+          "screenshot": "projects_uk.png"
+        },
+        "zh": {
+          "textCount": 50,
+          "leakCount": 6,
+          "screenshot": "projects_zh.png"
+        }
+      },
+      "screenshotEn": "projects_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization",
+      "name": "project-detail",
+      "enTextCount": 277,
+      "locales": {
+        "en": {
+          "textCount": 277,
+          "leakCount": 18,
+          "screenshot": "project-detail_en.png"
+        },
+        "ru": {
+          "textCount": 277,
+          "leakCount": 5,
+          "screenshot": "project-detail_ru.png"
+        },
+        "de": {
+          "textCount": 282,
+          "leakCount": 6,
+          "screenshot": "project-detail_de.png"
+        },
+        "el": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-detail_el.png"
+        },
+        "es": {
+          "textCount": 279,
+          "leakCount": 7,
+          "screenshot": "project-detail_es.png"
+        },
+        "pt": {
+          "textCount": 279,
+          "leakCount": 7,
+          "screenshot": "project-detail_pt.png"
+        },
+        "uk": {
+          "textCount": 279,
+          "leakCount": 7,
+          "screenshot": "project-detail_uk.png"
+        },
+        "zh": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-detail_zh.png"
+        }
+      },
+      "screenshotEn": "project-detail_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization/issues",
+      "name": "project-issues",
+      "enTextCount": 349,
+      "locales": {
+        "en": {
+          "textCount": 279,
+          "leakCount": 18,
+          "screenshot": "project-issues_en.png"
+        },
+        "ru": {
+          "textCount": 279,
+          "leakCount": 3,
+          "screenshot": "project-issues_ru.png"
+        },
+        "de": {
+          "textCount": 279,
+          "leakCount": 5,
+          "screenshot": "project-issues_de.png"
+        },
+        "el": {
+          "textCount": 279,
+          "leakCount": 7,
+          "screenshot": "project-issues_el.png"
+        },
+        "es": {
+          "textCount": 279,
+          "leakCount": 7,
+          "screenshot": "project-issues_es.png"
+        },
+        "pt": {
+          "textCount": 349,
+          "leakCount": 8,
+          "screenshot": "project-issues_pt.png"
+        },
+        "uk": {
+          "textCount": 349,
+          "leakCount": 8,
+          "screenshot": "project-issues_uk.png"
+        },
+        "zh": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-issues_zh.png"
+        }
+      },
+      "screenshotEn": "project-issues_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization/workspaces",
+      "name": "project-workspaces",
+      "enTextCount": 349,
+      "locales": {
+        "en": {
+          "textCount": 279,
+          "leakCount": 18,
+          "screenshot": "project-workspaces_en.png"
+        },
+        "ru": {
+          "textCount": 279,
+          "leakCount": 3,
+          "screenshot": "project-workspaces_ru.png"
+        },
+        "de": {
+          "textCount": 282,
+          "leakCount": 6,
+          "screenshot": "project-workspaces_de.png"
+        },
+        "el": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-workspaces_el.png"
+        },
+        "es": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-workspaces_es.png"
+        },
+        "pt": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-workspaces_pt.png"
+        },
+        "uk": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-workspaces_uk.png"
+        },
+        "zh": {
+          "textCount": 277,
+          "leakCount": 7,
+          "screenshot": "project-workspaces_zh.png"
+        }
+      },
+      "screenshotEn": "project-workspaces_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization/configuration",
+      "name": "project-config",
+      "enTextCount": 163,
+      "locales": {
+        "en": {
+          "textCount": 163,
+          "leakCount": 31,
+          "screenshot": "project-config_en.png"
+        },
+        "ru": {
+          "textCount": 163,
+          "leakCount": 10,
+          "screenshot": "project-config_ru.png"
+        },
+        "de": {
+          "textCount": 163,
+          "leakCount": 19,
+          "screenshot": "project-config_de.png"
+        },
+        "el": {
+          "textCount": 163,
+          "leakCount": 24,
+          "screenshot": "project-config_el.png"
+        },
+        "es": {
+          "textCount": 163,
+          "leakCount": 24,
+          "screenshot": "project-config_es.png"
+        },
+        "pt": {
+          "textCount": 163,
+          "leakCount": 24,
+          "screenshot": "project-config_pt.png"
+        },
+        "uk": {
+          "textCount": 163,
+          "leakCount": 24,
+          "screenshot": "project-config_uk.png"
+        },
+        "zh": {
+          "textCount": 163,
+          "leakCount": 24,
+          "screenshot": "project-config_zh.png"
+        }
+      },
+      "screenshotEn": "project-config_en.png"
+    },
+    {
+      "route": "/ZAI/projects/localization",
+      "name": "project-localization",
+      "enTextCount": 278,
+      "locales": {
+        "en": {
+          "textCount": 278,
+          "leakCount": 18,
+          "screenshot": "project-localization_en.png"
+        },
+        "ru": {
+          "textCount": 278,
+          "leakCount": 3,
+          "screenshot": "project-localization_ru.png"
+        },
+        "de": {
+          "textCount": 348,
+          "leakCount": 3,
+          "screenshot": "project-localization_de.png"
+        },
+        "el": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-localization_el.png"
+        },
+        "es": {
+          "textCount": 279,
+          "leakCount": 7,
+          "screenshot": "project-localization_es.png"
+        },
+        "pt": {
+          "textCount": 348,
+          "leakCount": 7,
+          "screenshot": "project-localization_pt.png"
+        },
+        "uk": {
+          "textCount": 278,
+          "leakCount": 7,
+          "screenshot": "project-localization_uk.png"
+        },
+        "zh": {
+          "textCount": 277,
+          "leakCount": 7,
+          "screenshot": "project-localization_zh.png"
+        }
+      },
+      "screenshotEn": "project-localization_en.png"
+    },
+    {
+      "route": "/ZAI/agents/ceo",
+      "name": "agents-detail",
+      "enTextCount": 189,
+      "locales": {
+        "en": {
+          "textCount": 189,
+          "leakCount": 18,
+          "screenshot": "agents-detail_en.png"
+        },
+        "ru": {
+          "textCount": 189,
+          "leakCount": 7,
+          "screenshot": "agents-detail_ru.png"
+        },
+        "de": {
+          "textCount": 189,
+          "leakCount": 9,
+          "screenshot": "agents-detail_de.png"
+        },
+        "el": {
+          "textCount": 189,
+          "leakCount": 12,
+          "screenshot": "agents-detail_el.png"
+        },
+        "es": {
+          "textCount": 189,
+          "leakCount": 12,
+          "screenshot": "agents-detail_es.png"
+        },
+        "pt": {
+          "textCount": 189,
+          "leakCount": 12,
+          "screenshot": "agents-detail_pt.png"
+        },
+        "uk": {
+          "textCount": 189,
+          "leakCount": 12,
+          "screenshot": "agents-detail_uk.png"
+        },
+        "zh": {
+          "textCount": 179,
+          "leakCount": 11,
+          "screenshot": "agents-detail_zh.png"
+        }
+      },
+      "screenshotEn": "agents-detail_en.png"
+    },
+    {
+      "route": "/ZAI/agents/all",
+      "name": "agents-all",
+      "enTextCount": 74,
+      "locales": {
+        "en": {
+          "textCount": 75,
+          "leakCount": 16,
+          "screenshot": "agents-all_en.png"
+        },
+        "ru": {
+          "textCount": 75,
+          "leakCount": 3,
+          "screenshot": "agents-all_ru.png"
+        },
+        "de": {
+          "textCount": 75,
+          "leakCount": 3,
+          "screenshot": "agents-all_de.png"
+        },
+        "el": {
+          "textCount": 75,
+          "leakCount": 7,
+          "screenshot": "agents-all_el.png"
+        },
+        "es": {
+          "textCount": 75,
+          "leakCount": 8,
+          "screenshot": "agents-all_es.png"
+        },
+        "pt": {
+          "textCount": 75,
+          "leakCount": 7,
+          "screenshot": "agents-all_pt.png"
+        },
+        "uk": {
+          "textCount": 75,
+          "leakCount": 7,
+          "screenshot": "agents-all_uk.png"
+        },
+        "zh": {
+          "textCount": 75,
+          "leakCount": 7,
+          "screenshot": "agents-all_zh.png"
+        }
+      },
+      "screenshotEn": "agents-all_en.png"
+    },
+    {
+      "route": "/ZAI/agents/active",
+      "name": "agents-active",
+      "enTextCount": 75,
+      "locales": {
+        "en": {
+          "textCount": 74,
+          "leakCount": 16,
+          "screenshot": "agents-active_en.png"
+        },
+        "ru": {
+          "textCount": 74,
+          "leakCount": 3,
+          "screenshot": "agents-active_ru.png"
+        },
+        "de": {
+          "textCount": 74,
+          "leakCount": 3,
+          "screenshot": "agents-active_de.png"
+        },
+        "el": {
+          "textCount": 74,
+          "leakCount": 7,
+          "screenshot": "agents-active_el.png"
+        },
+        "es": {
+          "textCount": 74,
+          "leakCount": 8,
+          "screenshot": "agents-active_es.png"
+        },
+        "pt": {
+          "textCount": 74,
+          "leakCount": 7,
+          "screenshot": "agents-active_pt.png"
+        },
+        "uk": {
+          "textCount": 74,
+          "leakCount": 7,
+          "screenshot": "agents-active_uk.png"
+        },
+        "zh": {
+          "textCount": 74,
+          "leakCount": 7,
+          "screenshot": "agents-active_zh.png"
+        }
+      },
+      "screenshotEn": "agents-active_en.png"
+    },
+    {
+      "route": "/ZAI/approvals/pending",
+      "name": "approvals-pending",
+      "enTextCount": 47,
+      "locales": {
+        "en": {
+          "textCount": 47,
+          "leakCount": 13,
+          "screenshot": "approvals-pending_en.png"
+        },
+        "ru": {
+          "textCount": 47,
+          "leakCount": 0,
+          "screenshot": "approvals-pending_ru.png"
+        },
+        "de": {
+          "textCount": 47,
+          "leakCount": 0,
+          "screenshot": "approvals-pending_de.png"
+        },
+        "el": {
+          "textCount": 47,
+          "leakCount": 4,
+          "screenshot": "approvals-pending_el.png"
+        },
+        "es": {
+          "textCount": 47,
+          "leakCount": 4,
+          "screenshot": "approvals-pending_es.png"
+        },
+        "pt": {
+          "textCount": 47,
+          "leakCount": 4,
+          "screenshot": "approvals-pending_pt.png"
+        },
+        "uk": {
+          "textCount": 47,
+          "leakCount": 4,
+          "screenshot": "approvals-pending_uk.png"
+        },
+        "zh": {
+          "textCount": 47,
+          "leakCount": 4,
+          "screenshot": "approvals-pending_zh.png"
+        }
+      },
+      "screenshotEn": "approvals-pending_en.png"
+    },
+    {
+      "route": "/ZAI/approvals/all",
+      "name": "approvals-all",
+      "enTextCount": 101,
+      "locales": {
+        "en": {
+          "textCount": 101,
+          "leakCount": 17,
+          "screenshot": "approvals-all_en.png"
+        },
+        "ru": {
+          "textCount": 101,
+          "leakCount": 3,
+          "screenshot": "approvals-all_ru.png"
+        },
+        "de": {
+          "textCount": 101,
+          "leakCount": 3,
+          "screenshot": "approvals-all_de.png"
+        },
+        "el": {
+          "textCount": 101,
+          "leakCount": 7,
+          "screenshot": "approvals-all_el.png"
+        },
+        "es": {
+          "textCount": 101,
+          "leakCount": 7,
+          "screenshot": "approvals-all_es.png"
+        },
+        "pt": {
+          "textCount": 101,
+          "leakCount": 7,
+          "screenshot": "approvals-all_pt.png"
+        },
+        "uk": {
+          "textCount": 101,
+          "leakCount": 7,
+          "screenshot": "approvals-all_uk.png"
+        },
+        "zh": {
+          "textCount": 101,
+          "leakCount": 7,
+          "screenshot": "approvals-all_zh.png"
+        }
+      },
+      "screenshotEn": "approvals-all_en.png"
+    },
+    {
+      "route": "/ZAI/org",
+      "name": "org",
+      "enTextCount": 61,
+      "locales": {
+        "en": {
+          "textCount": 61,
+          "leakCount": 12,
+          "screenshot": "org_en.png"
+        },
+        "ru": {
+          "textCount": 61,
+          "leakCount": 2,
+          "screenshot": "org_ru.png"
+        },
+        "de": {
+          "textCount": 61,
+          "leakCount": 2,
+          "screenshot": "org_de.png"
+        },
+        "el": {
+          "textCount": 61,
+          "leakCount": 6,
+          "screenshot": "org_el.png"
+        },
+        "es": {
+          "textCount": 61,
+          "leakCount": 6,
+          "screenshot": "org_es.png"
+        },
+        "pt": {
+          "textCount": 61,
+          "leakCount": 6,
+          "screenshot": "org_pt.png"
+        },
+        "uk": {
+          "textCount": 61,
+          "leakCount": 6,
+          "screenshot": "org_uk.png"
+        },
+        "zh": {
+          "textCount": 61,
+          "leakCount": 6,
+          "screenshot": "org_zh.png"
+        }
+      },
+      "screenshotEn": "org_en.png"
+    },
+    {
+      "route": "/ZAI/costs",
+      "name": "costs",
+      "enTextCount": 115,
+      "locales": {
+        "en": {
+          "textCount": 115,
+          "leakCount": 17,
+          "screenshot": "costs_en.png"
+        },
+        "ru": {
+          "textCount": 115,
+          "leakCount": 7,
+          "screenshot": "costs_ru.png"
+        },
+        "de": {
+          "textCount": 115,
+          "leakCount": 7,
+          "screenshot": "costs_de.png"
+        },
+        "el": {
+          "textCount": 115,
+          "leakCount": 11,
+          "screenshot": "costs_el.png"
+        },
+        "es": {
+          "textCount": 115,
+          "leakCount": 11,
+          "screenshot": "costs_es.png"
+        },
+        "pt": {
+          "textCount": 115,
+          "leakCount": 11,
+          "screenshot": "costs_pt.png"
+        },
+        "uk": {
+          "textCount": 115,
+          "leakCount": 11,
+          "screenshot": "costs_uk.png"
+        },
+        "zh": {
+          "textCount": 115,
+          "leakCount": 11,
+          "screenshot": "costs_zh.png"
+        }
+      },
+      "screenshotEn": "costs_en.png"
+    },
+    {
+      "route": "/ZAI/activity",
+      "name": "activity",
+      "enTextCount": 225,
+      "locales": {
+        "en": {
+          "textCount": 224,
+          "leakCount": 14,
+          "screenshot": "activity_en.png"
+        },
+        "ru": {
+          "textCount": 227,
+          "leakCount": 4,
+          "screenshot": "activity_ru.png"
+        },
+        "de": {
+          "textCount": 228,
+          "leakCount": 4,
+          "screenshot": "activity_de.png"
+        },
+        "el": {
+          "textCount": 229,
+          "leakCount": 8,
+          "screenshot": "activity_el.png"
+        },
+        "es": {
+          "textCount": 231,
+          "leakCount": 8,
+          "screenshot": "activity_es.png"
+        },
+        "pt": {
+          "textCount": 230,
+          "leakCount": 8,
+          "screenshot": "activity_pt.png"
+        },
+        "uk": {
+          "textCount": 231,
+          "leakCount": 8,
+          "screenshot": "activity_uk.png"
+        },
+        "zh": {
+          "textCount": 232,
+          "leakCount": 8,
+          "screenshot": "activity_zh.png"
+        }
+      },
+      "screenshotEn": "activity_en.png"
+    },
+    {
+      "route": "/ZAI/company/settings",
+      "name": "company-settings",
+      "enTextCount": 41,
+      "locales": {
+        "en": {
+          "textCount": 41,
+          "leakCount": 12,
+          "screenshot": "company-settings_en.png"
+        },
+        "ru": {
+          "textCount": 45,
+          "leakCount": 3,
+          "screenshot": "company-settings_ru.png"
+        },
+        "de": {
+          "textCount": 41,
+          "leakCount": 0,
+          "screenshot": "company-settings_de.png"
+        },
+        "el": {
+          "textCount": 41,
+          "leakCount": 0,
+          "screenshot": "company-settings_el.png"
+        },
+        "es": {
+          "textCount": 41,
+          "leakCount": 0,
+          "screenshot": "company-settings_es.png"
+        },
+        "pt": {
+          "textCount": 41,
+          "leakCount": 0,
+          "screenshot": "company-settings_pt.png"
+        },
+        "uk": {
+          "textCount": 41,
+          "leakCount": 0,
+          "screenshot": "company-settings_uk.png"
+        },
+        "zh": {
+          "textCount": 41,
+          "leakCount": 0,
+          "screenshot": "company-settings_zh.png"
+        }
+      },
+      "screenshotEn": "company-settings_en.png"
+    },
+    {
+      "route": "/ZAI/company/settings/access",
+      "name": "company-access",
+      "enTextCount": 36,
+      "locales": {
+        "en": {
+          "textCount": 36,
+          "leakCount": 14,
+          "screenshot": "company-access_en.png"
+        },
+        "ru": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_ru.png"
+        },
+        "de": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_de.png"
+        },
+        "el": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_el.png"
+        },
+        "es": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_es.png"
+        },
+        "pt": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_pt.png"
+        },
+        "uk": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_uk.png"
+        },
+        "zh": {
+          "textCount": 36,
+          "leakCount": 3,
+          "screenshot": "company-access_zh.png"
+        }
+      },
+      "screenshotEn": "company-access_en.png"
+    },
+    {
+      "route": "/ZAI/company/settings/environments",
+      "name": "company-environments",
+      "enTextCount": 20,
+      "locales": {
+        "en": {
+          "textCount": 20,
+          "leakCount": 6,
+          "screenshot": "company-environments_en.png"
+        },
+        "ru": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_ru.png"
+        },
+        "de": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_de.png"
+        },
+        "el": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_el.png"
+        },
+        "es": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_es.png"
+        },
+        "pt": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_pt.png"
+        },
+        "uk": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_uk.png"
+        },
+        "zh": {
+          "textCount": 20,
+          "leakCount": 0,
+          "screenshot": "company-environments_zh.png"
+        }
+      },
+      "screenshotEn": "company-environments_en.png"
+    },
+    {
+      "route": "/ZAI/workspaces",
+      "name": "workspaces",
+      "enTextCount": 288,
+      "locales": {
+        "en": {
+          "textCount": 288,
+          "leakCount": 15,
+          "screenshot": "workspaces_en.png"
+        },
+        "ru": {
+          "textCount": 445,
+          "leakCount": 0,
+          "screenshot": "workspaces_ru.png"
+        },
+        "de": {
+          "textCount": 288,
+          "leakCount": 0,
+          "screenshot": "workspaces_de.png"
+        },
+        "el": {
+          "textCount": 288,
+          "leakCount": 4,
+          "screenshot": "workspaces_el.png"
+        },
+        "es": {
+          "textCount": 288,
+          "leakCount": 2,
+          "screenshot": "workspaces_es.png"
+        },
+        "pt": {
+          "textCount": 288,
+          "leakCount": 4,
+          "screenshot": "workspaces_pt.png"
+        },
+        "uk": {
+          "textCount": 445,
+          "leakCount": 3,
+          "screenshot": "workspaces_uk.png"
+        },
+        "zh": {
+          "textCount": 287,
+          "leakCount": 4,
+          "screenshot": "workspaces_zh.png"
+        }
+      },
+      "screenshotEn": "workspaces_en.png"
+    },
+    {
+      "route": "/ZAI/design-guide",
+      "name": "design-guide",
+      "enTextCount": 498,
+      "locales": {
+        "en": {
+          "textCount": 498,
+          "leakCount": 52,
+          "screenshot": "design-guide_en.png"
+        },
+        "ru": {
+          "textCount": 498,
+          "leakCount": 42,
+          "screenshot": "design-guide_ru.png"
+        },
+        "de": {
+          "textCount": 498,
+          "leakCount": 42,
+          "screenshot": "design-guide_de.png"
+        },
+        "el": {
+          "textCount": 498,
+          "leakCount": 46,
+          "screenshot": "design-guide_el.png"
+        },
+        "es": {
+          "textCount": 498,
+          "leakCount": 46,
+          "screenshot": "design-guide_es.png"
+        },
+        "pt": {
+          "textCount": 498,
+          "leakCount": 46,
+          "screenshot": "design-guide_pt.png"
+        },
+        "uk": {
+          "textCount": 498,
+          "leakCount": 46,
+          "screenshot": "design-guide_uk.png"
+        },
+        "zh": {
+          "textCount": 498,
+          "leakCount": 46,
+          "screenshot": "design-guide_zh.png"
+        }
+      },
+      "screenshotEn": "design-guide_en.png"
+    },
+    {
+      "route": "/instance/settings/general",
+      "name": "instance-general",
+      "enTextCount": 67,
+      "locales": {
+        "en": {
+          "textCount": 67,
+          "leakCount": 15,
+          "screenshot": "instance-general_en.png"
+        },
+        "ru": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_ru.png"
+        },
+        "de": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_de.png"
+        },
+        "el": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_el.png"
+        },
+        "es": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_es.png"
+        },
+        "pt": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_pt.png"
+        },
+        "uk": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_uk.png"
+        },
+        "zh": {
+          "textCount": 67,
+          "leakCount": 11,
+          "screenshot": "instance-general_zh.png"
+        }
+      },
+      "screenshotEn": "instance-general_en.png"
+    },
+    {
+      "route": "/instance/settings/profile",
+      "name": "instance-profile",
+      "enTextCount": 32,
+      "locales": {
+        "en": {
+          "textCount": 32,
+          "leakCount": 12,
+          "screenshot": "instance-profile_en.png"
+        },
+        "ru": {
+          "textCount": 32,
+          "leakCount": 0,
+          "screenshot": "instance-profile_ru.png"
+        },
+        "de": {
+          "textCount": 32,
+          "leakCount": 0,
+          "screenshot": "instance-profile_de.png"
+        },
+        "el": {
+          "textCount": 32,
+          "leakCount": 1,
+          "screenshot": "instance-profile_el.png"
+        },
+        "es": {
+          "textCount": 32,
+          "leakCount": 0,
+          "screenshot": "instance-profile_es.png"
+        },
+        "pt": {
+          "textCount": 32,
+          "leakCount": 1,
+          "screenshot": "instance-profile_pt.png"
+        },
+        "uk": {
+          "textCount": 32,
+          "leakCount": 1,
+          "screenshot": "instance-profile_uk.png"
+        },
+        "zh": {
+          "textCount": 32,
+          "leakCount": 1,
+          "screenshot": "instance-profile_zh.png"
+        }
+      },
+      "screenshotEn": "instance-profile_en.png"
+    },
+    {
+      "route": "/instance/settings/access",
+      "name": "instance-access",
+      "enTextCount": 51,
+      "locales": {
+        "en": {
+          "textCount": 51,
+          "leakCount": 15,
+          "screenshot": "instance-access_en.png"
+        },
+        "ru": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_ru.png"
+        },
+        "de": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_de.png"
+        },
+        "el": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_el.png"
+        },
+        "es": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_es.png"
+        },
+        "pt": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_pt.png"
+        },
+        "uk": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_uk.png"
+        },
+        "zh": {
+          "textCount": 51,
+          "leakCount": 11,
+          "screenshot": "instance-access_zh.png"
+        }
+      },
+      "screenshotEn": "instance-access_en.png"
+    },
+    {
+      "route": "/instance/settings/experimental",
+      "name": "instance-experimental",
+      "enTextCount": 40,
+      "locales": {
+        "en": {
+          "textCount": 40,
+          "leakCount": 8,
+          "screenshot": "instance-experimental_en.png"
+        },
+        "ru": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_ru.png"
+        },
+        "de": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_de.png"
+        },
+        "el": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_el.png"
+        },
+        "es": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_es.png"
+        },
+        "pt": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_pt.png"
+        },
+        "uk": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_uk.png"
+        },
+        "zh": {
+          "textCount": 40,
+          "leakCount": 4,
+          "screenshot": "instance-experimental_zh.png"
+        }
+      },
+      "screenshotEn": "instance-experimental_en.png"
+    },
+    {
+      "route": "/instance/settings/adapters",
+      "name": "instance-adapters",
+      "enTextCount": 54,
+      "locales": {
+        "en": {
+          "textCount": 54,
+          "leakCount": 9,
+          "screenshot": "instance-adapters_en.png"
+        },
+        "ru": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_ru.png"
+        },
+        "de": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_de.png"
+        },
+        "el": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_el.png"
+        },
+        "es": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_es.png"
+        },
+        "pt": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_pt.png"
+        },
+        "uk": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_uk.png"
+        },
+        "zh": {
+          "textCount": 54,
+          "leakCount": 5,
+          "screenshot": "instance-adapters_zh.png"
+        }
+      },
+      "screenshotEn": "instance-adapters_en.png"
+    },
+    {
+      "route": "/ZAI/u/board",
+      "name": "user-board",
+      "enTextCount": 179,
+      "locales": {
+        "en": {
+          "textCount": 179,
+          "leakCount": 18,
+          "screenshot": "user-board_en.png"
+        },
+        "ru": {
+          "textCount": 178,
+          "leakCount": 3,
+          "screenshot": "user-board_ru.png"
+        },
+        "de": {
+          "textCount": 178,
+          "leakCount": 3,
+          "screenshot": "user-board_de.png"
+        },
+        "el": {
+          "textCount": 178,
+          "leakCount": 12,
+          "screenshot": "user-board_el.png"
+        },
+        "es": {
+          "textCount": 178,
+          "leakCount": 12,
+          "screenshot": "user-board_es.png"
+        },
+        "pt": {
+          "textCount": 178,
+          "leakCount": 12,
+          "screenshot": "user-board_pt.png"
+        },
+        "uk": {
+          "textCount": 178,
+          "leakCount": 12,
+          "screenshot": "user-board_uk.png"
+        },
+        "zh": {
+          "textCount": 178,
+          "leakCount": 12,
+          "screenshot": "user-board_zh.png"
+        }
+      },
+      "screenshotEn": "user-board_en.png"
+    },
+    {
+      "route": "/onboarding",
+      "name": "onboarding",
+      "enTextCount": 16,
+      "locales": {
+        "en": {
+          "textCount": 16,
+          "leakCount": 10,
+          "screenshot": "onboarding_en.png"
+        },
+        "ru": {
+          "textCount": 16,
+          "leakCount": 2,
+          "screenshot": "onboarding_ru.png"
+        },
+        "de": {
+          "textCount": 16,
+          "leakCount": 2,
+          "screenshot": "onboarding_de.png"
+        },
+        "el": {
+          "textCount": 16,
+          "leakCount": 4,
+          "screenshot": "onboarding_el.png"
+        },
+        "es": {
+          "textCount": 16,
+          "leakCount": 4,
+          "screenshot": "onboarding_es.png"
+        },
+        "pt": {
+          "textCount": 16,
+          "leakCount": 4,
+          "screenshot": "onboarding_pt.png"
+        },
+        "uk": {
+          "textCount": 16,
+          "leakCount": 4,
+          "screenshot": "onboarding_uk.png"
+        },
+        "zh": {
+          "textCount": 16,
+          "leakCount": 4,
+          "screenshot": "onboarding_zh.png"
+        }
+      },
+      "screenshotEn": "onboarding_en.png"
+    },
+    {
+      "route": "/ZAI/issues/ZAI-79",
+      "name": "issue-detail",
+      "enTextCount": 3317,
+      "locales": {
+        "en": {
+          "textCount": 3317,
+          "leakCount": 94,
+          "screenshot": "issue-detail_en.png"
+        },
+        "ru": {
+          "textCount": 3316,
+          "leakCount": 39,
+          "screenshot": "issue-detail_ru.png"
+        },
+        "de": {
+          "textCount": 3317,
+          "leakCount": 40,
+          "screenshot": "issue-detail_de.png"
+        },
+        "el": {
+          "textCount": 3317,
+          "leakCount": 42,
+          "screenshot": "issue-detail_el.png"
+        },
+        "es": {
+          "textCount": 3317,
+          "leakCount": 42,
+          "screenshot": "issue-detail_es.png"
+        },
+        "pt": {
+          "textCount": 3317,
+          "leakCount": 42,
+          "screenshot": "issue-detail_pt.png"
+        },
+        "uk": {
+          "textCount": 3316,
+          "leakCount": 42,
+          "screenshot": "issue-detail_uk.png"
+        },
+        "zh": {
+          "textCount": 3315,
+          "leakCount": 39,
+          "screenshot": "issue-detail_zh.png"
+        }
+      },
+      "screenshotEn": "issue-detail_en.png"
+    },
+    {
+      "route": "/ZAI/projects/onboarding",
+      "name": "project-onboarding",
+      "enTextCount": 69,
+      "locales": {
+        "en": {
+          "textCount": 69,
+          "leakCount": 21,
+          "screenshot": "project-onboarding_en.png"
+        },
+        "ru": {
+          "textCount": 69,
+          "leakCount": 8,
+          "screenshot": "project-onboarding_ru.png"
+        },
+        "de": {
+          "textCount": 69,
+          "leakCount": 6,
+          "screenshot": "project-onboarding_de.png"
+        },
+        "el": {
+          "textCount": 69,
+          "leakCount": 10,
+          "screenshot": "project-onboarding_el.png"
+        },
+        "es": {
+          "textCount": 69,
+          "leakCount": 10,
+          "screenshot": "project-onboarding_es.png"
+        },
+        "pt": {
+          "textCount": 69,
+          "leakCount": 10,
+          "screenshot": "project-onboarding_pt.png"
+        },
+        "uk": {
+          "textCount": 69,
+          "leakCount": 10,
+          "screenshot": "project-onboarding_uk.png"
+        },
+        "zh": {
+          "textCount": 68,
+          "leakCount": 10,
+          "screenshot": "project-onboarding_zh.png"
+        }
+      },
+      "screenshotEn": "project-onboarding_en.png"
+    }
+  ]
+}

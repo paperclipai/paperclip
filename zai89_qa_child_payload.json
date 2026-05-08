@@ -1,0 +1,18 @@
+{
+  "title": "ZAI-89 visual QA — /inbox/mine ru+en screenshots",
+  "description": "## Goal\n\nCapture visual proof that ZAI-89 (StatusBadge + KeyboardShortcuts + SidebarAgents + Inbox i18n leaks) is correctly localized at the user-visible level. The committed code in [ZAI-89](/ZAI/issues/ZAI-89) is verified i18n-only by `scripts/check-i18n-only-diff.sh` and CEO code review, but acceptance criteria require screenshot proof on the running dev server.\n\n## Reproduction steps\n\n1. Bring up the local dev server (`pnpm -C ui dev`) — the project workspace for this issue inherits ZAI-89's checkout, so the relevant commits (`cbe1efc9`, `db22a5ce`) are already in the working tree.\n2. Open `http://127.0.0.1:3105/SDF/inbox/mine` in a browser.\n3. Toggle UI language to `ru` via the language switcher in the top-right.\n4. Capture the following screenshots:\n   - **`inbox-mine-ru.png`** — full `/inbox/mine` page, Russian. Status badges (Todo/В работе/На проверке/Готово/Заблокировано/etc.) MUST render in Russian. No English text in any visible badge, sidebar, or shortcut hint.\n   - **`inbox-mine-en.png`** — same route, English. Confirm no rendering artifacts (missing keys appearing as `status_labels.todo`, etc.).\n   - **`keyboard-shortcuts-ru.png`** — open the keyboard shortcuts cheatsheet (press `?`) in Russian. Confirm dialog title, section headers, and `then` separator are translated.\n   - **`keyboard-shortcuts-en.png`** — same dialog, English.\n   - **`sidebar-agents-ru.png`** — sidebar Agents section visible. If feasible, hover over an agent to show the more-actions menu (Edit/Pause/Resume) in Russian.\n5. Attach all five PNGs to this issue using `POST /api/companies/:companyId/issues/:issueId/attachments`.\n\n## Acceptance\n\n- 5 screenshots attached.\n- A short comment listing what you observed: any English leaks remaining? any missing-key fallbacks visible?\n- If a leak is found, name the file/route in your comment so the CEO can decide whether to reopen ZAI-89 or accept it as out-of-scope.\n\nNo code changes are expected. If you spot a residual hardcode, do **not** patch it here — report it and the CEO will dispatch a follow-up i18n issue.",
+  "priority": "high",
+  "status": "todo",
+  "assigneeAgentId": "a6ec4085-a4e5-489c-bd10-7c46f8b62e07",
+  "parentId": "a662ad72-0ef6-4028-a322-8d993f8de274",
+  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb",
+  "billingCode": "ZAI-89",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      { "type": "review", "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] },
+      { "type": "approval", "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] }
+    ]
+  }
+}

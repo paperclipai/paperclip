@@ -69,7 +69,11 @@
     "reinstalled_body": "\"{{type}}\" atualizado do npm.{{versionSuffix}}",
     "company_fallback": "Empresa",
     "tooltip_local_path": "Instalado do caminho local",
-    "tooltip_npm": "Instalado do npm"
+    "tooltip_npm": "Instalado do npm",
+    "reinstall_btn": "Reinstalar",
+    "reinstalling_btn": "Reinstalando...",
+    "remove_btn": "Remover",
+    "removing_btn": "Removendo..."
   },
   "claude_local": {
     "instructions_file": "Arquivo de instruções do agente",

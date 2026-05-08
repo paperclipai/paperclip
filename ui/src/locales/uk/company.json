@@ -417,7 +417,18 @@
     "remove_member_group_humans": "Люди",
     "remove_member_group_agents": "Агенти",
     "remove_member_cancel": "Скасувати",
-    "remove_member_removing": "Видалення..."
+    "remove_member_removing": "Видалення...",
+    "remove_btn": "Видалити",
+    "removal_reason": {
+      "cannot_remove_self": "Ви не можете видалити себе.",
+      "non_human_member": "Можна видаляти лише учасників-людей.",
+      "board_access_required": "Для видалення учасників потрібен доступ ради.",
+      "instance_admin_protected": "Адміністраторів екземпляра не можна видалити з доступу до компанії.",
+      "owner_protected": "Власників ради не можна видалити з доступу до компанії.",
+      "admin_protected": "Адміністраторів компанії не можна видалити з доступу до компанії.",
+      "actor_not_member": "Видаляти користувачів можуть лише активні учасники компанії.",
+      "target_role_too_high": "Ви можете видаляти лише користувачів з нижчою роллю в компанії."
+    }
   },
   "companies": {
     "breadcrumb": "Компанії",
@@ -755,6 +766,26 @@
       "status_hard_stop": "Жорстка зупинка",
       "status_healthy": "В нормі",
       "error_invalid_amount": "Введіть коректну невід'ємну суму в доларах."
+    }
+  },
+  "user_profile": {
+    "role": {
+      "owner": "власник",
+      "admin": "адмін",
+      "member": "учасник",
+      "operator": "оператор",
+      "viewer": "спостерігач"
+    },
+    "status": {
+      "active": "активний",
+      "invited": "запрошений",
+      "suspended": "призупинений",
+      "pending": "очікується"
+    },
+    "window": {
+      "last7": "Останні 7 днів",
+      "last30": "Останні 30 днів",
+      "all": "За весь час"
     }
   }
 }

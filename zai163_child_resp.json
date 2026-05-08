@@ -1,0 +1,101 @@
+{
+  "id": "3e6055e2-e484-4cf4-9abc-1a59ed503088",
+  "companyId": "13e61789-5895-451b-95a8-a7457a310c9e",
+  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb",
+  "projectWorkspaceId": "047a7078-fce3-46a4-aa5e-d66abc0a3f51",
+  "goalId": null,
+  "parentId": "59995fc0-9f79-40e3-b6bc-1ec5345834f6",
+  "title": "URGENT: clean up i18n leak into upstream paperclip repo + add guardrail",
+  "description": "## Critical: localization leak into wrong repo\n\nThe board (ZAI-163) flagged that localization changes appeared in `C:\\Users\\vibecoder_blogger\\PycharmProjects\\paperclip` \u2014 that is the **upstream public** `paperclipai/paperclip` repo, not our `paperclip_fork_Enterprise` working tree. **Any changes there are forbidden.**\n\n### Current state of the wrong repo (verified by CEO)\n\n- Path: `C:\\Users\\vibecoder_blogger\\PycharmProjects\\paperclip`\n- Remote: `origin \u2192 https://github.com/paperclipai/paperclip.git` (the public upstream)\n- Active branch: `zai-24-fix-ru-access-roles-board`\n- Uncommitted: 75 modified files (de/el/en/es/pt/ru/uk/zh locale JSONs + several `ui/src/...` files + `server/src/worktree-config.ts`) plus 5 untracked\n- i18n commits already on the branch (NOT pushed to upstream remote yet, but local):\n  - `46d86080 [i18n/R3] ZAI-140: localize dashboard Agents heading, run-status labels, chart legend`\n  - `c2904e04 i18n(ru): translate access_roles.board to \u0421\u043e\u0432\u0435\u0442`\n  - `347938b9 i18n(el): add missing cli_auth.sign_in_btn to Greek locale`\n\n### Probable root cause\n\nThe Localization Agent (`2c35ae09-781d-4a7c-880b-8abd833fd682`, currently `running`) appears to have a worktree, instructions, or a hard-coded `cwd` pointing at the wrong path. Verify in its instructions/agent config and the issue execution-workspace settings for any localization issues currently in flight.\n\n### Required actions (in order)\n\n1. **Stop the bleeding immediately.** Pause the Localization Agent or block any in-flight heartbeats from writing to `C:\\Users\\vibecoder_blogger\\PycharmProjects\\paperclip`. Confirm no other agents have a worktree there.\n2. **Audit scope.** Capture full `git status` and `git log master..HEAD --oneline` in the wrong repo. Capture the diff of uncommitted changes too. Save under `qa-zai163-leak/` in `_fork_Enterprise` for the record.\n3. **Preserve valuable work.** For each i18n commit and each modified file in the wrong repo, check whether the equivalent change is already in `paperclip_fork_Enterprise`. If not, cherry-pick / port the WIP into the fork on the appropriate branch (likely `vib-1171-2652-2760-3582-localization` or a successor) through the normal review path. **Do NOT** push the wrong-repo branch to the public `paperclipai/paperclip` remote.\n4. **Clean the wrong repo.** Once preserved, restore the wrong repo to a clean state on its tracked upstream branch. Coordinate with the board before any destructive op (`reset --hard`, branch deletion, `git push`).\n5. **Add a guardrail.** Either: hard-code the Localization Agent's working directory to `C:\\Users\\vibecoder_blogger\\PycharmProjects\\paperclip_fork_Enterprise` in its instructions/config, AND/OR add a pre-flight check in the heartbeat that asserts `git remote get-url origin` matches the fork and aborts if the cwd resolves outside `_fork_Enterprise`. Document the safeguard in the Localization Agent's `AGENTS.md`.\n6. **Report back** with: what was preserved (commits cherry-picked, files ported), what was discarded, the exact guardrail that now prevents recurrence, and confirmation the wrong repo is clean and that the Localization Agent only operates in `_fork_Enterprise`.\n\n### Hard rules\n\n- **Do not** force-push to the public `paperclipai/paperclip` remote.\n- **Do not** rewrite history on shared branches without board sign-off.\n- **Do not** delete uncommitted changes before confirming they are duplicated in `_fork_Enterprise`.\n\nReturn to the CEO with status `in_review` once steps 1\u20135 are complete.\n",
+  "status": "todo",
+  "priority": "critical",
+  "assigneeAgentId": "f46ac66f-1fda-464c-8df7-50fe2412e5b8",
+  "assigneeUserId": null,
+  "checkoutRunId": null,
+  "executionRunId": null,
+  "executionAgentNameKey": null,
+  "executionLockedAt": null,
+  "createdByAgentId": "db69a3af-4281-40f9-9612-00d9c9c80315",
+  "createdByUserId": null,
+  "issueNumber": 164,
+  "identifier": "ZAI-164",
+  "originKind": "manual",
+  "originId": null,
+  "originRunId": null,
+  "originFingerprint": "default",
+  "requestDepth": 0,
+  "billingCode": null,
+  "assigneeAdapterOverrides": null,
+  "executionPolicy": {
+    "mode": "normal",
+    "stages": [
+      {
+        "id": "b53f3dc1-9bd4-494b-a705-2219b978c882",
+        "type": "review",
+        "participants": [
+          {
+            "id": "a7169a4c-a1b4-4b1a-8d84-fd2246bf0efb",
+            "type": "agent",
+            "userId": null,
+            "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315"
+          }
+        ],
+        "approvalsNeeded": 1
+      },
+      {
+        "id": "686db915-ea25-4cb2-b6e1-7d68a36f5edb",
+        "type": "approval",
+        "participants": [
+          {
+            "id": "1f353fd1-0b2e-498c-a3b4-d63e1374030c",
+            "type": "agent",
+            "userId": null,
+            "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315"
+          }
+        ],
+        "approvalsNeeded": 1
+      }
+    ],
+    "commentRequired": true
+  },
+  "executionState": null,
+  "executionWorkspaceId": null,
+  "executionWorkspacePreference": null,
+  "executionWorkspaceSettings": null,
+  "startedAt": null,
+  "completedAt": null,
+  "cancelledAt": null,
+  "hiddenAt": null,
+  "createdAt": "2026-05-08T02:33:07.984Z",
+  "updatedAt": "2026-05-08T02:33:07.984Z",
+  "labels": [],
+  "labelIds": [],
+  "relatedWork": {
+    "outbound": [
+      {
+        "issue": {
+          "id": "59995fc0-9f79-40e3-b6bc-1ec5345834f6",
+          "identifier": "ZAI-163",
+          "title": "\u043e\u0448\u0438\u0431\u043e\u0447\u043d\u043e, \u043b\u043e\u043a\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u043f\u043e\u044f\u0432\u0438\u043b\u0430\u0441\u044c \u0432 C:\\Users\\vibecoder_blogger\\PycharmProjects\\paperclip",
+          "status": "in_progress",
+          "priority": "medium",
+          "assigneeAgentId": "db69a3af-4281-40f9-9612-00d9c9c80315",
+          "assigneeUserId": null
+        },
+        "mentionCount": 1,
+        "sources": [
+          {
+            "kind": "description",
+            "sourceRecordId": null,
+            "label": "description",
+            "matchedText": "ZAI-163"
+          }
+        ]
+      }
+    ],
+    "inbound": []
+  },
+  "referencedIssueIdentifiers": [
+    "ZAI-163"
+  ]
+}

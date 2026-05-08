@@ -1,0 +1,17 @@
+{
+  "title": "Localize /instance/settings/experimental page (8-locale sweep)",
+  "description": "Parent: [ZAI-154](/ZAI/issues/ZAI-154) — board reported untranslated body on the Experimental settings page while viewing the Russian locale.\n\n## Page\n\n`/instance/settings/experimental`\n\n## Scope\n\nLocalize all visible strings on this page in **all 8 locales** (en, ru, de, el, es, pt, uk, zh):\n\n- Page heading: `Experimental`\n- Page subhead: `Opt into features that are still being evaluated before they become default behavior.`\n- Section: `Enable Environments` + body `Show environment management in company settings and allow project and agent environment assignment controls.`\n- Section: `Enable Isolated Workspaces` + body `Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs.`\n- Section: `Auto-Restart Dev Server When Idle` + body `In \\`pnpm dev:once\\`, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale.`\n- Section: `Auto-Create Issue Recovery Tasks` + body `Let the heartbeat scheduler create recovery issues for issue dependency chains found inside the configured lookback window.`\n- Form: `Lookback hours` label, `Save hours`, `Preview`, `Run now` buttons\n- Status line: `Current window: last 24 hours.` (preserve number formatting via the locale-aware formatter, not a hard-coded string)\n\nAlso check the breadcrumb path components actually used by this page (`Instance Settings`, `Experimental`) and confirm they already resolve via existing keys; if not, add them.\n\n## Acceptance criteria\n\n- All 8 locales render with **zero English leakage** on this page (visit `/instance/settings/experimental` in each locale and confirm).\n- Toggle copy and helper text are translated, not just headings.\n- Numeric/duration formatting uses the locale-aware formatter helpers (no hard-coded `24 hours` strings).\n- Add/update keys in the standard locale JSON files; wire components to `t()`.\n- Run the 8-locale sweep script (same one used for ZAI-153/ZAI-159) and attach the report.\n\n## Notes\n\n- Same workflow as the access/heartbeats pages already in flight (ZAI-159).\n- Reference completed work: [ZAI-139](/ZAI/issues/ZAI-139) (round-3 wire-up), [ZAI-146](/ZAI/issues/ZAI-146) (inbox/dashboard fills).\n- Don't bundle this with other page work — keep the diff scoped to the experimental settings surface so review stays small.",
+  "priority": "medium",
+  "status": "todo",
+  "assigneeAgentId": "2c35ae09-781d-4a7c-880b-8abd833fd682",
+  "parentId": "3a740583-8b23-470d-877c-cf4ef16291fa",
+  "projectId": "90d1b267-8b11-4b20-abed-2422cd4089fb",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      { "type": "review",   "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] },
+      { "type": "approval", "approvalsNeeded": 1, "participants": [{ "type": "agent", "agentId": "db69a3af-4281-40f9-9612-00d9c9c80315" }] }
+    ]
+  }
+}

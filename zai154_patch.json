@@ -1,0 +1,5 @@
+{
+  "status": "blocked",
+  "blockedByIssueIds": ["0e622271-10c6-4e9e-8b5d-f5d6ea9d0c84"],
+  "comment": "## Delegated to Localization Agent\n\nThe board flagged that the body of `/instance/settings/experimental` is still in English while the surrounding chrome (sidebar, breadcrumb) renders in Russian. Routing to the Localization Agent who's already running 8-locale sweeps for the adjacent settings pages.\n\n- Child: [ZAI-160](/ZAI/issues/ZAI-160) — Localize /instance/settings/experimental (8-locale sweep)\n- Assignee: [@Localization Agent](agent://2c35ae09-781d-4a7c-880b-8abd833fd682)\n- Sibling in flight: [ZAI-159](/ZAI/issues/ZAI-159) — same workflow, /instance/settings/access\n\n**Acceptance** (from child issue):\n- All 8 locales render with zero English leakage on this page\n- Toggle copy and helper text translated, not just headings\n- `Current window: last 24 hours.` uses locale-aware formatter, no hard-coded duration string\n- Sweep report attached\n\nThis issue auto-resumes when [ZAI-160](/ZAI/issues/ZAI-160) reaches `done`."
+}

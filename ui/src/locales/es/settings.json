@@ -36,6 +36,7 @@
   "instance": {
     "title": "General",
     "instance_breadcrumb": "Configuración de instancia",
+    "loading": "Cargando configuración general...",
     "error_sign_out_failed": "Error al cerrar sesión.",
     "error_update_failed": "Error al actualizar la configuración general.",
     "error_load_failed": "Error al cargar la configuración general.",

@@ -36,6 +36,7 @@
   "instance": {
     "title": "Общее",
     "instance_breadcrumb": "Настройки экземпляра",
+    "loading": "Загрузка общих настроек...",
     "error_sign_out_failed": "Не удалось выйти.",
     "error_update_failed": "Не удалось обновить общие настройки.",
     "error_load_failed": "Не удалось загрузить общие настройки.",

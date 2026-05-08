@@ -69,7 +69,11 @@
     "reinstalled_body": "\"{{type}}\" 已从 npm 更新。{{versionSuffix}}",
     "company_fallback": "公司",
     "tooltip_local_path": "从本地路径安装",
-    "tooltip_npm": "从 npm 安装"
+    "tooltip_npm": "从 npm 安装",
+    "reinstall_btn": "重新安装",
+    "reinstalling_btn": "正在重新安装...",
+    "remove_btn": "移除",
+    "removing_btn": "正在移除..."
   },
   "claude_local": {
     "instructions_file": "智能体指令文件",

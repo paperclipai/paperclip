@@ -1,0 +1,5 @@
+ZAI-89 | in_review | ass=db69a3af-428 | upd=2026-05-06T20:58:10 | ZAI-88-A5: i18n global utility leaks (StatusBadge + KeyboardShortcuts + Sidebar 
+ZAI-92 | todo | ass=2c35ae09-781 | upd=2026-05-06T20:30:02 | ZAI-88-A2: i18n AgentConfigForm.tsx (84 строки)
+ZAI-113 | in_progress | ass=db69a3af-428 | upd=2026-05-06T21:02:58 | ZAI-88 health monitor — 15min CEO wake
+ZAI-95 | in_progress | ass=2c35ae09-781 | upd=2026-05-06T19:52:48 | ZAI-88-A6: i18n DE locale (213 missing keys)
+ZAI-98 | in_progress | ass=db69a3af-428 | upd=2026-05-06T19:44:40 | ZAI-88 health monitor — 15min CEO wake
