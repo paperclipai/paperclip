@@ -1024,7 +1024,14 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      priority?: string | null;
+    },
+    options?: { allowSecurityRoleBypass?: boolean },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1038,6 +1045,33 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      if (
+        options?.allowSecurityRoleBypass
+        && (issue.priority === "critical" || issue.priority === "high")
+      ) {
+        const actorAgent = await agentsSvc.getById(actorAgentId);
+        if (actorAgent && actorAgent.companyId === issue.companyId && actorAgent.role === "security") {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "cross_assignee_security_comment",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              safeguard_role_bypass: true,
+              callerAgentId: actorAgentId,
+              issueId: issue.id,
+              priority: issue.priority,
+              assigneeAgentId: issue.assigneeAgentId,
+            },
+          });
+          return true;
+        }
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -4137,7 +4171,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowSecurityRoleBypass: true }))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
