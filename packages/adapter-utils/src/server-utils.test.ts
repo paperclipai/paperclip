@@ -211,7 +211,7 @@ describe("runChildProcess", () => {
     const result = await runChildProcess(
       randomUUID(),
       "sh",
-      ["-lc", "cat /proc/*/environ"],
+      ["-lc", "echo $(printenv)"],
       {
         cwd: process.cwd(),
         env: {

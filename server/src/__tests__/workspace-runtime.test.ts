@@ -213,8 +213,8 @@ describe("workspace command runtime preflight", () => {
         },
         workspace: buildWorkspace(root),
         command: {
-          name: "dump-proc-env",
-          command: "cat /proc/$PPID/environ",
+          name: "dump-substitution-env",
+          command: "echo $(printenv)",
         },
         adapterEnv: {
           PAPERCLIP_SENTINEL_SECRET: "should-not-appear",

@@ -47,6 +47,24 @@ describe("runtime command preflight", () => {
     expect(blocked("bash", ["-lc", "command -v env"])).toBeNull();
   });
 
+  it("blocks shell substitution, grouping, keyword wrapper, and time wrapper dump forms", () => {
+    expect(blocked("sh", ["-lc", "echo $(env)"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "echo $(printenv)"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
+    expect(blocked("sh", ["-lc", "echo `env`"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "(env)"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "if env; then echo ok; fi"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
+    expect(blocked("sh", ["-lc", "while printenv; do break; done"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
+    expect(blocked("sh", ["-lc", "time env"])).toMatchObject({ code: "broad_runtime_env_inspection" });
+    expect(blocked("sh", ["-lc", "echo '$(env)'"])).toBeNull();
+    expect(blocked("sh", ["-lc", "time echo ok"])).toBeNull();
+  });
+
   it("blocks proc environ reads before command execution", () => {
     expect(blocked("cat", ["/proc/self/environ"])).toMatchObject({ code: "broad_runtime_env_inspection" });
     expect(blocked("sh", ["-lc", "tr '\\0' '\\n' < /proc/123/environ"])).toMatchObject({

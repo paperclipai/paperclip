@@ -131,7 +131,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
           strictHostKeyChecking: true,
         },
       },
-      "cat /proc/$PPID/environ",
+      "echo $(printenv)",
       {
         cwd: "/tmp/local",
         env: {
