@@ -199,6 +199,7 @@ function UsageList({
 
 export function UserProfile() {
   const { t } = useTranslation("company");
+  const { t: tActivity } = useTranslation("activity");
   const { userSlug = "" } = useParams<{ userSlug: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -341,9 +342,11 @@ export function UserProfile() {
               {data.recentActivity.map((event) => (
                 <li key={event.id} className="grid gap-2 py-2.5 sm:grid-cols-[1fr_auto] sm:items-center">
                   <div className="min-w-0">
-                    <div className="truncate text-sm">{event.action.replaceAll("_", " ")}</div>
+                    <div className="truncate text-sm">
+                      {tActivity(`verbs.${event.action.replace(".", "_")}`, { defaultValue: event.action.replaceAll("_", " ") })}
+                    </div>
                     <div className="truncate text-xs text-muted-foreground">
-                      {event.entityType} · {event.entityId.slice(0, 12)}
+                      {tActivity(`filter.entity_types.${event.entityType}`, { defaultValue: event.entityType })} · {event.entityId.slice(0, 12)}
                     </div>
                   </div>
                   <span className="text-xs tabular-nums text-muted-foreground sm:justify-self-end">{relativeTime(event.createdAt)}</span>
