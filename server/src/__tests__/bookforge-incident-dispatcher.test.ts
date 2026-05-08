@@ -6,7 +6,11 @@ import {
   buildBookforgeRepairIssueDraft,
   type BookforgeDispatchAgent,
 } from "../services/bookforge-incident-dispatcher.js";
-import { buildBookforgeQualityHoldSummary } from "../services/bookforge-runtime-monitor.js";
+import {
+  buildBookforgeQualityHoldSummary,
+  buildBookforgeTargetMismatchSummary,
+  findBookforgeApprovedTargetMismatch,
+} from "../services/bookforge-runtime-monitor.js";
 
 const agents: BookforgeDispatchAgent[] = [
   { id: "ceo", name: "Bookforge Steward CEO", status: "idle" },
@@ -46,7 +50,29 @@ describe("Bookforge incident dispatcher", () => {
     expect(plan.targets).toHaveLength(3);
     expect(plan.targets.every((target) => target.source === "automation")).toBe(true);
     expect(plan.targets.every((target) => target.reason === "bookforge_incident_dispatch")).toBe(true);
+    expect(plan.targets.every((target) => target.contextSnapshot.forceFreshSession === true)).toBe(true);
     expect(plan.targets.every((target) => target.idempotencyKey?.startsWith("bookforge-incident:issue-1:"))).toBe(true);
+  });
+
+  it("routes wrong-book target mismatches across Steward, Publication, Engineering, and Runtime", () => {
+    const plan = planBookforgeIncidentDispatch({
+      agents,
+      sourceAgentId: "watchman",
+      sourceAgentName: "Bookforge Watchman",
+      issueId: "issue-wrong-book",
+      incidentKind: "bookforge_wrong_book_target_mismatch",
+      severity: "critical",
+      summary: "Approved target is Widow but live stale policy says Last Safe Lie",
+    });
+
+    expect(plan.allowed).toBe(true);
+    expect(plan.targets.map((target) => target.agentName)).toEqual([
+      "Bookforge Steward CEO",
+      "Bookforge Publisher",
+      "Bookforge Forgewright",
+      "Bookforge Runtime Governor",
+    ]);
+    expect(plan.targets.every((target) => target.contextSnapshot.forceFreshSession === true)).toBe(true);
   });
 
   it("refuses generic recovery-loop incidents so Paperclip does not create storm wakes", () => {
@@ -240,6 +266,95 @@ describe("Bookforge incident dispatcher", () => {
     expect(summary).toContain("Queue item: queue-14");
     expect(summary).toContain("chain_of_custody");
     expect(buildBookforgeQualityHoldSummary({ counts: { running: 1 }, attention: null })).toBeNull();
+  });
+
+  it("detects approved-target mismatches even when no quality hold is present", () => {
+    const mismatch = findBookforgeApprovedTargetMismatch(
+      {
+        counts: { running: 1, quality_hold: 0 },
+        items: [
+          {
+            id: "old-item",
+            yaml: "the_last_safe_lie.yaml",
+            project_name: "the_last_safe_lie",
+            status: "done",
+          },
+          {
+            id: "live-item",
+            yaml: "the_widow_in_room_twelve.yaml",
+            project_name: "the_widow_in_room_twelve",
+            status: "running",
+            activity: "ghostwriter",
+            chapter: 3,
+            completed_chapters: 2,
+            cost_usd: 0.23,
+          },
+        ],
+      },
+      { running: true, current_item_id: "live-item", paused: false, stop_requested: false },
+      { yaml: "the_last_safe_lie.yaml", itemId: "old-item" },
+    );
+
+    expect(mismatch).not.toBeNull();
+    expect(mismatch?.liveYaml).toBe("the_widow_in_room_twelve.yaml");
+    expect(mismatch?.approvedYaml).toBe("the_last_safe_lie.yaml");
+    expect(mismatch?.liveItemId).toBe("live-item");
+    expect(buildBookforgeTargetMismatchSummary(mismatch!)).toContain("BOOKFORGE WRONG-BOOK TARGET MISMATCH");
+    expect(buildBookforgeTargetMismatchSummary(mismatch!)).toContain("Approved target: the_last_safe_lie.yaml");
+    expect(buildBookforgeTargetMismatchSummary(mismatch!)).toContain("Live target: the_widow_in_room_twelve.yaml");
+  });
+
+  it("does not flag the approved target when the worker is running the matching queue item", () => {
+    const mismatch = findBookforgeApprovedTargetMismatch(
+      {
+        counts: { running: 1, quality_hold: 0 },
+        items: [
+          {
+            id: "widow-item",
+            yaml: "the_widow_in_room_twelve.yaml",
+            project_name: "the_widow_in_room_twelve",
+            status: "running",
+          },
+        ],
+      },
+      { running: true, current_item_id: "widow-item", paused: false, stop_requested: false },
+      { yaml: "the_widow_in_room_twelve.yaml", itemId: "widow-item" },
+    );
+
+    expect(mismatch).toBeNull();
+  });
+
+  it("continues waking remaining Bookforge targets when one planned agent is paused", async () => {
+    const wakeup = vi.fn(async (agentId: string) => {
+      if (agentId === "scribe") {
+        const error = new Error("Agent is not invokable in its current state") as Error & { status?: number; details?: unknown };
+        error.status = 409;
+        error.details = { status: "paused" };
+        throw error;
+      }
+      return { queued: true };
+    });
+
+    const result = await dispatchBookforgeIncident({
+      agents,
+      sourceAgentId: "watchman",
+      sourceAgentName: "Bookforge Watchman",
+      issueId: "issue-paused-agent",
+      incidentKind: "chapter_repair_quality_hold",
+      severity: "high",
+      summary: "Chapter 5 quality hold needs continuity repair",
+      wakeup,
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(wakeup).toHaveBeenCalledTimes(5);
+    expect(result.wakeResults).toHaveLength(5);
+    expect(result.wakeResults[0]).toEqual(expect.objectContaining({
+      agentId: "scribe",
+      agentName: "Bookforge Scribe",
+      ok: false,
+    }));
+    expect(result.wakeResults.slice(1).every((entry) => entry.ok)).toBe(true);
   });
 
   it("wakes planned targets with idempotent automation requests", async () => {

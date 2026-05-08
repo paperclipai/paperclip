@@ -16,6 +16,7 @@ export type BookforgeIncidentKind =
   | "cost_spike"
   | "model_routing"
   | "bookforge_worker_unapproved_running"
+  | "bookforge_wrong_book_target_mismatch"
   | "bookforge_runtime_restart"
   | "bookforge_generation_resume"
   | "bookforge_server_down"
@@ -111,7 +112,13 @@ export interface BookforgeRepairIssueDraft {
 }
 
 export interface BookforgeIncidentDispatchResult extends BookforgeIncidentDispatchPlan {
-  wakeResults: Array<{ agentId: string; agentName: string; result: unknown }>;
+  wakeResults: Array<{
+    agentId: string;
+    agentName: string;
+    ok: boolean;
+    result?: unknown;
+    error?: { message: string; status?: unknown; details?: unknown };
+  }>;
 }
 
 export type BookforgeIncidentWakeup = (
@@ -274,8 +281,27 @@ export function validateBookforgeRepairAcceptance(
   };
 }
 
+function isWrongBookTargetIncident(incidentKind: string, summary?: string | null) {
+  const kind = normalize(incidentKind);
+  return (
+    kind.includes("wrong_book") ||
+    kind.includes("target_mismatch") ||
+    (kind.includes("worker") && kind.includes("unapproved") && normalize(summary).includes("wrong-book"))
+  );
+}
+
 function targetNamesForIncident(incidentKind: string, severity: string, summary?: string | null) {
   const kind = normalize(incidentKind);
+
+  if (isWrongBookTargetIncident(incidentKind, summary)) {
+    return [
+      "Bookforge Steward CEO",
+      "Bookforge Publisher",
+      "Bookforge Forgewright",
+      "Bookforge Runtime Governor",
+      "Bookforge Watchman",
+    ];
+  }
 
   if (kind.includes("worker") || kind.includes("queue") || kind.includes("state") || kind.includes("incident") || kind.includes("runtime") || kind.includes("server") || kind.includes("generation")) {
     return ["Bookforge Runtime Governor", "Bookforge Incident Coordinator", "Bookforge Treasurer"];
@@ -386,7 +412,7 @@ export function planBookforgeIncidentDispatch(input: BookforgeIncidentDispatchIn
   const severity = normalize(input.severity) || "medium";
   const incidentKind = normalize(input.incidentKind) || "general";
   const repairAcceptanceGate = buildBookforgeRepairAcceptanceGate(incidentKind, input.summary);
-  const defaultFanout = repairAcceptanceGate ? 5 : 3;
+  const defaultFanout = repairAcceptanceGate ? 5 : isWrongBookTargetIncident(incidentKind, input.summary) ? 5 : 3;
   const fanoutLimit = Math.max(1, Math.min(Math.floor(input.maxFanout ?? defaultFanout), 5));
 
   if (looksLikeRecoveryStorm(input)) {
@@ -423,6 +449,7 @@ export function planBookforgeIncidentDispatch(input: BookforgeIncidentDispatchIn
         repairAcceptanceGate,
       },
       contextSnapshot: {
+        forceFreshSession: true,
         source: "bookforge.watchman.dispatcher",
         issueId: input.issueId ?? null,
         incidentKind,
@@ -444,24 +471,38 @@ export async function dispatchBookforgeIncident(
   input: BookforgeIncidentDispatchInput & { wakeup: BookforgeIncidentWakeup },
 ): Promise<BookforgeIncidentDispatchResult> {
   const plan = planBookforgeIncidentDispatch(input);
-  const wakeResults: Array<{ agentId: string; agentName: string; result: unknown }> = [];
+  const wakeResults: BookforgeIncidentDispatchResult["wakeResults"] = [];
 
   if (!plan.allowed) {
     return { ...plan, wakeResults };
   }
 
   for (const target of plan.targets) {
-    const result = await input.wakeup(target.agentId, {
-      source: target.source,
-      triggerDetail: target.triggerDetail,
-      reason: target.reason,
-      payload: target.payload,
-      idempotencyKey: target.idempotencyKey,
-      requestedByActorType: "system",
-      requestedByActorId: input.sourceAgentId ?? null,
-      contextSnapshot: target.contextSnapshot,
-    });
-    wakeResults.push({ agentId: target.agentId, agentName: target.agentName, result });
+    try {
+      const result = await input.wakeup(target.agentId, {
+        source: target.source,
+        triggerDetail: target.triggerDetail,
+        reason: target.reason,
+        payload: target.payload,
+        idempotencyKey: target.idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: input.sourceAgentId ?? null,
+        contextSnapshot: target.contextSnapshot,
+      });
+      wakeResults.push({ agentId: target.agentId, agentName: target.agentName, ok: true, result });
+    } catch (error) {
+      const maybeError = error as { message?: string; status?: unknown; details?: unknown };
+      wakeResults.push({
+        agentId: target.agentId,
+        agentName: target.agentName,
+        ok: false,
+        error: {
+          message: typeof maybeError.message === "string" ? maybeError.message : String(error),
+          status: maybeError.status,
+          details: maybeError.details,
+        },
+      });
+    }
   }
 
   return { ...plan, wakeResults };

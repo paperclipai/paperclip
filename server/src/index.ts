@@ -792,6 +792,12 @@ export async function startServer(): Promise<StartedServer> {
       companyId: bookforgeMonitorCompanyId,
       bookforgeBaseUrl: process.env.PAPERCLIP_BOOKFORGE_BASE_URL ?? "http://127.0.0.1:5012",
       intervalMs: Number(process.env.PAPERCLIP_BOOKFORGE_MONITOR_INTERVAL_MS ?? 60000),
+      approvedTarget: {
+        yaml: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_YAML ?? null,
+        itemId: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_ITEM_ID ?? null,
+        projectName: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_PROJECT ?? null,
+      },
+      approvedTargetFile: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_FILE ?? `${process.env.HOME ?? ""}/.paperclip/bookforge-approved-target.json`,
       logger,
     }).start();
   }
