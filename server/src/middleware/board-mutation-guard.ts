@@ -58,7 +58,14 @@ export function boardMutationGuard(): RequestHandler {
 
     // Local-trusted mode and board bearer keys are not browser-session requests.
     // In these modes, origin/referer headers can be absent; do not block those mutations.
-    if (req.actor.source === "local_implicit" || req.actor.source === "board_key") {
+    // telegram_chat_id source is the bot acting on-behalf-of a linked user — the
+    // upgrade requires both a valid agent-key AND a previously-linked chat id, so
+    // it carries the same trust level as a board key (no browser origin available).
+    if (
+      req.actor.source === "local_implicit" ||
+      req.actor.source === "board_key" ||
+      req.actor.source === "telegram_chat_id"
+    ) {
       next();
       return;
     }
