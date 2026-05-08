@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,8 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -164,6 +166,120 @@ describeEmbeddedPostgres("dashboard service", () => {
       failed: 2,
       other: 1,
       total: 3,
+    });
+  });
+
+  it("counts override comments and surfaces reasons in the same 30-day window", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "OverrideCo",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "OtherCo",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Ship the feature",
+        identifier: "OVR-1",
+        status: "done",
+      },
+      {
+        id: otherIssueId,
+        companyId: otherCompanyId,
+        title: "Other company issue",
+        identifier: "OTH-1",
+        status: "done",
+      },
+    ]);
+
+    const recentDate = utcDay(-5);
+    const oldDate = utcDay(-35);
+
+    await db.insert(issueComments).values([
+      // Recent override comment — must appear in results
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: "user-1",
+        body: "Shipping anyway — deadline is tomorrow",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        metadata: { outcomeOverride: true, actorUserId: "user-1" } as any,
+        createdAt: recentDate,
+      },
+      // Older than 30 days — must NOT be counted
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: "user-1",
+        body: "Old override, should not count",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        metadata: { outcomeOverride: true, actorUserId: "user-1" } as any,
+        createdAt: oldDate,
+      },
+      // Non-override comment — must not be counted
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: "user-1",
+        body: "Just a regular comment",
+        createdAt: recentDate,
+      },
+      // Different company override — must not leak into companyId results
+      {
+        id: randomUUID(),
+        companyId: otherCompanyId,
+        issueId: otherIssueId,
+        authorType: "user",
+        authorUserId: "user-2",
+        body: "Other company override",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        metadata: { outcomeOverride: true, actorUserId: "user-2" } as any,
+        createdAt: recentDate,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.outcomeOverrides.last30Days).toBe(1);
+    expect(summary.outcomeOverrides.recentReasons).toHaveLength(1);
+    expect(summary.outcomeOverrides.recentReasons[0]).toMatchObject({
+      issueIdentifier: "OVR-1",
+      issueTitle: "Ship the feature",
+      reason: "Shipping anyway — deadline is tomorrow",
     });
   });
 });
