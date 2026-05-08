@@ -11,7 +11,8 @@
       "approval": "Согласование",
       "invite": "Приглашение",
       "company": "Компания",
-      "heartbeat_run": "Сердцебиение"
+      "heartbeat_run": "Сердцебиение",
+      "environment_lease": "Аренда окружения"
     }
   },
   "empty": {

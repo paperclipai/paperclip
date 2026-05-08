@@ -11,7 +11,8 @@
       "approval": "Погодження",
       "invite": "Запрошення",
       "company": "Компанія",
-      "heartbeat_run": "Моніторинг"
+      "heartbeat_run": "Моніторинг",
+      "environment_lease": "Оренда Середовища"
     }
   },
   "empty": {

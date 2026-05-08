@@ -182,17 +182,27 @@ function formatChangedEntityLabel(
   return `${labels.length} ${plural}`;
 }
 
-function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
+function formatIssueUpdatedVerb(details: ActivityDetails, options: ActivityFormatOptions = {}): string | null {
   if (!details) return null;
   const previous = asRecord(details._previous) ?? {};
   if (details.status !== undefined) {
     const from = previous.status;
+    if (options.t) {
+      return from
+        ? options.t("changes.changed_status_from", { from: humanizeValue(from), to: humanizeValue(details.status) })
+        : options.t("changes.changed_status_to", { to: humanizeValue(details.status) });
+    }
     return from
       ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
       : `changed status to ${humanizeValue(details.status)} on`;
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
+    if (options.t) {
+      return from
+        ? options.t("changes.changed_priority_from", { from: humanizeValue(from), to: humanizeValue(details.priority) })
+        : options.t("changes.changed_priority_to", { to: humanizeValue(details.priority) });
+    }
     return from
       ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`
       : `changed priority to ${humanizeValue(details.priority)} on`;
@@ -220,26 +230,50 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
 
   if (details.status !== undefined) {
     const from = previous.status;
-    parts.push(
-      from
-        ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-        : `changed the status to ${humanizeValue(details.status)}`,
-    );
+    if (options.t) {
+      parts.push(
+        from
+          ? options.t("changes.changed_status_from_detail", { from: humanizeValue(from), to: humanizeValue(details.status) })
+          : options.t("changes.changed_status_to_detail", { to: humanizeValue(details.status) }),
+      );
+    } else {
+      parts.push(
+        from
+          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          : `changed the status to ${humanizeValue(details.status)}`,
+      );
+    }
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
-    parts.push(
-      from
-        ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-        : `changed the priority to ${humanizeValue(details.priority)}`,
-    );
+    if (options.t) {
+      parts.push(
+        from
+          ? options.t("changes.changed_priority_from_detail", { from: humanizeValue(from), to: humanizeValue(details.priority) })
+          : options.t("changes.changed_priority_to_detail", { to: humanizeValue(details.priority) }),
+      );
+    } else {
+      parts.push(
+        from
+          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          : `changed the priority to ${humanizeValue(details.priority)}`,
+      );
+    }
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
     const assigneeName = formatAssigneeName(details, options);
-    parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
+    if (options.t) {
+      parts.push(assigneeName ? options.t("changes.assigned_to", { name: assigneeName }) : options.t("changes.unassigned"));
+    } else {
+      parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
+    }
   }
-  if (details.title !== undefined) parts.push("updated the title");
-  if (details.description !== undefined) parts.push("updated the description");
+  if (details.title !== undefined) {
+    parts.push(options.t ? options.t("changes.updated_title") : "updated the title");
+  }
+  if (details.description !== undefined) {
+    parts.push(options.t ? options.t("changes.updated_description") : "updated the description");
+  }
 
   return parts.length > 0 ? parts.join(", ") : null;
 }
@@ -292,7 +326,7 @@ export function formatActivityVerb(
   options: ActivityFormatOptions = {},
 ): string {
   if (action === "issue.updated") {
-    const issueUpdatedVerb = formatIssueUpdatedVerb(details);
+    const issueUpdatedVerb = formatIssueUpdatedVerb(details, options);
     if (issueUpdatedVerb) return issueUpdatedVerb;
   }
 

@@ -11,7 +11,8 @@
       "approval": "Έγκριση",
       "invite": "Πρόσκληση",
       "company": "Εταιρία",
-      "heartbeat_run": "Heartbeat"
+      "heartbeat_run": "Heartbeat",
+      "environment_lease": "Μίσθωση περιβάλλοντος"
     }
   },
   "empty": {

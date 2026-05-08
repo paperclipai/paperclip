@@ -11,7 +11,8 @@
       "approval": "审批",
       "invite": "邀请",
       "company": "公司",
-      "heartbeat_run": "心跳检测"
+      "heartbeat_run": "心跳检测",
+      "environment_lease": "环境租赁"
     }
   },
   "empty": {

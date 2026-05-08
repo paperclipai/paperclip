@@ -11,7 +11,8 @@
       "approval": "Aprobación",
       "invite": "Invitación",
       "company": "Empresa",
-      "heartbeat_run": "Heartbeat"
+      "heartbeat_run": "Heartbeat",
+      "environment_lease": "Arrendamiento de Entorno"
     }
   },
   "empty": {

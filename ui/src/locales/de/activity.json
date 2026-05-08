@@ -11,7 +11,8 @@
       "approval": "Genehmigung",
       "invite": "Einladung",
       "company": "Unternehmen",
-      "heartbeat_run": "Heartbeat"
+      "heartbeat_run": "Heartbeat",
+      "environment_lease": "Umgebungsleasingvertrag"
     }
   },
   "empty": {
