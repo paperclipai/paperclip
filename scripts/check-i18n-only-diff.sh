@@ -28,7 +28,9 @@ while IFS= read -r commit; do
     # ── Always-OK categories ─────────────────────────────────────────────────
     case "$filepath" in
       ui/src/locales/*.json)  continue ;;
+      ui/src/locales/*/**.json) continue ;;
       ui/src/locales/i18n.ts) continue ;;
+      ui/src/locales/~temp/*.md) continue ;;
       ui/package.json|pnpm-lock.yaml) continue ;;
       scripts/*|.github/*|.githooks/*) continue ;;
       AGENTS.md) continue ;;
@@ -69,6 +71,17 @@ while IFS= read -r commit; do
             echo "$content" | grep -qE "\] as \[string" && continue
             # TypeScript Parameters<typeof ...> utility type (needed for updateView type safety)
             echo "$content" | grep -qE "Parameters<typeof " && continue
+            # TFunc type alias used for t() function signatures
+            echo "$content" | grep -qE "\bTFunc\b" && continue
+            # i18n.language access (locale-aware formatters)
+            echo "$content" | grep -qE "i18n\.language" && continue
+            # tFallback pattern (optional fallback translation function)
+            echo "$content" | grep -qE "\btFallback\b" && continue
+            # formatActivityVerb / formatIssueActivityAction / formatTimelineActorName / formatTimelineAssigneeLabel
+            # — helper functions that receive t as an argument for locale-aware formatting
+            echo "$content" | grep -qE "formatActivity|formatIssueActivity|formatTimeline" && continue
+            # Functions/consts receiving t as a typed parameter: foo(…, t: …)
+            echo "$content" | grep -qE ",\s*t\s*[:,)]|,\s*t\b\s*\)" && continue
             # Stage-8 bypass: allow LanguageSwitcher import and component usage
             [[ $has_bypass -eq 1 ]] && echo "$content" | grep -qiE 'LanguageSwitcher' && continue
             # violation
