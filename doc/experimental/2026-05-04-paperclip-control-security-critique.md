@@ -20,9 +20,11 @@ The script is **excellently designed** for a single-operator dev/staging context
 
 > [!NOTE]
 > **Optional hardening**: The token could be stored in the macOS Keychain instead of a file:
+>
 > ```bash
 > OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s paperclip-op-token -w)"
 > ```
+>
 > This keeps the token out of the filesystem entirely. **Caveat**: `security find-generic-password` requires the login keychain to be unlocked, which happens automatically when the user is logged in. For truly headless scenarios (launchd at boot before login, SSH without keychain forwarding), the keychain would be locked and this would fail. The current `.envrc` file approach is more portable for non-interactive use.
 
 ---
@@ -69,8 +71,27 @@ The script exists at the intersection of these three tools' limitations. Docker 
 
 > [!NOTE]
 > **Alternatives that would eliminate this script:**
+>
 > - **Docker secrets + Swarm mode** — compose `secrets:` with external providers, but requires Swarm
 > - **1Password Connect Server** — a local API that containers query directly for secrets, bypassing `op run` entirely
 > - **Infisical / Doppler / Vault Agent** — dedicated secret injection sidecars that mount secrets as files or env vars inside the container
 >
 > All of these move secret resolution **inside** the container runtime rather than wrapping it from the outside. That's the architecturally correct boundary — but each adds deployment complexity that may not be justified for a single-operator dev setup.
+
+---
+
+## 🛠️ Rules for Agents (LinkCast Environment)
+
+When working in this repository, agents **must** use the following wrappers to interact with the environment. This ensures compliance with the security model and prevents secret leakage.
+
+### 1. Orchestration (pcc)
+
+* **Command**: `./paperclip-control.sh` (Commonly aliased as `pcc`)
+- **Rule**: Use for all lifecycle actions (start, stop, status, logs, etc.).
+- **Rationale**: Ensures 1Password secrets are whitelisted and injected into the container environment without host-level leakage.
+
+### 2. API Interaction (pca)
+
+* **Command**: `./paperclip-api.sh` (Commonly aliased as `pca`)
+- **Rule**: Use for all direct Paperclip API interactions (curl).
+- **Rationale**: Resolves `PAPERCLIP_API_KEY` from 1Password and uses temporary configuration files to prevent secret leakage in the system process list (`ps`).

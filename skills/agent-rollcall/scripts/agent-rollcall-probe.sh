@@ -45,5 +45,6 @@ exec "$DELEGATE_DIR/agent-create-issue.sh" \
   --title "$TITLE" \
   --assignee "$AGENT_ID" \
   --parent "$PARENT" \
+  --status "todo" \
   --origin-kind "rollcall_probe" \
   --description "$DESCRIPTION"
