@@ -178,7 +178,7 @@ export function Companies() {
                               : "bg-muted text-muted-foreground"
                         }`}
                       >
-                        {company.status}
+                        {t(`status_labels.${company.status}`, { defaultValue: company.status })}
                       </span>
                       <Button
                         variant="ghost"
