@@ -473,7 +473,17 @@
     "failed_load_workspace_log": "Falha ao carregar log de operações do espaço de trabalho",
     "instructions_placeholder": "# Instruções do agente",
     "skill_view_link": "Ver",
-    "approve_agent": "Aprovar agente"
+    "approve_agent": "Aprovar agente",
+    "clear_session_text": "limpar sessão para estas tarefas",
+    "clearing_session": "limpando sessão...",
+    "failure_details": "Detalhes da falha",
+    "jump_to_live": "Ir para ao vivo",
+    "load_more_log": "Carregar mais log",
+    "no_log_events": "Nenhum evento de log.",
+    "no_persisted_log_lines": "Nenhuma linha de log persistida.",
+    "transcript": "Transcrição",
+    "transcript_mode_nice": "nice",
+    "transcript_mode_raw": "raw"
   },
   "run_errors": {
     "exited_with_code": "Claude saiu com código {{code}}",
