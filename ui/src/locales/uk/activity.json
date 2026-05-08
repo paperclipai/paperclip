@@ -146,7 +146,15 @@
     "assignee_label": "Виконавець",
     "updated_task": "оновив цю задачу",
     "requested_follow_up": "запросив подальші дії",
-    "system": "Система"
+    "system": "Система",
+    "environment_label": "Середовище",
+    "failure_label": "Збій",
+    "lease_label": "Оренда",
+    "no_entries": "Немає записів у хроніці.",
+    "none": "Немає",
+    "provider_label": "Провайдер",
+    "run_label": "запуск",
+    "workspace_label": "Робочий простір"
   },
   "system": "System",
   "board": "Board",

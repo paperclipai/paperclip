@@ -21,6 +21,7 @@
   },
   "status": {
     "approved": "Aprovado",
+    "cancelled": "Cancelado",
     "pending": "Pendente",
     "rejected": "Rejeitado",
     "revision_requested": "Revisão Solicitada"

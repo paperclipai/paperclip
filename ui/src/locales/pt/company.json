@@ -29,6 +29,8 @@
     },
     "actions": {
       "save_changes": "Salvar alterações",
+      "saving": "Salvando...",
+      "failed_to_save": "Falha ao salvar",
       "remove_logo": "Remover logotipo",
       "removing_logo": "Removendo...",
       "clear_color": "Limpar",
@@ -48,8 +50,13 @@
       "votes_saved_locally": "Os votos são sempre salvos localmente. Esta configuração controla se as saídas de IA votadas também podem ser marcadas para compartilhamento com o Paperclip Labs.",
       "terms_version": "Versão dos termos:",
       "enabled_at": "Habilitado",
+      "enabled_at_by": "Habilitado {{date}} por {{user}}",
       "currently_disabled": "O compartilhamento está atualmente desabilitado.",
-      "read_tos": "Leia nossos termos de serviço"
+      "read_tos": "Leia nossos termos de serviço",
+      "sharing_enabled": "Compartilhamento de feedback habilitado",
+      "sharing_disabled": "Compartilhamento de feedback desabilitado",
+      "sharing_update_failed": "Falha ao atualizar configuração de compartilhamento de feedback",
+      "unknown_error": "Erro desconhecido"
     },
     "openclaw": {
       "generate_snippet": "Gerar um snippet de convite de agente OpenClaw.",
@@ -58,7 +65,9 @@
       "snippet_label": "Prompt de Convite OpenClaw",
       "copied": "Copiado",
       "copy_snippet": "Copiar snippet",
-      "copied_snippet": "Snippet copiado"
+      "copied_snippet": "Snippet copiado",
+      "generate_snippet_hint": "Gera um convite temporário de agente OpenClaw e exibe o prompt para cópia.",
+      "failed_to_create": "Falha ao criar convite"
     },
     "packages": {
       "moved_notice": "Importação e exportação foram movidas para páginas dedicadas acessíveis pelo",
@@ -70,8 +79,10 @@
     "danger": {
       "archive_notice": "Archive esta empresa para ocultá-la da barra lateral. Isso persiste no banco de dados.",
       "archive_button": "Arquivar empresa",
+      "already_archived": "Já arquivado",
       "archiving": "Arquivando...",
-      "confirm_archive": "Arquivar empresa"
+      "confirm_archive": "Arquivar empresa «{{name}}»? Ela será ocultada da barra lateral.",
+      "archive_failed": "Falha ao arquivar empresa"
     }
   },
   "import": {
@@ -146,7 +157,22 @@
     "export_button": "Exportar",
     "loading_data": "Carregando dados de exportação...",
     "select_company": "Selecione uma empresa para exportar.",
-    "company_export_title": "Exportação de {{name}}"
+    "company_export_title": "Exportação de {{name}}",
+    "binary_not_available": "Pré-visualização de arquivos binários não disponível para este tipo.",
+    "org_chart_breadcrumb": "Organograma",
+    "selection_count_one": "{{selected}} / {{total}} arquivo selecionado",
+    "selection_count_other": "{{selected}} / {{total}} arquivos selecionados",
+    "warnings_count_one": "{{count}} aviso",
+    "warnings_count_other": "{{count}} avisos",
+    "export_count_one": "Exportar {{count}} arquivo",
+    "export_count_other": "Exportar {{count}} arquivos",
+    "show_more_issues_count": "Mostrar mais tarefas ({{visible}} de {{total}})",
+    "toast_failed_title": "Exportação falhou",
+    "toast_failed_load": "Falha ao carregar dados de exportação.",
+    "toast_failed_build": "Falha ao criar pacote de exportação.",
+    "toast_downloaded_title": "Exportação baixada",
+    "toast_downloaded_body_one": "{{count}} arquivo exportado como {{path}}.zip",
+    "toast_downloaded_body_other": "{{count}} arquivos exportados como {{path}}.zip"
   },
   "invites": {
     "no_company": "Selecione uma empresa para gerenciar convites.",
@@ -428,7 +454,9 @@
     "open_assigned_issues_one": "{{count}} tarefa atribuída aberta",
     "open_assigned_issues_other": "{{count}} tarefas atribuídas abertas",
     "more_issues_one": "{{count}} tarefa a mais",
-    "more_issues_other": "{{count}} tarefas a mais"
+    "more_issues_other": "{{count}} tarefas a mais",
+    "member_fallback_name": "este membro",
+    "agent_option_label": "{{name}} ({{role}})"
   },
   "companies": {
     "breadcrumb": "Empresas",
@@ -483,7 +511,10 @@
     "toast_approved": "Solicitação de adesão aprovada",
     "toast_rejected": "Solicitação de adesão rejeitada",
     "unknown_human": "Solicitante humano desconhecido",
-    "unknown_agent": "Solicitante de agente desconhecido"
+    "unknown_agent": "Solicitante de agente desconhecido",
+    "breadcrumb_inbox": "Caixa de entrada",
+    "company_fallback": "Empresa",
+    "description_extra": "Esta fila usa as mesmas operações de aprovação que os cards integrados da caixa de entrada."
   },
   "invite": {
     "invalid_token": "Token de convite inválido.",
@@ -774,6 +805,41 @@
     }
   },
   "user_profile": {
+    "breadcrumb_users": "Usuários",
+    "select_company": "Selecione uma empresa para ver perfis de usuários.",
+    "not_found": "Perfil de usuário não encontrado para esta empresa.",
+    "last_14_days": "Últimos 14 dias",
+    "tokens_total": "tokens no total",
+    "tokens_per_day": "tokens / dia",
+    "completions": "execuções",
+    "done": "concluído",
+    "stat_touched": "Trabalhadas",
+    "stat_completed": "Concluídas",
+    "stat_comments": "Comentários",
+    "stat_actions": "Ações",
+    "stat_tokens": "Tokens",
+    "stat_spend": "Gastos",
+    "stat_created": "Criadas",
+    "stat_open": "Abertas",
+    "issue_linked_usage": "Uso por tarefa",
+    "billed_through": "Cobrado via {{provider}}",
+    "hero_all_time_tokens": "Tokens de todos os tempos",
+    "hero_completed": "Concluídas",
+    "hero_open_assigned": "Abertas atribuídas",
+    "hero_7day_actions": "Ações dos últimos 7 dias",
+    "hero_spent": "Gasto {{amount}}",
+    "hero_rate": "Taxa {{rate}}",
+    "hero_created": "Criadas {{n}}",
+    "hero_comments": "{{n}} comentários",
+    "recent_tasks": "Tarefas recentes",
+    "no_recent_tasks": "Nenhuma tarefa trabalhada ainda.",
+    "recent_activity": "Atividade recente",
+    "no_recent_activity": "Nenhuma ação direta do usuário registrada ainda.",
+    "agent_attribution": "Atribuição de agentes",
+    "no_agent_usage": "Nenhum uso de tokens por tarefa ainda.",
+    "provider_mix": "Distribuição de provedores",
+    "no_provider_usage": "Nenhum uso de provedores atribuído ainda.",
+    "joined": "entrou {{date}}",
     "role": {
       "owner": "proprietário",
       "admin": "administrador",

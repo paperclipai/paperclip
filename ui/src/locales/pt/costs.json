@@ -52,6 +52,8 @@
     "estimated_in_range": "estimado no período",
     "debits_credits": "{{debits}} débitos · {{credits}} créditos",
     "events_in_range_one": "{{count}} evento no período",
+    "events_in_range_few": "{{count}} eventos no período",
+    "events_in_range_many": "{{count}} eventos no período",
     "events_in_range_other": "{{count}} eventos no período"
   },
   "budget": {
@@ -68,8 +70,27 @@
   "cards": {
     "inference_ledger": "Razão de inferência",
     "inference_ledger_desc": "Gastos com inferência com escopo de requisição para o período selecionado.",
+    "inference_ledger_points": {
+      "point1": "tokens + dólares faturados",
+      "point2": "provedor, faturador, modelo",
+      "point3": "contabilidade de assinatura e excedentes"
+    },
     "finance_ledger": "Razão financeiro",
     "finance_ledger_desc": "Cobranças no nível de conta que não mapeiam para uma única requisição de inferência.",
+    "finance_ledger_points": {
+      "point1": "recargas, reembolsos, taxas",
+      "point2": "capacidade reservada ou treinamento Bedrock",
+      "point3": "expiração e ajuste de créditos"
+    },
+    "live_quotas": "Cotas ao vivo",
+    "live_quotas_desc": "Janelas de provedor ou faturador que podem parar o tráfego em tempo real.",
+    "live_quotas_points": {
+      "point1": "janelas de cota do provedor",
+      "point2": "sistemas de crédito do faturador",
+      "point3": "erros mapeados diretamente"
+    },
+    "accounting_model_title": "Modelo contábil",
+    "accounting_model_desc": "O Paperclip agora separa o uso de inferência no nível de requisição e eventos financeiros no nível de conta. Isso garante relatórios precisos quando o faturador é OpenRouter, Cloudflare, Bedrock ou outro intermediário.",
     "by_agent": "Por agente",
     "by_agent_desc": "O que cada agente consumiu no período selecionado.",
     "by_project": "Por projeto",
@@ -91,6 +112,14 @@
     "project_budgets_title": "Orçamentos de projetos"
   },
   "incident_card": {
+    "hard_stop": "parada forçada",
+    "resolved": "Resolvido",
+    "dismissed": "Descartado",
+    "escalated": "Escalado",
+    "pending_approval": "Aguardando aprovação",
+    "open": "Aberto",
+    "spending_reached": "Os gastos atingiram {{observed}} com limite de {{limit}}.",
+    "new_budget_usd": "Novo orçamento (USD)",
     "project_paused": "A execução do projeto está pausada. Novos trabalhos neste projeto não serão iniciados até você resolver o incidente de orçamento.",
     "scope_paused": "Este escopo está pausado. Novos heartbeats não serão iniciados até você resolver o incidente de orçamento.",
     "applying": "Aplicando...",
@@ -122,7 +151,10 @@
     "budget_usd": "Orçamento (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Pausado por orçamento"
+    "paused_by_budget": "Pausado por orçamento",
+    "healthy": "Orçamento saudável",
+    "warning": "Aviso de orçamento",
+    "critical": "Pausado por orçamento"
   },
   "empty": {
     "select_company": "Selecione uma empresa para ver os custos.",
@@ -159,7 +191,11 @@
     "api_runs_only": "~{{apiRuns}} execuções api",
     "sub_runs_only": "~{{subRuns}} execuções por assinatura",
     "percent_used": "{{percent}}% usado",
-    "resets": "reinicia {{date}}"
+    "resets": "reinicia {{date}}",
+    "runs_label": "execuções",
+    "total_label": "total",
+    "of_provider_tokens": "{{percent}}% dos tokens do provedor",
+    "of_provider_cost": "{{percent}}% dos gastos do provedor"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} execução medida",
@@ -168,7 +204,11 @@
     "subscription_runs_other": "{{count}} execuções por assinatura",
     "this_week": "esta semana",
     "billing_types": "Tipos de cobrança",
-    "upstream_providers": "Provedores upstream"
+    "upstream_providers": "Provedores upstream",
+    "provider_count_one": "{{count}} provedor",
+    "provider_count_other": "{{count}} provedores",
+    "model_count_one": "{{count}} modelo",
+    "model_count_other": "{{count}} modelos"
   },
   "finance_kind": {
     "title": "Composição dos eventos financeiros",

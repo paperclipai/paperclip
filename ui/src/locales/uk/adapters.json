@@ -84,7 +84,8 @@
     "instructions_file_hint": "Абсолютний шлях до markdown-файлу (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
     "enable_chrome": "Увімкнути Chrome",
     "skip_permissions": "Пропустити дозволи",
-    "max_turns": "Макс. кроків за запуск"
+    "max_turns": "Макс. кроків за запуск",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
   },
   "openclaw": {
     "gateway_url": "URL шлюзу",
@@ -104,7 +105,11 @@
     "scopes_placeholder": "operator.admin",
     "wait_timeout": "Таймаут очікування (мс)",
     "wait_timeout_placeholder": "120000",
-    "device_auth": "Автентифікація пристрою"
+    "device_auth": "Автентифікація пристрою",
+    "device_auth_desc": "Завжди увімкнено для агентів шлюзу. Paperclip зберігає ключ пристрою під час онбордингу, щоб підтвердження сполучення залишалися стабільними між запусками.",
+    "session_strategy_fixed": "Фіксована",
+    "session_strategy_issue": "На кожну задачу",
+    "session_strategy_run": "На кожен запуск"
   },
   "http": {
     "webhook_url": "URL вебхука",
@@ -115,5 +120,68 @@
     "command_placeholder": "напр. node, python",
     "args": "Аргументи (через кому)",
     "args_placeholder": "напр. script.js, --flag"
+  },
+  "codex_local": {
+    "bypass_sandbox": "Обхід пісочниці",
+    "enable_search": "Увімкнути пошук",
+    "fast_mode": "Швидкий режим",
+    "fast_mode_manual": "Швидкий режим буде передано для цієї ручної моделі. Якщо Codex його відхилить, вимкніть перемикач.",
+    "fast_mode_supported": "Швидкий режим витрачає кредити/токени значно швидше за звичайні запуски Codex.",
+    "fast_mode_unsupported": "Швидкий режим наразі працює лише на {{models}} або ручних ідентифікаторах моделей. Paperclip ігноруватиме цей перемикач, доки модель не буде змінена.",
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання. Примітка: Codex може також автоматично застосовувати файли AGENTS.md з робочої директорії.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
+  },
+  "cursor": {
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в промпт під час виконання.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
+  },
+  "gemini_local": {
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Додається на початок промпту Gemini під час виконання.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
+  },
+  "hermes_local": {
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
+  },
+  "opencode_local": {
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md",
+    "skip_permissions": "Пропустити дозволи"
+  },
+  "path_instructions": {
+    "title": "Як отримати повний шлях",
+    "choose": "Вибрати",
+    "description_prefix": "Вставте абсолютний шлях (напр.",
+    "description_suffix": ") у поле введення.",
+    "platform_linux": "Linux",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "linux_step_1": "Відкрийте термінал і перейдіть до директорії за допомогою cd.",
+    "linux_step_2": "Виконайте pwd для виведення повного шляху.",
+    "linux_step_3": "Скопіюйте вивід і вставте сюди.",
+    "linux_tip": "У більшості файлових менеджерів Ctrl+L відкриває повний шлях в адресному рядку.",
+    "mac_step_1": "Відкрийте Finder і перейдіть до папки.",
+    "mac_step_2": "Клацніть правою кнопкою (або Ctrl+клік) по папці.",
+    "mac_step_3": "Утримуйте клавішу Option (⌥) — пункт «Скопіювати» зміниться на «Скопіювати шлях».",
+    "mac_step_4": "Натисніть «Скопіювати шлях» і вставте сюди.",
+    "mac_tip": "Також можна відкрити Terminal, ввести cd, перетягнути папку у вікно терміналу й натиснути Enter. Потім введіть pwd, щоб побачити повний шлях.",
+    "windows_step_1": "Відкрийте Провідник і перейдіть до папки.",
+    "windows_step_2": "Клацніть по адресному рядку вгорі — відобразиться повний шлях.",
+    "windows_step_3": "Скопіюйте шлях і вставте сюди.",
+    "windows_tip": "Альтернатива: утримуючи Shift, клацніть правою кнопкою по папці та виберіть «Копіювати як шлях»."
+  },
+  "pi_local": {
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
+  },
+  "runtime_json": {
+    "payload_template_json": "JSON шаблону корисного навантаження",
+    "runtime_services_json": "JSON сервісів середовища виконання"
   }
 }

@@ -82,9 +82,36 @@
   "claude_local": {
     "instructions_file": "Arquivo de instruções do agente",
     "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Injetado no prompt do sistema durante a execução.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md",
     "enable_chrome": "Habilitar Chrome",
     "skip_permissions": "Pular permissões",
     "max_turns": "Máx. de turnos por execução"
+  },
+  "codex_local": {
+    "instructions_file": "Arquivo de instruções do agente",
+    "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Injetado no prompt do sistema durante a execução. Nota: o Codex também pode aplicar automaticamente arquivos AGENTS.md do diretório de trabalho.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md",
+    "bypass_sandbox": "Ignorar sandbox",
+    "enable_search": "Habilitar pesquisa",
+    "fast_mode": "Modo rápido",
+    "fast_mode_manual": "O modo rápido será passado para este modelo manual. Se o Codex o rejeitar, desative o interruptor.",
+    "fast_mode_supported": "O modo rápido consome créditos/tokens significativamente mais rápido do que execuções normais do Codex.",
+    "fast_mode_unsupported": "O modo rápido atualmente funciona apenas em {{models}} ou identificadores de modelos manuais. O Paperclip ignorará este interruptor até que o modelo seja alterado."
+  },
+  "cursor": {
+    "instructions_file": "Arquivo de instruções do agente",
+    "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Injetado no prompt durante a execução.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md"
+  },
+  "gemini_local": {
+    "instructions_file": "Arquivo de instruções do agente",
+    "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Inserido no início do prompt do Gemini durante a execução.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md"
+  },
+  "hermes_local": {
+    "instructions_file": "Arquivo de instruções do agente",
+    "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Injetado no prompt do sistema durante a execução.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md"
   },
   "openclaw": {
     "gateway_url": "URL do gateway",
@@ -94,6 +121,9 @@
     "claimed_api_key_path": "Caminho para a chave API salva",
     "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
     "session_strategy": "Estratégia de sessão",
+    "session_strategy_fixed": "Fixa",
+    "session_strategy_issue": "Por tarefa",
+    "session_strategy_run": "Por execução",
     "session_key": "Chave de sessão",
     "session_key_placeholder": "paperclip",
     "gateway_auth_token": "Token de autenticação do gateway (x-openclaw-token)",
@@ -104,7 +134,19 @@
     "scopes_placeholder": "operator.admin",
     "wait_timeout": "Tempo limite de espera (ms)",
     "wait_timeout_placeholder": "120000",
-    "device_auth": "Autenticação de dispositivo"
+    "device_auth": "Autenticação de dispositivo",
+    "device_auth_desc": "Sempre ativada para agentes de gateway. O Paperclip salva a chave do dispositivo durante o onboarding para que as confirmações de emparelhamento permaneçam estáveis entre execuções."
+  },
+  "opencode_local": {
+    "instructions_file": "Arquivo de instruções do agente",
+    "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Injetado no prompt do sistema durante a execução.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md",
+    "skip_permissions": "Pular permissões"
+  },
+  "pi_local": {
+    "instructions_file": "Arquivo de instruções do agente",
+    "instructions_file_hint": "Caminho absoluto para um arquivo markdown (ex: AGENTS.md) que define o comportamento do agente. Injetado no prompt do sistema durante a execução.",
+    "instructions_placeholder": "/caminho/absoluto/para/AGENTS.md"
   },
   "http": {
     "webhook_url": "URL do webhook",
@@ -115,5 +157,31 @@
     "command_placeholder": "ex: node, python",
     "args": "Argumentos (separados por vírgula)",
     "args_placeholder": "ex: script.js, --flag"
+  },
+  "runtime_json": {
+    "runtime_services_json": "JSON de serviços de tempo de execução",
+    "payload_template_json": "JSON de template de payload"
+  },
+  "path_instructions": {
+    "choose": "Escolher",
+    "title": "Como obter o caminho completo",
+    "description_prefix": "Cole o caminho absoluto (ex.:",
+    "description_suffix": ") no campo de entrada.",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "Abra o Finder e navegue até a pasta.",
+    "mac_step_2": "Clique com o botão direito (ou Ctrl+clique) na pasta.",
+    "mac_step_3": "Segure a tecla Option (⌥) — o item «Copiar» mudará para «Copiar caminho».",
+    "mac_step_4": "Clique em «Copiar caminho» e cole aqui.",
+    "mac_tip": "Também é possível abrir o Terminal, digitar cd, arrastar a pasta para a janela do terminal e pressionar Enter. Em seguida, digite pwd para ver o caminho completo.",
+    "windows_step_1": "Abra o Explorador de Arquivos e navegue até a pasta.",
+    "windows_step_2": "Clique na barra de endereços na parte superior — o caminho completo será exibido.",
+    "windows_step_3": "Copie o caminho e cole aqui.",
+    "windows_tip": "Alternativa: segure Shift e clique com o botão direito na pasta, depois selecione «Copiar como caminho».",
+    "linux_step_1": "Abra um terminal e navegue até o diretório com cd.",
+    "linux_step_2": "Execute pwd para exibir o caminho completo.",
+    "linux_step_3": "Copie a saída e cole aqui.",
+    "linux_tip": "Na maioria dos gerenciadores de arquivos, Ctrl+L abre o caminho completo na barra de endereços."
   }
 }

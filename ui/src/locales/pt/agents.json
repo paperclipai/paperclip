@@ -153,7 +153,9 @@
     "file_contents_placeholder": "Conteúdo do arquivo",
     "cancel": "Cancelar",
     "delete": "Excluir",
+    "copy_as_markdown": "Copiar como Markdown",
     "can_assign_tasks_desc": "Pode atribuir tarefas a outros agentes",
+    "signal": "sinal",
     "save_failed_msg": "Não foi possível salvar o agente",
     "failed_resume": "Falha ao retomar execução",
     "failed_retry": "Falha ao tentar novamente",
@@ -468,6 +470,7 @@
     "show_full_log": "Mostrar log completo",
     "failed_clear_sessions": "Falha ao limpar sessões",
     "failed_load_run_log": "Falha ao carregar log de execução",
+    "failed_load_workspace_log": "Falha ao carregar log de operações do espaço de trabalho",
     "instructions_placeholder": "# Instruções do agente",
     "skill_view_link": "Ver",
     "approve_agent": "Aprovar agente"
@@ -481,5 +484,9 @@
     "run_succeeded": "Execução bem-sucedida",
     "adapter_invocation": "Invocação do adaptador",
     "used_skill": "Habilidade utilizada"
+  },
+  "icon_picker": {
+    "search_placeholder": "Pesquisar ícones...",
+    "no_match": "Nenhuma correspondência"
   }
 }

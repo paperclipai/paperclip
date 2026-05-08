@@ -8,6 +8,8 @@
   },
   "budget": {
     "active_incidents_one": "{{count}} incidente de orçamento ativo",
+    "active_incidents_few": "{{count}} incidentes de orçamento ativos",
+    "active_incidents_many": "{{count}} incidentes de orçamento ativos",
     "active_incidents_other": "{{count}} incidentes de orçamento ativos",
     "paused_summary": "{{agents}} agentes pausados · {{projects}} projetos pausados · {{approvals}} aprovações de orçamento pendentes",
     "open_budgets": "Abrir orçamentos"

@@ -41,6 +41,7 @@
     "copy": "Copy",
     "copy_code": "Copy code",
     "copied": "Copied",
+    "copy_failed": "Falha ao copiar",
     "loading": "Loading...",
     "creating": "Creating...",
     "importing": "Importing...",
@@ -113,7 +114,9 @@
     "planned": "Planned",
     "draft": "Draft",
     "skipped": "Skipped",
-    "blocked": "Blocked"
+    "blocked": "Blocked",
+    "on": "Ativado",
+    "off": "Desativado"
   },
   "status_labels": {
     "backlog": "Backlog",
@@ -239,6 +242,8 @@
     "select_company": "Select company",
     "switch_workspace": "Switch workspace",
     "no_workspaces": "No workspaces",
+    "edit_order": "Editar",
+    "done_order": "Concluído",
     "open_switcher": "Open {{company}} workspace switcher",
     "open_switcher_generic": "Open workspace switcher"
   },
@@ -788,6 +793,7 @@
     "no_cap_configured": "Nenhum limite configurado",
     "disabled": "Desabilitado",
     "soft_alert_at": "Alerta suave em {{percent}}%",
+    "of_limit": "{{percent}}% do limite",
     "remaining": "Restante",
     "unlimited": "Ilimitado",
     "budget_usd": "Orçamento (USD)",
@@ -799,6 +805,8 @@
     "hard_stop": "Parada permanente",
     "paused": "Pausado",
     "enter_valid_amount": "Insira um valor em dólares válido e não negativo.",
+    "project_paused": "A execução está pausada para este projeto até que o orçamento seja aumentado ou o incidente seja descartado.",
+    "scope_paused": "Os heartbeats estão pausados para este escopo até que o orçamento seja aumentado ou o incidente seja descartado.",
     "scope_type_agent": "Agente",
     "scope_type_project": "Projeto"
   },
@@ -1176,7 +1184,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions..."
+    "loading_revisions": "Loading revisions...",
+    "diff_title": "Comparação",
+    "rev_label": "rev. {{number}}",
+    "actor_board": "conselho",
+    "actor_agent": "agente",
+    "actor_system": "sistema",
+    "old_label": "Antigo",
+    "new_label": "Novo",
+    "select_revision": "Selecione uma revisão",
+    "select_two_revisions": "Selecione duas revisões para comparar.",
+    "same_revision": "Ambos os lados são a mesma revisão.",
+    "content_header": "Conteúdo"
   },
   "language_switcher": {
     "change_language": "Alterar idioma"

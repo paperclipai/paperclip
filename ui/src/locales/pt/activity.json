@@ -144,9 +144,17 @@
     "unassigned": "Não atribuído",
     "status_label": "Estado",
     "assignee_label": "Responsável",
+    "workspace_label": "Espaço de trabalho",
     "updated_task": "atualizou esta tarefa",
     "requested_follow_up": "solicitou acompanhamento",
-    "system": "Sistema"
+    "system": "Sistema",
+    "none": "Nenhum",
+    "no_entries": "Nenhuma entrada na linha do tempo ainda.",
+    "run_label": "execução",
+    "environment_label": "Ambiente",
+    "provider_label": "Provedor",
+    "lease_label": "Arrendamento",
+    "failure_label": "Falha"
   },
   "system": "System",
   "board": "Board",
