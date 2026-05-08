@@ -147,8 +147,17 @@ function ComboboxField({
             if (!open) setOpen(true);
           }}
           onBlur={() => {
-            // Delay close to allow click on option to register
-            setTimeout(() => setOpen(false), 150);
+            // Delay close to allow click on option to register first.
+            // If the typed value doesn't match any option, commit it as a
+            // custom slug (so paste + click-away works without pressing Enter).
+            setTimeout(() => {
+              setOpen(false);
+              if (filter && filtered.length === 0) {
+                select(filter);
+              } else {
+                setFilter("");
+              }
+            }, 150);
           }}
           onKeyDown={handleKeyDown}
         />
