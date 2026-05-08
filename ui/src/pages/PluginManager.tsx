@@ -40,8 +40,8 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
   return line ?? null;
 }
 
-function getPluginErrorSummary(plugin: PluginRecord): string {
-  return firstNonEmptyLine(plugin.lastError) ?? "Plugin entered an error state without a stored error message.";
+function getPluginErrorSummary(plugin: PluginRecord): string | null {
+  return firstNonEmptyLine(plugin.lastError);
 }
 
 /**
@@ -359,7 +359,7 @@ export function PluginManager() {
                               className="mt-1 text-sm text-red-700/90 dark:text-red-200/90 break-words"
                               title={plugin.lastError ?? undefined}
                             >
-                              {errorSummaryByPluginId.get(plugin.id)}
+                              {errorSummaryByPluginId.get(plugin.id) ?? t("plugins.no_error_summary")}
                             </p>
                           </div>
                           <Button
@@ -489,7 +489,7 @@ export function PluginManager() {
                     {t("plugins.what_errored")}
                   </p>
                   <p className="text-red-700/90 dark:text-red-200/90 break-words">
-                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : t("plugins.no_error_summary")}
+                    {errorDetailsPlugin ? (getPluginErrorSummary(errorDetailsPlugin) ?? t("plugins.no_error_summary")) : t("plugins.no_error_summary")}
                   </p>
                 </div>
               </div>
