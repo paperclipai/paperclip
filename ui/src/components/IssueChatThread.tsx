@@ -828,12 +828,12 @@ function IssueChatChainOfThought({
   let headerSuffix: string | null = null;
   if (isActive) {
     headerVerb = t("chat.working");
-    if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
+    if (liveElapsed) headerSuffix = t("chat.for_duration", { duration: liveElapsed });
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;
     const durationText = formatDurationWords(durationMs);
     headerVerb = t("chat.worked");
-    if (durationText) headerSuffix = `for ${durationText}`;
+    if (durationText) headerSuffix = t("chat.for_duration", { duration: durationText });
   } else {
     headerVerb = t("chat.worked");
   }
@@ -2259,7 +2259,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
                 {displayedRunAgentName}
               </Link>
-              <span className="text-muted-foreground">run</span>
+              <span className="text-muted-foreground">{t("chat.run_word")}</span>
               <Link
                 to={`/agents/${runAgentId}/runs/${runId}`}
                 className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"

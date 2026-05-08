@@ -17,7 +17,7 @@ export function RunButton({
   return (
     <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">{label ?? t("common.actions.run_now")}</span>
+      <span className="hidden sm:inline">{label ?? t("actions.run_now")}</span>
     </Button>
   );
 }
@@ -41,7 +41,7 @@ export function PauseResumeButton({
     return (
       <Button variant="outline" size={size} onClick={onResume} disabled={disabled}>
         <Play className="h-3.5 w-3.5 sm:mr-1" />
-        <span className="hidden sm:inline">{t("agents.action_buttons.resume")}</span>
+        <span className="hidden sm:inline">{t("action_buttons.resume")}</span>
       </Button>
     );
   }
@@ -49,7 +49,7 @@ export function PauseResumeButton({
   return (
     <Button variant="outline" size={size} onClick={onPause} disabled={disabled}>
       <Pause className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">{t("agents.action_buttons.pause")}</span>
+      <span className="hidden sm:inline">{t("action_buttons.pause")}</span>
     </Button>
   );
 }
