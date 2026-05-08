@@ -9,7 +9,7 @@
     "title": "为您的公司命名",
     "subtitle": "这是您的智能体将为之工作的组织。",
     "company_name": "公司名称",
-    "company_name_placeholder": "Acme Corp",
+    "company_name_placeholder": "示例公司",
     "mission": "使命 / 目标（可选）",
     "mission_placeholder": "这家公司想要实现什么？"
   },

@@ -9,7 +9,7 @@
     "title": "Nomeie sua empresa",
     "subtitle": "Esta é a organização para a qual seus agentes trabalharão.",
     "company_name": "Nome da empresa",
-    "company_name_placeholder": "Acme Corp",
+    "company_name_placeholder": "Empresa Exemplo",
     "mission": "Missão / objetivo (opcional)",
     "mission_placeholder": "O que esta empresa está tentando alcançar?"
   },

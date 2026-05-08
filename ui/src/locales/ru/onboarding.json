@@ -9,7 +9,7 @@
     "title": "Назовите компанию",
     "subtitle": "Это организация, в которой будут работать ваши агенты.",
     "company_name": "Название компании",
-    "company_name_placeholder": "Acme Corp",
+    "company_name_placeholder": "ООО Компания",
     "mission": "Миссия / цель (необязательно)",
     "mission_placeholder": "Чего пытается достичь эта компания?"
   },
