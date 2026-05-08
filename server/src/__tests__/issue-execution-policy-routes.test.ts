@@ -385,6 +385,45 @@ describe("issue execution policy routes", () => {
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
   });
 
+  it("allows moving an issue to in_review without specifying a reviewer agent id", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1000",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.assigneeAgentId).toBeUndefined();
+    expect(updatePatch.assigneeUserId).toBeUndefined();
+    expect(updatePatch.executionState).toBeUndefined();
+  });
+
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
