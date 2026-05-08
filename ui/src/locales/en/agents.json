@@ -478,6 +478,8 @@
     "run_started": "Run started",
     "run_finished": "Run finished",
     "run_cancelled": "Run cancelled",
-    "adapter_invocation": "Adapter invocation"
+    "run_succeeded": "Run succeeded",
+    "adapter_invocation": "Adapter invocation",
+    "used_skill": "Used Skill"
   }
 }

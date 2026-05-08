@@ -478,6 +478,8 @@
     "run_started": "Запуск начат",
     "run_finished": "Запуск завершён",
     "run_cancelled": "Запуск отменён",
-    "adapter_invocation": "Вызов адаптера"
+    "run_succeeded": "Запуск успешен",
+    "adapter_invocation": "Вызов адаптера",
+    "used_skill": "Использованный навык"
   }
 }
