@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
 import {
@@ -21,6 +22,7 @@ import { cn } from "../lib/utils";
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings() {
+  const { t } = useTranslation("settings");
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -37,10 +39,10 @@ export function InstanceGeneralSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
+      { label: t("general.instance_breadcrumb") },
+      { label: t("sidebar.general") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,

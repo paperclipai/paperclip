@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -109,6 +110,7 @@ function shapeError(error: unknown): { message: string; status?: number } {
 }
 
 export function Search() {
+  const { t } = useTranslation("common");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
@@ -128,8 +130,8 @@ export function Search() {
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Search" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.search") }]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     if (!selectedCompanyId) return;

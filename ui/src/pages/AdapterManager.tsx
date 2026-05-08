@@ -5,6 +5,7 @@
  * They just register a ServerAdapterModule that provides model discovery and execution.
  */
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -252,6 +253,7 @@ function ReinstallDialog({
 }
 
 export function AdapterManager() {
+  const { t } = useTranslation("adapters");
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -267,10 +269,10 @@ export function AdapterManager() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/instance/settings/general" },
-      { label: "Adapters" },
+      { label: t("manager.settings_breadcrumb"), href: "/instance/settings/general" },
+      { label: t("manager.adapters_label") },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs, t]);
 
   const { data: adapters, isLoading } = useQuery({
     queryKey: queryKeys.adapters.all,

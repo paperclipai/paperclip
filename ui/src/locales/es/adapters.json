@@ -1,6 +1,7 @@
 {
   "manager": {
     "title": "Gestor de adaptadores",
+    "adapters_label": "Adaptadores",
     "settings_breadcrumb": "Configuración",
     "loading": "Cargando adaptadores...",
     "install_adapter": "Instalar adaptador",

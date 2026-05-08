@@ -1,6 +1,7 @@
 {
   "manager": {
     "title": "Διαχειριστής Προσαρμογέων",
+    "adapters_label": "Προσαρμογείς",
     "settings_breadcrumb": "Ρυθμίσεις",
     "loading": "Φόρτωση προσαρμογέων...",
     "install_adapter": "Εγκατάσταση προσαρμογέα",

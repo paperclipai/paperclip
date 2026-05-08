@@ -118,8 +118,8 @@ export function Issues() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("title") }]);
+  }, [setBreadcrumbs, t]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 

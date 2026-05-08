@@ -1,6 +1,7 @@
 {
   "manager": {
     "title": "Менеджер адаптерів",
+    "adapters_label": "Адаптери",
     "settings_breadcrumb": "Налаштування",
     "loading": "Завантаження адаптерів...",
     "install_adapter": "Встановити адаптер",
