@@ -77,6 +77,11 @@ function isBookforgeRepairGateIssue(issue: Pick<typeof issues.$inferSelect, "ori
   );
 }
 
+function isSuccessfulBookforgeDiagnosticIssue(issue: Pick<typeof issues.$inferSelect, "title">) {
+  const title = issue.title.toLowerCase();
+  return title.includes("bookforge") && (title.includes("smoke") || title.includes("diagnostic"));
+}
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -95,7 +100,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -279,6 +284,53 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function extractBookforgeEvidencePathsFromText(text: string | null) {
+  if (!text) return [];
+  const matches = text.match(/\/Users\/begilhan\/Bookforge V2 PublicationForge\/reports\/[^\s`'"<>]+/g) ?? [];
+  return matches.map((path) => path.replace(/[),.;:]+$/, ""));
+}
+
+function readBookforgeCapturedEvidence(latestRun: LatestIssueRun) {
+  if (!latestRun || !isUnsuccessfulTerminalIssueRun(latestRun)) return null;
+  if (!isProductiveContinuationRun({ ...latestRun, status: "succeeded" })) return null;
+
+  const result = parseObject(latestRun.resultJson);
+  const stdout = readNonEmptyString(result.stdout);
+  const stderr = readNonEmptyString(result.stderr);
+  const summary = readNonEmptyString(result.summary) ??
+    readNonEmptyString(result.result) ??
+    readNonEmptyString(result.message) ??
+    (asBoolean(result.partial, false) ? stdout ?? stderr : null);
+  const paths: string[] = [];
+  const workProducts = Array.isArray(result.workProducts) ? result.workProducts : [];
+  for (const item of workProducts) {
+    const product = parseObject(item);
+    const path = readNonEmptyString(product.path) ?? readNonEmptyString(product.filePath) ?? readNonEmptyString(product.url);
+    if (path) paths.push(path);
+  }
+  const artifactPaths = Array.isArray(result.artifacts) ? result.artifacts : [];
+  for (const item of artifactPaths) {
+    const artifact = parseObject(item);
+    const path = typeof item === "string"
+      ? item
+      : readNonEmptyString(artifact.path) ?? readNonEmptyString(artifact.filePath) ?? readNonEmptyString(artifact.url);
+    if (path) paths.push(path);
+  }
+  paths.push(...extractBookforgeEvidencePathsFromText(stdout));
+  paths.push(...extractBookforgeEvidencePathsFromText(stderr));
+
+  if (!summary && paths.length === 0) return null;
+  return {
+    summary,
+    paths: [...new Set(paths)].slice(0, 5),
+  };
+}
+
+function formatBookforgeEvidencePaths(paths: string[]) {
+  if (paths.length === 0) return "- Captured evidence: run result summary only";
+  return paths.map((path) => `- Captured evidence: \`${path}\``).join("\n");
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -391,6 +443,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
       .where(
@@ -1781,6 +1834,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (isBookforgeRepairGateIssue(issue)) {
+        const capturedEvidence = readBookforgeCapturedEvidence(latestRun);
+        if (capturedEvidence && latestRun) {
+          const updated = await issuesSvc.update(issue.id, { status: "in_review" });
+          if (updated) {
+            const prefix = await getCompanyIssuePrefix(issue.companyId);
+            await issuesSvc.addComment(
+              issue.id,
+              [
+                "Paperclip captured Bookforge evidence before the assigned agent ended unsuccessfully.",
+                "",
+                `- Issue: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+                `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
+                `- Latest run status: \`${latestRun.status}\``,
+                capturedEvidence.summary ? `- Summary: ${capturedEvidence.summary}` : null,
+                formatBookforgeEvidencePaths(capturedEvidence.paths),
+                "- Guard: Bookforge evidence-bearing terminal runs move to review instead of generic stranded recovery loops.",
+                "- Next action: validate the captured Bookforge evidence; do not resume generation unless Runtime Governor/user gates are green.",
+              ].filter((line): line is string => typeof line === "string").join("\n"),
+              {},
+            );
+            result.productiveContinuationObserved += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
       if (isBookforgeRepairGateIssue(issue) && latestRun?.status === "succeeded") {
         const updated = await issuesSvc.update(issue.id, { status: "in_review" });
         if (updated) {
@@ -1794,6 +1876,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
               "- Guard: Bookforge repair gates do not use generic stranded-issue continuation loops after evidence is produced.",
               "- Next action: validate the Bookforge repair acceptance evidence, then let Runtime Governor clear/resume only if the gate passes.",
+            ].join("\n"),
+            {},
+          );
+          result.productiveContinuationObserved += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (isSuccessfulBookforgeDiagnosticIssue(issue) && latestRun?.status === "succeeded") {
+        const updated = await issuesSvc.update(issue.id, { status: "in_review" });
+        if (updated) {
+          const prefix = await getCompanyIssuePrefix(issue.companyId);
+          await issuesSvc.addComment(
+            issue.id,
+            [
+              "Paperclip received successful Bookforge diagnostic output from the assigned agent.",
+              "",
+              `- Issue: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+              `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
+              `- Latest run liveness: \`${latestRun.livenessState ?? "unknown"}\``,
+              "- Guard: successful Bookforge smoke/diagnostic issues move to review instead of spawning generic stranded-work recovery.",
+              "- Next action: validate the diagnostic evidence and close the issue if acceptance criteria are met; do not start Bookforge generation.",
             ].join("\n"),
             {},
           );
