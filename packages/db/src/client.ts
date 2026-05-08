@@ -34,6 +34,20 @@ function splitMigrationStatements(content: string): string[] {
     .filter((statement) => statement.length > 0);
 }
 
+const NO_TRANSACTION_DIRECTIVE_REGEX = /^[ \t]*--[ \t]*@no-transaction(?:[ \t].*)?$/m;
+
+export function migrationDisablesTransaction(content: string): boolean {
+  return NO_TRANSACTION_DIRECTIVE_REGEX.test(content);
+}
+
+async function anyMigrationDisablesTransaction(migrationFiles: string[]): Promise<boolean> {
+  for (const migrationFile of migrationFiles) {
+    const content = await readMigrationFileContent(migrationFile);
+    if (migrationDisablesTransaction(content)) return true;
+  }
+  return false;
+}
+
 export type MigrationState =
   | { status: "upToDate"; tableCount: number; availableMigrations: string[]; appliedMigrations: string[] }
   | {
@@ -259,6 +273,24 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
+      const folderMillis = folderMillisByFileName.get(migrationFile) ?? Date.now();
+
+      if (migrationDisablesTransaction(migrationContent)) {
+        for (const statement of splitMigrationStatements(migrationContent)) {
+          await sql.unsafe(statement);
+        }
+
+        await recordMigrationHistoryEntry(
+          sql,
+          qualifiedTable,
+          columnNames,
+          migrationFile,
+          hash,
+          folderMillis,
+        );
+        continue;
+      }
+
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
           await sql.unsafe(statement);
@@ -270,7 +302,7 @@ async function applyPendingMigrationsManually(
           columnNames,
           migrationFile,
           hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
+          folderMillis,
         );
       });
     }
@@ -662,12 +694,20 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   if (initialState.status === "upToDate") return;
 
   if (initialState.reason === "no-migration-journal-empty-db") {
-    const sql = createUtilitySql(url);
-    try {
-      const db = drizzlePg(sql);
-      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    } finally {
-      await sql.end();
+    if (await anyMigrationDisablesTransaction(initialState.pendingMigrations)) {
+      // drizzle-orm's migrator wraps every migration in a single transaction,
+      // which is incompatible with statements like CREATE INDEX CONCURRENTLY.
+      // Route through the manual applier when any pending migration opts out
+      // of transactional execution via the `-- @no-transaction` directive.
+      await applyPendingMigrationsManually(url, initialState.pendingMigrations);
+    } else {
+      const sql = createUtilitySql(url);
+      try {
+        const db = drizzlePg(sql);
+        await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+      } finally {
+        await sql.end();
+      }
     }
 
     let bootstrappedState = await inspectMigrations(url);
@@ -743,6 +783,17 @@ export async function migratePostgresIfEmpty(url: string): Promise<MigrationBoot
 
     if (tableCount > 0) {
       return { migrated: false, reason: "not-empty-no-migration-journal", tableCount };
+    }
+
+    const availableMigrations = await listMigrationFiles();
+    if (await anyMigrationDisablesTransaction(availableMigrations)) {
+      // drizzle-orm's migrator wraps every migration in a single transaction,
+      // which is incompatible with statements like CREATE INDEX CONCURRENTLY.
+      // Fall back to the manual applier when any pending migration opts out
+      // of transactional execution via the `-- @no-transaction` directive.
+      await sql.end();
+      await applyPendingMigrationsManually(url, availableMigrations);
+      return { migrated: true, reason: "migrated-empty-db", tableCount: 0 };
     }
 
     const db = drizzlePg(sql);
