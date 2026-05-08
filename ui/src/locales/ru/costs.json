@@ -190,7 +190,11 @@
     "api_runs_only": "~{{apiRuns}} api запусков",
     "sub_runs_only": "~{{subRuns}} подп. запусков",
     "percent_used": "{{percent}}% использовано",
-    "resets": "сбрасывается {{date}}"
+    "resets": "сбрасывается {{date}}",
+    "runs_label": "запусков",
+    "total_label": "всего",
+    "of_provider_tokens": "{{percent}}% токенов провайдера",
+    "of_provider_cost": "{{percent}}% расходов провайдера"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} тарифицированный запуск",

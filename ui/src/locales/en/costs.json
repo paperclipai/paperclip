@@ -188,7 +188,11 @@
     "api_runs_only": "~{{apiRuns}} api runs",
     "sub_runs_only": "~{{subRuns}} sub runs",
     "percent_used": "{{percent}}% used",
-    "resets": "resets {{date}}"
+    "resets": "resets {{date}}",
+    "runs_label": "runs",
+    "total_label": "total",
+    "of_provider_tokens": "{{percent}}% of provider tokens",
+    "of_provider_cost": "{{percent}}% of provider cost"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} metered run",
