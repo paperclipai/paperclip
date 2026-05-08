@@ -3891,6 +3891,11 @@ export function heartbeatService(db: Db) {
         );
 
       const startupCandidates = pickAssignedIssueWakeupCandidates(assignedIssues);
+      const activeAgentRows = await db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      const busyAgentIds = new Set(activeAgentRows.map((row) => row.agentId));
 
       let checked = 0;
       let enqueued = 0;
@@ -3900,6 +3905,10 @@ export function heartbeatService(db: Db) {
         const agentId = issue.assigneeAgentId;
         if (!agentId) continue;
         checked += 1;
+        if (busyAgentIds.has(agentId)) {
+          skipped += 1;
+          continue;
+        }
         try {
           const run = await enqueueWakeup(agentId, {
             source: "assignment",
