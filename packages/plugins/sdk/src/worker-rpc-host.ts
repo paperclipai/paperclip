@@ -34,6 +34,7 @@
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -223,10 +224,25 @@ export function runWorker(
   }
   const entry = process.argv[1];
   if (typeof entry !== "string") return;
-  const thisFile = path.resolve(fileURLToPath(moduleUrl));
-  const entryPath = path.resolve(entry);
+  // Resolve symlinks on both sides before comparing. On macOS, /tmp is a
+  // symlink to /private/tmp; the host's spawn passes the kernel-resolved
+  // real path as argv[1], while fileURLToPath(import.meta.url) preserves
+  // the un-resolved path the module was loaded with. Without realpath the
+  // comparison fails for any plugin built under /tmp and the worker exits
+  // silently (code=0) before the RPC host starts. realpathSync is a no-op
+  // when no symlinks are involved.
+  const thisFile = realPathOrSelf(path.resolve(fileURLToPath(moduleUrl)));
+  const entryPath = realPathOrSelf(path.resolve(entry));
   if (thisFile === entryPath) {
     startWorkerRpcHost({ plugin });
+  }
+}
+
+function realPathOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
   }
 }
 
