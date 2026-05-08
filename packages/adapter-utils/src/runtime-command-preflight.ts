@@ -11,7 +11,7 @@ export const RUNTIME_COMMAND_PREFLIGHT_REFUSAL_MESSAGE = [
 ].join(" ");
 
 const SHELL_COMMANDS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
-const PROC_ENVIRON_RE = /(?:^|[\s"'`<>=:])\/proc\/(?:self|\d+|[A-Za-z0-9_.-]+)\/environ(?:$|[\s"'`>;&|])/;
+const PROC_ENVIRON_RE = /(?:^|[\s"'`<>=:])\/proc\/(?:self|\d+|[A-Za-z0-9_.-]+|\$[^/\s"'`<>;&|]+)\/environ(?:$|[\s"'`>;&|])/;
 
 function commandBasename(command: string): string {
   const normalized = command.trim().replaceAll("\\", "/");

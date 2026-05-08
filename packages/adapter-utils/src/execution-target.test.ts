@@ -131,7 +131,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
           strictHostKeyChecking: true,
         },
       },
-      "env | rg '^PAPERCLIP_'",
+      "cat /proc/$PPID/environ",
       {
         cwd: "/tmp/local",
         env: {
@@ -356,6 +356,35 @@ describe("runAdapterExecutionTargetProcess", () => {
     expect(JSON.stringify(onLog.mock.calls)).not.toContain("should-not-appear");
   });
 
+  it("refuses shell-expanded proc environ process commands before execution", async () => {
+    const onLog = vi.fn(async () => {});
+
+    const result = await runAdapterExecutionTargetProcess(
+      "run-refuse-proc-process",
+      null,
+      "sh",
+      ["-lc", "cat /proc/$PPID/environ"],
+      {
+        cwd: "/tmp/local",
+        env: {
+          PAPERCLIP_SENTINEL_SECRET: "should-not-appear",
+        },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog,
+      },
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 126,
+      timedOut: false,
+      stdout: "",
+    });
+    expect(result.stderr).toContain("Runtime command refused before execution");
+    expect(result.stderr).not.toContain("should-not-appear");
+    expect(JSON.stringify(onLog.mock.calls)).not.toContain("should-not-appear");
+  });
+
   it("refuses broad environment sandbox commands before provider execution", async () => {
     const runner = {
       execute: vi.fn(async () => ({
@@ -379,7 +408,7 @@ describe("runAdapterExecutionTargetProcess", () => {
         runner,
       },
       "sh",
-      ["-lc", "cat /proc/self/environ"],
+      ["-lc", "cat /proc/${PPID}/environ"],
       {
         cwd: "/tmp/local",
         env: {},
