@@ -1,0 +1,148 @@
+{
+  "title": "Projects",
+  "addProject": "Add Project",
+  "selectCompany": "Select a company to view projects.",
+  "noProjects": "No projects yet.",
+  "status": "Status",
+  "targetDate": "Target Date",
+  "overview": "Overview",
+  "issues": "Issues",
+  "pluginOperations": "Plugin operations",
+  "workspaces": "Workspaces",
+  "configuration": "Configuration",
+  "budget": "Budget",
+  "addDescription": "Add a description...",
+  "pausedByBudget": "Paused by budget hard stop",
+  "managedBy": "Managed by {{name}}",
+  "loadingWorkspaces": "Loading workspaces...",
+  "archive": {
+    "archived": "\"{{name}}\" has been archived",
+    "unarchived": "\"{{name}}\" has been unarchived",
+    "failedToArchive": "Failed to archive project",
+    "failedToUnarchive": "Failed to unarchive project"
+  },
+  "changeColor": "Change project color",
+  "selectColor": "Select color {{color}}",
+  "project": "Project",
+  "newProjectDialog": {
+    "title": "New project",
+    "namePlaceholder": "Project name",
+ "descriptionPlaceholder": "Add description...",
+    "repoUrlLabel": "Repo URL",
+    "repoUrlTooltip": "Link a GitHub repository so agents can clone, read, and push code for this project.",
+    "repoUrlPlaceholder": "https://github.com/org/repo",
+    "localFolderLabel": "Local folder",
+    "localFolderTooltip": "Set an absolute path on this machine where local agents will read and write files for this project.",
+    "localFolderPlaceholder": "/absolute/path/to/workspace",
+    "optional": "optional",
+    "errors": {
+      "absolutePathRequired": "Local folder must be a full absolute path.",
+      "invalidRepoUrl": "Repo must use a valid GitHub or GitHub Enterprise repo URL."
+    },
+    "fallbackLocalFolder": "Local folder",
+    "fallbackRepo": "GitHub repo",
+    "noGoal": "No goal",
+    "allGoalsSelected": "All goals already selected.",
+    "addGoal": "+ Goal",
+    "goal": "Goal",
+    "removeGoalAria": "Remove goal {{title}}",
+    "targetDatePlaceholder": "Target date",
+    "failedToCreate": "Failed to create project.",
+    "creating": "Creating…",
+    "createProject": "Create project",
+    "statuses": {
+      "backlog": "Backlog",
+      "planned": "Planned",
+      "in_progress": "In Progress",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    }
+  },
+  "properties": {
+    "statuses": {
+      "backlog": "Backlog",
+      "planned": "Planned",
+      "in_progress": "In Progress",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "saveIndicator": {
+      "saving": "Saving",
+      "saved": "Saved",
+      "failed": "Failed"
+    },
+    "archive": {
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "archiving": "Archiving...",
+      "unarchiving": "Unarchiving...",
+      "confirm": "Confirm",
+      "cancel": "Cancel",
+      "archiveProject": "Archive project",
+      "unarchiveProject": "Unarchive project",
+      "descriptionArchive": "Archive this project to hide it from the sidebar and project selectors.",
+      "descriptionUnarchive": "Unarchive this project to restore it in the sidebar and project selectors."
+    },
+    "fields": {
+      "name": "Name",
+      "description": "Description",
+      "status": "Status",
+      "goals": "Goals",
+      "env": "Env",
+      "created": "Created",
+      "updated": "Updated",
+      "targetDate": "Target Date"
+    },
+    "noDescription": "No description",
+    "envDescription": "Applied to all runs for issues in this project. Project values override agent env on key conflicts.",
+    "codebase": {
+      "title": "Codebase",
+      "help": "Repo identifies the source of truth. Local folder is the default place agents write code.",
+      "repo": "Repo",
+      "localFolder": "Local folder",
+      "paperclipManaged": "Paperclip-managed folder.",
+      "additionalLegacyWorkspaces": "Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.",
+      "notSet": "Not set.",
+      "setRepo": "Set repo",
+      "changeRepo": "Change repo",
+      "clearRepo": "Clear repo",
+      "setLocalFolder": "Set local folder",
+      "changeLocalFolder": "Change local folder",
+      "clearLocalFolder": "Clear local folder"
+    },
+    "executionWorkspaces": {
+      "title": "Execution Workspaces",
+      "help": "Project-owned defaults for isolated issue checkouts and execution workspace behavior.",
+      "enableIsolated": "Enable isolated issue checkouts",
+      "enableIsolatedDescription": "Let issues choose between the project's primary checkout and an isolated execution workspace.",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "newIssuesDefault": "New issues default to isolated checkout",
+      "newIssuesDefaultDescription": "If disabled, new issues stay on the project's primary checkout unless someone opts in.",
+      "showAdvanced": "Show advanced checkout settings",
+      "hideAdvanced": "Hide advanced checkout settings",
+      "hostManaged": "Host-managed implementation:",
+      "gitWorktree": "Git worktree",
+      "environment": "Environment",
+      "noEnvironment": "No environment",
+      "baseRef": "Base ref",
+      "branchTemplate": "Branch template",
+      "worktreeParentDir": "Worktree parent dir",
+      "provisionCommand": "Provision command",
+      "teardownCommand": "Teardown command",
+      "provisionTeardownHint": "Provision runs inside the derived worktree before agent execution. Teardown is stored here for future cleanup flows."
+    },
+    "errors": {
+      "absolutePathRequired": "Local folder must be a full absolute path.",
+      "invalidRepoUrl": "Repo must use a valid GitHub or GitHub Enterprise repo URL.",
+      "failedToSaveWorkspace": "Failed to save workspace.",
+      "failedToDeleteWorkspace": "Failed to delete workspace.",
+      "failedToUpdateWorkspace": "Failed to update workspace."
+    },
+    "buttons": {
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "dangerZone": "Danger Zone"
+  }
+}

@@ -11,6 +11,8 @@ import { SidebarProvider } from "@/context/SidebarContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { ToastProvider } from "@/context/ToastContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { LocaleProvider } from "@/i18n/LocaleContext";
+import "@/i18n";
 import {
   storybookAgents,
   storybookApprovals,
@@ -253,9 +255,10 @@ function StorybookProviders({
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <MemoryRouter initialEntries={["/PAP/storybook"]}>
-          <CompanyProvider>
+      <LocaleProvider>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={["/PAP/storybook"]}>
+            <CompanyProvider>
             <EditorAutocompleteProvider>
               <ToastProvider>
                 <TooltipProvider>
@@ -272,7 +275,8 @@ function StorybookProviders({
           </CompanyProvider>
         </MemoryRouter>
       </ThemeProvider>
-    </QueryClientProvider>
+    </LocaleProvider>
+  </QueryClientProvider>
   );
 }
 

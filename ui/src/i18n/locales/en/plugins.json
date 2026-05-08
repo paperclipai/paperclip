@@ -1,0 +1,72 @@
+{
+  "title": "Plugin Manager",
+  "breadcrumbs": {
+    "company": "Company",
+    "settings": "Settings",
+    "plugins": "Plugins"
+  },
+  "errorState": "Plugin entered an error state without a stored error message.",
+  "toasts": {
+    "installed": "Plugin installed successfully",
+    "installFailed": "Failed to install plugin",
+    "uninstalled": "Plugin uninstalled successfully",
+    "uninstallFailed": "Failed to uninstall plugin",
+    "enabled": "Plugin enabled",
+    "enableFailed": "Failed to enable plugin",
+    "disabled": "Plugin disabled",
+    "disableFailed": "Failed to disable plugin"
+  },
+  "loading": "Loading plugins...",
+  "loadFailed": "Failed to load plugins.",
+  "install": {
+    "button": "Install Plugin",
+    "title": "Install Plugin",
+    "description": "Enter the npm package name of the plugin you wish to install.",
+    "packageNameLabel": "npm Package Name",
+    "packageNamePlaceholder": "@paperclipai/plugin-example",
+    "installing": "Installing...",
+    "install": "Install"
+  },
+  "alphaWarning": {
+    "title": "Plugins are alpha.",
+    "description": "The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles."
+  },
+  "availablePlugins": "Available Plugins",
+  "examplesBadge": "Examples",
+  "loadingExamples": "Loading bundled examples...",
+  "loadExamplesFailed": "Failed to load bundled examples.",
+  "noExamples": "No bundled example plugins were found in this checkout.",
+  "exampleBadge": "Example",
+  "notInstalled": "Not installed",
+  "enable": "Enable",
+  "openSettings": "Open Settings",
+  "review": "Review",
+  "installExample": "Install Example",
+  "installedPlugins": "Installed Plugins",
+  "noPluginsInstalled": "No plugins installed",
+  "noPluginsDescription": "Install a plugin to extend functionality.",
+  "noDescription": "No description provided.",
+  "pluginError": "Plugin error",
+  "viewFullError": "View full error",
+  "disable": "Disable",
+  "configure": "Configure",
+  "uninstall": {
+    "title": "Uninstall Plugin",
+    "description": "Are you sure you want to uninstall <strong>{{name}}</strong>? This action cannot be undone.",
+    "uninstalling": "Uninstalling...",
+    "uninstall": "Uninstall"
+  },
+  "selectCompany": "Select a company to view this page.",
+  "loading": "Loading…",
+  "routeConflict": "Multiple plugins declare the route <code>{{route}}</code>. Use the plugin-id route until the conflict is resolved.",
+  "back": "Back",
+  "errorDetails": {
+    "title": "Error Details",
+    "hitErrorState": "{{name}} hit an error state.",
+    "whatErrored": "What errored",
+    "noSummary": "No error summary available.",
+    "fullOutput": "Full error output",
+    "noStoredMessage": "No stored error message.",
+    "close": "Close"
+  }
+}

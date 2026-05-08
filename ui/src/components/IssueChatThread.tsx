@@ -28,6 +28,7 @@ import {
   type Ref,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "@/lib/router";
 import type {
   Agent,
@@ -414,34 +415,35 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
 }
 
 function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+  const { t } = useTranslation("issues");
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
-      ? "It was paused by a budget hard stop."
+      ? t("detail.pauseReasonBudget")
       : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : "It was paused manually.";
+        ? t("detail.pauseReasonSystem")
+        : t("detail.pauseReasonManual");
 
   return (
     <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
       <div className="flex items-start gap-2">
         <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
         <p className="min-w-0 leading-5">
-          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
+          {t("detail.agentPaused", { name: agent.name })} {pauseDetail}
         </p>
       </div>
     </div>
   );
 }
 
-function fallbackAuthorLabel(message: ThreadMessage) {
+function fallbackAuthorLabel(message: ThreadMessage, t: (key: string, options?: { ns?: string }) => string) {
   const custom = message.metadata?.custom as Record<string, unknown> | undefined;
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
   if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
-  if (message.role === "assistant") return "Agent";
-  if (message.role === "user") return "You";
-  return "System";
+  if (message.role === "assistant") return t("actor.agent", { ns: "common" });
+  if (message.role === "user") return t("actor.you", { ns: "common" });
+  return t("actor.system", { ns: "common" });
 }
 
 function fallbackTextParts(message: ThreadMessage) {
@@ -475,6 +477,7 @@ function IssueChatFallbackThread({
   emptyMessage: string;
   variant: "full" | "embedded";
 }) {
+  const { t } = useTranslation("issues");
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
       <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
@@ -505,7 +508,7 @@ function IssueChatFallbackThread({
             return (
               <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
-                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
+                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message, t)}</span>
                   {message.createdAt ? (
                     <span className="text-[11px] text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
@@ -516,7 +519,7 @@ function IssueChatFallbackThread({
                   {lines.length > 0 ? lines.map((line, index) => (
                     <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
                   )) : (
-                    <p className="text-sm text-muted-foreground">No message content.</p>
+                    <p className="text-sm text-muted-foreground">{t("detail.noMessageContent")}</p>
                   )}
                 </div>
               </div>
@@ -678,6 +681,7 @@ function humanizeValue(value: string | null) {
 
 function formatTimelineAssigneeLabel(
   assignee: IssueTimelineAssignee,
+  t: (key: string, options?: { ns?: string }) => string,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
@@ -686,9 +690,9 @@ function formatTimelineAssigneeLabel(
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? t("actor.board", { ns: "common" });
   }
-  return "Unassigned";
+  return t("actor.unassigned", { ns: "common" });
 }
 
 function initialsForName(name: string) {
@@ -699,35 +703,42 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
-function formatInteractionActorLabel(args: {
-  agentId?: string | null;
-  userId?: string | null;
-  agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
-  userLabelMap?: ReadonlyMap<string, string> | null;
-}) {
+function formatInteractionActorLabel(
+  args: {
+    agentId?: string | null;
+    userId?: string | null;
+    agentMap?: Map<string, Agent>;
+    currentUserId?: string | null;
+    userLabelMap?: ReadonlyMap<string, string> | null;
+  },
+  t: (key: string, options?: { ns?: string }) => string,
+) {
   const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
   if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   if (userId) {
     return userLabelMap?.get(userId)
       ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
-      ?? "Board";
+      ?? t("actor.board", { ns: "common" });
   }
-  return "System";
+  return t("actor.system", { ns: "common" });
 }
 
-export function resolveIssueChatHumanAuthor(args: {
-  authorName?: string | null;
-  authorUserId?: string | null;
-  currentUserId?: string | null;
-  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-}) {
+export function resolveIssueChatHumanAuthor(
+  args: {
+    authorName?: string | null;
+    authorUserId?: string | null;
+    currentUserId?: string | null;
+    userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+  },
+  t?: (key: string, options?: { ns?: string }) => string,
+) {
+  const tFn = t ?? ((k: string) => k);
   const { authorName, authorUserId, currentUserId, userProfileMap } = args;
   const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
   const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
   const resolvedAuthorName = profile?.label?.trim()
     || authorName?.trim()
-    || (authorUserId === "local-board" ? "Board" : (isCurrentUser ? "You" : "User"));
+    || (authorUserId === "local-board" ? tFn("actor.board", { ns: "common" }) : (isCurrentUser ? tFn("actor.you", { ns: "common" }) : tFn("actor.user", { ns: "common" })));
 
   return {
     isCurrentUser,
@@ -1254,6 +1265,7 @@ function IssueChatUserMessage({
   message: ThreadMessage;
   isInterruptingQueuedRun: boolean;
 }) {
+  const { t } = useTranslation("issues");
   const {
     onInterruptQueued,
     onCancelQueued,
@@ -1281,7 +1293,7 @@ function IssueChatUserMessage({
     authorUserId,
     currentUserId,
     userProfileMap,
-  });
+  }, t);
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
       {avatarUrl ? <AvatarImage src={avatarUrl} alt={resolvedAuthorName} /> : null}
@@ -1884,6 +1896,7 @@ function ExpiredRequestConfirmationActivity({
   anchorId?: string;
   interaction: RequestConfirmationInteraction;
 }) {
+  const { t } = useTranslation("issues");
   const {
     agentMap,
     currentUserId,
@@ -1906,7 +1919,7 @@ function ExpiredRequestConfirmationActivity({
     agentMap,
     currentUserId,
     userLabelMap,
-  });
+  }, t);
   const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
   const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
   const detailsId = anchorId ? `${anchorId}-details` : `${interaction.id}-details`;
@@ -2338,6 +2351,7 @@ function SystemNoticeCommentRow({
 }
 
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
+  const { t } = useTranslation("issues");
   const {
     agentMap,
     currentUserId,
@@ -2445,11 +2459,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               Assignee
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, t, agentMap, currentUserId, userLabelMap)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, t, agentMap, currentUserId, userLabelMap)}
             </span>
           </div>
         ) : null}

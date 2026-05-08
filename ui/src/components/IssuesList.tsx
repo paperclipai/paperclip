@@ -1,4 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
@@ -41,7 +42,7 @@ import {
   resolveIssueWorkspaceName,
   type InboxIssueColumn,
 } from "../lib/inbox";
-import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { cn } from "../lib/utils";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -66,7 +67,6 @@ import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
-import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
@@ -88,15 +88,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   return null;
 }
 const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-};
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
@@ -114,7 +105,7 @@ export type IssueSortField = "status" | "priority" | "title" | "created" | "upda
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   collapsedGroups: string[];
@@ -364,12 +355,6 @@ interface IssuesListProps {
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
   showProgressSummary?: boolean;
-  /**
-   * When set together with `showProgressSummary`, the progress strip fetches
-   * the recursive cost-summary for this parent issue and renders aggregate
-   * tokens + wall-clock runtime for every run in the tree.
-   */
-  parentIssueIdForCostSummary?: string;
   enableRoutineVisibilityFilter?: boolean;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
@@ -387,6 +372,7 @@ function IssueSearchInput({
   value: string;
   onDebouncedChange?: (search: string) => void;
 }) {
+  const { t } = useTranslation("issues");
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
 
@@ -433,9 +419,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder={t("list.searchPlaceholder")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label={t("list.searchAriaLabel")}
         data-page-search-target="true"
       />
     </div>
@@ -445,12 +431,11 @@ function IssueSearchInput({
 function SubIssueProgressSummaryStrip({
   summary,
   issueLinkState,
-  parentIssueIdForCostSummary,
 }: {
   summary: SubIssueProgressSummary;
   issueLinkState?: unknown;
-  parentIssueIdForCostSummary?: string;
 }) {
+  const { t } = useTranslation(["issues", "common"]);
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
@@ -459,56 +444,24 @@ function SubIssueProgressSummaryStrip({
     .map((status) => ({ status, count: summary.countsByStatus[status] ?? 0 }))
     .filter((entry) => entry.count > 0);
 
-  // Refresh fast enough that the runtime ticks up while a sub-issue is still
-  // running, but slow enough not to hammer the recursive CTE on idle trees.
-  const hasInProgress = summary.inProgressCount > 0;
-  const { data: costSummary } = useQuery({
-    queryKey: queryKeys.issues.costSummary(parentIssueIdForCostSummary ?? "pending", { excludeRoot: true }),
-    queryFn: () => issuesApi.getCostSummary(parentIssueIdForCostSummary!, { excludeRoot: true }),
-    enabled: !!parentIssueIdForCostSummary,
-    refetchInterval: hasInProgress ? 5_000 : false,
-  });
-
-  const totalTokens = costSummary
-    ? costSummary.inputTokens + costSummary.cachedInputTokens + costSummary.outputTokens
-    : 0;
-  const showCostSummary = !!costSummary && (costSummary.runCount > 0 || totalTokens > 0);
-
   return (
     <div className="border border-border bg-background p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="font-medium text-foreground">
-              {summary.doneCount}/{summary.totalCount} done
+              {summary.doneCount}/{summary.totalCount} {t("list.subIssuesDone")}
             </span>
             <span className="text-muted-foreground">
-              {summary.inProgressCount} in progress
+              {summary.inProgressCount} {t("list.subIssuesInProgress")}
             </span>
             <span className="text-muted-foreground">
-              {summary.blockedCount} blocked
+              {summary.blockedCount} {t("list.subIssuesBlocked")}
             </span>
-            {showCostSummary && (
-              <>
-                <span
-                  className="text-muted-foreground tabular-nums"
-                  title={`${costSummary.runCount.toLocaleString()} run${
-                    costSummary.runCount === 1 ? "" : "s"
-                  } across ${costSummary.issueCount} sub-issue${
-                    costSummary.issueCount === 1 ? "" : "s"
-                  }`}
-                >
-                  {formatTokens(totalTokens)} tokens
-                </span>
-                <span className="text-muted-foreground tabular-nums">
-                  {formatDurationMs(costSummary.runtimeMs)} runtime
-                </span>
-              </>
-            )}
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-issues completion progress"
+            aria-label={t("list.ariaLabelSubIssuesProgress")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -519,7 +472,7 @@ function SubIssueProgressSummaryStrip({
                 key={status}
                 className={cn("h-full", progressSegmentClasses[status])}
                 style={{ width: `${(count / summary.totalCount) * 100}%` }}
-                title={`${issueStatusLabels[status]}: ${count}`}
+                title={`${t("issueStatus." + status, { ns: "common" })}: ${count}`}
                 aria-hidden="true"
               />
             ))}
@@ -530,7 +483,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? t("list.nextUp") : t("list.waitingOnBlockers")}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}
@@ -545,11 +498,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{t("list.noActiveSubIssues")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">{t("list.allSubIssuesDone")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{t("list.noActionableSubIssues")}</div>
           )}
         </div>
       </div>
@@ -576,7 +529,6 @@ export function IssuesList({
   createIssueLabel,
   defaultSortField,
   showProgressSummary = false,
-  parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
@@ -586,6 +538,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
+  const { t } = useTranslation("issues");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -740,10 +693,10 @@ export function IssuesList({
   }, [projects]);
 
   const projectWorkspaceById = useMemo(() => {
-    const map = new Map<string, { name: string; projectId: string }>();
+    const map = new Map<string, { name: string }>();
     for (const project of projects ?? []) {
       for (const workspace of project.workspaces ?? []) {
-        map.set(workspace.id, { name: workspace.name || project.name, projectId: project.id });
+        map.set(workspace.id, { name: workspace.name || project.name });
       }
     }
     return map;
@@ -770,21 +723,16 @@ export function IssuesList({
       name: string;
       mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
       projectWorkspaceId: string | null;
-      projectId: string | null;
     }>();
     for (const workspace of executionWorkspaces) {
-      const projectWorkspace = workspace.projectWorkspaceId
-        ? projectWorkspaceById.get(workspace.projectWorkspaceId) ?? null
-        : null;
       map.set(workspace.id, {
         name: workspace.name,
         mode: workspace.mode,
         projectWorkspaceId: workspace.projectWorkspaceId ?? null,
-        projectId: projectWorkspace?.projectId ?? null,
       });
     }
     return map;
-  }, [executionWorkspaces, projectWorkspaceById]);
+  }, [executionWorkspaces]);
   const issueFilterWorkspaceContext = useMemo(() => ({
     executionWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
@@ -1016,13 +964,13 @@ export function IssuesList({
       const groups = groupBy(filtered, (i) => i.status);
       return issueStatusOrder
         .filter((s) => groups[s]?.length)
-        .map((s) => ({ key: s, label: issueFilterLabel(s), items: groups[s]! }));
+        .map((s) => ({ key: s, label: issueFilterLabel(s, (key) => t(key)), items: groups[s]! }));
     }
     if (viewState.groupBy === "priority") {
       const groups = groupBy(filtered, (i) => i.priority);
       return issuePriorityOrder
         .filter((p) => groups[p]?.length)
-        .map((p) => ({ key: p, label: issueFilterLabel(p), items: groups[p]! }));
+        .map((p) => ({ key: p, label: issueFilterLabel(p, (key) => t(key)), items: groups[p]! }));
     }
     if (viewState.groupBy === "workspace") {
       const groups = groupBy(
@@ -1039,22 +987,6 @@ export function IssuesList({
         .map((key) => ({
           key,
           label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
-          items: groups[key]!,
-        }));
-    }
-    if (viewState.groupBy === "project") {
-      const groups = groupBy(filtered, (issue) => issue.projectId ?? "__no_project");
-      return Object.keys(groups)
-        .sort((a, b) => {
-          if (a === "__no_project") return 1;
-          if (b === "__no_project") return -1;
-          const labelA = projectById.get(a)?.name ?? a;
-          const labelB = projectById.get(b)?.name ?? b;
-          return labelA.localeCompare(labelB);
-        })
-        .map((key) => ({
-          key,
-          label: key === "__no_project" ? "No Project" : (projectById.get(key)?.name ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1098,7 +1030,6 @@ export function IssuesList({
     workspaceNameMap,
     issueTitleMap,
     companyUserLabelMap,
-    projectById,
   ]);
 
   useEffect(() => {
@@ -1184,8 +1115,7 @@ export function IssuesList({
     };
   }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
-  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
-    const groupKey = group?.key;
+  const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
     if (groupKey) {
@@ -1195,28 +1125,6 @@ export function IssuesList({
         if (groupKey.startsWith("__user:")) defaults.assigneeUserId = groupKey.slice("__user:".length);
         else defaults.assigneeAgentId = groupKey;
       }
-      else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
-      else if (viewState.groupBy === "workspace" && groupKey !== "__no_workspace") {
-        const representativeIssue = group?.items.find((issue) => issue.executionWorkspaceId === groupKey) ?? null;
-        const executionWorkspace = executionWorkspaceById.get(groupKey);
-        if (executionWorkspace) {
-          defaults.executionWorkspaceId = groupKey;
-          defaults.executionWorkspaceMode = "reuse_existing";
-          if (executionWorkspace.projectWorkspaceId) defaults.projectWorkspaceId = executionWorkspace.projectWorkspaceId;
-          const groupedProjectId = executionWorkspace.projectId
-            ?? (executionWorkspace.projectWorkspaceId
-              ? projectWorkspaceById.get(executionWorkspace.projectWorkspaceId)?.projectId
-              : null)
-            ?? (representativeIssue?.executionWorkspaceId === groupKey ? representativeIssue.projectId : null);
-          if (groupedProjectId) defaults.projectId = groupedProjectId;
-        } else {
-          const projectWorkspace = projectWorkspaceById.get(groupKey);
-          if (projectWorkspace) {
-            defaults.projectWorkspaceId = groupKey;
-            defaults.projectId = projectWorkspace.projectId;
-          }
-        }
-      }
       else if (viewState.groupBy === "parent" && groupKey !== "__no_parent") {
         const parentIssue = issueById.get(groupKey);
         if (parentIssue) Object.assign(defaults, buildSubIssueDefaultsForViewer(parentIssue, currentUserId));
@@ -1224,20 +1132,16 @@ export function IssuesList({
       }
     }
     return defaults;
-  }, [
-    baseCreateIssueDefaults,
-    currentUserId,
-    executionWorkspaceById,
-    issueById,
-    projectId,
-    projectWorkspaceById,
-    viewState.groupBy,
-  ]);
+  }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
-  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
-    openNewIssue(newIssueDefaults(group));
+  const createActionLabel = createIssueLabel
+    ? `${t("actions.create", { ns: "common" })} ${createIssueLabel}`
+    : t("list.createIssue");
+  const createButtonLabel = createIssueLabel
+    ? `${t("actions.new", { ns: "common" })} ${createIssueLabel}`
+    : t("list.newIssue");
+  const openCreateIssueDialog = useCallback((groupKey?: string) => {
+    openNewIssue(newIssueDefaults(groupKey));
   }, [newIssueDefaults, openNewIssue]);
 
   const filterToWorkspace = useCallback((workspaceId: string) => {
@@ -1269,11 +1173,7 @@ export function IssuesList({
   return (
     <div ref={rootRef} className="space-y-4">
       {progressSummary ? (
-        <SubIssueProgressSummaryStrip
-          summary={progressSummary}
-          issueLinkState={issueLinkState}
-          parentIssueIdForCostSummary={parentIssueIdForCostSummary}
-        />
+        <SubIssueProgressSummaryStrip summary={progressSummary} issueLinkState={issueLinkState} />
       ) : null}
 
       {/* Toolbar */}
@@ -1298,14 +1198,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("list.listView")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("list.boardView")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1318,7 +1218,7 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("list.disableNesting") : t("list.enableNesting")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1329,7 +1229,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={t("list.chooseColumns")}
             iconOnly
           />
 
@@ -1351,19 +1251,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("list.sort")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["workflow", "Workflow"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["workflow", t("list.sortWorkflow")],
+                    ["status", t("list.sortStatus")],
+                    ["priority", t("list.sortPriority")],
+                    ["title", t("list.sortTitle")],
+                    ["created", t("list.sortCreated")],
+                    ["updated", t("list.sortUpdated")],
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
@@ -1395,20 +1295,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("list.group")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Assignee"],
-                    ["project", "Project"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
-                    ["none", "None"],
+                    ["status", t("filters.status")],
+                    ["priority", t("filters.priority")],
+                    ["assignee", t("filters.assignee")],
+                    ["workspace", t("filters.workspace")],
+                    ["parent", t("list.groupParentIssue")],
+                    ["none", t("list.groupNone")],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -1432,18 +1331,18 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {t("list.showingUpToMatches", { limit: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
+          {t("list.boardColumnLimit", { limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT })}
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={t("list.noIssuesMatch")}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1488,10 +1387,8 @@ export function IssuesList({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    className="-mr-2 text-muted-foreground"
-                    title={`New issue in ${group.label}`}
-                    aria-label={`New issue in ${group.label}`}
-                    onClick={() => openCreateIssueDialog(group)}
+                    className="text-muted-foreground"
+                    onClick={() => openCreateIssueDialog(group.key)}
                   >
                     <Plus className="h-3 w-3" />
                   </Button>
@@ -1618,27 +1515,17 @@ export function IssuesList({
                               issueBadge === "Paused" ? (
                                 <span
                                   className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
+                                  aria-label={t("list.paused")}
+                                  title={t("list.paused")}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {t("list.paused")}
                                 </span>
                               ) : (
                                 <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
                                   {issueBadge}
                                 </span>
                               )
-                            ) : null}
-                            {isSuccessfulRunHandoffRequired(issue) ? (
-                              <span
-                                className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This issue needs a next step"
-                              >
-                                <CircleDot className="h-3 w-3" />
-                                Needs next step
-                              </span>
                             ) : null}
                           </>
                         )}
@@ -1729,7 +1616,7 @@ export function IssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          Assignee
+                                          {t("list.assignee")}
                                         </span>
                                       )}
                                     </button>
@@ -1742,7 +1629,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder={t("list.searchAssignees")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1759,7 +1646,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
+                                        {t("filters.noAssignee")}
                                       </button>
                                       {currentUserId && (
                                         <button
@@ -1774,7 +1661,7 @@ export function IssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{t("filters.me")}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])
@@ -1821,10 +1708,10 @@ export function IssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more issues..."
+                  ? t("list.loadingMore")
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} issues`
-                    : "Scroll to load more issues"}
+                    ? t("list.renderingCount", { rendered: Math.min(renderedIssueRowLimit, filtered.length), total: filtered.length })
+                    : t("list.scrollToLoadMore")}
               </p>
             </div>
           )}

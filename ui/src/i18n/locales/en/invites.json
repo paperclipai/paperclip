@@ -1,0 +1,391 @@
+{
+  "companyInvites": {
+    "title": "Company Invites",
+    "description": "Create human invite links for company access. New invite links are copied to your clipboard when they are generated.",
+    "createInvite": {
+      "title": "Create invite",
+      "description": "Generate a human invite link and choose the default access it should request.",
+      "chooseRole": "Choose a role",
+      "singleUseNote": "Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.",
+      "creating": "Creating…",
+      "createButton": "Create invite",
+      "historyNote": "Invite history below keeps the audit trail."
+    },
+    "role": {
+      "viewer": {
+        "label": "Viewer",
+        "description": "Can view company work and follow along without operational permissions.",
+        "gets": "No built-in grants."
+      },
+      "operator": {
+        "label": "Operator",
+        "description": "Recommended for people who need to help run work without managing access.",
+        "gets": "Can assign tasks.",
+        "defaultBadge": "Default"
+      },
+      "admin": {
+        "label": "Admin",
+        "description": "Recommended for operators who need to invite people, create agents, and approve joins.",
+        "gets": "Can create agents, invite users, assign tasks, and approve join requests."
+      },
+      "owner": {
+        "label": "Owner",
+        "description": "Full company access, including membership and permission management.",
+        "gets": "Everything in Admin, plus managing members and permission grants."
+      }
+    },
+    "latestInvite": {
+      "title": "Latest invite link",
+      "domainNote": "This URL includes the current Paperclip domain returned by the server.",
+      "copied": "Copied",
+      "openInvite": "Open invite"
+    },
+    "history": {
+      "title": "Invite history",
+      "description": "Review invite status, role, inviter, and any linked join request.",
+      "openQueue": "Open join request queue",
+      "empty": "No invites have been created for this company yet.",
+      "loadingMore": "Loading more…",
+      "viewMore": "View more",
+      "columns": {
+        "state": "State",
+        "role": "Role",
+        "invitedBy": "Invited by",
+        "created": "Created",
+        "joinRequest": "Join request",
+        "action": "Action"
+      },
+      "unknownInviter": "Unknown inviter",
+      "reviewRequest": "Review request",
+      "revoke": "Revoke",
+      "inactive": "Inactive"
+    },
+    "selectCompany": "Select a company to manage invites.",
+    "loading": "Loading invites…",
+    "permissionError": "You do not have permission to manage company invites.",
+    "loadError": "Failed to load invites.",
+    "toast": {
+      "clipboardUnavailable": "Clipboard unavailable",
+      "clipboardUnavailableBody": "Copy the invite URL manually from the field below.",
+      "inviteCreated": "Invite created",
+      "inviteCreatedCopied": "Invite ready below and copied to clipboard.",
+      "inviteCreatedNotCopied": "Invite ready below.",
+      "inviteRevoked": "Invite revoked",
+      "createFailed": "Failed to create invite",
+      "revokeFailed": "Failed to revoke invite"
+    }
+  },
+  "landing": {
+    "invalidToken": "Invalid invite token.",
+    "loading": "Loading invite...",
+    "checkingAccess": "Checking your access...",
+    "notAvailable": {
+      "title": "Invite not available",
+      "description": "This invite may be expired, revoked, or already used."
+    },
+    "rejected": "This join request was not approved.",
+    "alreadyUsed": "This invite has already been used.",
+    "openingCompany": "Opening company...",
+    "bootstrap": {
+      "title": "Bootstrap complete",
+      "openBoard": "Open board"
+    },
+    "joined": {
+      "title": "You joined the company",
+      "openBoard": "Open board"
+    },
+    "awaitingApproval": {
+      "title": "Request to join {{companyName}}",
+      "body": "Your request is still awaiting approval. {{approver}} must approve your request to join.",
+      "approvalPage": "Approval page",
+      "companySettingsAccess": "Company Settings → Access",
+      "askToVisit": "Ask them to visit {{link}} to approve your request.",
+      "refreshHint": "Refresh this page after you've been approved — you'll be redirected automatically.",
+      "claimSecret": "Claim secret",
+      "onboarding": "Onboarding:"
+    },
+    "invitedToJoin": "You've been invited to join Paperclip",
+    "setUpPaperclip": "Set up Paperclip",
+    "joinCompany": "Join {{companyName}}",
+    "agentFormDescription": "Review the invite details, then submit the agent information below to start the join request.",
+    "humanAccountDescription": "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email.",
+    "readyDescription": "Your account is ready. Review the invite details, then accept it to continue.",
+    "meta": {
+      "company": "Company",
+      "invitedBy": "Invited by",
+      "paperclipBoard": "Paperclip board",
+      "requestedAccess": "Requested access",
+      "agentJoinRequest": "Agent join request",
+      "companyAccess": "Company access",
+      "inviteExpires": "Invite expires"
+    },
+    "messageFromInviter": "Message from inviter",
+    "signedInAs": "Signed in as <1>{{label}}</1>.",
+    "agentForm": {
+      "title": "Submit agent details",
+      "description": "This invite will create an approval request for a new agent in {{companyName}}.",
+      "agentName": "Agent name",
+      "adapterType": "Adapter type",
+      "capabilities": "Capabilities",
+      "working": "Working...",
+      "submitRequest": "Submit request"
+    },
+    "auth": {
+      "createAccount": "Create your account",
+      "signInToContinue": "Sign in to continue",
+      "createAccountDescription": "Start with a Paperclip account. After that, you'll come right back here to accept the invite for {{companyName}}.",
+      "signInDescription": "Use the Paperclip account that already matches this invite. If you do not have one yet, switch back to create account.",
+      "createAccountButton": "Create account",
+      "alreadyHaveAccount": "I already have an account",
+      "name": "Name",
+      "email": "Email",
+      "password": "Password",
+      "signInAndContinue": "Sign in and continue",
+      "createAccountAndContinue": "Create account and continue",
+      "alreadySignedUpHint": "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user.",
+      "noAccountHint": "No account yet? Switch back to create account so you can accept the invite with a new login.",
+      "fillRequiredFields": "Please fill in all required fields."
+    },
+    "accept": {
+      "submittingJoinRequest": "Submitting join request",
+      "acceptBootstrapInvite": "Accept bootstrap invite",
+      "acceptCompanyInvite": "Accept company invite",
+      "submittingDescription": "Submitting your join request for {{companyName}}.",
+      "alreadyMemberDescription": "This account already belongs to {{companyName}}.",
+      "submitOrCompleteDescription": "This will {{action}}.",
+      "finishSetup": "finish setting up Paperclip",
+      "submitCompleteJoinRequest": "submit or complete your join request for {{companyName}}",
+      "submittingRequest": "Submitting request...",
+      "finishingSignIn": "Finishing sign-in...",
+      "acceptInvite": "Accept invite",
+      "working": "Working...",
+      "continue": "Continue"
+    },
+    "errors": {
+      "checkingAccess": "Checking your company access. Try again in a moment.",
+      "alreadyBelongs": "This account already belongs to the company.",
+      "inviteNotFound": "Invite not found",
+      "acceptFailed": "Failed to accept invite",
+      "authFailed": "Authentication failed",
+      "userAlreadyExists": "An account already exists for {{email}}. Sign in below to continue with this invite.",
+      "invalidEmailOrPassword": "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+      "accountMayExist": "An account may already exist for {{email}}. Try signing in instead."
+    }
+  },
+  "uxLab": {
+    "badge": "Invite UX Lab",
+    "title": "Invite and signup UX review surface",
+    "description": "This page collects the current invite landing, signup, approval-result, and company invite-management states in one place so styling changes can be reviewed without recreating each backend condition by hand.",
+    "tags": {
+      "route": "/tests/ux/invites",
+      "signupInvite": "signup + invite states",
+      "fixture": "fixture-backed preview"
+    },
+    "coveredStates": {
+      "title": "Covered states",
+      "items": [
+        "Invite loading, access-check, missing-token, and unavailable states",
+        "Inline account creation and sign-in variants, including feedback/error copy",
+        "Human accept, agent request, and auto-accept transitions",
+        "Pending approval, joined-now, claim secret, and onboarding result screens",
+        "Company invite creation, copied-link, history, empty, and permission-error states"
+      ]
+    },
+    "topLevelStates": {
+      "eyebrow": "Top-level states",
+      "title": "Landing state coverage",
+      "description": "Small cards for the fast-return invite states that do not render the full split-screen layout."
+    },
+    "statusCards": {
+      "loadingInvite": {
+        "title": "Loading invite",
+        "body": "Shown while invite summary, deployment mode, or auth session data is still loading."
+      },
+      "checkingAccess": {
+        "title": "Checking your access",
+        "body": "Shown after sign-in while the app verifies whether the current user already belongs to the invited company."
+      },
+      "invalidToken": {
+        "title": "Invalid invite token",
+        "body": "The token is missing entirely, so the page short-circuits before any invite lookup."
+      },
+      "notAvailable": {
+        "title": "Invite not available",
+        "body": "Used for expired, revoked, already-consumed, or otherwise missing invites."
+      },
+      "bootstrapComplete": {
+        "title": "Bootstrap complete",
+        "body": "Result screen for bootstrap CEO invites after setup has been accepted successfully."
+      },
+      "autoAccept": {
+        "title": "Auto-accept in progress",
+        "body": "Signed-in human users skip the extra button click and move straight into join submission."
+      },
+      "alreadyMember": {
+        "title": "Already a member",
+        "body": "Acceptance stays disabled and the page redirects into the company once membership is confirmed."
+      },
+      "resultSurfaces": {
+        "title": "Invite result surfaces",
+        "body": "Both pending-approval and joined-now confirmations are included below with claim and onboarding extras."
+      }
+    },
+    "inviteLanding": {
+      "eyebrow": "Invite landing",
+      "title": "Split-screen invite flows",
+      "description": "These frames mirror the production invite surface closely enough to review spacing, hierarchy, and control states while keeping data fixture-driven."
+    },
+    "resultStates": {
+      "eyebrow": "Result states",
+      "title": "Approval and completion screens",
+      "description": "These are the post-submit states returned from invite acceptance, including optional claim and onboarding metadata."
+    },
+    "standaloneAuth": {
+      "eyebrow": "Standalone auth",
+      "title": "Auth page states",
+      "description": "The general `/auth` page uses a different composition from invite landing. These previews keep both sign-in and sign-up variants visible."
+    },
+    "authPreview": {
+      "badge": "Auth preview",
+      "title": "Side-by-side signup styling review",
+      "description": "This frame mirrors the production auth surface so spacing, label density, button treatments, and desktop composition are easy to compare."
+    },
+    "companySettings": {
+      "eyebrow": "Company settings",
+      "title": "Company invite management",
+      "description": "This section captures the board-side invite creation flow, copied-link state, audit table, and the edge states that are otherwise tedious to stage."
+    },
+    "companyInvitesPreview": {
+      "title": "Company Invites",
+      "createInvite": "Create invite",
+      "createInviteDescription": "Generate a human invite link and choose the default access it should request.",
+      "chooseRole": "Choose a role",
+      "singleUseNote": "Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.",
+      "createButton": "Create invite",
+      "historyNote": "Invite history below keeps the audit trail.",
+      "latestInvite": "Latest invite link",
+      "domainNote": "This URL includes the current Paperclip domain returned by the server.",
+      "copied": "Copied",
+      "openInvite": "Open invite",
+      "inviteHistory": "Invite history",
+      "historyDescription": "Review invite status, role, inviter, and any linked join request.",
+      "openQueue": "Open join request queue",
+      "emptyHistory": "Empty history state",
+      "emptyHistoryDescription": "No invites have been created for this company yet.",
+      "permissionError": "Permission error",
+      "permissionErrorDescription": "You do not have permission to manage company invites."
+    },
+    "inviteSummary": {
+      "invitedToJoin": "You've been invited to join Paperclip",
+      "joinCompany": "Join {{companyName}}",
+      "createAccountDescription": "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email.",
+      "readyDescription": "Your account is ready. Review the invite details, then accept it to continue.",
+      "reviewAgentDescription": "Review the invite details, then submit the agent information below to start the join request.",
+      "company": "Company",
+      "invitedBy": "Invited by",
+      "requestedAccess": "Requested access",
+      "inviteExpires": "Invite expires",
+      "messageFromInviter": "Message from inviter",
+      "signedInAs": "Signed in as <1>{{label}}</1>."
+    },
+    "inlineAuth": {
+      "createAccount": "Create your account",
+      "signInToContinue": "Sign in to continue",
+      "createAccountDescription": "Start with a Paperclip account. After that, you'll come right back here to accept the invite for {{companyName}}.",
+      "signInDescription": "Use the Paperclip account that already matches this invite. If you do not have one yet, switch back to create account.",
+      "createAccountButton": "Create account",
+      "alreadyHaveAccount": "I already have an account",
+      "name": "Name",
+      "email": "Email",
+      "password": "Password",
+      "signInAndContinue": "Sign in and continue",
+      "createAccountAndContinue": "Create account and continue",
+      "alreadySignedUpHint": "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user.",
+      "noAccountHint": "No account yet? Switch back to create account so you can accept the invite with a new login."
+    },
+    "agentRequest": {
+      "title": "Submit agent details",
+      "description": "This invite will create an approval request for a new agent in {{companyName}}.",
+      "agentName": "Agent name",
+      "adapterType": "Adapter type",
+      "capabilities": "Capabilities",
+      "submitRequest": "Submit request"
+    },
+    "acceptInvite": {
+      "title": "Accept company invite",
+      "submittingDescription": "Submitting your join request for {{companyName}}.",
+      "alreadyMemberDescription": "This account already belongs to {{companyName}}.",
+      "submitOrCompleteDescription": "This will submit or complete your join request for {{companyName}}.",
+      "submittingRequest": "Submitting request...",
+      "acceptInvite": "Accept invite"
+    },
+    "inviteResult": {
+      "requestToJoin": "Request to join {{companyName}}",
+      "approverMustApprove": "{{inviter}} must approve your request to join.",
+      "askToVisit": "Ask them to visit Company Settings → Access to approve your request.",
+      "joinedNow": "You joined the company",
+      "joinedNowDescription": "Your account already matched the approved invite, so the board can be opened immediately.",
+      "openBoard": "Open board",
+      "approvalPage": "Approval page",
+      "companySettingsAccess": "Company Settings → Access",
+      "refreshHint": "Refresh this page after you've been approved — you'll be redirected automatically.",
+      "claimSecret": "Claim secret",
+      "onboarding": "Onboarding:"
+    },
+    "authScreen": {
+      "paperclip": "Paperclip",
+      "signInTitle": "Sign in to Paperclip",
+      "signUpTitle": "Create your Paperclip account",
+      "signInDescription": "Use your email and password to access this instance.",
+      "signUpDescription": "Create an account for this instance. Email confirmation is not required in v1.",
+      "name": "Name",
+      "email": "Email",
+      "password": "Password",
+      "signInButton": "Sign In",
+      "createAccountButton": "Create Account",
+      "needAccount": "Need an account?",
+      "alreadyHaveAccount": "Already have an account?",
+      "createOne": "Create one",
+      "signInLink": "Sign in"
+    }
+  },
+  "joinRequestQueue": {
+    "breadcrumb": {
+      "company": "Company",
+      "inbox": "Inbox",
+      "joinRequests": "Join Requests"
+    },
+    "title": "Join Request Queue",
+    "description": "Review human and agent join requests outside the mixed inbox feed. This queue uses the same approval mutations as the inline inbox cards.",
+    "status": "Status",
+    "requestType": "Request type",
+    "statusOptions": {
+      "pending_approval": "Pending approval",
+      "approved": "Approved",
+      "rejected": "Rejected"
+    },
+    "typeOptions": {
+      "all": "All",
+      "human": "Human",
+      "agent": "Agent"
+    },
+    "noMatches": "No join requests match the current filters.",
+    "unknownHuman": "Unknown human requester",
+    "unknownAgent": "Unknown agent requester",
+    "inviteUnavailable": "Invite metadata unavailable",
+    "submitted": "Submitted {{date}}",
+    "inviteContext": "Invite context",
+    "requestDetails": "Request details",
+    "sourceIp": "Source IP {{ip}}",
+    "reject": "Reject",
+    "approve": "Approve",
+    "selectCompany": "Select a company to review join requests.",
+    "loading": "Loading join requests…",
+    "permissionError": "You do not have permission to review join requests for this company.",
+    "loadError": "Failed to load join requests.",
+    "toast": {
+      "approved": "Join request approved",
+      "rejected": "Join request rejected"
+    }
+  }
+}

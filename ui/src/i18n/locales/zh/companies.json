@@ -1,0 +1,16 @@
+{
+  "title": "公司",
+  "newCompany": "新建公司",
+  "loading": "正在加载公司...",
+  "rename": "重命名",
+  "deleteCompany": "删除公司",
+  "agentCount_one": "{{count}} 个智能体",
+  "agentCount_other": "{{count}} 个智能体",
+  "issueCount_one": "{{count}} 个待办",
+  "issueCount_other": "{{count}} 个待办",
+  "unlimitedBudget": "无限预算",
+  "created": "创建于 {{time}}",
+  "deleteConfirm": "删除此公司及其所有数据？此操作无法撤销。",
+  "deleting": "正在删除…",
+  "selectCompany": "选择公司以查看公司列表。"
+}

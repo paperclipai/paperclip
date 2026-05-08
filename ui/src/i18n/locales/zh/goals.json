@@ -1,0 +1,41 @@
+{
+  "pageTitle": "目标",
+  "selectCompany": "选择公司以查看目标。",
+  "noGoals": "暂无目标。",
+  "addGoal": "添加目标",
+  "newGoal": "新建目标",
+  "subGoal": "子目标",
+  "noSubGoals": "暂无子目标。",
+  "noLinkedProjects": "暂无关联项目。",
+  "detail": {
+    "levelCompany": "公司",
+    "levelTeam": "团队",
+    "levelAgent": "智能体",
+    "levelTask": "任务"
+  },
+  "showProperties": "显示属性",
+  "addDescription": "添加描述...",
+  "children": "子目标",
+  "projects": "项目",
+  "breadcrumb": "目标",
+  "status": {
+    "planned": "计划中",
+    "active": "进行中",
+    "achieved": "已完成",
+    "cancelled": "已取消"
+  },
+  "createGoalDialog": {
+    "title": "新建目标",
+    "subGoalTitle": "新建子目标",
+    "namePlaceholder": "目标标题",
+    "descriptionPlaceholder": "添加描述...",
+    "parentGoal": "父目标",
+    "noParent": "无父目标",
+    "creating": "创建中…",
+    "createGoal": "创建目标",
+    "createSubGoal": "创建子目标",
+    "errors": {
+      "noCompanySelected": "未选择公司"
+    }
+  }
+}

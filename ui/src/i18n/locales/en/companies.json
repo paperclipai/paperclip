@@ -1,0 +1,16 @@
+{
+  "title": "Companies",
+  "newCompany": "New Company",
+  "loading": "Loading companies...",
+  "rename": "Rename",
+  "deleteCompany": "Delete Company",
+  "agentCount_one": "{{count}} agent",
+  "agentCount_other": "{{count}} agents",
+  "issueCount_one": "{{count}} issue",
+  "issueCount_other": "{{count}} issues",
+  "unlimitedBudget": "Unlimited budget",
+  "created": "Created {{time}}",
+  "deleteConfirm": "Delete this company and all its data? This cannot be undone.",
+  "deleting": "Deleting…",
+  "selectCompany": "Select a company to view companies."
+}

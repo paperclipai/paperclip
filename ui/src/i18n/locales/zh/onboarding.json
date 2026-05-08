@@ -1,0 +1,90 @@
+{
+  "steps": {
+    "company": "公司",
+    "agent": "智能体",
+    "task": "任务",
+    "launch": "启动"
+  },
+  "close": "关闭",
+  "step1": {
+    "title": "为公司命名",
+    "description": "这是你的智能体将要为之工作的组织。",
+    "companyNameLabel": "公司名称",
+    "companyNamePlaceholder": "Acme Corp",
+    "goalLabel": "使命 / 目标（可选）",
+    "goalPlaceholder": "这家公司想要实现什么？"
+  },
+  "step2": {
+    "title": "创建你的第一个智能体",
+    "description": "选择此智能体将如何运行任务。",
+    "agentNameLabel": "智能体名称",
+    "agentNamePlaceholder": "CEO",
+    "adapterTypeLabel": "适配器类型",
+    "recommendedBadge": "推荐",
+    "moreAdapters": "更多智能体适配器类型",
+    "comingSoon": "即将推出",
+    "modelLabel": "模型",
+    "modelRequired": "选择模型（必填）",
+    "modelDefault": "默认",
+    "searchModelsPlaceholder": "搜索模型...",
+    "noModelsDiscovered": "未发现模型。",
+    "environmentCheck": {
+      "title": "适配器环境检查",
+      "description": "运行实时探测，要求适配器 CLI 响应 hello。",
+      "testNow": "立即测试",
+      "testing": "测试中...",
+      "passed": "通过"
+    },
+    "anthropicKeyWarning": "Claude 在 {{key}} 已设置的情况下运行失败。你可以在当前 CEO 适配器配置中清除它并重试探测。",
+    "unsetAnthropicKey": "取消设置 {{key}}",
+    "retrying": "重试中...",
+    "manualDebug": {
+      "title": "手动调试",
+      "promptLabel": "提示词",
+      "promptValue": "Respond with hello.",
+      "authHint": "如果认证失败，请在环境中设置 {{env}} 或运行 {{cmd}}。",
+      "loginHint": "如果需要登录，请运行 {{cmd}} 并重试。"
+    },
+    "gatewayUrlLabel": "网关 URL",
+    "webhookUrlLabel": "Webhook URL"
+  },
+  "step3": {
+    "title": "给它分配一些任务",
+    "description": "给你的智能体一个小的起步任务——修复一个 bug、研究一个问题、编写一个脚本。",
+    "defaultTaskTitle": "招聘第一位工程师并制定招聘计划",
+    "defaultTaskDescription": "你是 CEO。你为公司设定方向。\n\n- 招聘一名创始工程师\n- 撰写招聘计划\n- 将路线图分解为具体任务并开始委派工作",
+    "taskTitleLabel": "任务标题",
+    "taskTitlePlaceholder": "例如：调研竞品定价",
+    "descriptionLabel": "描述（可选）",
+    "descriptionPlaceholder": "添加更多关于智能体应该做什么的详细信息..."
+  },
+  "step4": {
+    "title": "准备启动",
+    "description": "一切准备就绪。现在启动将创建初始任务、唤醒智能体并打开待办。",
+    "companyLabel": "公司",
+    "taskLabel": "任务"
+  },
+  "navigation": {
+    "back": "返回",
+    "next": "下一步",
+    "creating": "创建中...",
+    "createAndOpen": "创建并打开待办"
+  },
+  "approvalRemark": "在入职向导首次智能体设置期间批准。",
+  "errors": {
+    "createCompanyFailed": "创建公司失败",
+    "createAgentFailed": "创建智能体失败",
+    "createTaskFailed": "创建任务失败",
+    "testEnvironmentFailed": "适配器环境测试失败",
+    "testEnvironmentNoCompany": "在测试适配器环境之前，请先创建或选择一个公司。",
+    "opencodeModelRequired": "OpenCode 需要提供显式的模型，格式为 provider/model。",
+    "anthropicRetryFailed": "已在适配器配置中取消设置 {{key}} 并重试，但环境测试仍然失败。",
+    "unsetAnthropicFailed": "取消设置 {{key}} 并重试失败。"
+  },
+  "adapterEnvironment": {
+    "passed": "通过",
+    "warnings": "警告",
+    "failed": "失败",
+    "hint": "提示"
+  }
+}

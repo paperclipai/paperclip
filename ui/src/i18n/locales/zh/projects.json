@@ -1,0 +1,148 @@
+{
+  "title": "项目",
+  "addProject": "添加项目",
+  "selectCompany": "选择公司以查看项目。",
+  "noProjects": "暂无项目。",
+  "status": "状态",
+  "targetDate": "目标日期",
+  "overview": "概览",
+  "issues": "待办",
+  "pluginOperations": "插件操作",
+  "workspaces": "工作区",
+  "configuration": "配置",
+  "budget": "预算",
+  "addDescription": "添加描述...",
+  "pausedByBudget": "因预算硬限制已暂停",
+  "managedBy": "由 {{name}} 管理",
+  "loadingWorkspaces": "正在加载工作区...",
+  "archive": {
+    "archived": "\"{{name}}\" 已归档",
+    "unarchived": "\"{{name}}\" 已取消归档",
+    "failedToArchive": "归档项目失败",
+    "failedToUnarchive": "取消归档项目失败"
+  },
+  "changeColor": "更改项目颜色",
+  "selectColor": "选择颜色 {{color}}",
+  "project": "项目",
+  "newProjectDialog": {
+    "title": "新建项目",
+    "namePlaceholder": "项目名称",
+    "descriptionPlaceholder": "添加描述...",
+    "repoUrlLabel": "仓库地址",
+    "repoUrlTooltip": "链接 GitHub 仓库，以便智能体可以克隆、读取和推送代码。",
+    "repoUrlPlaceholder": "https://github.com/org/repo",
+    "localFolderLabel": "本地文件夹",
+    "localFolderTooltip": "设置本机上的绝对路径，本地智能体将在此读取和写入项目文件。",
+    "localFolderPlaceholder": "/absolute/path/to/workspace",
+    "optional": "可选",
+    "errors": {
+      "absolutePathRequired": "本地文件夹必须是完整的绝对路径。",
+      "invalidRepoUrl": "仓库必须使用有效的 GitHub 或 GitHub Enterprise 仓库地址。"
+    },
+    "fallbackLocalFolder": "本地文件夹",
+    "fallbackRepo": "GitHub 仓库",
+    "noGoal": "无目标",
+    "allGoalsSelected": "已选择所有目标。",
+    "addGoal": "+ 目标",
+    "goal": "目标",
+    "removeGoalAria": "移除目标 {{title}}",
+    "targetDatePlaceholder": "目标日期",
+    "failedToCreate": "创建项目失败。",
+    "creating": "创建中…",
+    "createProject": "创建项目",
+    "statuses": {
+      "backlog": "待办",
+      "planned": "已计划",
+      "in_progress": "进行中",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    }
+  },
+  "properties": {
+    "statuses": {
+      "backlog": "待办",
+      "planned": "已计划",
+      "in_progress": "进行中",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    },
+    "saveIndicator": {
+      "saving": "保存中",
+      "saved": "已保存",
+      "failed": "失败"
+    },
+    "archive": {
+      "archive": "归档",
+      "unarchive": "取消归档",
+      "archiving": "归档中...",
+      "unarchiving": "取消归档中...",
+      "confirm": "确认",
+      "cancel": "取消",
+      "archiveProject": "归档项目",
+      "unarchiveProject": "取消归档项目",
+      "descriptionArchive": "归档此项目以将其从侧边栏和项目选择器中隐藏。",
+      "descriptionUnarchive": "取消归档此项目以将其恢复到侧边栏和项目选择器中。"
+    },
+    "fields": {
+      "name": "名称",
+      "description": "描述",
+      "status": "状态",
+      "goals": "目标",
+      "env": "环境变量",
+      "created": "创建时间",
+      "updated": "更新时间",
+      "targetDate": "目标日期"
+    },
+    "noDescription": "无描述",
+    "envDescription": "应用于此项目中所有待办的运行。项目值在键冲突时覆盖代理环境变量。",
+    "codebase": {
+      "title": "代码库",
+      "help": "仓库标识来源。本地文件夹是智能体写入代码的默认位置。",
+      "repo": "仓库",
+      "localFolder": "本地文件夹",
+      "paperclipManaged": "Paperclip 托管文件夹。",
+      "additionalLegacyWorkspaces": "此项目上存在其他旧版工作区记录。Paperclip 使用主工作区作为代码库视图。",
+      "notSet": "未设置。",
+      "setRepo": "设置仓库",
+      "changeRepo": "更改仓库",
+      "clearRepo": "清除仓库",
+      "setLocalFolder": "设置本地文件夹",
+      "changeLocalFolder": "更改本地文件夹",
+      "clearLocalFolder": "清除本地文件夹"
+    },
+    "executionWorkspaces": {
+      "title": "执行工作区",
+      "help": "项目拥有的隔离待办检出和执行工作区行为的默认设置。",
+      "enableIsolated": "启用隔离待办检出",
+      "enableIsolatedDescription": "让待办在项目的主检出和隔离执行工作区之间选择。",
+      "enabled": "已启用",
+      "disabled": "已禁用",
+      "newIssuesDefault": "新待办默认隔离检出",
+      "newIssuesDefaultDescription": "如果禁用，新待办将留在项目的主检出上，除非有人选择加入。",
+      "showAdvanced": "显示高级检出设置",
+      "hideAdvanced": "隐藏高级检出设置",
+      "hostManaged": "主机托管实现：",
+      "gitWorktree": "Git 工作树",
+      "environment": "环境",
+      "noEnvironment": "无环境",
+      "baseRef": "基础引用",
+      "branchTemplate": "分支模板",
+      "worktreeParentDir": "工作树父目录",
+      "provisionCommand": "预置命令",
+      "teardownCommand": "清理命令",
+      "provisionTeardownHint": "预置在派生工作树中于智能体执行之前运行。清理命令存储在此处以供将来的清理流程使用。"
+    },
+    "errors": {
+      "absolutePathRequired": "本地文件夹必须是完整的绝对路径。",
+      "invalidRepoUrl": "仓库必须使用有效的 GitHub 或 GitHub Enterprise 仓库地址。",
+      "failedToSaveWorkspace": "保存工作区失败。",
+      "failedToDeleteWorkspace": "删除工作区失败。",
+      "failedToUpdateWorkspace": "更新工作区失败。"
+    },
+    "buttons": {
+      "save": "保存",
+      "cancel": "取消"
+    },
+    "dangerZone": "危险区域"
+  }
+}

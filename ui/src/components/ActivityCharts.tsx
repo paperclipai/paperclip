@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 
 /* ---- Utilities ---- */
 
@@ -85,6 +86,7 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
 }
 
 export function RunActivityChart(props: RunChartProps) {
+  const { t } = useTranslation("dashboard");
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
@@ -92,7 +94,7 @@ export function RunActivityChart(props: RunChartProps) {
   const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = activity.some(v => v.total > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("chartEmpty.noRuns")}</p>;
 
   return (
     <div>
@@ -131,6 +133,7 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+  const { t } = useTranslation(["dashboard", "common"]);
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -144,7 +147,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard:chartEmpty.noIssues")}</p>;
 
   return (
     <div>
@@ -169,7 +172,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
+      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: t(`common:priority.${p}`) }))} />
     </div>
   );
 }
@@ -184,17 +187,8 @@ const statusColors: Record<string, string> = {
   backlog: "#64748b",
 };
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
-
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+  const { t } = useTranslation(["dashboard", "common"]);
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
@@ -211,7 +205,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard:chartEmpty.noIssues")}</p>;
 
   return (
     <div>
@@ -236,18 +230,19 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: t(`common:issueStatus.${s}`) }))} />
     </div>
   );
 }
 
 export function SuccessRateChart(props: RunChartProps) {
+  const { t } = useTranslation("dashboard");
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("chartEmpty.noRuns")}</p>;
 
   return (
     <div>

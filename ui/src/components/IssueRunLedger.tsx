@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
@@ -69,62 +70,6 @@ type LivenessCopy = {
   description: string;
 };
 
-const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
-  completed: {
-    label: "Completed",
-    tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    description: "Issue reached a terminal state.",
-  },
-  advanced: {
-    label: "Advanced",
-    tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-    description: "Run produced concrete evidence of progress.",
-  },
-  plan_only: {
-    label: "Plan only",
-    tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    description: "Run described future work without concrete action evidence.",
-  },
-  empty_response: {
-    label: "Empty response",
-    tone: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
-    description: "Run finished without useful output.",
-  },
-  blocked: {
-    label: "Blocked",
-    tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-    description: "Run or issue declared a blocker.",
-  },
-  failed: {
-    label: "Failed",
-    tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-    description: "Run ended unsuccessfully.",
-  },
-  needs_followup: {
-    label: "Needs follow-up",
-    tone: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-    description: "Run produced useful output but did not prove concrete progress.",
-  },
-};
-
-const PENDING_LIVENESS_COPY: LivenessCopy = {
-  label: "Checks after finish",
-  tone: "border-border bg-background text-muted-foreground",
-  description: "Liveness is evaluated after the run finishes.",
-};
-
-const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
-  label: "Retry pending",
-  tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-  description: "Paperclip queued an automatic retry that has not started yet.",
-};
-
-const MISSING_LIVENESS_COPY: LivenessCopy = {
-  label: "No liveness data",
-  tone: "border-border bg-background text-muted-foreground",
-  description: "This run has no persisted liveness classification.",
-};
-
 const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
 
@@ -135,20 +80,89 @@ type RunOutputSilenceCopy = {
   tone: string;
 };
 
-const RUN_OUTPUT_SILENCE_COPY: Partial<Record<RunOutputSilenceLevel, RunOutputSilenceCopy>> = {
-  suspicious: {
-    label: "Silence watch",
-    tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  },
-  critical: {
-    label: "Stale run",
-    tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-  },
-  snoozed: {
-    label: "Silence snoozed",
-    tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-  },
-};
+function livenessCopyForRun(
+  run: LedgerRun,
+  t: (key: string) => string,
+): LivenessCopy {
+  const map: Record<RunLivenessState, LivenessCopy> = {
+    completed: {
+      label: t("runLiveness.completed"),
+      tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+      description: t("runLiveness.completedDescription"),
+    },
+    advanced: {
+      label: t("runLiveness.advanced"),
+      tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+      description: t("runLiveness.advancedDescription"),
+    },
+    plan_only: {
+      label: t("runLiveness.planOnly"),
+      tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      description: t("runLiveness.planOnlyDescription"),
+    },
+    empty_response: {
+      label: t("runLiveness.emptyResponse"),
+      tone: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
+      description: t("runLiveness.emptyResponseDescription"),
+    },
+    blocked: {
+      label: t("runLiveness.blocked"),
+      tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
+      description: t("runLiveness.blockedDescription"),
+    },
+    failed: {
+      label: t("runLiveness.failed"),
+      tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
+      description: t("runLiveness.failedDescription"),
+    },
+    needs_followup: {
+      label: t("runLiveness.needsFollowup"),
+      tone: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+      description: t("runLiveness.needsFollowupDescription"),
+    },
+  };
+  if (run.status === "scheduled_retry") {
+    return {
+      label: t("runLiveness.retryPending"),
+      tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+      description: t("runLiveness.retryPendingDescription"),
+    };
+  }
+  if (run.livenessState) return map[run.livenessState];
+  if (isActiveRun(run)) {
+    return {
+      label: t("runLiveness.checksAfterFinish"),
+      tone: "border-border bg-background text-muted-foreground",
+      description: t("runLiveness.checksAfterFinishDescription"),
+    };
+  }
+  return {
+    label: t("runLiveness.noLivenessData"),
+    tone: "border-border bg-background text-muted-foreground",
+    description: t("runLiveness.noLivenessDataDescription"),
+  };
+}
+
+function silenceCopyForRun(
+  level: RunOutputSilenceLevel,
+  t: (key: string) => string,
+): RunOutputSilenceCopy | undefined {
+  const map: Partial<Record<RunOutputSilenceLevel, RunOutputSilenceCopy>> = {
+    suspicious: {
+      label: t("runLiveness.silenceWatch"),
+      tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    },
+    critical: {
+      label: t("runLiveness.staleRun"),
+      tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
+    },
+    snoozed: {
+      label: t("runLiveness.silenceSnoozed"),
+      tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+    },
+  };
+  return map[level];
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -292,12 +306,6 @@ function runSummary(run: LedgerRun, agentMap: ReadonlyMap<string, Pick<Agent, "n
   if (run.status === "queued") return `Queued for ${agentName}`;
   if (run.status === "scheduled_retry") return `Automatic retry scheduled for ${agentName}`;
   return `${statusLabel(run.status)} by ${agentName}`;
-}
-
-function livenessCopyForRun(run: LedgerRun) {
-  if (run.status === "scheduled_retry") return RETRY_PENDING_LIVENESS_COPY;
-  if (run.livenessState) return LIVENESS_COPY[run.livenessState];
-  return isActiveRun(run) ? PENDING_LIVENESS_COPY : MISSING_LIVENESS_COPY;
 }
 
 function stopReasonLabel(run: RunForIssue) {
@@ -489,6 +497,7 @@ export function IssueRunLedgerContent({
   watchdogDecisionError,
   onWatchdogDecision,
 }: IssueRunLedgerContentProps) {
+  const { t } = useTranslation("issues");
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
   const latestRun = ledgerRuns[0] ?? null;
   const latestSilentRun = useMemo(
@@ -686,7 +695,7 @@ export function IssueRunLedgerContent({
               return <div key={`activity:${item.id}`}>{renderActivityEvent?.(item.event)}</div>;
             }
             const run = item.run;
-            const liveness = livenessCopyForRun(run);
+            const liveness = livenessCopyForRun(run, t);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
             const exhausted = hasExhaustedContinuation(run);
@@ -727,7 +736,7 @@ export function IssueRunLedgerContent({
                   </span>
                   {exhausted ? (
                     <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-300">
-                      Exhausted
+                      {t("runLiveness.exhausted")}
                     </span>
                   ) : null}
                   {continuation ? (
@@ -743,15 +752,21 @@ export function IssueRunLedgerContent({
                       {retryState.badgeLabel}
                     </span>
                   ) : null}
-                  {run.outputSilence && RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
-                    <span
-                      className={cn(
-                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
-                        RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.tone,
-                      )}
-                    >
-                      {RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.label}
-                    </span>
+                  {run.outputSilence ? (
+                    (() => {
+                      const silence = silenceCopyForRun(run.outputSilence.level, t);
+                      if (!silence) return null;
+                      return (
+                        <span
+                          className={cn(
+                            "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                            silence.tone,
+                          )}
+                        >
+                          {silence.label}
+                        </span>
+                      );
+                    })()
                   ) : null}
                   {(() => {
                     const profile = modelProfileForRun(run);

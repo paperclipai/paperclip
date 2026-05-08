@@ -1,0 +1,59 @@
+{
+  "welcomeMessage": "Welcome to Paperclip. Set up your first company and agent to get started.",
+  "getStarted": "Get Started",
+  "selectCompanyMessage": "Create or select a company to view the dashboard.",
+  "noAgents": "You have no agents",
+  "createAgent": "Create one here",
+  "budgetIncidents_one": "{{count}} active budget incident",
+  "budgetIncidents_other": "{{count}} active budget incidents",
+  "budgetStatus": "{{agents}} agents paused · {{projects}} projects paused · {{approvals}} pending budget approvals",
+  "openBudgets": "Open budgets",
+  "metrics": {
+    "agentsEnabled": "Agents Enabled",
+    "tasksInProgress": "Tasks In Progress",
+    "monthSpend": "Month Spend",
+    "pendingApprovals": "Pending Approvals"
+  },
+  "metricDescriptions": {
+    "runningPausedErrors": "{{running}} running, {{paused}} paused, {{error}} errors",
+    "openBlocked": "{{open}} open, {{blocked}} blocked",
+    "budgetUtilization": "{{utilization}}% of {{budget}} budget",
+    "unlimitedBudget": "Unlimited budget",
+    "budgetOverrides": "{{count}} budget overrides awaiting board review",
+    "awaitingReview": "Awaiting board review"
+  },
+  "charts": {
+    "runActivity": "Run Activity",
+    "issuesByPriority": "Issues by Priority",
+    "issuesByStatus": "Issues by Status",
+    "successRate": "Success Rate",
+    "last14Days": "Last 14 days"
+  },
+  "recentActivity": "Recent Activity",
+  "recentTasks": "Recent Tasks",
+  "noTasksYet": "No tasks yet.",
+  "activeAgents": {
+    "title": "Agents",
+    "noRecentRuns": "No recent agent runs.",
+    "moreRuns_one": "{{count}} more active/recent run",
+    "moreRuns_other": "{{count}} more active/recent runs",
+    "liveNow": "Live now",
+    "finished": "Finished {{time}}",
+    "started": "Started {{time}}"
+  },
+  "liveRuns": {
+    "breadcrumb": "Live runs",
+    "selectCompany": "Select a company to view live runs.",
+    "createCompany": "Create a company to view live runs.",
+    "backToDashboard": "Dashboard",
+    "title": "Live agent runs",
+    "description": "Active runs first, followed by the most recent completed runs.",
+    "showingUpTo": "Showing up to {{limit}}",
+    "activeRecent": "Active / recent",
+    "noRuns": "No active or recent agent runs."
+  },
+  "chartEmpty": {
+    "noRuns": "No runs yet",
+    "noIssues": "No issues"
+  }
+}

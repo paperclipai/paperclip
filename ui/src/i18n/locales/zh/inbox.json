@@ -1,0 +1,75 @@
+{
+  "retry": "重试",
+  "retrying": "重试中…",
+  "dismiss": "忽略",
+  "selectCompany": "选择公司以查看收件箱。",
+  "searchPlaceholder": "搜索收件箱...",
+  "tabs": {
+    "mine": "我的",
+    "recent": "最近",
+    "unread": "未读",
+    "all": "全部"
+  },
+  "enableNesting": "启用嵌套",
+  "disableNesting": "禁用嵌套",
+  "group": "分组",
+  "groupBy": {
+    "none": "无",
+    "type": "类型",
+    "workspace": "工作区"
+  },
+  "chooseColumns": "选择列",
+  "markAllAsRead": "全部标记为已读",
+  "marking": "标记中...",
+  "markAllConfirmTitle": "全部标记为已读？",
+  "markAllConfirmDescription": "这将把 {{count}} 条未读待办标记为已读。",
+  "categories": {
+    "all": "全部",
+    "myIssues": "我的待办",
+    "joinRequests": "加入请求",
+    "approvals": "审批",
+    "failedRuns": "失败运行",
+    "alerts": "警报"
+  },
+  "approvalStatuses": {
+    "all": "全部",
+    "actionable": "待处理",
+    "resolved": "已解决"
+  },
+  "empty": {
+    "search": "没有匹配搜索的结果。",
+    "mine": "收件箱中没有内容。",
+    "unread": "没有未读项目。",
+    "recent": "没有最近项目。",
+    "filters": "没有匹配筛选条件的项目。"
+  },
+  "archived": "已归档",
+  "otherResults": "其他结果",
+  "failedRun": "运行失败",
+  "markAsRead": "标记为已读",
+  "dismissFromInbox": "从收件箱忽略",
+  "alertsTitle": "警报",
+  "alerts": {
+    "agentErrors_one": "{{count}} 个智能体出现错误",
+    "agentErrors_other": "{{count}} 个智能体出现错误",
+    "budgetWarning": "本月预算使用率已达 {{percent}}%"
+  },
+  "earlier": "更早",
+  "categoryPlaceholder": "类别",
+  "approvalStatusPlaceholder": "审批状态",
+  "errors": {
+    "runExited": "运行出错退出。",
+    "failedToApprove": "批准失败",
+    "failedToReject": "拒绝失败",
+    "failedToApproveJoinRequest": "批准加入请求失败",
+    "failedToRejectJoinRequest": "拒绝加入请求失败",
+    "retrySkipped": "重试被跳过。",
+    "failedToArchiveIssue": "归档待办失败",
+    "failedToUndoArchive": "撤销收件箱归档失败",
+    "humanJoinRequest": "人工加入请求"
+  },
+  "creatorLabels": {
+    "board": "面板",
+    "me": "我"
+  }
+}

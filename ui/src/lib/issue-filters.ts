@@ -37,14 +37,23 @@ export const defaultIssueFilterState: IssueFilterState = {
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
-export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
-];
+export function getIssueQuickFilterPresets(
+  t: (key: string) => string,
+): { label: string; statuses: string[] }[] {
+  return [
+    { label: t("filters.all"), statuses: [] as string[] },
+    { label: t("filters.active"), statuses: ["todo", "in_progress", "in_review", "blocked"] },
+    { label: t("filters.backlog"), statuses: ["backlog"] },
+    { label: t("filters.done"), statuses: ["done", "cancelled"] },
+  ];
+}
 
-export function issueFilterLabel(value: string): string {
+export function issueFilterLabel(value: string, t?: (key: string) => string): string {
+  if (t) {
+    const key = `filters.status.${value}`;
+    const translated = t(key);
+    if (translated !== key) return translated;
+  }
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 

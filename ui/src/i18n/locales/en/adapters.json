@@ -1,0 +1,94 @@
+{
+  "title": "Adapters",
+  "adapterManager": {
+    "title": "Adapters"
+  },
+  "alpha": "Alpha",
+  "installAdapter": "Install Adapter",
+  "installDialog": {
+    "title": "Install External Adapter",
+    "description": "Add an adapter from npm or a local path. The adapter package must export ",
+    "npmPackage": "npm package",
+    "localPath": "Local path",
+    "pathLabel": "Path to adapter package",
+    "pathPlaceholder": "/mnt/e/Projects/my-adapter  or  E:\\Projects\\my-adapter",
+    "pathHint": "Accepts Linux, WSL, and Windows paths. Windows paths are auto-converted.",
+    "packageNameLabel": "Package Name",
+    "packageNamePlaceholder": "my-paperclip-adapter",
+    "versionLabel": "Version (optional)",
+    "versionPlaceholder": "latest",
+    "cancel": "Cancel",
+    "install": "Install",
+    "installing": "Installing..."
+  },
+  "alphaNotice": {
+    "title": "External adapters are alpha.",
+    "description": "The adapter plugin system is under active development. APIs and storage format may change. Use the power icon to hide adapters from agent menus without removing them."
+  },
+  "externalAdapters": "External Adapters",
+  "builtinAdapters": "Built-in Adapters",
+  "noExternalAdapters": {
+    "title": "No external adapters installed",
+    "description": "Install an adapter package to extend model support."
+  },
+  "noBuiltinAdapters": "No built-in adapters found.",
+  "loading": "Loading adapters...",
+  "adapterRow": {
+    "external": "External",
+    "builtin": "Built-in",
+    "localPath": "Installed from local path",
+    "npmPackage": "Installed from npm",
+    "overridesBuiltin": "Overrides built-in",
+    "overriddenBy": "Overridden by",
+    "hiddenFromMenus": "Hidden from menus",
+    "models": "models",
+    "reinstallTooltip": "Reinstall adapter (pull latest from npm)",
+    "reloadTooltip": "Reload adapter (hot-swap)",
+    "showInMenus": "Show in agent menus",
+    "hideFromMenus": "Hide from agent menus",
+    "removeTooltip": "Remove adapter",
+    "overridePaused": "Override paused",
+    "pauseExternalOverride": "Pause external override",
+    "resumeExternalOverride": "Resume external override"
+  },
+  "reinstallDialog": {
+    "title": "Reinstall Adapter",
+    "description": "This will pull the latest version of ",
+    "descriptionSuffix": " from npm and hot-swap the running adapter module. Existing agents will use the new version on their next run.",
+    "package": "Package",
+    "current": "Current",
+    "latestOnNpm": "Latest on npm",
+    "unknown": "unknown",
+    "checking": "checking...",
+    "unavailable": "unavailable",
+    "upToDate": "Already on the latest version.",
+    "cancel": "Cancel",
+    "reinstall": "Reinstall",
+    "reinstalling": "Reinstalling..."
+  },
+  "removeDialog": {
+    "title": "Remove Adapter",
+    "description": "Are you sure you want to remove the ",
+    "descriptionSuffix": " adapter? It will be unregistered and removed from the adapter store.",
+    "npmCleanup": "npm packages will be cleaned up from disk.",
+    "irreversible": "This action cannot be undone.",
+    "cancel": "Cancel",
+    "remove": "Remove",
+    "removing": "Removing..."
+  },
+  "toasts": {
+    "adapterInstalled": "Adapter installed",
+    "typeRegistered": "Type \"{{type}}\" registered successfully.",
+    "installFailed": "Install failed",
+    "adapterRemoved": "Adapter removed",
+    "removalFailed": "Removal failed",
+    "toggleFailed": "Toggle failed",
+    "overrideToggleFailed": "Override toggle failed",
+    "adapterReloaded": "Adapter reloaded",
+    "typeReloaded": "Type \"{{type}}\" reloaded.",
+    "reloadFailed": "Reload failed",
+    "adapterReinstalled": "Adapter reinstalled",
+    "typeReinstalled": "Type \"{{type}}\" updated from npm.",
+    "reinstallFailed": "Reinstall failed"
+  }
+}

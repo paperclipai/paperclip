@@ -17,6 +17,8 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { LocaleProvider } from "./i18n/LocaleContext";
+import "./i18n";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 

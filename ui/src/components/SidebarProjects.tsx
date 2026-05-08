@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/collapsible";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import type { Project } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
@@ -49,6 +50,7 @@ function SortableProjectItem({
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const {
     attributes,
     listeners,
@@ -95,7 +97,7 @@ function SortableProjectItem({
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
           <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          {project.pauseReason === "budget" ? <BudgetSidebarMarker title={t("projectActions.projectPausedByBudget")} /> : null}
         </NavLink>
         {projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
@@ -126,6 +128,7 @@ export function SidebarProjects() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { t } = useTranslation("navigation");
   const location = useLocation();
 
   const { data: projects } = useQuery({
@@ -192,7 +195,7 @@ export function SidebarProjects() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
+              {t("sidebar.projects")}
             </span>
           </CollapsibleTrigger>
           <button
@@ -201,7 +204,7 @@ export function SidebarProjects() {
               openNewProject();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New project"
+            aria-label={t("newProject")}
           >
             <Plus className="h-3 w-3" />
           </button>

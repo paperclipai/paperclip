@@ -1,0 +1,75 @@
+{
+  "retry": "Retry",
+  "retrying": "Retrying…",
+  "dismiss": "Dismiss",
+  "selectCompany": "Select a company to view your inbox.",
+  "searchPlaceholder": "Search inbox...",
+  "tabs": {
+    "mine": "Mine",
+    "recent": "Recent",
+    "unread": "Unread",
+    "all": "All"
+  },
+  "enableNesting": "Enable nesting",
+  "disableNesting": "Disable nesting",
+  "group": "Group",
+  "groupBy": {
+    "none": "None",
+    "type": "Type",
+    "workspace": "Workspace"
+  },
+  "chooseColumns": "Choose columns",
+  "markAllAsRead": "Mark all as read",
+  "marking": "Marking...",
+  "markAllConfirmTitle": "Mark all as read?",
+  "markAllConfirmDescription": "This will mark {{count}} unread items as read.",
+  "categories": {
+    "all": "Everything",
+    "myIssues": "My issues",
+    "joinRequests": "Join requests",
+    "approvals": "Approvals",
+    "failedRuns": "Failed runs",
+    "alerts": "Alerts"
+  },
+  "approvalStatuses": {
+    "all": "All",
+    "actionable": "Actionable",
+    "resolved": "Resolved"
+  },
+  "empty": {
+    "search": "No results match your search.",
+    "mine": "Nothing in your inbox.",
+    "unread": "No unread items.",
+    "recent": "No recent items.",
+    "filters": "No items match your filters."
+  },
+  "archived": "Archived",
+  "otherResults": "Other results",
+  "failedRun": "Failed run",
+  "markAsRead": "Mark as read",
+  "dismissFromInbox": "Dismiss from inbox",
+  "alertsTitle": "Alerts",
+  "alerts": {
+    "agentErrors_one": "{{count}} agent has errors",
+    "agentErrors_other": "{{count}} agents have errors",
+    "budgetWarning": "Budget at {{percent}}% utilization this month"
+  },
+  "earlier": "Earlier",
+  "categoryPlaceholder": "Category",
+  "approvalStatusPlaceholder": "Approval status",
+  "errors": {
+    "runExited": "Run exited with an error.",
+    "failedToApprove": "Failed to approve",
+    "failedToReject": "Failed to reject",
+    "failedToApproveJoinRequest": "Failed to approve join request",
+    "failedToRejectJoinRequest": "Failed to reject join request",
+    "retrySkipped": "Retry was skipped.",
+    "failedToArchiveIssue": "Failed to archive issue",
+    "failedToUndoArchive": "Failed to undo inbox archive",
+    "humanJoinRequest": "Human join request"
+  },
+  "creatorLabels": {
+    "board": "Board",
+    "me": "Me"
+  }
+}

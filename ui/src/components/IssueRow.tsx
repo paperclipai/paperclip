@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
-import { Eye, Flag, X } from "lucide-react";
+import { Eye, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -10,7 +11,6 @@ import {
 import { cn } from "../lib/utils";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
-import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -59,6 +59,7 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
+  const { t } = useTranslation("issues");
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
@@ -72,8 +73,8 @@ export function IssueRow({
         "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300",
         selected ? "border-muted-foreground text-muted-foreground" : null,
       )}
-      title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
-      aria-label="Productivity review open"
+      title={`${t("detail.productivityReview")}: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
+      aria-label={t("detail.productivityReviewTooltip")}
     >
       <Eye className="h-2.5 w-2.5" aria-hidden />
     </span>
@@ -82,24 +83,6 @@ export function IssueRow({
   const checklistStep = hasChecklistStep ? (
     <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
       {checklistStepNumber}.
-    </span>
-  ) : null;
-  const planningModeIndicator = issue.workMode === "planning" ? (
-    <span
-      className="ml-1.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="This issue is in planning mode."
-    >
-      Planning
-    </span>
-  ) : null;
-  const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
-    <span
-      data-testid="issue-row-parked-blocker"
-      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
-    >
-      <Flag className="h-2.5 w-2.5" aria-hidden />
-      Blocked by parked work
     </span>
   ) : null;
 
@@ -123,8 +106,6 @@ export function IssueRow({
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
         {productivityReviewIndicator}
-        {planningModeIndicator}
-        {parkedBlockerIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
@@ -149,8 +130,6 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
-              {planningModeIndicator}
-              {parkedBlockerIndicator}
             </>
           )}
           {mobileMeta ? (
@@ -192,7 +171,7 @@ export function IssueRow({
                 "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                 selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
               )}
-              aria-label="Mark as read"
+              aria-label={t("detail.markAsRead")}
             >
               <span
                 className={cn(
@@ -218,7 +197,7 @@ export function IssueRow({
               }}
               disabled={archiveDisabled}
               className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Dismiss from inbox"
+              aria-label={t("detail.dismissFromInbox")}
             >
               <X className="h-3.5 w-3.5" />
             </button>

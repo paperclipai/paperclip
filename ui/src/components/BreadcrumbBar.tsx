@@ -15,6 +15,7 @@ import {
 import { Fragment, useMemo } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { useTranslation } from "react-i18next";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -31,6 +32,7 @@ function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
 }
 
 export function BreadcrumbBar() {
+  const { t } = useTranslation("common");
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -67,7 +69,7 @@ export function BreadcrumbBar() {
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={t("openSidebar")}
     >
       <Menu className="h-5 w-5" />
     </Button>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, GitBranch, ListChecks, Loader2, MessageSquareQuote, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -48,52 +49,61 @@ interface IssueThreadInteractionCardProps {
   ) => Promise<void> | void;
 }
 
-function resolveActorLabel(args: {
-  agentId?: string | null;
-  userId?: string | null;
-  agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
-  userLabelMap?: ReadonlyMap<string, string> | null;
-}) {
+function resolveActorLabel(
+  args: {
+    agentId?: string | null;
+    userId?: string | null;
+    agentMap?: Map<string, Agent>;
+    currentUserId?: string | null;
+    userLabelMap?: ReadonlyMap<string, string> | null;
+  },
+  t: (key: string, options?: { ns?: string }) => string,
+) {
   const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
   if (agentId) {
     return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   }
   if (userId) {
-    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? t("actor.board", { ns: "common" });
   }
-  return "Unknown";
+  return t("actor.unknown", { ns: "common" });
 }
 
-function statusLabel(status: IssueThreadInteraction["status"]) {
+function statusLabel(
+  status: IssueThreadInteraction["status"],
+  t: (key: string) => string,
+) {
   switch (status) {
     case "pending":
-      return "Pending";
+      return t("threadInteraction.status.pending");
     case "accepted":
-      return "Accepted";
+      return t("threadInteraction.status.accepted");
     case "rejected":
-      return "Rejected";
+      return t("threadInteraction.status.rejected");
     case "answered":
-      return "Answered";
+      return t("threadInteraction.status.answered");
     case "cancelled":
-      return "Cancelled";
+      return t("threadInteraction.status.cancelled");
     case "expired":
-      return "Expired";
+      return t("threadInteraction.status.expired");
     case "failed":
-      return "Failed";
+      return t("threadInteraction.status.failed");
     default:
       return status;
   }
 }
 
-function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
+function interactionKindLabel(
+  kind: IssueThreadInteraction["kind"],
+  t: (key: string) => string,
+) {
   switch (kind) {
     case "suggest_tasks":
-      return "Suggested tasks";
+      return t("threadInteraction.kind.suggestTasks");
     case "ask_user_questions":
-      return "Ask user questions";
+      return t("threadInteraction.kind.askUserQuestions");
     case "request_confirmation":
-      return "Confirmation";
+      return t("threadInteraction.kind.requestConfirmation");
     default:
       return kind;
   }
@@ -197,6 +207,7 @@ function TaskTreeNode({
   showSelection?: boolean;
   onToggleSelection?: (node: SuggestedTaskTreeNode, checked: boolean) => void;
 }) {
+  const { t } = useTranslation("issues");
   const visibleChildren = node.children.filter((child) => !child.task.hiddenInPreview);
   const hiddenChildCount = node.children
     .filter((child) => child.task.hiddenInPreview)
@@ -210,7 +221,7 @@ function TaskTreeNode({
     agentMap,
     currentUserId,
     userLabelMap,
-  });
+  }, t);
   const hasExplicitAssignee = Boolean(
     node.task.assigneeAgentId || node.task.assigneeUserId,
   );
@@ -1214,6 +1225,7 @@ export function IssueThreadInteractionCard({
   onSubmitInteractionAnswers,
   onCancelInteraction,
 }: IssueThreadInteractionCardProps) {
+  const { t } = useTranslation("issues");
   const StatusIcon = statusIcon(interaction.status);
   const styles = statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
@@ -1222,7 +1234,7 @@ export function IssueThreadInteractionCard({
     agentMap,
     currentUserId,
     userLabelMap,
-  });
+  }, t);
   const resolvedByLabel =
     interaction.resolvedByAgentId || interaction.resolvedByUserId
       ? resolveActorLabel({
@@ -1231,7 +1243,7 @@ export function IssueThreadInteractionCard({
           agentMap,
           currentUserId,
           userLabelMap,
-        })
+        }, t)
       : null;
 
   return (
@@ -1241,9 +1253,9 @@ export function IssueThreadInteractionCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]", styles.badge)}>
               <StatusIcon className="h-3.5 w-3.5" />
-              {interactionKindLabel(interaction.kind)}
+              {interactionKindLabel(interaction.kind, t)}
               <span className="text-current/60">/</span>
-              {statusLabel(interaction.status)}
+              {statusLabel(interaction.status, t)}
             </span>
             {interaction.continuationPolicy === "wake_assignee"
               || interaction.continuationPolicy === "wake_assignee_on_accept" ? (

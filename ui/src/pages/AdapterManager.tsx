@@ -5,6 +5,7 @@
  * They just register a ServerAdapterModule that provides model discovery and execution.
  */
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -66,6 +67,7 @@ function AdapterRow({
   toggleTitleDisabled?: string;
   disabledBadgeLabel?: string;
 }) {
+  const { t } = useTranslation("adapters");
   return (
     <li>
       <div className="flex items-center gap-4 px-4 py-3">

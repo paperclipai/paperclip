@@ -1,0 +1,41 @@
+{
+  "pageTitle": "Goals",
+  "selectCompany": "Select a company to view goals.",
+  "noGoals": "No goals yet.",
+  "addGoal": "Add Goal",
+  "newGoal": "New Goal",
+  "subGoal": "Sub Goal",
+  "noSubGoals": "No sub-goals.",
+  "noLinkedProjects": "No linked projects.",
+  "detail": {
+    "levelCompany": "Company",
+    "levelTeam": "Team",
+    "levelAgent": "Agent",
+    "levelTask": "Task"
+  },
+  "showProperties": "Show properties",
+  "addDescription": "Add a description...",
+  "children": "Sub-Goals",
+  "projects": "Projects",
+  "breadcrumb": "Goals",
+  "status": {
+    "planned": "Planned",
+    "active": "Active",
+    "achieved": "Achieved",
+    "cancelled": "Cancelled"
+  },
+  "createGoalDialog": {
+    "title": "New goal",
+    "subGoalTitle": "New sub-goal",
+    "namePlaceholder": "Goal title",
+    "descriptionPlaceholder": "Add description...",
+    "parentGoal": "Parent goal",
+    "noParent": "No parent",
+    "creating": "Creating…",
+    "createGoal": "Create goal",
+    "createSubGoal": "Create sub-goal",
+    "errors": {
+      "noCompanySelected": "No company selected"
+    }
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "title": "Costs",
+  "description": "Inference spend, platform fees, credits, and live quota windows.",
+  "selectCompany": "Select a company to view costs.",
+  "selectDates": "Select a start and end date to load data.",
+  "tabs": {
+    "overview": "Overview",
+    "budgets": "Budgets",
+    "providers": "Providers",
+    "billers": "Billers",
+    "finance": "Finance"
+  },
+  "metrics": {
+    "inferenceSpend": "Inference spend",
+    "budget": "Budget",
+    "financeNet": "Finance net",
+    "financeEvents": "Finance events",
+    "tokensAcrossEvents": "{{tokens}} tokens across request-scoped events",
+    "agentsPaused": "{{agents}} agents paused · {{projects}} projects paused",
+    "spendOfBudget": "{{spent}} of {{budget}}",
+    "noMonthlyCap": "No monthly cap configured",
+    "debitsCredits": "{{debits}} debits · {{credits}} credits",
+    "estimatedInRange": "{{estimated}} estimated in range"
+  },
+  "budget": {
+    "open": "Open",
+    "controlPlane": "Budget control plane",
+    "controlPlaneDescription": "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.",
+    "activeIncidents": "Active incidents",
+    "activeIncidentsSubtitle": "Open soft or hard threshold crossings",
+    "pendingApprovals": "Pending approvals",
+    "pendingApprovalsSubtitle": "Budget override approvals awaiting board action",
+    "pausedAgents": "Paused agents",
+    "pausedAgentsSubtitle": "Agent heartbeats blocked by budget",
+    "pausedProjects": "Paused projects",
+    "pausedProjectsSubtitle": "Project execution blocked by budget",
+    "activeIncidentsTitle": "Active incidents",
+    "activeIncidentsDescription": "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+    "companyBudgets": "Company budgets",
+    "companyBudgetsDescription": "Company-wide monthly policy.",
+    "agentBudgets": "Agent budgets",
+    "agentBudgetsDescription": "Recurring monthly spend policies for individual agents.",
+    "projectBudgets": "Project budgets",
+    "projectBudgetsDescription": "Lifetime spend policies for execution-bound projects.",
+    "noPolicies": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control."
+  },
+  "inference": {
+    "ledger": "Inference ledger",
+    "ledgerDescription": "Request-scoped inference spend for the selected period.",
+    "usage": "usage",
+    "budget": "Budget {{budget}}",
+    "unlimitedBudget": "Unlimited budget",
+    "percentConsumed": "{{percent}}% of monthly budget consumed in this range."
+  },
+  "finance": {
+    "ledger": "Finance ledger",
+    "ledgerDescription": "Account-level charges that do not map to a single inference request.",
+    "debits": "Debits",
+    "debitsSubtitle_one": "{{count}} total event in range",
+    "debitsSubtitle_other": "{{count}} total events in range",
+    "credits": "Credits",
+    "creditsSubtitle": "Refunds, offsets, and credit returns",
+    "net": "Net",
+    "netSubtitle": "Debit minus credit for the selected period",
+    "estimated": "Estimated",
+    "estimatedSubtitle": "Estimated debits that are not yet invoice-authoritative",
+    "byBiller": "By biller",
+    "byBillerDescription": "Account-level financial events grouped by who charged or credited them.",
+    "noEvents": "No finance events yet. Add account-level charges once biller invoices or credits land.",
+    "noFinanceEvents": "No finance events yet."
+  },
+  "byAgent": {
+    "title": "By agent",
+    "description": "What each agent consumed in the selected period.",
+    "noEvents": "No cost events yet.",
+    "in": "in",
+    "out": "out",
+    "apiRuns": "{{count}} api",
+    "subscriptionRuns": "{{count}} subscription",
+    "tokensAbbreviation": "tok"
+  },
+  "byProject": {
+    "title": "By project",
+    "description": "Run costs attributed through project-linked issues.",
+    "noCosts": "No project-attributed run costs yet.",
+    "unattributed": "Unattributed"
+  },
+  "providers": {
+    "allProviders": "All providers",
+    "noEvents": "No cost events in this period.",
+    "noBillableEvents": "No billable events in this period."
+  },
+  "billers": {
+    "allBillers": "All billers"
+  },
+  "presets": {
+    "mtd": "Month to Date",
+    "7d": "Last 7 Days",
+    "30d": "Last 30 Days",
+    "ytd": "Year to Date",
+    "all": "All Time",
+    "custom": "Custom"
+  },
+  "to": "to"
+}

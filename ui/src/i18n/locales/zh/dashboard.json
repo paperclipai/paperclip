@@ -1,0 +1,59 @@
+{
+  "welcomeMessage": "欢迎使用 Paperclip。设置你的第一个公司和智能体以开始使用。",
+  "getStarted": "开始使用",
+  "selectCompanyMessage": "创建或选择一个公司以查看仪表盘。",
+  "noAgents": "你还没有智能体",
+  "createAgent": "在这里创建一个",
+  "budgetIncidents_one": "{{count}} 个活跃预算事件",
+  "budgetIncidents_other": "{{count}} 个活跃预算事件",
+  "budgetStatus": "{{agents}} 个智能体已暂停 · {{projects}} 个项目已暂停 · {{approvals}} 个预算审批待处理",
+  "openBudgets": "打开预算",
+  "metrics": {
+    "agentsEnabled": "已启用智能体",
+    "tasksInProgress": "进行中待办",
+    "monthSpend": "本月支出",
+    "pendingApprovals": "待处理审批"
+  },
+  "metricDescriptions": {
+    "runningPausedErrors": "{{running}} 运行中, {{paused}} 已暂停, {{error}} 错误",
+    "openBlocked": "{{open}} 待处理, {{blocked}} 已阻塞",
+    "budgetUtilization": "{{utilization}}% 的 {{budget}} 预算",
+    "unlimitedBudget": "无限制预算",
+    "budgetOverrides": "{{count}} 个预算覆盖等待面板审查",
+    "awaitingReview": "等待审查"
+  },
+  "charts": {
+    "runActivity": "运行活动",
+    "issuesByPriority": "按优先级查看待办",
+    "issuesByStatus": "按状态查看待办",
+    "successRate": "成功率",
+    "last14Days": "最近 14 天"
+  },
+  "recentActivity": "最近活动",
+  "recentTasks": "最近待办",
+  "noTasksYet": "暂无待办。",
+  "activeAgents": {
+    "title": "智能体",
+    "noRecentRuns": "暂无近期运行。",
+    "moreRuns_one": "{{count}} 个更多活跃/近期运行",
+    "moreRuns_other": "{{count}} 个更多活跃/近期运行",
+    "liveNow": "实时运行中",
+    "finished": "已完成 {{time}}",
+    "started": "已开始 {{time}}"
+  },
+  "liveRuns": {
+    "breadcrumb": "实时运行",
+    "selectCompany": "选择公司以查看实时运行。",
+    "createCompany": "创建公司以查看实时运行。",
+    "backToDashboard": "仪表盘",
+    "title": "实时智能体运行",
+    "description": "先显示活跃运行，然后显示最近完成的运行。",
+    "showingUpTo": "最多显示 {{limit}} 个",
+    "activeRecent": "活跃 / 近期",
+    "noRuns": "暂无活跃或近期的智能体运行。"
+  },
+  "chartEmpty": {
+    "noRuns": "暂无运行",
+    "noIssues": "暂无待办"
+  }
+}

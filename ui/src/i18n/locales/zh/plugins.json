@@ -1,0 +1,72 @@
+{
+  "title": "插件管理器",
+  "breadcrumbs": {
+    "company": "公司",
+    "settings": "设置",
+    "plugins": "插件"
+  },
+  "errorState": "插件进入错误状态，但没有存储错误消息。",
+  "toasts": {
+    "installed": "插件安装成功",
+    "installFailed": "安装插件失败",
+    "uninstalled": "插件卸载成功",
+    "uninstallFailed": "卸载插件失败",
+    "enabled": "插件已启用",
+    "enableFailed": "启用插件失败",
+    "disabled": "插件已禁用",
+    "disableFailed": "禁用插件失败"
+  },
+  "loading": "正在加载插件...",
+  "loadFailed": "加载插件失败。",
+  "install": {
+    "button": "安装插件",
+    "title": "安装插件",
+    "description": "输入你要安装的插件的 npm 包名。",
+    "packageNameLabel": "npm 包名",
+    "packageNamePlaceholder": "@paperclipai/plugin-example",
+    "installing": "正在安装...",
+    "install": "安装"
+  },
+  "alphaWarning": {
+    "title": "插件处于 Alpha 阶段。",
+    "description": "插件运行时和 API 表面仍在变化中。在此功能稳定之前，预计会有破坏性变更。"
+  },
+  "availablePlugins": "可用插件",
+  "examplesBadge": "示例",
+  "loadingExamples": "正在加载捆绑示例...",
+  "loadExamplesFailed": "加载捆绑示例失败。",
+  "noExamples": "在此代码库中未找到捆绑的示例插件。",
+  "exampleBadge": "示例",
+  "notInstalled": "未安装",
+  "enable": "启用",
+  "openSettings": "打开设置",
+  "review": "查看",
+  "installExample": "安装示例",
+  "installedPlugins": "已安装插件",
+  "noPluginsInstalled": "暂无已安装插件",
+  "noPluginsDescription": "安装插件以扩展功能。",
+  "noDescription": "未提供描述。",
+  "pluginError": "插件错误",
+  "viewFullError": "查看完整错误",
+  "disable": "禁用",
+  "configure": "配置",
+  "uninstall": {
+    "title": "卸载插件",
+    "description": "确定要卸载 <strong>{{name}}</strong> 吗？此操作无法撤销。",
+    "uninstalling": "正在卸载...",
+    "uninstall": "卸载"
+  },
+  "selectCompany": "选择公司以查看此页面。",
+  "loading": "加载中...",
+  "routeConflict": "多个插件声明了路由 <code>{{route}}</code>。在冲突解决之前，请使用 plugin-id 路由。",
+  "back": "返回",
+  "errorDetails": {
+    "title": "错误详情",
+    "hitErrorState": "{{name}} 进入错误状态。",
+    "whatErrored": "出错内容",
+    "noSummary": "暂无错误摘要。",
+    "fullOutput": "完整错误输出",
+    "noStoredMessage": "暂无存储的错误消息。",
+    "close": "关闭"
+  }
+}

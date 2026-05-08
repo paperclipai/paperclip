@@ -1,0 +1,105 @@
+{
+  "title": "成本",
+  "description": "推理费用、平台费用、积分和实时配额窗口。",
+  "selectCompany": "选择公司以查看成本。",
+  "selectDates": "选择开始和结束日期以加载数据。",
+  "tabs": {
+    "overview": "概览",
+    "budgets": "预算",
+    "providers": "提供商",
+    "billers": "计费方",
+    "finance": "财务"
+  },
+  "metrics": {
+    "inferenceSpend": "推理费用",
+    "budget": "预算",
+    "financeNet": "财务净额",
+    "financeEvents": "财务事件",
+    "tokensAcrossEvents": "{{tokens}} tokens，跨请求范围事件",
+    "agentsPaused": "{{agents}} 个智能体已暂停 · {{projects}} 个项目已暂停",
+    "spendOfBudget": "{{spent}} / {{budget}}",
+    "noMonthlyCap": "未配置月度上限",
+    "debitsCredits": "{{debits}} 借方 · {{credits}} 贷方",
+    "estimatedInRange": "{{estimated}} 范围内预估"
+  },
+  "budget": {
+    "open": "无限制",
+    "controlPlane": "预算控制平面",
+    "controlPlaneDescription": "智能体和项目的硬停止支出限制。提供商订阅配额保持独立，显示在提供商选项卡下。",
+    "activeIncidents": "活跃事件",
+    "activeIncidentsSubtitle": "开放的软阈值或硬阈值跨越",
+    "pendingApprovals": "待处理审批",
+    "pendingApprovalsSubtitle": "等待董事会处理的预算覆盖审批",
+    "pausedAgents": "已暂停智能体",
+    "pausedAgentsSubtitle": "因预算限制暂停智能体心跳",
+    "pausedProjects": "已暂停项目",
+    "pausedProjectsSubtitle": "因预算限制暂停项目执行",
+    "activeIncidentsTitle": "活跃事件",
+    "activeIncidentsDescription": "通过提高预算或明确保持范围暂停来解决硬停止。",
+    "companyBudgets": "公司预算",
+    "companyBudgetsDescription": "公司范围的月度策略。",
+    "agentBudgets": "智能体预算",
+    "agentBudgetsDescription": "单个智能体的月度支出策略。",
+    "projectBudgets": "项目预算",
+    "projectBudgetsDescription": "执行绑定项目的终身支出策略。",
+    "noPolicies": "尚无预算策略。从详情页面设置智能体和项目预算，或使用现有的公司月度预算控制。"
+  },
+  "inference": {
+    "ledger": "推理账簿",
+    "ledgerDescription": "所选时间段内的请求范围推理支出。",
+    "usage": "用量",
+    "budget": "预算 {{budget}}",
+    "unlimitedBudget": "无限预算",
+    "percentConsumed": "此范围内已消耗月度预算的 {{percent}}%。"
+  },
+  "finance": {
+    "ledger": "财务账簿",
+    "ledgerDescription": "无法映射到单个推理请求的账户级别费用。",
+    "debits": "借方",
+    "debitsSubtitle_one": "范围内共 {{count}} 个事件",
+    "debitsSubtitle_other": "范围内共 {{count}} 个事件",
+    "credits": "贷方",
+    "creditsSubtitle": "退款、抵销和积分返还",
+    "net": "净额",
+    "netSubtitle": "所选时间段内借方减贷方",
+    "estimated": "预估",
+    "estimatedSubtitle": "尚未具有发票权威性的预估借方",
+    "byBiller": "按计费方",
+    "byBillerDescription": "按收费或积分方分组的账户级财务事件。",
+    "noEvents": "暂无财务事件。计费方发票或积分到账后添加账户级费用。",
+    "noFinanceEvents": "暂无财务事件。"
+  },
+  "byAgent": {
+    "title": "按智能体",
+    "description": "每个智能体在所选时间段内的消耗。",
+    "noEvents": "暂无成本事件。",
+    "in": "入",
+    "out": "出",
+    "apiRuns": "{{count}} 次 API",
+    "subscriptionRuns": "{{count}} 次订阅",
+    "tokensAbbreviation": "tokens"
+  },
+  "byProject": {
+    "title": "按项目",
+    "description": "通过项目关联待办归因的运行成本。",
+    "noCosts": "暂无项目归因的运行成本。",
+    "unattributed": "未归因"
+  },
+  "providers": {
+    "allProviders": "全部提供商",
+    "noEvents": "此期间无成本事件。",
+    "noBillableEvents": "此期间无可计费事件。"
+  },
+  "billers": {
+    "allBillers": "全部计费方"
+  },
+  "presets": {
+    "mtd": "本月至今",
+    "7d": "最近 7 天",
+    "30d": "最近 30 天",
+    "ytd": "年初至今",
+    "all": "全部时间",
+    "custom": "自定义"
+  },
+  "to": "至"
+}

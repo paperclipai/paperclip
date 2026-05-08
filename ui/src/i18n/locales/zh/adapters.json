@@ -1,0 +1,94 @@
+{
+  "title": "适配器",
+  "adapterManager": {
+    "title": "适配器"
+  },
+  "alpha": "Alpha",
+  "installAdapter": "安装适配器",
+  "installDialog": {
+    "title": "安装外部适配器",
+    "description": "从 npm 或本地路径添加适配器。适配器包必须导出 ",
+    "npmPackage": "npm 包",
+    "localPath": "本地路径",
+    "pathLabel": "适配器包路径",
+    "pathPlaceholder": "/mnt/e/Projects/my-adapter  或  E:\\Projects\\my-adapter",
+    "pathHint": "接受 Linux、WSL 和 Windows 路径。Windows 路径会自动转换。",
+    "packageNameLabel": "包名称",
+    "packageNamePlaceholder": "my-paperclip-adapter",
+    "versionLabel": "版本（可选）",
+    "versionPlaceholder": "latest",
+    "cancel": "取消",
+    "install": "安装",
+    "installing": "正在安装..."
+  },
+  "alphaNotice": {
+    "title": "外部适配器处于 Alpha 阶段。",
+    "description": "适配器插件系统正在积极开发中。API 和存储格式可能会发生变化。使用电源图标可在不移除的情况下将适配器从代理菜单中隐藏。"
+  },
+  "externalAdapters": "外部适配器",
+  "builtinAdapters": "内置适配器",
+  "noExternalAdapters": {
+    "title": "未安装外部适配器",
+    "description": "安装适配器包以扩展模型支持。"
+  },
+  "noBuiltinAdapters": "未找到内置适配器。",
+  "loading": "正在加载适配器...",
+  "adapterRow": {
+    "external": "外部",
+    "builtin": "内置",
+    "localPath": "从本地路径安装",
+    "npmPackage": "从 npm 安装",
+    "overridesBuiltin": "覆盖内置",
+    "overriddenBy": "被覆盖",
+    "hiddenFromMenus": "已从菜单隐藏",
+    "models": "个模型",
+    "reinstallTooltip": "重新安装适配器（从 npm 拉取最新版本）",
+    "reloadTooltip": "重新加载适配器（热替换）",
+    "showInMenus": "在代理菜单中显示",
+    "hideFromMenus": "从代理菜单中隐藏",
+    "removeTooltip": "移除适配器",
+    "overridePaused": "覆盖已暂停",
+    "pauseExternalOverride": "暂停外部覆盖",
+    "resumeExternalOverride": "恢复外部覆盖"
+  },
+  "reinstallDialog": {
+    "title": "重新安装适配器",
+    "description": "这将从 npm 拉取 ",
+    "descriptionSuffix": " 的最新版本并热替换正在运行的适配器模块。现有代理将在下次运行时使用新版本。",
+    "package": "包",
+    "current": "当前版本",
+    "latestOnNpm": "npm 最新版本",
+    "unknown": "未知",
+    "checking": "正在检查...",
+    "unavailable": "不可用",
+    "upToDate": "已是最新版本。",
+    "cancel": "取消",
+    "reinstall": "重新安装",
+    "reinstalling": "正在重新安装..."
+  },
+  "removeDialog": {
+    "title": "移除适配器",
+    "description": "确定要移除 ",
+    "descriptionSuffix": " 适配器吗？它将被注销并从适配器存储中移除。",
+    "npmCleanup": "npm 包将从磁盘清理。",
+    "irreversible": "此操作无法撤销。",
+    "cancel": "取消",
+    "remove": "移除",
+    "removing": "正在移除..."
+  },
+  "toasts": {
+    "adapterInstalled": "适配器已安装",
+    "typeRegistered": "类型 \"{{type}}\" 注册成功。",
+    "installFailed": "安装失败",
+    "adapterRemoved": "适配器已移除",
+    "removalFailed": "移除失败",
+    "toggleFailed": "切换失败",
+    "overrideToggleFailed": "覆盖切换失败",
+    "adapterReloaded": "适配器已重新加载",
+    "typeReloaded": "类型 \"{{type}}\" 已重新加载。",
+    "reloadFailed": "重新加载失败",
+    "adapterReinstalled": "适配器已重新安装",
+    "typeReinstalled": "类型 \"{{type}}\" 已从 npm 更新。",
+    "reinstallFailed": "重新安装失败"
+  }
+}

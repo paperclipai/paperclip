@@ -1,0 +1,391 @@
+{
+  "companyInvites": {
+    "title": "公司邀请",
+    "description": "创建公司访问的人工邀请链接。生成的新邀请链接会自动复制到剪贴板。",
+    "createInvite": {
+      "title": "创建邀请",
+      "description": "生成人工邀请链接并选择默认访问权限。",
+      "chooseRole": "选择角色",
+      "singleUseNote": "每个邀请链接仅限单次使用。首次成功使用后会消耗该链接，并在审批前创建或复用匹配的加入请求。",
+      "creating": "创建中…",
+      "createButton": "创建邀请",
+      "historyNote": "下方的邀请历史记录保留审计追踪。"
+    },
+    "role": {
+      "viewer": {
+        "label": "观察者",
+        "description": "可以查看公司工作并跟进，但没有操作权限。",
+        "gets": "无内置授权。"
+      },
+      "operator": {
+        "label": "操作员",
+        "description": "推荐给需要协助运行工作但不需要管理访问权限的人员。",
+        "gets": "可以分配待办。",
+        "defaultBadge": "默认"
+      },
+      "admin": {
+        "label": "管理员",
+        "description": "推荐给需要邀请人员、创建智能体和审批加入请求的操作员。",
+        "gets": "可以创建智能体、邀请用户、分配待办和审批加入请求。"
+      },
+      "owner": {
+        "label": "所有者",
+        "description": "完整的公司访问权限，包括成员和权限管理。",
+        "gets": "拥有管理员的所有权限，外加管理成员和权限授权。"
+      }
+    },
+    "latestInvite": {
+      "title": "最新邀请链接",
+      "domainNote": "此 URL 包含服务器返回的当前 Paperclip 域名。",
+      "copied": "已复制",
+      "openInvite": "打开邀请"
+    },
+    "history": {
+      "title": "邀请历史",
+      "description": "查看邀请状态、角色、邀请人及任何关联的加入请求。",
+      "openQueue": "打开加入请求队列",
+      "empty": "此公司尚未创建任何邀请。",
+      "loadingMore": "加载更多…",
+      "viewMore": "查看更多",
+      "columns": {
+        "state": "状态",
+        "role": "角色",
+        "invitedBy": "邀请人",
+        "created": "创建时间",
+        "joinRequest": "加入请求",
+        "action": "操作"
+      },
+      "unknownInviter": "未知邀请人",
+      "reviewRequest": "审核请求",
+      "revoke": "撤销",
+      "inactive": "已失效"
+    },
+    "selectCompany": "选择一个公司来管理邀请。",
+    "loading": "正在加载邀请…",
+    "permissionError": "你没有权限管理公司邀请。",
+    "loadError": "加载邀请失败。",
+    "toast": {
+      "clipboardUnavailable": "剪贴板不可用",
+      "clipboardUnavailableBody": "请手动从下方字段复制邀请 URL。",
+      "inviteCreated": "邀请已创建",
+      "inviteCreatedCopied": "邀请已准备就绪并复制到剪贴板。",
+      "inviteCreatedNotCopied": "邀请已准备就绪。",
+      "inviteRevoked": "邀请已撤销",
+      "createFailed": "创建邀请失败",
+      "revokeFailed": "撤销邀请失败"
+    }
+  },
+  "landing": {
+    "invalidToken": "邀请令牌无效。",
+    "loading": "正在加载邀请...",
+    "checkingAccess": "正在检查你的访问权限...",
+    "notAvailable": {
+      "title": "邀请不可用",
+      "description": "此邀请可能已过期、已撤销或已被使用。"
+    },
+    "rejected": "此加入请求未获批准。",
+    "alreadyUsed": "此邀请已被使用。",
+    "openingCompany": "正在打开公司...",
+    "bootstrap": {
+      "title": "初始化完成",
+      "openBoard": "打开面板"
+    },
+    "joined": {
+      "title": "你已加入该公司",
+      "openBoard": "打开面板"
+    },
+    "awaitingApproval": {
+      "title": "请求加入 {{companyName}}",
+      "body": "你的请求仍在等待审批。{{approver}} 必须批准你的加入请求。",
+      "approvalPage": "审批页面",
+      "companySettingsAccess": "公司设置 → 访问权限",
+      "askToVisit": "请他们访问 {{link}} 来批准你的请求。",
+      "refreshHint": "审批通过后刷新此页面 —— 系统将自动重定向。",
+      "claimSecret": "认领密钥",
+      "onboarding": "入职指引："
+    },
+    "invitedToJoin": "你已被邀请加入 Paperclip",
+    "setUpPaperclip": "设置 Paperclip",
+    "joinCompany": "加入 {{companyName}}",
+    "agentFormDescription": "查看邀请详情，然后在下方提交智能体信息以启动加入请求。",
+    "humanAccountDescription": "首先创建你的 Paperclip 账户。如果你已有账户，请切换至登录并使用相同邮箱继续邀请流程。",
+    "readyDescription": "你的账户已就绪。查看邀请详情，然后接受以继续。",
+    "meta": {
+      "company": "公司",
+      "invitedBy": "邀请人",
+      "paperclipBoard": "Paperclip 面板",
+      "requestedAccess": "请求访问权限",
+      "agentJoinRequest": "智能体加入请求",
+      "companyAccess": "公司访问权限",
+      "inviteExpires": "邀请过期时间"
+    },
+    "messageFromInviter": "来自邀请人的消息",
+    "signedInAs": "已登录为 <1>{{label}}</1>。",
+    "agentForm": {
+      "title": "提交智能体详情",
+      "description": "此邀请将为 {{companyName}} 创建一个新智能体的审批请求。",
+      "agentName": "智能体名称",
+      "adapterType": "适配器类型",
+      "capabilities": "能力",
+      "working": "处理中...",
+      "submitRequest": "提交请求"
+    },
+    "auth": {
+      "createAccount": "创建你的账户",
+      "signInToContinue": "登录以继续",
+      "createAccountDescription": "先创建一个 Paperclip 账户。之后，你会回到这里接受 {{companyName}} 的邀请。",
+      "signInDescription": "使用与此邀请匹配的 Paperclip 账户登录。如果你还没有账户，请切换回创建账户。",
+      "createAccountButton": "创建账户",
+      "alreadyHaveAccount": "我已有账户",
+      "name": "姓名",
+      "email": "邮箱",
+      "password": "密码",
+      "signInAndContinue": "登录并继续",
+      "createAccountAndContinue": "创建账户并继续",
+      "alreadySignedUpHint": "之前已经注册过？请使用已有账户选项，以便邀请关联到正确的 Paperclip 用户。",
+      "noAccountHint": "还没有账户？切换回创建账户，以便使用新登录接受邀请。",
+      "fillRequiredFields": "请填写所有必填字段。"
+    },
+    "accept": {
+      "submittingJoinRequest": "正在提交加入请求",
+      "acceptBootstrapInvite": "接受初始化邀请",
+      "acceptCompanyInvite": "接受公司邀请",
+      "submittingDescription": "正在提交你加入 {{companyName}} 的请求。",
+      "alreadyMemberDescription": "此账户已属于 {{companyName}}。",
+      "submitOrCompleteDescription": "这将{{action}}。",
+      "finishSetup": "完成 Paperclip 的设置",
+      "submitCompleteJoinRequest": "提交或完成你加入 {{companyName}} 的请求",
+      "submittingRequest": "正在提交请求...",
+      "finishingSignIn": "正在完成登录...",
+      "acceptInvite": "接受邀请",
+      "working": "处理中...",
+      "continue": "继续"
+    },
+    "errors": {
+      "checkingAccess": "正在检查你的公司访问权限。请稍后再试。",
+      "alreadyBelongs": "此账户已属于该公司。",
+      "inviteNotFound": "未找到邀请",
+      "acceptFailed": "接受邀请失败",
+      "authFailed": "认证失败",
+      "userAlreadyExists": "{{email}} 的账户已存在。请在下方登录以继续此邀请。",
+      "invalidEmailOrPassword": "该邮箱和密码与现有 Paperclip 账户不匹配。请检查两项输入，如果你是新用户请先创建账户。",
+      "accountMayExist": "{{email}} 的账户可能已存在。请尝试登录。"
+    }
+  },
+  "uxLab": {
+    "badge": "邀请 UX 实验室",
+    "title": "邀请和注册用户体验审查界面",
+    "description": "此页面将当前的邀请落地页、注册、审批结果和公司邀请管理状态汇集在一处，以便无需手动重现每个后端条件即可审查样式更改。",
+    "tags": {
+      "route": "/tests/ux/invites",
+      "signupInvite": "注册 + 邀请状态",
+      "fixture": "基于固定数据的预览"
+    },
+    "coveredStates": {
+      "title": "覆盖的状态",
+      "items": [
+        "邀请加载、访问检查、缺失令牌和不可用状态",
+        "内联账户创建和登录变体，包括反馈/错误文案",
+        "人工接受、智能体请求和自动接受过渡",
+        "待审批、已加入、认领密钥和入职结果屏幕",
+        "公司邀请创建、已复制链接、历史记录、空状态和权限错误状态"
+      ]
+    },
+    "topLevelStates": {
+      "eyebrow": "顶层状态",
+      "title": "落地页状态覆盖",
+      "description": "不渲染完整分屏布局的快速返回邀请状态的小卡片。"
+    },
+    "statusCards": {
+      "loadingInvite": {
+        "title": "正在加载邀请",
+        "body": "在邀请摘要、部署模式或认证会话数据仍在加载时显示。"
+      },
+      "checkingAccess": {
+        "title": "正在检查你的访问权限",
+        "body": "登录后显示，应用验证当前用户是否已属于被邀请的公司。"
+      },
+      "invalidToken": {
+        "title": "邀请令牌无效",
+        "body": "令牌完全缺失，因此页面在任何邀请查找之前短路返回。"
+      },
+      "notAvailable": {
+        "title": "邀请不可用",
+        "body": "用于已过期、已撤销、已消费或其他缺失的邀请。"
+      },
+      "bootstrapComplete": {
+        "title": "初始化完成",
+        "body": "CEO 初始化邀请在设置成功接受后的结果屏幕。"
+      },
+      "autoAccept": {
+        "title": "自动接受进行中",
+        "body": "已登录的人工用户跳过额外的按钮点击，直接进入加入提交。"
+      },
+      "alreadyMember": {
+        "title": "已是成员",
+        "body": "接受保持禁用状态，一旦确认成员身份，页面将重定向到公司。"
+      },
+      "resultSurfaces": {
+        "title": "邀请结果界面",
+        "body": "下方包含待审批和已加入确认，以及认领和入职附加信息。"
+      }
+    },
+    "inviteLanding": {
+      "eyebrow": "邀请落地页",
+      "title": "分屏邀请流程",
+      "description": "这些框架足够接近生产邀请界面，可以在保持数据固定驱动的同时审查间距、层次结构和控件状态。"
+    },
+    "resultStates": {
+      "eyebrow": "结果状态",
+      "title": "审批和完成屏幕",
+      "description": "这些是从邀请接受返回的提交后状态，包括可选的认领和入职元数据。"
+    },
+    "standaloneAuth": {
+      "eyebrow": "独立认证",
+      "title": "认证页面状态",
+      "description": "通用的 `/auth` 页面使用与邀请落地页不同的布局。这些预览同时保持登录和注册变体可见。"
+    },
+    "authPreview": {
+      "badge": "认证预览",
+      "title": "并排注册样式审查",
+      "description": "此框架镜像生产认证界面，以便轻松比较间距、标签密度、按钮处理和桌面布局。"
+    },
+    "companySettings": {
+      "eyebrow": "公司设置",
+      "title": "公司邀请管理",
+      "description": "此部分捕获面板端的邀请创建流程、已复制链接状态、审计表以及否则难以准备的边缘状态。"
+    },
+    "companyInvitesPreview": {
+      "title": "公司邀请",
+      "createInvite": "创建邀请",
+      "createInviteDescription": "生成人工邀请链接并选择默认访问权限。",
+      "chooseRole": "选择角色",
+      "singleUseNote": "每个邀请链接仅限单次使用。首次成功使用后会消耗该链接，并在审批前创建或复用匹配的加入请求。",
+      "createButton": "创建邀请",
+      "historyNote": "下方的邀请历史记录保留审计追踪。",
+      "latestInvite": "最新邀请链接",
+      "domainNote": "此 URL 包含服务器返回的当前 Paperclip 域名。",
+      "copied": "已复制",
+      "openInvite": "打开邀请",
+      "inviteHistory": "邀请历史",
+      "historyDescription": "查看邀请状态、角色、邀请人及任何关联的加入请求。",
+      "openQueue": "打开加入请求队列",
+      "emptyHistory": "空历史状态",
+      "emptyHistoryDescription": "此公司尚未创建任何邀请。",
+      "permissionError": "权限错误",
+      "permissionErrorDescription": "你没有权限管理公司邀请。"
+    },
+    "inviteSummary": {
+      "invitedToJoin": "你已被邀请加入 Paperclip",
+      "joinCompany": "加入 {{companyName}}",
+      "createAccountDescription": "首先创建你的 Paperclip 账户。如果你已有账户，请切换至登录并使用相同邮箱继续邀请流程。",
+      "readyDescription": "你的账户已就绪。查看邀请详情，然后接受以继续。",
+      "reviewAgentDescription": "查看邀请详情，然后在下方提交智能体信息以启动加入请求。",
+      "company": "公司",
+      "invitedBy": "邀请人",
+      "requestedAccess": "请求访问权限",
+      "inviteExpires": "邀请过期时间",
+      "messageFromInviter": "来自邀请人的消息",
+      "signedInAs": "已登录为 <1>{{label}}</1>。"
+    },
+    "inlineAuth": {
+      "createAccount": "创建你的账户",
+      "signInToContinue": "登录以继续",
+      "createAccountDescription": "先创建一个 Paperclip 账户。之后，你会回到这里接受 {{companyName}} 的邀请。",
+      "signInDescription": "使用与此邀请匹配的 Paperclip 账户登录。如果你还没有账户，请切换回创建账户。",
+      "createAccountButton": "创建账户",
+      "alreadyHaveAccount": "我已有账户",
+      "name": "姓名",
+      "email": "邮箱",
+      "password": "密码",
+      "signInAndContinue": "登录并继续",
+      "createAccountAndContinue": "创建账户并继续",
+      "alreadySignedUpHint": "之前已经注册过？请使用已有账户选项，以便邀请关联到正确的 Paperclip 用户。",
+      "noAccountHint": "还没有账户？切换回创建账户，以便使用新登录接受邀请。"
+    },
+    "agentRequest": {
+      "title": "提交智能体详情",
+      "description": "此邀请将为 {{companyName}} 创建一个新智能体的审批请求。",
+      "agentName": "智能体名称",
+      "adapterType": "适配器类型",
+      "capabilities": "能力",
+      "submitRequest": "提交请求"
+    },
+    "acceptInvite": {
+      "title": "接受公司邀请",
+      "submittingDescription": "正在提交你加入 {{companyName}} 的请求。",
+      "alreadyMemberDescription": "此账户已属于 {{companyName}}。",
+      "submitOrCompleteDescription": "这将提交或完成你加入 {{companyName}} 的请求。",
+      "submittingRequest": "正在提交请求...",
+      "acceptInvite": "接受邀请"
+    },
+    "inviteResult": {
+      "requestToJoin": "请求加入 {{companyName}}",
+      "approverMustApprove": "{{inviter}} 必须批准你的加入请求。",
+      "askToVisit": "请他们访问公司设置 → 访问权限来批准你的请求。",
+      "joinedNow": "你已加入该公司",
+      "joinedNowDescription": "你的账户已与已批准的邀请匹配，因此可以立即打开面板。",
+      "openBoard": "打开面板",
+      "approvalPage": "审批页面",
+      "companySettingsAccess": "公司设置 → 访问权限",
+      "refreshHint": "审批通过后刷新此页面 —— 系统将自动重定向。",
+      "claimSecret": "认领密钥",
+      "onboarding": "入职指引："
+    },
+    "authScreen": {
+      "paperclip": "Paperclip",
+      "signInTitle": "登录 Paperclip",
+      "signUpTitle": "创建你的 Paperclip 账户",
+      "signInDescription": "使用你的邮箱和密码访问此实例。",
+      "signUpDescription": "为此实例创建一个账户。v1 版本中不需要邮箱验证。",
+      "name": "姓名",
+      "email": "邮箱",
+      "password": "密码",
+      "signInButton": "登录",
+      "createAccountButton": "创建账户",
+      "needAccount": "需要账户？",
+      "alreadyHaveAccount": "已有账户？",
+      "createOne": "创建一个",
+      "signInLink": "登录"
+    }
+  },
+  "joinRequestQueue": {
+    "breadcrumb": {
+      "company": "公司",
+      "inbox": "收件箱",
+      "joinRequests": "加入请求"
+    },
+    "title": "加入请求队列",
+    "description": "在混合收件箱之外审核人类和代理的加入请求。此队列使用与内联收件箱卡片相同的审批操作。",
+    "status": "状态",
+    "requestType": "请求类型",
+    "statusOptions": {
+      "pending_approval": "待审批",
+      "approved": "已批准",
+      "rejected": "已拒绝"
+    },
+    "typeOptions": {
+      "all": "全部",
+      "human": "人类",
+      "agent": "代理"
+    },
+    "noMatches": "没有符合当前筛选条件的加入请求。",
+    "unknownHuman": "未知的人类请求者",
+    "unknownAgent": "未知的代理请求者",
+    "inviteUnavailable": "邀请元数据不可用",
+    "submitted": "提交于 {{date}}",
+    "inviteContext": "邀请上下文",
+    "requestDetails": "请求详情",
+    "sourceIp": "来源 IP {{ip}}",
+    "reject": "拒绝",
+    "approve": "批准",
+    "selectCompany": "选择公司以审核加入请求。",
+    "loading": "正在加载加入请求…",
+    "permissionError": "您没有权限审核此公司的加入请求。",
+    "loadError": "加载加入请求失败。",
+    "toast": {
+      "approved": "加入请求已批准",
+      "rejected": "加入请求已拒绝"
+    }
+  }
+}

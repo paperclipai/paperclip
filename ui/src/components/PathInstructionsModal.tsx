@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Apple, Monitor, Terminal } from "lucide-react";
 import {
   Dialog,
@@ -11,11 +12,13 @@ import { cn } from "@/lib/utils";
 
 type Platform = "mac" | "windows" | "linux";
 
-const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
-  { id: "mac", label: "macOS", icon: Apple },
-  { id: "windows", label: "Windows", icon: Monitor },
-  { id: "linux", label: "Linux", icon: Terminal },
-];
+function getPlatforms(t: (key: string) => string): { id: Platform; label: string; icon: typeof Apple }[] {
+  return [
+    { id: "mac", label: t("pathHelp.macOS"), icon: Apple },
+    { id: "windows", label: t("pathHelp.windows"), icon: Monitor },
+    { id: "linux", label: t("pathHelp.linux"), icon: Terminal },
+  ];
+}
 
 const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
   mac: {
@@ -62,6 +65,8 @@ export function PathInstructionsModal({
   onOpenChange,
 }: PathInstructionsModalProps) {
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
+  const { t } = useTranslation("common");
+  const platforms = getPlatforms(t);
 
   const current = instructions[platform];
 
@@ -69,11 +74,9 @@ export function PathInstructionsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("pathHelp.title")}</DialogTitle>
           <DialogDescription>
-            Paste the absolute path (e.g.{" "}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            {t("pathHelp.description")}
           </DialogDescription>
         </DialogHeader>
 
@@ -125,6 +128,7 @@ export function PathInstructionsModal({
  */
 export function ChoosePathButton({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
+  const { t } = useTranslation("common");
   return (
     <>
       <button
@@ -135,7 +139,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("actions.choose")}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

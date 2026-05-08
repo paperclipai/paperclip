@@ -1,0 +1,90 @@
+{
+  "steps": {
+    "company": "Company",
+    "agent": "Agent",
+    "task": "Task",
+    "launch": "Launch"
+  },
+  "close": "Close",
+  "step1": {
+    "title": "Name your company",
+    "description": "This is the organization your agents will work for.",
+    "companyNameLabel": "Company name",
+    "companyNamePlaceholder": "Acme Corp",
+    "goalLabel": "Mission / goal (optional)",
+    "goalPlaceholder": "What is this company trying to achieve?"
+  },
+  "step2": {
+    "title": "Create your first agent",
+    "description": "Choose how this agent will run tasks.",
+    "agentNameLabel": "Agent name",
+    "agentNamePlaceholder": "CEO",
+    "adapterTypeLabel": "Adapter type",
+    "recommendedBadge": "Recommended",
+    "moreAdapters": "More Agent Adapter Types",
+    "comingSoon": "Coming soon",
+    "modelLabel": "Model",
+    "modelRequired": "Select model (required)",
+    "modelDefault": "Default",
+    "searchModelsPlaceholder": "Search models...",
+    "noModelsDiscovered": "No models discovered.",
+    "environmentCheck": {
+      "title": "Adapter environment check",
+      "description": "Runs a live probe that asks the adapter CLI to respond with hello.",
+      "testNow": "Test now",
+      "testing": "Testing...",
+      "passed": "Passed"
+    },
+    "anthropicKeyWarning": "Claude failed while {{key}} is set. You can clear it in this CEO adapter config and retry the probe.",
+    "unsetAnthropicKey": "Unset {{key}}",
+    "retrying": "Retrying...",
+    "manualDebug": {
+      "title": "Manual debug",
+      "promptLabel": "Prompt",
+      "promptValue": "Respond with hello.",
+      "authHint": "If auth fails, set {{env}} in env or run {{cmd}}.",
+      "loginHint": "If login is required, run {{cmd}} and retry."
+    },
+    "gatewayUrlLabel": "Gateway URL",
+    "webhookUrlLabel": "Webhook URL"
+  },
+  "step3": {
+    "title": "Give it something to do",
+    "description": "Give your agent a small task to start with — a bug fix, a research question, writing a script.",
+    "defaultTaskTitle": "Hire your first engineer and create a hiring plan",
+    "defaultTaskDescription": "You are the CEO. You set the direction for the company.\n\n- hire a founding engineer\n- write a hiring plan\n- break the roadmap into concrete tasks and start delegating work",
+    "taskTitleLabel": "Task title",
+    "taskTitlePlaceholder": "e.g. Research competitor pricing",
+    "descriptionLabel": "Description (optional)",
+    "descriptionPlaceholder": "Add more detail about what the agent should do..."
+  },
+  "step4": {
+    "title": "Ready to launch",
+    "description": "Everything is set up. Launching now will create the starter task, wake the agent, and open the issue.",
+    "companyLabel": "Company",
+    "taskLabel": "Task"
+  },
+  "navigation": {
+    "back": "Back",
+    "next": "Next",
+    "creating": "Creating...",
+    "createAndOpen": "Create & Open Issue"
+  },
+  "approvalRemark": "Approved during onboarding first-agent setup.",
+  "errors": {
+    "createCompanyFailed": "Failed to create company",
+    "createAgentFailed": "Failed to create agent",
+    "createTaskFailed": "Failed to create task",
+    "testEnvironmentFailed": "Adapter environment test failed",
+    "testEnvironmentNoCompany": "Create or select a company before testing adapter environment.",
+    "opencodeModelRequired": "OpenCode requires an explicit model in provider/model format.",
+    "anthropicRetryFailed": "Retried with {{key}} unset in adapter config, but the environment test is still failing.",
+    "unsetAnthropicFailed": "Failed to unset {{key}} and retry."
+  },
+  "adapterEnvironment": {
+    "passed": "Passed",
+    "warnings": "Warnings",
+    "failed": "Failed",
+    "hint": "Hint"
+  }
+}

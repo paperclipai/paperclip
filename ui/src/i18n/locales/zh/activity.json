@@ -1,0 +1,23 @@
+{
+  "breadcrumb": "活动",
+  "filter": {
+    "placeholder": "按类型筛选",
+    "allTypes": "所有类型"
+  },
+  "empty": {
+    "selectCompany": "选择公司以查看活动。",
+    "noActivity": "暂无活动。"
+  },
+  "entityType": {
+    "issue": "问题",
+    "project": "项目",
+    "goal": "目标",
+    "agent": "智能体",
+    "routine": "定时任务",
+    "adapter": "适配器",
+    "user": "用户",
+    "company": "公司",
+    "team": "团队",
+    "run": "运行"
+  }
+}

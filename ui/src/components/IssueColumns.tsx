@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
@@ -22,27 +23,31 @@ import { StatusIcon } from "./StatusIcon";
 
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
 
-const issueColumnLabels: Record<InboxIssueColumn, string> = {
-  status: "Status",
-  id: "ID",
-  assignee: "Assignee",
-  project: "Project",
-  workspace: "Workspace",
-  parent: "Parent issue",
-  labels: "Tags",
-  updated: "Last updated",
-};
+function useIssueColumnLabels(t: (key: string) => string): Record<InboxIssueColumn, string> {
+  return {
+    status: t("list.columnLabels.status"),
+    id: t("list.columnLabels.id"),
+    assignee: t("list.columnLabels.assignee"),
+    project: t("list.columnLabels.project"),
+    workspace: t("list.columnLabels.workspace"),
+    parent: t("list.columnLabels.parent"),
+    labels: t("list.columnLabels.labels"),
+    updated: t("list.columnLabels.updated"),
+  };
+}
 
-const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
-  id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
-  project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
-  labels: "Issue labels and tags.",
-  updated: "Latest visible activity time.",
-};
+function useIssueColumnDescriptions(t: (key: string) => string): Record<InboxIssueColumn, string> {
+  return {
+    status: t("list.columnDescriptions.status"),
+    id: t("list.columnDescriptions.id"),
+    assignee: t("list.columnDescriptions.assignee"),
+    project: t("list.columnDescriptions.project"),
+    workspace: t("list.columnDescriptions.workspace"),
+    parent: t("list.columnDescriptions.parent"),
+    labels: t("list.columnDescriptions.labels"),
+    updated: t("list.columnDescriptions.updated"),
+  };
+}
 
 export function issueActivityText(issue: Issue): string {
   return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
@@ -76,6 +81,9 @@ export function IssueColumnPicker({
   title: string;
   iconOnly?: boolean;
 }) {
+  const { t } = useTranslation("issues");
+  const columnLabels = useIssueColumnLabels((key) => t(key));
+  const columnDescriptions = useIssueColumnDescriptions((key) => t(key));
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -84,17 +92,17 @@ export function IssueColumnPicker({
           variant={iconOnly ? "outline" : "ghost"}
           size={iconOnly ? "icon" : "sm"}
           className={iconOnly ? "h-8 w-8 shrink-0" : "hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"}
-          title="Columns"
+          title={t("list.columns")}
         >
           <Columns3 className={iconOnly ? "h-3.5 w-3.5" : "mr-1 h-3.5 w-3.5"} />
-          {!iconOnly && "Columns"}
+          {!iconOnly && t("list.columns")}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+              {t("list.desktopIssueRows")}
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -112,10 +120,10 @@ export function IssueColumnPicker({
           >
             <span className="flex flex-col gap-0.5">
               <span className="text-sm font-medium text-foreground">
-                {issueColumnLabels[column]}
+                {columnLabels[column]}
               </span>
               <span className="text-xs leading-relaxed text-muted-foreground">
-                {issueColumnDescriptions[column]}
+                {columnDescriptions[column]}
               </span>
             </span>
           </DropdownMenuCheckboxItem>
@@ -125,8 +133,8 @@ export function IssueColumnPicker({
           onSelect={onResetColumns}
           className="rounded-lg px-3 py-2 text-sm"
         >
-          Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+          {t("list.resetDefaults")}
+          <span className="ml-auto text-xs text-muted-foreground">{["status", "id", "updated"].map((c) => columnLabels[c as InboxIssueColumn]).join(", ")}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

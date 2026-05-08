@@ -2,6 +2,7 @@ import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import i18n from "@/i18n";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -22,49 +23,54 @@ export function asFiniteNumber(value: unknown, fallback: number) {
 }
 
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return new Intl.NumberFormat(i18n.language, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents / 100);
 }
 
 export function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
+  return new Intl.NumberFormat(i18n.language).format(n);
 }
 
 export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+  return new Intl.DateTimeFormat(i18n.language, {
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
+  }).format(new Date(date));
 }
 
 export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+  return new Intl.DateTimeFormat(i18n.language, {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  });
+  }).format(new Date(date));
 }
 
 export function formatShortDate(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+  return new Intl.DateTimeFormat(i18n.language, {
     month: "short",
     day: "numeric",
-  });
+  }).format(new Date(date));
 }
 
 export function relativeTime(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  if (diffSec < 60) return i18n.t("relativeTime.justNow");
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return i18n.t("relativeTime.minutesAgo", { count: diffMin });
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return i18n.t("relativeTime.hoursAgo", { count: diffHr });
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
+  if (diffDay < 30) return i18n.t("relativeTime.daysAgo", { count: diffDay });
   return formatDate(date);
 }
 
@@ -109,15 +115,7 @@ export function providerDisplayName(provider: string): string {
 }
 
 export function billingTypeDisplayName(billingType: BillingType): string {
-  const map: Record<BillingType, string> = {
-    metered_api: "Metered API",
-    subscription_included: "Subscription",
-    subscription_overage: "Subscription overage",
-    credits: "Credits",
-    fixed: "Fixed",
-    unknown: "Unknown",
-  };
-  return map[billingType];
+  return i18n.t(`billingType.${billingType}`, { defaultValue: billingType });
 }
 
 export function quotaSourceDisplayName(source: string): string {
@@ -164,27 +162,11 @@ export function visibleRunCostUsd(
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
-  const map: Record<FinanceEventKind, string> = {
-    inference_charge: "Inference charge",
-    platform_fee: "Platform fee",
-    credit_purchase: "Credit purchase",
-    credit_refund: "Credit refund",
-    credit_expiry: "Credit expiry",
-    byok_fee: "BYOK fee",
-    gateway_overhead: "Gateway overhead",
-    log_storage_charge: "Log storage",
-    logpush_charge: "Logpush",
-    provisioned_capacity_charge: "Provisioned capacity",
-    training_charge: "Training",
-    custom_model_import_charge: "Custom model import",
-    custom_model_storage_charge: "Custom model storage",
-    manual_adjustment: "Manual adjustment",
-  };
-  return map[eventKind];
+  return i18n.t(`financeEventKind.${eventKind}`, { defaultValue: eventKind });
 }
 
 export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
+  return i18n.t(`financeDirection.${direction}`, { defaultValue: direction });
 }
 
 /** Build an issue URL using the human-readable identifier when available. */

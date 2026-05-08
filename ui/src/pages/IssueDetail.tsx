@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
+import { useTranslation } from "react-i18next";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -1182,6 +1183,7 @@ function IssueDetailActivityTab({
 }
 
 export function IssueDetail() {
+  const { t } = useTranslation("issues");
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -3389,7 +3391,7 @@ export function IssueDetail() {
                   }}
                 >
                   <PauseCircle className="h-3 w-3" />
-                  Pause work...
+                  {t("detail.pauseWork")}...
                 </button>
               ) : null}
               {canResumeLeafWork ? (
@@ -3403,7 +3405,7 @@ export function IssueDetail() {
                   }}
                 >
                   <PlayCircle className="h-3 w-3" />
-                  Resume work
+                  {t("detail.resumeWork")}
                 </button>
               ) : null}
               {canShowSubtreeControls ? (
@@ -3418,7 +3420,7 @@ export function IssueDetail() {
                     }}
                   >
                     <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
+                    {t("detail.pauseSubtree")}...
                   </button>
                   {canResumeSubtree ? (
                     <button
@@ -3431,7 +3433,7 @@ export function IssueDetail() {
                       }}
                     >
                       <PlayCircle className="h-3 w-3" />
-                      Resume subtree
+                      {t("detail.resumeSubtree")}
                     </button>
                   ) : null}
                   <button
@@ -3444,7 +3446,7 @@ export function IssueDetail() {
                     }}
                   >
                     <XCircle className="h-3 w-3" />
-                    Cancel subtree...
+                    {t("detail.cancelSubtree")}...
                   </button>
                   {canRestoreSubtree ? (
                     <button
@@ -3458,7 +3460,7 @@ export function IssueDetail() {
                       }}
                     >
                       <Repeat className="h-3 w-3" />
-                      Restore subtree...
+                      {t("detail.restoreSubtree")}...
                     </button>
                   ) : null}
                 </>
@@ -3474,7 +3476,7 @@ export function IssueDetail() {
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                {t("detail.hideThisIssue")}
               </button>
             </PopoverContent>
             </Popover>
@@ -3570,7 +3572,6 @@ export function IssueDetail() {
             createIssueLabel="Sub-issue"
             defaultSortField="workflow"
             showProgressSummary
-            parentIssueIdForCostSummary={issue.id}
             onUpdateIssue={handleChildIssueUpdate}
           />
         </div>

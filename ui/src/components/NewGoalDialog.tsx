@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
@@ -23,17 +24,21 @@ import {
   Layers,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
-import { StatusBadge } from "./StatusBadge";
 
-const levelLabels: Record<string, string> = {
-  company: "Company",
-  team: "Team",
-  agent: "Agent",
-  task: "Task",
-};
+function getLevelLabels(t: (key: string) => string): Record<string, string> {
+  return {
+    company: t("detail.levelCompany"),
+    team: t("detail.levelTeam"),
+    agent: t("detail.levelAgent"),
+    task: t("detail.levelTask"),
+  };
+}
 
 export function NewGoalDialog() {
+  const { t } = useTranslation("goals");
+  const levelLabels = getLevelLabels(t);
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -128,7 +133,7 @@ export function NewGoalDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
+            <span>{newGoalDefaults.parentId ? t("createGoalDialog.subGoalTitle") : t("createGoalDialog.title")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -154,7 +159,7 @@ export function NewGoalDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Goal title"
+            placeholder={t("createGoalDialog.namePlaceholder")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -173,7 +178,7 @@ export function NewGoalDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t("createGoalDialog.descriptionPlaceholder")}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
@@ -189,7 +194,12 @@ export function NewGoalDialog() {
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                <StatusBadge status={status} />
+                <span className={cn(
+                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
+                  statusBadge[status] ?? statusBadgeDefault
+                )}>
+                  {t(`status.${status}`)}
+                </span>
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-40 p-1" align="start">
@@ -202,7 +212,7 @@ export function NewGoalDialog() {
                   )}
                   onClick={() => { setStatus(s); setStatusOpen(false); }}
                 >
-                  {s}
+                  {t(`status.${s}`)}
                 </button>
               ))}
             </PopoverContent>
@@ -237,7 +247,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Target className="h-3 w-3 text-muted-foreground" />
-                {currentParent ? currentParent.title : "Parent goal"}
+                {currentParent ? currentParent.title : t("createGoalDialog.parentGoal")}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
@@ -248,7 +258,7 @@ export function NewGoalDialog() {
                 )}
                 onClick={() => { setParentId(""); setParentOpen(false); }}
               >
-                No parent
+                {t("createGoalDialog.noParent")}
               </button>
               {(goals ?? []).map((g) => (
                 <button
@@ -273,7 +283,7 @@ export function NewGoalDialog() {
             disabled={!title.trim() || createGoal.isPending}
             onClick={handleSubmit}
           >
-            {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
+            {createGoal.isPending ? t("createGoalDialog.creating") : newGoalDefaults.parentId ? t("createGoalDialog.createSubGoal") : t("createGoalDialog.createGoal")}
           </Button>
         </div>
       </DialogContent>

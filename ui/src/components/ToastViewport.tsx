@@ -8,6 +8,7 @@ import {
   type ToastTone,
 } from "../context/ToastContext";
 import { cn } from "../lib/utils";
+import { useTranslation } from "react-i18next";
 
 const toneClasses: Record<ToastTone, string> = {
   info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100",
@@ -30,6 +31,7 @@ function AnimatedToast({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
+  const { t } = useTranslation("common");
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -68,7 +70,7 @@ function AnimatedToast({
         </div>
         <button
           type="button"
-          aria-label="Dismiss notification"
+          aria-label={t("dismissNotification")}
           onClick={() => onDismiss(toast.id)}
           className="mt-0.5 shrink-0 rounded p-1 opacity-50 hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
         >

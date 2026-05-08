@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   DocumentRevision,
@@ -103,12 +104,6 @@ function downloadDocumentFile(key: string, body: string) {
   URL.revokeObjectURL(url);
 }
 
-function getRevisionActorLabel(revision: DocumentRevision) {
-  if (revision.createdByUserId) return "board";
-  if (revision.createdByAgentId) return "agent";
-  return "system";
-}
-
 function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
   if (!draft || draft.isNew || draft.key !== doc.key) return false;
   return draft.body !== doc.body || (doc.title ?? "") !== draft.title;
@@ -158,6 +153,7 @@ export function IssueDocumentsSection({
   ) => Promise<void>;
   extraActions?: ReactNode;
 }) {
+  const { t } = useTranslation("issues");
   const queryClient = useQueryClient();
   const location = useLocation();
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
@@ -258,7 +254,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to delete document");
+      setError(err instanceof Error ? err.message : t("documents.errors.failedToDelete"));
     },
   });
 
@@ -275,7 +271,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to restore document revision");
+      setError(err instanceof Error ? err.message : t("documents.errors.failedToRestore"));
     },
   });
 
@@ -300,7 +296,7 @@ export function IssueDocumentsSection({
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? t("documents.errors.invalidKeyHint")
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -372,9 +368,9 @@ export function IssueDocumentsSection({
 
     if (!normalizedKey || !normalizedBody) {
       if (currentDraft.isNew) {
-        setError("Document key and body are required");
+        setError(t("documents.errors.keyAndBodyRequired"));
       } else if (!normalizedBody) {
-        setError("Document body cannot be empty");
+        setError(t("documents.errors.bodyCannotBeEmpty"));
       }
       if (options?.trackAutosave) {
         resetAutosaveState();
@@ -383,7 +379,7 @@ export function IssueDocumentsSection({
     }
 
     if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
+      setError(t("documents.errors.invalidKeyFormat"));
       if (options?.trackAutosave) {
         resetAutosaveState();
       }
@@ -462,11 +458,11 @@ export function IssueDocumentsSection({
           resetAutosaveState();
           return false;
         } catch {
-          setError("Document changed remotely and the latest version could not be loaded");
+          setError(t("documents.errors.remoteChangeLoadFailed"));
           return false;
         }
       }
-      setError(err instanceof Error ? err.message : "Failed to save document");
+      setError(err instanceof Error ? err.message : t("documents.errors.failedToSave"));
       return false;
     }
   }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
@@ -527,7 +523,7 @@ export function IssueDocumentsSection({
         setCopiedDocumentKey((current) => current === key ? null : current);
       }, 1400);
     } catch {
-      setError("Could not copy document");
+      setError(t("documents.errors.couldNotCopy"));
     }
   }, []);
 
@@ -552,7 +548,7 @@ export function IssueDocumentsSection({
       return;
     }
     if (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft)) {
-      setError("Save or cancel your local changes before viewing an older revision.");
+      setError(t("documents.errors.saveBeforeViewingRevision"));
       return;
     }
     resetAutosaveState();
@@ -694,19 +690,19 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">{t("documents.newDocument")}</span>
+            <span className="sm:hidden">{t("documents.new")}</span>
           </Button>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">{t("documents.documents")}</h3>
           <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
-              <span className="sm:hidden">New</span>
+              <span className="hidden sm:inline">{t("documents.newDocument")}</span>
+              <span className="sm:hidden">{t("documents.new")}</span>
             </Button>
           </div>
         </div>
@@ -726,7 +722,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={t("documents.documentKey")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -737,7 +733,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={t("documents.optionalTitle")}
             />
           )}
           <MarkdownEditor
@@ -745,7 +741,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={t("documents.markdownBody")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-[220px] text-[15px] leading-7"
@@ -756,14 +752,14 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {t("documents.cancel")}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending ? t("documents.saving") : t("documents.createDocument")}
             </Button>
           </div>
         </div>
@@ -826,7 +822,7 @@ export function IssueDocumentsSection({
                       type="button"
                       className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                       onClick={() => toggleFoldedDocument(doc.key)}
-                      aria-label={isFolded ? `Expand ${doc.key} document` : `Collapse ${doc.key} document`}
+                      aria-label={isFolded ? t("documents.expandDocument", { key: doc.key }) : t("documents.collapseDocument", { key: doc.key })}
                       aria-expanded={!isFolded}
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -852,9 +848,9 @@ export function IssueDocumentsSection({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="w-72">
-                        <DropdownMenuLabel>Revision history</DropdownMenuLabel>
+                        <DropdownMenuLabel>{t("documents.revisionHistory")}</DropdownMenuLabel>
                         {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && rawRevisionHistory.length === 0 ? (
-                          <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
+                          <DropdownMenuItem disabled>{t("documents.loadingRevisions")}</DropdownMenuItem>
                         ) : revisionHistory.length > 0 ? (
                           <DropdownMenuRadioGroup value={selectedRevisionId ?? currentRevision.id ?? ""}>
                             {revisionHistory.map((revision) => {
@@ -871,12 +867,16 @@ export function IssueDocumentsSection({
                                       <span className="font-medium">rev {revision.revisionNumber}</span>
                                       {isCurrentRevision ? (
                                         <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                                          Current
+                                          {t("documents.current")}
                                         </span>
                                       ) : null}
                                     </div>
                                     <span className="text-xs text-muted-foreground">
-                                      {relativeTime(revision.createdAt)} • {getRevisionActorLabel(revision)}
+                                      {relativeTime(revision.createdAt)} • {
+                                        revision.createdByUserId ? t("actor.board", { ns: "common" }) :
+                                        revision.createdByAgentId ? t("actor.agent", { ns: "common" }) :
+                                        t("actor.system", { ns: "common" })
+                                      }
                                     </span>
                                   </div>
                                 </DropdownMenuRadioItem>
@@ -884,7 +884,7 @@ export function IssueDocumentsSection({
                             })}
                           </DropdownMenuRadioGroup>
                         ) : (
-                          <DropdownMenuItem disabled>No revisions yet</DropdownMenuItem>
+                          <DropdownMenuItem disabled>{t("documents.noRevisionsYet")}</DropdownMenuItem>
                         )}
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -892,7 +892,7 @@ export function IssueDocumentsSection({
                       href={`#document-${encodeURIComponent(doc.key)}`}
                       className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
-                      updated {relativeTime(displayedUpdatedAt)}
+                      {t("documents.updated", { time: relativeTime(displayedUpdatedAt) })}
                     </a>
                   </div>
                   {showTitle && <p className="mt-2 text-sm font-medium">{displayedTitle}</p>}
@@ -905,7 +905,7 @@ export function IssueDocumentsSection({
                       "text-muted-foreground transition-colors",
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
-                    title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                    title={copiedDocumentKey === doc.key ? t("documents.copied") : t("documents.copyDocument")}
                     onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                   >
                     {copiedDocumentKey === doc.key ? (
@@ -920,7 +920,7 @@ export function IssueDocumentsSection({
                         variant="ghost"
                         size="icon-xs"
                         className="text-muted-foreground"
-                        title="Document actions"
+                        title={t("documents.documentActions")}
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
@@ -929,7 +929,7 @@ export function IssueDocumentsSection({
                       {!isHistoricalPreview ? (
                         <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
                           <FilePenLine className="h-3.5 w-3.5" />
-                          Edit document
+                          {t("documents.editDocument")}
                         </DropdownMenuItem>
                       ) : null}
                       {!isHistoricalPreview ? <DropdownMenuSeparator /> : null}
@@ -937,12 +937,12 @@ export function IssueDocumentsSection({
                         onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                       >
                         <Download className="h-3.5 w-3.5" />
-                        Download document
+                        {t("documents.downloadDocument")}
                       </DropdownMenuItem>
                       {doc.latestRevisionNumber > 1 ? (
                         <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
                           <Diff className="h-3.5 w-3.5" />
-                          View diff
+                          {t("documents.viewDiff")}
                         </DropdownMenuItem>
                       ) : null}
                       {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
@@ -952,7 +952,7 @@ export function IssueDocumentsSection({
                           onClick={() => setConfirmDeleteKey(doc.key)}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                          Delete document
+                          {t("documents.deleteDocument")}
                         </DropdownMenuItem>
                       ) : null}
                     </DropdownMenuContent>
@@ -983,10 +983,10 @@ export function IssueDocumentsSection({
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
                           <p className="text-sm font-medium text-amber-200">
-                            Viewing revision {selectedHistoricalRevision.revisionNumber}
+                            {t("documents.viewingRevision", { number: selectedHistoricalRevision.revisionNumber })}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.
+                            {t("documents.historicalPreviewDescription")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -995,7 +995,7 @@ export function IssueDocumentsSection({
                             size="sm"
                             onClick={() => returnToLatestRevision(doc.key)}
                           >
-                            Return to latest
+                            {t("documents.returnToLatest")}
                           </Button>
                           <Button
                             size="sm"
@@ -1006,8 +1006,8 @@ export function IssueDocumentsSection({
                             disabled={restoreDocumentRevision.isPending}
                           >
                             {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
-                              ? "Restoring..."
-                              : "Restore this revision"}
+                              ? t("documents.restoring")
+                              : t("documents.restoreRevision")}
                           </Button>
                         </div>
                       </div>
@@ -1017,9 +1017,9 @@ export function IssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-amber-200">{t("documents.outOfDate")}</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
+                            {t("documents.outOfDateDescription")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1034,37 +1034,37 @@ export function IssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? "Hide remote" : "Review remote"}
+                            {activeConflict.showRemote ? t("documents.hideRemote") : t("documents.reviewRemote")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => keepConflictedDraft(doc.key)}
                           >
-                            Keep my draft
+                            {t("documents.keepMyDraft")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => reloadDocumentFromServer(doc.key)}
                           >
-                            Reload remote
+                            {t("documents.reloadRemote")}
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
+                            {upsertDocument.isPending ? t("documents.saving") : t("documents.overwriteRemote")}
                           </Button>
                         </div>
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
                           <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-                            <span>Remote revision {activeConflict.serverDocument.latestRevisionNumber}</span>
+                            <span>{t("documents.remoteRevision", { number: activeConflict.serverDocument.latestRevisionNumber })}</span>
                             <span>•</span>
-                            <span>updated {relativeTime(activeConflict.serverDocument.updatedAt)}</span>
+                            <span>{t("documents.updated", { time: relativeTime(activeConflict.serverDocument.updatedAt) })}</span>
                           </div>
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
@@ -1081,7 +1081,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={t("documents.optionalTitle")}
                     />
                   )}
                   <div
@@ -1103,7 +1103,7 @@ export function IssueDocumentsSection({
                             return current;
                           });
                         }}
-                        placeholder="Markdown body"
+                        placeholder={t("documents.markdownBody")}
                         bordered={false}
                         className="bg-transparent"
                         contentClassName={documentBodyContentClassName}
@@ -1128,17 +1128,17 @@ export function IssueDocumentsSection({
                       } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
                       {isHistoricalPreview
-                        ? "Viewing historical revision"
+                        ? t("documents.viewingHistoricalRevision")
                         : activeDraft
                           ? activeConflict
-                          ? "Out of date"
+                          ? t("documents.outOfDate")
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
-                              ? "Autosaving..."
+                              ? t("documents.autosaving")
                               : autosaveState === "saved"
-                                ? "Saved"
+                                ? t("documents.saved")
                                 : autosaveState === "error"
-                                  ? "Could not save"
+                                  ? t("documents.couldNotSave")
                                   : ""
                             : ""
                           : ""}
@@ -1160,7 +1160,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
+                    {t("documents.deleteConfirm")}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -1169,7 +1169,7 @@ export function IssueDocumentsSection({
                       onClick={() => setConfirmDeleteKey(null)}
                       disabled={deleteDocument.isPending}
                     >
-                      Cancel
+                      {t("documents.cancel")}
                     </Button>
                     <Button
                       variant="destructive"
@@ -1177,7 +1177,7 @@ export function IssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? "Deleting..." : "Delete"}
+                      {deleteDocument.isPending ? t("documents.deleting") : t("documents.delete")}
                     </Button>
                   </div>
                 </div>

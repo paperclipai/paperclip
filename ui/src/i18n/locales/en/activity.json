@@ -1,0 +1,23 @@
+{
+  "breadcrumb": "Activity",
+  "filter": {
+    "placeholder": "Filter by type",
+    "allTypes": "All types"
+  },
+  "empty": {
+    "selectCompany": "Select a company to view activity.",
+    "noActivity": "No activity yet."
+  },
+  "entityType": {
+    "issue": "Issue",
+    "project": "Project",
+    "goal": "Goal",
+    "agent": "Agent",
+    "routine": "Routine",
+    "adapter": "Adapter",
+    "user": "User",
+    "company": "Company",
+    "team": "Team",
+    "run": "Run"
+  }
+}
