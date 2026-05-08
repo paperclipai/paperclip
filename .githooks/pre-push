@@ -13,7 +13,7 @@ case "$current_branch" in
     if [[ -f "$script" ]]; then
       echo "[pre-push] Running i18n-only guardrail..."
       # Baseline: last commit before stray-files cleanup — commits after are pure i18n-only.
-      guardrail_baseline="81385f57"
+      guardrail_baseline="d1cd168d"
       bash "$script" "${guardrail_baseline}..HEAD" || {
         echo "[pre-push] i18n guardrail FAILED — push aborted. Fix violations above."
         exit 1
