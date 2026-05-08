@@ -35,9 +35,23 @@ function getOrCreate(companyId: string): IssueEntityMap {
   return map;
 }
 
+// IssueSummary has only 7 fields; full Issue always has companyId.
+function isPartialSummary(item: Issue): boolean {
+  return !("companyId" in item) || item.companyId == null;
+}
+
 function mergeIssue(store: IssueEntityMap, incoming: Issue): boolean {
   const existing = store[incoming.id];
-  if (existing && existing.updatedAt >= incoming.updatedAt) return false;
+  if (existing) {
+    // Never let a partial (IssueSummary) silently replace a full Issue record.
+    // Merge summary fields into the existing full object instead.
+    if (!isPartialSummary(existing) && isPartialSummary(incoming)) {
+      if (incoming.updatedAt <= existing.updatedAt) return false;
+      store[incoming.id] = { ...existing, ...incoming };
+      return true;
+    }
+    if (existing.updatedAt >= incoming.updatedAt) return false;
+  }
   store[incoming.id] = incoming;
   return true;
 }
@@ -96,8 +110,8 @@ export function installIssueEntityStoreSubscriber(queryClient: QueryClient): () 
     if (key[0] !== "issues") return;
 
     const second = key[1];
-    // Skip entity-map-keyed and per-issue-resource keys
-    if (second === "detail" || second === "entity-map") return;
+    // Skip per-issue-resource detail keys (e.g. comments, documents)
+    if (second === "detail") return;
 
     // Derive companyId from list query key shape: ["issues", companyId, ...]
     const companyId = typeof second === "string" ? second : null;

@@ -50,6 +50,7 @@ export const issuesApi = {
       includeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       showArchived?: boolean;
+      onlyArchived?: boolean;
       fields?: "summary";
       q?: string;
       limit?: number;
@@ -76,6 +77,7 @@ export const issuesApi = {
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.showArchived) params.set("showArchived", "true");
+    if (filters?.onlyArchived) params.set("onlyArchived", "true");
     if (filters?.fields) params.set("fields", filters.fields);
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));

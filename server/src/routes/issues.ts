@@ -1444,6 +1444,7 @@ export function issueRoutes(
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       showArchived: req.query.showArchived === "true" || req.query.showArchived === "1",
+      onlyArchived: req.query.onlyArchived === "true" || req.query.onlyArchived === "1",
       fields: req.query.fields === "summary" ? "summary" as const : undefined,
       q: req.query.q as string | undefined,
       limit,

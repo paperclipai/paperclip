@@ -108,6 +108,20 @@ describe("seedIssueEntityStore", () => {
     expect(getIssueEntityMap(queryClient, SEED_COMPANY)!["seed-keep"]?.title).toBe("Current title");
   });
 
+  it("does not let a partial summary overwrite a full issue", () => {
+    const full = createIssue({ id: "seed-guard", title: "Full title", description: "Some description", companyId: SEED_COMPANY, updatedAt: new Date("2026-01-01") });
+    // Simulate an IssueSummary: only 7 fields, no companyId
+    const summary = { id: "seed-guard", title: "Summary title", status: "todo", priority: "medium", assigneeAgentId: null, identifier: "ALL-1", updatedAt: new Date("2026-06-01") } as unknown as Issue;
+
+    seedIssueEntityStore(queryClient, SEED_COMPANY, [full]);
+    seedIssueEntityStore(queryClient, SEED_COMPANY, [summary]);
+
+    const stored = getIssueEntityMap(queryClient, SEED_COMPANY)!["seed-guard"];
+    // Full-issue fields must survive; summary fields may be updated
+    expect(stored?.description).toBe("Some description");
+    expect(stored?.title).toBe("Summary title"); // summary field is newer, so merged in
+  });
+
   it("is a no-op for empty arrays", () => {
     // Use a unique company that has never been seeded
     const emptyCompany = "company-empty-noop";
@@ -176,18 +190,6 @@ describe("installIssueEntityStoreSubscriber", () => {
     );
 
     expect(getIssueFromEntityStore(queryClient, testCompany, `sub-inf-${n}`)).toMatchObject({ id: `sub-inf-${n}` });
-  });
-
-  it("does not seed from entity-map key (no infinite loop)", () => {
-    installIssueEntityStoreSubscriber(queryClient);
-
-    const entityMapKey = queryKeys.issues.entityMap(testCompany);
-    // Writing to entity-map key should not trigger the subscriber to re-seed
-    queryClient.setQueryData(entityMapKey, { "dummy-id": createIssue({ id: "dummy-id" }) });
-
-    // The entity-map key itself was written directly, but the subscriber should not
-    // have picked it up and re-seeded. The module-level store should have no entry.
-    expect(getIssueFromEntityStore(queryClient, testCompany, "dummy-id")).toBeUndefined();
   });
 
   it("does not seed from detail key", () => {

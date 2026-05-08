@@ -677,7 +677,7 @@ export function IssuesList({
       issuesApi.list(selectedCompanyId!, {
         ...searchFilters,
         projectId,
-        showArchived: true,
+        onlyArchived: true,
         limit: 500,
       }),
     enabled: !!selectedCompanyId && viewState.showArchived && !searchWithinLoadedIssues,

@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -140,6 +140,7 @@ export interface IssueFilters {
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   showArchived?: boolean;
+  onlyArchived?: boolean;
   fields?: "summary";
   q?: string;
   limit?: number;
@@ -2347,7 +2348,9 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
-      if (!filters?.showArchived) {
+      if (filters?.onlyArchived) {
+        conditions.push(isNotNull(issues.hiddenAt));
+      } else if (!filters?.showArchived) {
         conditions.push(isNull(issues.hiddenAt));
       }
 
