@@ -80,6 +80,8 @@
     "saving_config": "保存中…",
     "assign_task": "分配任务",
     "copy_agent_id": "复制智能体 ID",
+    "copy_as_markdown": "复制为 Markdown",
+    "signal": "信号",
     "reset_sessions": "重置会话",
     "terminate": "终止",
     "view_details": "查看详情 →",
@@ -468,9 +470,23 @@
     "show_full_log": "显示完整日志",
     "failed_clear_sessions": "清除会话失败",
     "failed_load_run_log": "加载运行日志失败",
+    "failed_load_workspace_log": "加载工作空间日志失败",
+    "clear_session_text": "清除与这些任务关联的会话状态？",
+    "clearing_session": "清除中...",
+    "jump_to_live": "跳转到实时",
+    "load_more_log": "加载更多日志",
+    "no_log_events": "暂无日志事件。",
+    "no_persisted_log_lines": "暂无持久化日志行。",
+    "transcript": "运行记录",
+    "transcript_mode_nice": "简洁",
+    "transcript_mode_raw": "原始",
     "instructions_placeholder": "# 智能体指令",
     "skill_view_link": "查看",
     "approve_agent": "批准代理"
+  },
+  "icon_picker": {
+    "no_match": "未找到匹配的图标。",
+    "search_placeholder": "搜索图标..."
   },
   "run_errors": {
     "exited_with_code": "Claude 以退出码 {{code}} 退出",
