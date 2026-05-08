@@ -2827,4 +2827,192 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("skips a parent issue when a direct descendant has a live heartbeat run (PLA-321)", async () => {
+    const { companyId, agentId, issueId: parentIssueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    const childAgentId = randomUUID();
+    const childIssueId = randomUUID();
+    const childRunId = randomUUID();
+    const childWakeupRequestId = randomUUID();
+    const now = new Date("2026-03-19T01:00:00.000Z");
+
+    await db.insert(agents).values({
+      id: childAgentId,
+      companyId,
+      name: "ChildCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: childWakeupRequestId,
+      companyId,
+      agentId: childAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: childIssueId },
+      status: "claimed",
+      runId: childRunId,
+      claimedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: childRunId,
+      companyId,
+      agentId: childAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: childWakeupRequestId,
+      contextSnapshot: { issueId: childIssueId, taskId: childIssueId },
+      startedAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: parentIssueId,
+      title: "Live child of stranded parent",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: childAgentId,
+      checkoutRunId: childRunId,
+      executionRunId: childRunId,
+      issueNumber: 9001,
+      identifier: `T-CHILD-9001`,
+      startedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).not.toContain(parentIssueId);
+
+    const parent = await db.select().from(issues).where(eq(issues.id, parentIssueId)).then((rows) => rows[0] ?? null);
+    expect(parent?.status).toBe("in_progress");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+
+    // The active descendant has its own assignee; the parent's agent must not have been re-woken either.
+    const parentAgentWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(parentAgentWakes.every((row) => row.reason !== "issue_assignment_recovery")).toBe(true);
+  });
+
+  it("skips a grandparent issue when only a 2-deep descendant has a live heartbeat run (PLA-321 recursion)", async () => {
+    const { companyId, agentId, issueId: grandparentIssueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    const middleIssueId = randomUUID();
+    const grandchildIssueId = randomUUID();
+    const grandchildAgentId = randomUUID();
+    const grandchildRunId = randomUUID();
+    const grandchildWakeupRequestId = randomUUID();
+    const now = new Date("2026-03-19T02:00:00.000Z");
+
+    // Middle issue exists in the chain but has no live run/wake of its own.
+    await db.insert(issues).values({
+      id: middleIssueId,
+      companyId,
+      parentId: grandparentIssueId,
+      title: "Inert middle of chain",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 9100,
+      identifier: `T-MID-9100`,
+    });
+
+    await db.insert(agents).values({
+      id: grandchildAgentId,
+      companyId,
+      name: "GrandchildCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: grandchildWakeupRequestId,
+      companyId,
+      agentId: grandchildAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: grandchildIssueId },
+      status: "claimed",
+      runId: grandchildRunId,
+      claimedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: grandchildRunId,
+      companyId,
+      agentId: grandchildAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: grandchildWakeupRequestId,
+      contextSnapshot: { issueId: grandchildIssueId, taskId: grandchildIssueId },
+      startedAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: grandchildIssueId,
+      companyId,
+      parentId: middleIssueId,
+      title: "Live grandchild driving the chain",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: grandchildAgentId,
+      checkoutRunId: grandchildRunId,
+      executionRunId: grandchildRunId,
+      issueNumber: 9101,
+      identifier: `T-GC-9101`,
+      startedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).not.toContain(grandparentIssueId);
+
+    const grandparent = await db.select().from(issues).where(eq(issues.id, grandparentIssueId)).then((rows) => rows[0] ?? null);
+    expect(grandparent?.status).toBe("in_progress");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
 });

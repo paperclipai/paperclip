@@ -392,7 +392,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function collectIssueAndDescendantIds(
+    companyId: string,
+    rootIssueId: string,
+    maxDepth = 50,
+  ): Promise<string[]> {
+    const visited = new Set<string>([rootIssueId]);
+    let frontier: string[] = [rootIssueId];
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth += 1) {
+      const children = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, frontier),
+          ),
+        );
+      const next: string[] = [];
+      for (const child of children) {
+        if (!visited.has(child.id)) {
+          visited.add(child.id);
+          next.push(child.id);
+        }
+      }
+      frontier = next;
+    }
+    return Array.from(visited);
+  }
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
+    const issueIds = await collectIssueAndDescendantIds(companyId, issueId);
     const [run, deferredWake] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
@@ -401,7 +431,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, issueIds),
           ),
         )
         .limit(1)
@@ -413,7 +443,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           and(
             eq(agentWakeupRequests.companyId, companyId),
             eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            inArray(sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
           ),
         )
         .limit(1)
