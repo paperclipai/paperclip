@@ -28,7 +28,7 @@
   },
   "actor": {
     "system": "System",
-    "board": "Board",
+    "board": "Gremium",
     "you": "Sie",
     "unknown": "Unbekannt",
     "agent_fallback": "Agent",

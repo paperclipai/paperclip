@@ -28,7 +28,7 @@
   },
   "actor": {
     "system": "Σύστημα",
-    "board": "Board",
+    "board": "Συμβούλιο",
     "you": "Εσείς",
     "unknown": "Άγνωστος",
     "agent_fallback": "πράκτορας",

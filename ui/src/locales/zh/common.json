@@ -1,8 +1,9 @@
-{
+﻿{
   "nav": {
     "activity": "动态",
     "agents": "智能体",
     "issues": "任务",
+    "search": "搜索",
     "my_issues": "我的任务",
     "costs": "费用",
     "goals": "目标",

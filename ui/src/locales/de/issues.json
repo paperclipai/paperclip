@@ -1,4 +1,4 @@
-{
+﻿{
   "title": "Aufgaben",
   "my_title": "Meine Aufgaben",
   "empty": {
@@ -300,7 +300,7 @@
     "visibility": "Sichtbarkeit",
     "live_runs_only": "Live runs only",
     "hide_routine_runs": "Routine-Ausführungen ausblenden",
-    "board": "Board",
+    "board": "Gremium",
     "remove_creator": "Ersteller {{label}} entfernen"
   },
   "sub_issues": {
@@ -332,7 +332,7 @@
     "you": "Sie",
     "system": "System",
     "user": "Benutzer",
-    "board": "Board",
+    "board": "Gremium",
     "none": "Keine",
     "unassigned": "Nicht zugewiesen",
     "no_message_content": "Kein Nachrichteninhalt.",
@@ -456,7 +456,7 @@
     "sending": "Wird gesendet...",
     "you": "Sie",
     "system": "System",
-    "board": "Board",
+    "board": "Gremium",
     "unassigned": "Nicht zugewiesen",
     "none": "Keine",
     "updated_this_task": "hat diese Aufgabe aktualisiert",

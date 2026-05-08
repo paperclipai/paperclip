@@ -1,4 +1,4 @@
-{
+﻿{
   "title": "Tareas",
   "my_title": "Mis tareas",
   "empty": {
@@ -300,7 +300,7 @@
     "visibility": "Visibilidad",
     "live_runs_only": "Live runs only",
     "hide_routine_runs": "Ocultar ejecuciones de rutinas",
-    "board": "Board",
+    "board": "Junta",
     "remove_creator": "Eliminar creador {{label}}"
   },
   "sub_issues": {
@@ -332,7 +332,7 @@
     "you": "Usted",
     "system": "Sistema",
     "user": "Usuario",
-    "board": "Board",
+    "board": "Junta",
     "none": "Ninguno",
     "unassigned": "Sin asignar",
     "no_message_content": "Sin contenido de mensaje.",
@@ -456,7 +456,7 @@
     "sending": "Enviando...",
     "you": "Usted",
     "system": "Sistema",
-    "board": "Board",
+    "board": "Junta",
     "unassigned": "Sin asignar",
     "none": "Ninguno",
     "updated_this_task": "actualizó esta tarea",

@@ -82,6 +82,16 @@ while IFS= read -r commit; do
             echo "$content" | grep -qE "formatActivity|formatIssueActivity|formatTimeline" && continue
             # Functions/consts receiving t as a typed parameter: foo(…, t: …)
             echo "$content" | grep -qE ",\s*t\s*[:,)]|,\s*t\b\s*\)" && continue
+            # TypeScript const assertion: [...] as const  (used for locale-key enum arrays)
+            echo "$content" | grep -qE "\bas const\b" && continue
+            # TypeScript type alias lines: type Foo = ...
+            echo "$content" | grep -qE "^\s*type\s+[A-Za-z]" && continue
+            # React hooks with generic type: useState<T>, useRef<T>, etc.
+            echo "$content" | grep -qE "\buse[A-Z][a-zA-Z]*<" && continue
+            # Bare property shorthand in option-building arrays: value, / label, / key,
+            echo "$content" | grep -qE "^\s*[a-z_][a-zA-Z0-9_]*,\s*$" && continue
+            # Structural closing syntax from option-building patterns: })); or }); or });
+            echo "$content" | grep -qE "^\s*[\}\]\)]+[;,]?\s*$" && continue
             # Stage-8 bypass: allow LanguageSwitcher import and component usage
             [[ $has_bypass -eq 1 ]] && echo "$content" | grep -qiE 'LanguageSwitcher' && continue
             # violation

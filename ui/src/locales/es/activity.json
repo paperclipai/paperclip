@@ -28,7 +28,7 @@
   },
   "actor": {
     "system": "Sistema",
-    "board": "Board",
+    "board": "Junta",
     "you": "Tú",
     "unknown": "Desconocido",
     "agent_fallback": "agente",

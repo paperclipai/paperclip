@@ -1,4 +1,4 @@
-{
+﻿{
   "title": "Ζητήματα",
   "my_title": "Τα ζητήματά μου",
   "empty": {
@@ -300,7 +300,7 @@
     "visibility": "Ορατότητα",
     "live_runs_only": "Live runs only",
     "hide_routine_runs": "Απόκρυψη εκτελέσεων ρουτίνας",
-    "board": "Board",
+    "board": "Συμβούλιο",
     "remove_creator": "Αφαίρεση δημιουργού {{label}}"
   },
   "sub_issues": {
@@ -332,7 +332,7 @@
     "you": "Εσείς",
     "system": "Σύστημα",
     "user": "Χρήστης",
-    "board": "Board",
+    "board": "Συμβούλιο",
     "none": "Κανένα",
     "unassigned": "Μη ανατεθειμένο",
     "no_message_content": "Χωρίς περιεχόμενο μηνύματος.",
@@ -456,7 +456,7 @@
     "sending": "Αποστολή...",
     "you": "Εσείς",
     "system": "Σύστημα",
-    "board": "Board",
+    "board": "Συμβούλιο",
     "unassigned": "Μη ανατεθειμένο",
     "none": "Κανένα",
     "updated_this_task": "ενημέρωσε αυτήν την εργασία",

@@ -1,8 +1,9 @@
-{
+﻿{
   "nav": {
     "activity": "Actividad",
     "agents": "Agentes",
     "issues": "Tareas",
+    "search": "Buscar",
     "my_issues": "Mis tareas",
     "costs": "Costos",
     "goals": "Objetivos",
