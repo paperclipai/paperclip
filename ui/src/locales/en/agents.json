@@ -153,6 +153,7 @@
     "file_contents_placeholder": "File contents",
     "cancel": "Cancel",
     "delete": "Delete",
+    "copy_as_markdown": "Copy as markdown",
     "can_assign_tasks_desc": "Can assign tasks to other agents",
     "save_failed_msg": "Could not save agent",
     "failed_resume": "Failed to resume run",
@@ -479,6 +480,7 @@
     "show_full_log": "Show full log",
     "failed_clear_sessions": "Failed to clear sessions",
     "failed_load_run_log": "Failed to load run log",
+    "failed_load_workspace_log": "Failed to load workspace operation log",
     "instructions_placeholder": "# Agent instructions",
     "skill_view_link": "View",
     "approve_agent": "Approve agent"

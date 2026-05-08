@@ -153,6 +153,7 @@
     "file_contents_placeholder": "Содержимое файла",
     "cancel": "Отмена",
     "delete": "Удалить",
+    "copy_as_markdown": "Копировать как Markdown",
     "can_assign_tasks_desc": "Может назначать задачи другим агентам",
     "save_failed_msg": "Не удалось сохранить агента",
     "failed_resume": "Не удалось возобновить запуск",
@@ -479,6 +480,7 @@
     "show_full_log": "Показать полный лог",
     "failed_clear_sessions": "Не удалось очистить сессии",
     "failed_load_run_log": "Не удалось загрузить лог запуска",
+    "failed_load_workspace_log": "Не удалось загрузить журнал операций рабочего пространства",
     "instructions_placeholder": "# Инструкции агента",
     "skill_view_link": "Открыть",
     "approve_agent": "Утвердить агента"
