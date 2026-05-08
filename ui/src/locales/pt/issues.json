@@ -37,7 +37,7 @@
     "workspace": "Espaço de trabalho",
     "parent": "Tarefa Pai",
     "none": "Nenhum",
-    "project": "Project"
+    "project": "Projeto"
   },
   "no_project": "Sem projeto",
   "properties": {
@@ -1166,7 +1166,7 @@
   "failed": "falhou",
   "timed_out": "tempo esgotado",
   "name_run_statuslabel": "{name} executou {statusLabel}",
-  "trigger_triggerdetail": "Trigger: {triggerDetail}",
+  "trigger_triggerdetail": "Gatilho: {triggerDetail}",
   "view_run": "Ver execução",
   "back_to_inbox": "Voltar à caixa de entrada",
   "archive_from_inbox": "Arquivar da caixa de entrada",

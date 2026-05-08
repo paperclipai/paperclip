@@ -610,7 +610,7 @@
   "language": {
     "title": "Idioma",
     "description": "Altere o idioma da interface. Entra em vigor imediatamente.",
-    "en": "English",
+    "en": "Inglês",
     "ru": "Русский",
     "uk": "Українська"
   },
@@ -645,7 +645,7 @@
     "field_status": "Status",
     "field_lead": "Responsável",
     "field_goals": "Objetivos",
-    "field_env": "Env",
+    "field_env": "Amb.",
     "field_created": "Criado",
     "field_updated": "Atualizado",
     "field_target_date": "Data Alvo",

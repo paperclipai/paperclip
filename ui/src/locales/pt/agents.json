@@ -228,7 +228,7 @@
     "new_secret": "Novo",
     "seal": "Selar",
     "paperclip_vars_note": "Variáveis PAPERCLIP_* são injetadas automaticamente em tempo de execução.",
-    "value_placeholder": "value"
+    "value_placeholder": "valor"
   },
   "config_form": {
     "unsaved_changes": "Alterações não salvas",
@@ -387,8 +387,8 @@
     "stdout_label": "stdout",
     "collapse_stdout": "Recolher stdout",
     "expand_stdout": "Expandir stdout",
-    "inspect_input": "Inspect {{name}} input",
-    "no_input": "No {{name}} input",
+    "inspect_input": "Inspecionar entrada {{name}}",
+    "no_input": "Sem entrada {{name}}",
     "key_payload": "{{key}} payload",
     "paths_summary": "{{count}} path, starting with {{path}}",
     "paths_summary_plural": "{{count}} paths, starting with {{path}}",

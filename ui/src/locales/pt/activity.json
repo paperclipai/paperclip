@@ -156,7 +156,7 @@
     "lease_label": "Arrendamento",
     "failure_label": "Falha"
   },
-  "system": "System",
-  "board": "Board",
-  "unknown": "Unknown"
+  "system": "Sistema",
+  "board": "Conselho",
+  "unknown": "Desconhecido"
 }

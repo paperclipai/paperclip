@@ -1184,7 +1184,7 @@
     "last_checked": "Última verificação {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions...",
+    "loading_revisions": "Carregando revisões...",
     "diff_title": "Comparação",
     "rev_label": "rev. {{number}}",
     "actor_board": "conselho",
