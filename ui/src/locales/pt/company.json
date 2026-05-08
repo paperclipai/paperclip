@@ -152,6 +152,7 @@
     "no_company": "Selecione uma empresa para gerenciar convites.",
     "error_no_permission": "Você não tem permissão para gerenciar convites da empresa.",
     "error_load_failed": "Falha ao carregar convites.",
+    "loading": "Carregando convites…",
     "unknown_inviter": "Convidante desconhecido",
     "toast_clipboard_unavailable": "Área de transferência indisponível",
     "toast_clipboard_unavailable_body": "Copie a URL do convite manualmente do campo abaixo.",
@@ -207,6 +208,8 @@
       },
       "review": "Revisar solicitação",
       "revoke": "Revogar",
+      "inactive": "Inativo",
+      "loading_more": "Carregando mais…",
       "empty": "Nenhum convite foi criado para esta empresa ainda.",
       "view_more": "Ver mais"
     }

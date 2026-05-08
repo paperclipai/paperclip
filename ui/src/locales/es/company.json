@@ -152,6 +152,7 @@
     "no_company": "Seleccione una empresa para gestionar invitaciones.",
     "error_no_permission": "No tiene permiso para gestionar invitaciones de la empresa.",
     "error_load_failed": "Error al cargar invitaciones.",
+    "loading": "Cargando invitaciones…",
     "unknown_inviter": "Invitador desconocido",
     "toast_clipboard_unavailable": "Portapapeles no disponible",
     "toast_clipboard_unavailable_body": "Copie la URL de invitación manualmente desde el campo a continuación.",
@@ -207,6 +208,8 @@
       },
       "review": "Revisar solicitud",
       "revoke": "Revocar",
+      "inactive": "Inactivo",
+      "loading_more": "Cargando más…",
       "empty": "Aún no se han creado invitaciones para esta empresa.",
       "view_more": "Ver más"
     }

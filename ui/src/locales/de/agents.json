@@ -167,7 +167,13 @@
     "failed_update_permissions": "Berechtigungen konnten nicht aktualisiert werden",
     "live_now": "Gerade live",
     "more_active_runs": "{{count}} weiterer Lauf",
-    "more_active_runs_plural": "{{count}} weitere Läufe"
+    "more_active_runs_plural": "{{count}} weitere Läufe",
+    "run_source": {
+      "timer": "Timer",
+      "assignment": "Zuweisung",
+      "on_demand": "Auf Anfrage",
+      "automation": "Automatisierung"
+    }
   },
   "action_buttons": {
     "pause": "Pausieren"
@@ -461,7 +467,8 @@
     "failed_clear_sessions": "Sitzungen konnten nicht geleert werden",
     "failed_load_run_log": "Ausführungsprotokoll konnte nicht geladen werden",
     "instructions_placeholder": "# Agenten-Anweisungen",
-    "skill_view_link": "Anzeigen"
+    "skill_view_link": "Anzeigen",
+    "approve_agent": "Agenten genehmigen"
   },
   "run_errors": {
     "exited_with_code": "Claude wurde mit Code {{code}} beendet",

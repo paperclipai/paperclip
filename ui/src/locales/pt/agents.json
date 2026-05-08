@@ -167,7 +167,13 @@
     "failed_update_permissions": "Falha ao atualizar permissões",
     "live_now": "Ao vivo agora",
     "more_active_runs": "{{count}} execução a mais",
-    "more_active_runs_plural": "{{count}} execuções a mais"
+    "more_active_runs_plural": "{{count}} execuções a mais",
+    "run_source": {
+      "timer": "Temporizador",
+      "assignment": "Atribuição",
+      "on_demand": "Sob demanda",
+      "automation": "Automação"
+    }
   },
   "action_buttons": {
     "pause": "Pausar"
@@ -262,7 +268,14 @@
       "thinking_effort": "Esforço de raciocínio",
       "heartbeat_on_interval": "Heartbeat em intervalo",
       "wake_on_demand": "Acordar sob demanda",
-      "advanced_run_policy": "Política de Execução Avançada"
+      "advanced_run_policy": "Política de Execução Avançada",
+      "default_environment": "Ambiente padrão",
+      "default_environment_hint": "Destino de execução padrão no nível do agente. As configurações do projeto e da tarefa podem substituí-lo.",
+      "default_environment_company_local": "Padrão da empresa (local)",
+      "continue_after_max_turn": "Continuar após parar por limite de passos",
+      "continuation_attempts": "Tentativas de continuação",
+      "continuation_delay_sec": "Atraso de continuação (seg)",
+      "unit_sec": "seg"
     },
     "actions": {
       "save": "Salvar",
@@ -272,7 +285,10 @@
       "detect_model": "Detectar modelo",
       "detecting": "Detectando...",
       "re_detect_from_config": "Re-detectar da config",
-      "detect_from_config": "Detectar da config"
+      "detect_from_config": "Detectar da config",
+      "test": "Testar",
+      "refresh_models": "Atualizar modelos",
+      "refreshing": "Atualizando..."
     },
     "status": {
       "passed": "Aprovado",
@@ -285,7 +301,8 @@
       "failed_load_models": "Falha ao carregar modelos do adaptador.",
       "model_badge_current": "atual",
       "model_badge_detected": "detectado",
-      "model_badge_config": "config"
+      "model_badge_config": "config",
+      "live_opencode_local_only": "A detecção ao vivo de modelos OpenCode funciona apenas para ambientes locais. Uma lista curada e entrada manual são usadas para {{name}}."
     },
     "permissions": {
       "enabled_ceo": "Habilitado automaticamente para agentes CEO.",
@@ -305,6 +322,35 @@
     "bootstrap_prompt_warning": "O prompt de bootstrap é legado e será removido em uma versão futura. Considere mover este conteúdo para o template de prompt do agente ou arquivo de instruções.",
     "adapter_type": {
       "coming_soon": "Em breve"
+    },
+    "section_execution": "Execução",
+    "experimental_badge": "Experimental",
+    "primary_model": "Modelo principal",
+    "options": {
+      "auto": "Auto",
+      "minimal": "Mínimo",
+      "low": "Baixo",
+      "medium": "Médio",
+      "high": "Alto",
+      "xhigh": "Muito alto",
+      "plan": "Plano",
+      "ask": "Perguntar",
+      "max": "Máximo"
+    },
+    "errors": {
+      "select_company_secrets": "Selecione uma empresa para criar segredos",
+      "select_company_images": "Selecione uma empresa para fazer upload de imagens",
+      "select_company_detect_model": "Selecione uma empresa para detectar o modelo",
+      "select_company_test_environment": "Selecione uma empresa para testar o ambiente do adaptador",
+      "failed_refresh_models": "Falha ao atualizar modelos do adaptador."
+    },
+    "cheap_model": {
+      "label": "Modelo econômico",
+      "description": "Usado quando uma execução solicita um perfil econômico (p. ex., resumos de rotinas). O modelo principal não muda.",
+      "adapter_default_placeholder": "Padrão do adaptador · {{model}}",
+      "no_default_placeholder": "Sem padrão do adaptador — escolha um modelo mais barato",
+      "fallback_note": "Nenhum modelo econômico foi selecionado explicitamente — o runtime usa <code>{{model}}</code>.",
+      "no_default_warning": "Nenhum modelo econômico selecionado e o adaptador não tem valor padrão. As execuções do canal econômico continuarão com o modelo principal com nota de fallback."
     }
   },
   "transcript_view": {
@@ -421,7 +467,8 @@
     "failed_clear_sessions": "Falha ao limpar sessões",
     "failed_load_run_log": "Falha ao carregar log de execução",
     "instructions_placeholder": "# Instruções do agente",
-    "skill_view_link": "Ver"
+    "skill_view_link": "Ver",
+    "approve_agent": "Aprovar agente"
   },
   "run_errors": {
     "exited_with_code": "Claude saiu com código {{code}}",

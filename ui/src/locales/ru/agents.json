@@ -167,7 +167,13 @@
     "failed_update_permissions": "Не удалось обновить разрешения",
     "live_now": "В эфире",
     "more_active_runs": "{{count}} запуск ещё",
-    "more_active_runs_plural": "{{count}} запусков ещё"
+    "more_active_runs_plural": "{{count}} запусков ещё",
+    "run_source": {
+      "timer": "Таймер",
+      "assignment": "Задание",
+      "on_demand": "По запросу",
+      "automation": "Автоматизация"
+    }
   },
   "action_buttons": {
     "pause": "Пауза"
@@ -461,7 +467,8 @@
     "failed_clear_sessions": "Не удалось очистить сессии",
     "failed_load_run_log": "Не удалось загрузить лог запуска",
     "instructions_placeholder": "# Инструкции агента",
-    "skill_view_link": "Открыть"
+    "skill_view_link": "Открыть",
+    "approve_agent": "Утвердить агента"
   },
   "run_errors": {
     "exited_with_code": "Claude завершился с кодом {{code}}",

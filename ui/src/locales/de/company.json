@@ -178,6 +178,7 @@
     "no_company": "Wählen Sie ein Unternehmen, um Einladungen zu verwalten.",
     "error_no_permission": "Sie haben keine Berechtigung, Unternehmenseinladungen zu verwalten.",
     "error_load_failed": "Einladungen konnten nicht geladen werden.",
+    "loading": "Einladungen werden geladen…",
     "unknown_inviter": "Unbekannter Einlader",
     "toast_clipboard_unavailable": "Zwischenablage nicht verfügbar",
     "toast_clipboard_unavailable_body": "Kopieren Sie die Einladungs-URL manuell aus dem Feld unten.",
@@ -233,6 +234,8 @@
       },
       "review": "Anfrage prüfen",
       "revoke": "Widerrufen",
+      "inactive": "Inaktiv",
+      "loading_more": "Mehr laden…",
       "empty": "Für dieses Unternehmen wurden noch keine Einladungen erstellt.",
       "view_more": "Mehr anzeigen"
     }

@@ -167,7 +167,13 @@
     "failed_update_permissions": "Failed to update permissions",
     "live_now": "Live now",
     "more_active_runs": "{{count}} more run",
-    "more_active_runs_plural": "{{count}} more runs"
+    "more_active_runs_plural": "{{count}} more runs",
+    "run_source": {
+      "timer": "Timer",
+      "assignment": "Assignment",
+      "on_demand": "On-demand",
+      "automation": "Automation"
+    }
   },
   "action_buttons": {
     "pause": "Pause"
@@ -461,7 +467,8 @@
     "failed_clear_sessions": "Failed to clear sessions",
     "failed_load_run_log": "Failed to load run log",
     "instructions_placeholder": "# Agent instructions",
-    "skill_view_link": "View"
+    "skill_view_link": "View",
+    "approve_agent": "Approve agent"
   },
   "run_errors": {
     "exited_with_code": "Claude exited with code {{code}}",

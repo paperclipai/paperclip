@@ -167,7 +167,13 @@
     "failed_update_permissions": "Не вдалося оновити дозволи",
     "live_now": "Зараз у прямому ефірі",
     "more_active_runs": "{{count}} запуск ще",
-    "more_active_runs_plural": "{{count}} запусків ще"
+    "more_active_runs_plural": "{{count}} запусків ще",
+    "run_source": {
+      "timer": "Таймер",
+      "assignment": "Завдання",
+      "on_demand": "На запит",
+      "automation": "Автоматизація"
+    }
   },
   "action_buttons": {
     "pause": "Призупинити"
@@ -262,7 +268,14 @@
       "thinking_effort": "Глибина мислення",
       "heartbeat_on_interval": "Моніторинг за розкладом",
       "wake_on_demand": "Запуск на вимогу",
-      "advanced_run_policy": "Розширена політика запусків"
+      "advanced_run_policy": "Розширена політика запусків",
+      "default_environment": "Середовище за замовчуванням",
+      "default_environment_hint": "Ціль виконання за замовчуванням на рівні агента. Налаштування проєкту та задачі можуть це змінити.",
+      "default_environment_company_local": "За замовчуванням для компанії (локально)",
+      "continue_after_max_turn": "Продовжити після зупинки за лімітом кроків",
+      "continuation_attempts": "Спроби продовження",
+      "continuation_delay_sec": "Затримка продовження (сек)",
+      "unit_sec": "сек"
     },
     "actions": {
       "save": "Зберегти",
@@ -272,7 +285,10 @@
       "detect_model": "Визначити модель",
       "detecting": "Визначення...",
       "re_detect_from_config": "Перевизначити з конфігурації",
-      "detect_from_config": "Визначити з конфігурації"
+      "detect_from_config": "Визначити з конфігурації",
+      "test": "Тест",
+      "refresh_models": "Оновити моделі",
+      "refreshing": "Оновлення..."
     },
     "status": {
       "passed": "Пройдено",
@@ -285,7 +301,8 @@
       "failed_load_models": "Не вдалося завантажити моделі адаптера.",
       "model_badge_current": "поточна",
       "model_badge_detected": "визначена",
-      "model_badge_config": "конфіг"
+      "model_badge_config": "конфіг",
+      "live_opencode_local_only": "Живе визначення моделей OpenCode працює лише для локальних середовищ. Використовується курований список та ручне введення для {{name}}."
     },
     "permissions": {
       "enabled_ceo": "Автоматично увімкнено для CEO-агентів.",
@@ -305,6 +322,35 @@
     "bootstrap_prompt_warning": "Bootstrap-промпт застарів і буде видалений у майбутній версії. Розгляньте перенесення вмісту в шаблон промпту або файл інструкцій агента.",
     "adapter_type": {
       "coming_soon": "Незабаром"
+    },
+    "section_execution": "Виконання",
+    "experimental_badge": "Експериментальний",
+    "primary_model": "Основна модель",
+    "options": {
+      "auto": "Авто",
+      "minimal": "Мінімальний",
+      "low": "Низький",
+      "medium": "Середній",
+      "high": "Високий",
+      "xhigh": "Дуже високий",
+      "plan": "План",
+      "ask": "Запитати",
+      "max": "Максимум"
+    },
+    "errors": {
+      "select_company_secrets": "Оберіть компанію для створення секретів",
+      "select_company_images": "Оберіть компанію для завантаження зображень",
+      "select_company_detect_model": "Оберіть компанію для визначення моделі",
+      "select_company_test_environment": "Оберіть компанію для тестування середовища адаптера",
+      "failed_refresh_models": "Не вдалося оновити моделі адаптера."
+    },
+    "cheap_model": {
+      "label": "Бюджетна модель",
+      "description": "Використовується, коли запуск запитує бюджетний профіль (напр. зведення процедур). Основна модель не змінюється.",
+      "adapter_default_placeholder": "За замовчуванням для адаптера · {{model}}",
+      "no_default_placeholder": "Немає значення адаптера за замовчуванням — оберіть дешевшу модель",
+      "fallback_note": "Бюджетну модель не вибрано явно — runtime використовує <code>{{model}}</code>.",
+      "no_default_warning": "Бюджетну модель не вибрано, і адаптер не має значення за замовчуванням. Запуски бюджетного каналу продовжуватимуться на основній моделі з позначкою про fallback."
     }
   },
   "transcript_view": {
@@ -421,7 +467,8 @@
     "failed_clear_sessions": "Не вдалося очистити сесії",
     "failed_load_run_log": "Не вдалося завантажити лог запуску",
     "instructions_placeholder": "# Інструкції агента",
-    "skill_view_link": "Переглянути"
+    "skill_view_link": "Переглянути",
+    "approve_agent": "Схвалити агента"
   },
   "run_errors": {
     "exited_with_code": "Claude завершив роботу з кодом {{code}}",

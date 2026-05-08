@@ -167,7 +167,13 @@
     "failed_update_permissions": "Error al actualizar los permisos",
     "live_now": "En vivo ahora",
     "more_active_runs": "{{count}} ejecución más",
-    "more_active_runs_plural": "{{count}} ejecuciones más"
+    "more_active_runs_plural": "{{count}} ejecuciones más",
+    "run_source": {
+      "timer": "Temporizador",
+      "assignment": "Asignación",
+      "on_demand": "A petición",
+      "automation": "Automatización"
+    }
   },
   "action_buttons": {
     "pause": "Pausar"
@@ -262,7 +268,14 @@
       "thinking_effort": "Esfuerzo de pensamiento",
       "heartbeat_on_interval": "Heartbeat en intervalo",
       "wake_on_demand": "Despertar a demanda",
-      "advanced_run_policy": "Política de ejecución avanzada"
+      "advanced_run_policy": "Política de ejecución avanzada",
+      "default_environment": "Entorno predeterminado",
+      "default_environment_hint": "Objetivo de ejecución predeterminado a nivel de agente. La configuración del proyecto y la tarea pueden anularlo.",
+      "default_environment_company_local": "Predeterminado de empresa (local)",
+      "continue_after_max_turn": "Continuar tras parar por límite de pasos",
+      "continuation_attempts": "Intentos de continuación",
+      "continuation_delay_sec": "Retardo de continuación (seg)",
+      "unit_sec": "seg"
     },
     "actions": {
       "save": "Guardar",
@@ -272,7 +285,10 @@
       "detect_model": "Detectar modelo",
       "detecting": "Detectando...",
       "re_detect_from_config": "Volver a detectar desde configuración",
-      "detect_from_config": "Detectar desde configuración"
+      "detect_from_config": "Detectar desde configuración",
+      "test": "Probar",
+      "refresh_models": "Actualizar modelos",
+      "refreshing": "Actualizando..."
     },
     "status": {
       "passed": "Aprobado",
@@ -285,7 +301,8 @@
       "failed_load_models": "Error al cargar los modelos del adaptador.",
       "model_badge_current": "actual",
       "model_badge_detected": "detectado",
-      "model_badge_config": "configuración"
+      "model_badge_config": "configuración",
+      "live_opencode_local_only": "La detección en vivo de modelos OpenCode solo funciona para entornos locales. Se usa una lista curada y entrada manual para {{name}}."
     },
     "permissions": {
       "enabled_ceo": "Habilitado automáticamente para agentes CEO.",
@@ -305,6 +322,35 @@
     "bootstrap_prompt_warning": "El prompt de bootstrap es heredado y se eliminará en una versión futura. Considere mover este contenido a la plantilla de prompt o al archivo de instrucciones del agente.",
     "adapter_type": {
       "coming_soon": "Próximamente"
+    },
+    "section_execution": "Ejecución",
+    "experimental_badge": "Experimental",
+    "primary_model": "Modelo principal",
+    "options": {
+      "auto": "Auto",
+      "minimal": "Mínimo",
+      "low": "Bajo",
+      "medium": "Medio",
+      "high": "Alto",
+      "xhigh": "Muy alto",
+      "plan": "Plan",
+      "ask": "Preguntar",
+      "max": "Máximo"
+    },
+    "errors": {
+      "select_company_secrets": "Selecciona una empresa para crear secretos",
+      "select_company_images": "Selecciona una empresa para subir imágenes",
+      "select_company_detect_model": "Selecciona una empresa para detectar el modelo",
+      "select_company_test_environment": "Selecciona una empresa para probar el entorno del adaptador",
+      "failed_refresh_models": "No se pudieron actualizar los modelos del adaptador."
+    },
+    "cheap_model": {
+      "label": "Modelo económico",
+      "description": "Se usa cuando una ejecución solicita un perfil económico (p. ej., resúmenes de rutinas). El modelo principal no cambia.",
+      "adapter_default_placeholder": "Predeterminado del adaptador · {{model}}",
+      "no_default_placeholder": "Sin predeterminado del adaptador — elige un modelo más barato",
+      "fallback_note": "No se ha seleccionado explícitamente un modelo económico — el runtime usa <code>{{model}}</code>.",
+      "no_default_warning": "No hay modelo económico seleccionado y el adaptador no tiene valor predeterminado. Las ejecuciones del canal económico continuarán con el modelo principal con nota de fallback."
     }
   },
   "transcript_view": {
@@ -421,7 +467,8 @@
     "failed_clear_sessions": "Error al limpiar las sesiones",
     "failed_load_run_log": "Error al cargar el registro de ejecución",
     "instructions_placeholder": "# Instrucciones del agente",
-    "skill_view_link": "Ver"
+    "skill_view_link": "Ver",
+    "approve_agent": "Aprobar agente"
   },
   "run_errors": {
     "exited_with_code": "Claude salió con el código {{code}}",

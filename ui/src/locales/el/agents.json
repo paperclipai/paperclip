@@ -167,7 +167,13 @@
     "failed_update_permissions": "Αποτυχία ενημέρωσης αδειών",
     "live_now": "Ζωντανά τώρα",
     "more_active_runs": "{{count}} ακόμη εκτέλεση",
-    "more_active_runs_plural": "{{count}} ακόμη εκτελέσεις"
+    "more_active_runs_plural": "{{count}} ακόμη εκτελέσεις",
+    "run_source": {
+      "timer": "Χρονοδιακόπτης",
+      "assignment": "Ανάθεση",
+      "on_demand": "Κατόπιν αιτήματος",
+      "automation": "Αυτοματισμός"
+    }
   },
   "action_buttons": {
     "pause": "Παύση"
@@ -262,7 +268,14 @@
       "thinking_effort": "Προσπάθεια σκέψης",
       "heartbeat_on_interval": "Καρδιακός παλμός σε διάστημα",
       "wake_on_demand": "Ξύπνημα κατ' απαίτηση",
-      "advanced_run_policy": "Προηγμένη πολιτική εκτέλεσης"
+      "advanced_run_policy": "Προηγμένη πολιτική εκτέλεσης",
+      "default_environment": "Προεπιλεγμένο περιβάλλον",
+      "default_environment_hint": "Προεπιλεγμένος στόχος εκτέλεσης σε επίπεδο πράκτορα. Οι ρυθμίσεις έργου και εργασίας μπορούν να το παρακάμψουν.",
+      "default_environment_company_local": "Προεπιλογή εταιρίας (τοπικό)",
+      "continue_after_max_turn": "Συνέχεια μετά τη διακοπή ορίου βημάτων",
+      "continuation_attempts": "Προσπάθειες συνέχισης",
+      "continuation_delay_sec": "Καθυστέρηση συνέχισης (δευτ.)",
+      "unit_sec": "δευτ."
     },
     "actions": {
       "save": "Αποθήκευση",
@@ -272,7 +285,10 @@
       "detect_model": "Ανίχνευση μοντέλου",
       "detecting": "Ανίχνευση...",
       "re_detect_from_config": "Ανά-ανίχνευση από διαμόρφωση",
-      "detect_from_config": "Ανίχνευση από διαμόρφωση"
+      "detect_from_config": "Ανίχνευση από διαμόρφωση",
+      "test": "Δοκιμή",
+      "refresh_models": "Ανανέωση μοντέλων",
+      "refreshing": "Ανανέωση..."
     },
     "status": {
       "passed": "Περάστηκε",
@@ -285,7 +301,8 @@
       "failed_load_models": "Αποτυχία φόρτωσης μοντέλων προσαρμογέα.",
       "model_badge_current": "τρέχον",
       "model_badge_detected": "ανιχνευμένο",
-      "model_badge_config": "διαμόρφωση"
+      "model_badge_config": "διαμόρφωση",
+      "live_opencode_local_only": "Η ζωντανή ανίχνευση μοντέλων OpenCode λειτουργεί μόνο για τοπικά περιβάλλοντα. Χρησιμοποιείται επιμελημένη λίστα και χειροκίνητη εισαγωγή για το {{name}}."
     },
     "permissions": {
       "enabled_ceo": "Ενεργοποιήθηκε αυτόματα για πράκτορες Διευθύνοντος Συμβούλου.",
@@ -305,6 +322,35 @@
     "bootstrap_prompt_warning": "Η πρόσκληση ξεκίνησης είναι παρωχημένη και θα αφαιρεθεί σε μια μελλοντική έκδοση. Σκεφθείτε να μετακινήσετε αυτό το περιεχόμενο στο πρότυπο προτροπής του πράκτορα ή στο αρχείο οδηγιών.",
     "adapter_type": {
       "coming_soon": "Έρχεται σύντομα"
+    },
+    "section_execution": "Εκτέλεση",
+    "experimental_badge": "Πειραματικό",
+    "primary_model": "Κύριο μοντέλο",
+    "options": {
+      "auto": "Αυτόματο",
+      "minimal": "Ελάχιστο",
+      "low": "Χαμηλό",
+      "medium": "Μεσαίο",
+      "high": "Υψηλό",
+      "xhigh": "Πολύ υψηλό",
+      "plan": "Σχέδιο",
+      "ask": "Ρώτηση",
+      "max": "Μέγιστο"
+    },
+    "errors": {
+      "select_company_secrets": "Επιλέξτε εταιρία για δημιουργία μυστικών",
+      "select_company_images": "Επιλέξτε εταιρία για μεταφόρτωση εικόνων",
+      "select_company_detect_model": "Επιλέξτε εταιρία για ανίχνευση μοντέλου",
+      "select_company_test_environment": "Επιλέξτε εταιρία για δοκιμή περιβάλλοντος προσαρμογέα",
+      "failed_refresh_models": "Αποτυχία ανανέωσης μοντέλων προσαρμογέα."
+    },
+    "cheap_model": {
+      "label": "Οικονομικό μοντέλο",
+      "description": "Χρησιμοποιείται όταν μια εκτέλεση ζητά οικονομικό προφίλ (π.χ. συνοπτικές ρουτίνες). Το κύριο μοντέλο δεν αλλάζει.",
+      "adapter_default_placeholder": "Προεπιλογή προσαρμογέα · {{model}}",
+      "no_default_placeholder": "Δεν υπάρχει προεπιλογή προσαρμογέα — επιλέξτε φθηνότερο μοντέλο",
+      "fallback_note": "Δεν έχει επιλεγεί ρητά οικονομικό μοντέλο — το runtime χρησιμοποιεί <code>{{model}}</code>.",
+      "no_default_warning": "Δεν έχει επιλεγεί οικονομικό μοντέλο και ο προσαρμογέας δεν έχει προεπιλογή. Οι εκτελέσεις οικονομικού καναλιού θα συνεχίσουν με το κύριο μοντέλο με σημείωση fallback."
     }
   },
   "transcript_view": {
@@ -421,7 +467,8 @@
     "failed_clear_sessions": "Αποτυχία καθαρισμού συνεδριών",
     "failed_load_run_log": "Αποτυχία φόρτωσης καταγραφής εκτέλεσης",
     "instructions_placeholder": "# Οδηγίες πράκτορα",
-    "skill_view_link": "Προβολή"
+    "skill_view_link": "Προβολή",
+    "approve_agent": "Έγκριση πράκτορα"
   },
   "run_errors": {
     "exited_with_code": "Το Claude βγήκε με κωδικό {{code}}",

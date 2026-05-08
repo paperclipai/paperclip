@@ -152,6 +152,7 @@
     "no_company": "请选择公司以管理邀请。",
     "error_no_permission": "您没有管理公司邀请的权限。",
     "error_load_failed": "加载邀请失败。",
+    "loading": "加载邀请中…",
     "unknown_inviter": "未知邀请者",
     "toast_clipboard_unavailable": "剪贴板不可用",
     "toast_clipboard_unavailable_body": "请从下方字段手动复制邀请 URL。",
@@ -207,6 +208,8 @@
       },
       "review": "查看请求",
       "revoke": "撤销",
+      "inactive": "非活跃",
+      "loading_more": "加载更多…",
       "empty": "此公司尚未创建任何邀请。",
       "view_more": "查看更多"
     }

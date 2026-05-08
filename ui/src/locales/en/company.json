@@ -178,6 +178,7 @@
     "no_company": "Select a company to manage invites.",
     "error_no_permission": "You do not have permission to manage company invites.",
     "error_load_failed": "Failed to load invites.",
+    "loading": "Loading invites…",
     "unknown_inviter": "Unknown inviter",
     "toast_clipboard_unavailable": "Clipboard unavailable",
     "toast_clipboard_unavailable_body": "Copy the invite URL manually from the field below.",
@@ -233,6 +234,8 @@
       },
       "review": "Review request",
       "revoke": "Revoke",
+      "inactive": "Inactive",
+      "loading_more": "Loading more…",
       "empty": "No invites have been created for this company yet.",
       "view_more": "View more"
     }
