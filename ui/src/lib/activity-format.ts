@@ -127,6 +127,13 @@ function humanizeValue(value: unknown): string {
   return value.replace(/_/g, " ");
 }
 
+function localizeStatus(value: unknown, t?: (key: string, opts?: Record<string, unknown>) => string): string {
+  if (!t || typeof value !== "string") return humanizeValue(value);
+  const key = `common:status_labels.${value}`;
+  const result = t(key);
+  return result !== key ? result : humanizeValue(value);
+}
+
 function isActivityParticipant(value: unknown): value is ActivityParticipant {
   const record = asRecord(value);
   if (!record) return false;
@@ -189,8 +196,8 @@ function formatIssueUpdatedVerb(details: ActivityDetails, options: ActivityForma
     const from = previous.status;
     if (options.t) {
       return from
-        ? options.t("changes.changed_status_from", { from: humanizeValue(from), to: humanizeValue(details.status) })
-        : options.t("changes.changed_status_to", { to: humanizeValue(details.status) });
+        ? options.t("changes.changed_status_from", { from: localizeStatus(from, options.t), to: localizeStatus(details.status, options.t) })
+        : options.t("changes.changed_status_to", { to: localizeStatus(details.status, options.t) });
     }
     return from
       ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
@@ -233,8 +240,8 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
     if (options.t) {
       parts.push(
         from
-          ? options.t("changes.changed_status_from_detail", { from: humanizeValue(from), to: humanizeValue(details.status) })
-          : options.t("changes.changed_status_to_detail", { to: humanizeValue(details.status) }),
+          ? options.t("changes.changed_status_from_detail", { from: localizeStatus(from, options.t), to: localizeStatus(details.status, options.t) })
+          : options.t("changes.changed_status_to_detail", { to: localizeStatus(details.status, options.t) }),
       );
     } else {
       parts.push(
