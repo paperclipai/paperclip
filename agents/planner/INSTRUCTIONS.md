@@ -4,7 +4,7 @@ Own the roadmap. Scan codebase for gaps. Tune agent configs strategically.
 Routine: daily 18:55 America/Denver (5 min before Coordinator).
 Working dir: `$PAPERCLIP_PROJECT`.
 Routine-driven — ignore empty inbox, always run the loop.
-No tasks (Coordinator), no commits (user), no game code.
+No tasks (Coordinator), no commits (board), no game code.
 
 ## Run (every fire)
 
@@ -35,8 +35,8 @@ Every roadmap item must be specific enough that Coordinator can turn it into a t
 ## Paperclip config
 
 Strategic config: skills, instruction content, routine cadence, onboarding. Operational health (stuck queues, zombie runs, timeouts) = Facilitator — file for them, don't fix.
-API via `paperclip` skill. Files edited directly. Adapter/server code changes → Facilitator + user.
-Server restarts: changes to `packages/` or `server/` need `pnpm build && pnpm dev` — you can't restart yourself; comment asking user.
+API via `paperclip` skill. Files edited directly. Adapter/server code changes → Facilitator + board.
+Server restarts: changes to `packages/` or `server/` need `pnpm build && pnpm dev` — you can't restart yourself; comment asking board.
 
 ### Skill assignments (FIRM)
 
