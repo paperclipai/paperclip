@@ -172,7 +172,15 @@
     "toast_failed_build": "Falha ao criar pacote de exportação.",
     "toast_downloaded_title": "Exportação baixada",
     "toast_downloaded_body_one": "{{count}} arquivo exportado como {{path}}.zip",
-    "toast_downloaded_body_other": "{{count}} arquivos exportados como {{path}}.zip"
+    "toast_downloaded_body_other": "{{count}} arquivos exportados como {{path}}.zip",
+    "export_count_few": "Exportar {{count}} arquivos",
+    "export_count_many": "Exportar {{count}} arquivos",
+    "selection_count_few": "{{selected}} / {{total}} arquivos selecionados",
+    "selection_count_many": "{{selected}} / {{total}} arquivos selecionados",
+    "toast_downloaded_body_few": "{{count}} arquivos exportados como {{path}}.zip",
+    "toast_downloaded_body_many": "{{count}} arquivos exportados como {{path}}.zip",
+    "warnings_count_few": "{{count}} avisos",
+    "warnings_count_many": "{{count}} avisos"
   },
   "invites": {
     "no_company": "Selecione uma empresa para gerenciar convites.",
@@ -458,7 +466,13 @@
     "more_issues_one": "{{count}} tarefa a mais",
     "more_issues_other": "{{count}} tarefas a mais",
     "member_fallback_name": "este membro",
-    "agent_option_label": "{{name}} ({{role}})"
+    "agent_option_label": "{{name}} ({{role}})",
+    "more_issues_few": "{{count}} tarefas a mais",
+    "more_issues_many": "{{count}} tarefas a mais",
+    "open_assigned_issues_few": "{{count}} tarefas atribuídas abertas",
+    "open_assigned_issues_many": "{{count}} tarefas atribuídas abertas",
+    "remove_member_issues_cleaned_up_few": "{{count}} tarefas atribuídas limpas.",
+    "remove_member_issues_cleaned_up_many": "{{count}} tarefas atribuídas limpas."
   },
   "companies": {
     "breadcrumb": "Empresas",

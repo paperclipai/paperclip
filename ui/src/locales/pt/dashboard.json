@@ -25,7 +25,9 @@
     "budget_overrides_pending_one": "{{count}} substituição de orçamento aguardando revisão do conselho",
     "budget_overrides_pending_other": "{{count}} substituições de orçamento aguardando revisão do conselho",
     "unlimited_budget": "Orçamento ilimitado",
-    "awaiting_board": "Aguardando revisão do conselho"
+    "awaiting_board": "Aguardando revisão do conselho",
+    "budget_overrides_pending_few": "{{count}} substituições de orçamento aguardando revisão do conselho",
+    "budget_overrides_pending_many": "{{count}} substituições de orçamento aguardando revisão do conselho"
   },
   "charts": {
     "run_activity": "Atividade de Execução",

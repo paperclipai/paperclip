@@ -63,7 +63,9 @@
     "routine_count_other": "{{count}} rotinas",
     "routine_created": "Rotina criada",
     "routine_created_body": "Adicione o primeiro trigger para transformá-la em um fluxo de trabalho ativo.",
-    "failed_load": "Falha ao carregar rotinas"
+    "failed_load": "Falha ao carregar rotinas",
+    "routine_count_few": "{{count}} rotinas",
+    "routine_count_many": "{{count}} rotinas"
   },
   "trigger_kind": {
     "schedule": "Agendamento",

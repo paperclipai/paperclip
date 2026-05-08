@@ -76,7 +76,13 @@
       "weeks_one": "{{count}} semana",
       "weeks_other": "{{count}} semanas",
       "months_one": "{{count}} mês",
-      "months_other": "{{count}} meses"
+      "months_other": "{{count}} meses",
+      "days_few": "{{count}} dias",
+      "days_many": "{{count}} dias",
+      "months_few": "{{count}} meses",
+      "months_many": "{{count}} meses",
+      "weeks_few": "{{count}} semanas",
+      "weeks_many": "{{count}} semanas"
     },
     "feedback": {
       "title": "Compartilhamento de feedback de IA",
@@ -214,7 +220,13 @@
     "confirm_cancel": "Cancelar",
     "confirm_enable_only": "Apenas habilitar",
     "confirm_enable_create": "Habilitar e criar {{count}}",
-    "confirm_enable": "Habilitar"
+    "confirm_enable": "Habilitar",
+    "confirm_skipped_few": "{{count}} resultados atuais estão fora da retrospectiva configurada e não serão tocados.",
+    "confirm_skipped_many": "{{count}} resultados atuais estão fora da retrospectiva configurada e não serão tocados.",
+    "confirm_task_count_few": "{{count}} tarefas de recuperação correspondem às últimas {{hours}} horas.",
+    "confirm_task_count_many": "{{count}} tarefas de recuperação correspondem às últimas {{hours}} horas.",
+    "current_window_few": "Janela atual: últimas {{count}} horas.",
+    "current_window_many": "Janela atual: últimas {{count}} horas."
   },
   "access": {
     "breadcrumb_settings": "Configurações da Instância",

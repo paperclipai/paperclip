@@ -217,7 +217,15 @@
       "submit_failed": "Falha ao enviar",
       "submit_failed_body": "Não foi possível enviar as respostas",
       "question_cancelled": "Pergunta cancelada",
-      "cancel_question_failed_body": "Não foi possível cancelar a pergunta"
+      "cancel_question_failed_body": "Não foi possível cancelar a pergunta",
+      "accept_drafts_skipped_few": "Aceites {{count}} rascunhos e ignorado {{skipped}}",
+      "accept_drafts_skipped_many": "Aceites {{count}} rascunhos e ignorado {{skipped}}",
+      "pause_work_body_few": "Trabalho pausado. {{count}} execuções canceladas.",
+      "pause_work_body_many": "Trabalho pausado. {{count}} execuções canceladas.",
+      "tree_control_pause_leaf_body_few": "Trabalho pausado. {{count}} execuções canceladas.",
+      "tree_control_pause_leaf_body_many": "Trabalho pausado. {{count}} execuções canceladas.",
+      "tree_control_pause_subtree_body_few": "Subárvore pausada. {{count}} execuções canceladas.",
+      "tree_control_pause_subtree_body_many": "Subárvore pausada. {{count}} execuções canceladas."
     },
     "paused": "Em pausa",
     "paused_by_board": "Em pausa pelo conselho.",
@@ -431,14 +439,24 @@
       "minutes_one": "{{count}} minuto",
       "minutes_other": "{{count}} minutos",
       "seconds_one": "{{count}} segundo",
-      "seconds_other": "{{count}} segundos"
+      "seconds_other": "{{count}} segundos",
+      "hours_few": "{{count}} horas",
+      "hours_many": "{{count}} horas",
+      "minutes_few": "{{count}} minutos",
+      "minutes_many": "{{count}} minutos",
+      "seconds_few": "{{count}} segundos",
+      "seconds_many": "{{count}} segundos"
     },
     "more_composer_options": "Mais opções do compositor",
     "planning_label": "Planejamento",
     "planning_mode_active_title": "Modo de planejamento ativo para este envio. Clique para alternar para o Padrão.",
     "run_word": "execução",
     "switch_to_planning": "Alternar para planejamento",
-    "switch_to_standard": "Alternar para padrão"
+    "switch_to_standard": "Alternar para padrão",
+    "called_tools_few": "chamou {{count}} ferramentas",
+    "called_tools_many": "chamou {{count}} ferramentas",
+    "ran_commands_few": "executou {{count}} comandos",
+    "ran_commands_many": "executou {{count}} comandos"
   },
   "columns": {
     "button": "Colunas",
@@ -588,7 +606,9 @@
     "work_mode_planning": "Planejamento",
     "assignee_backlog_note": "Atribuir implica intenção executável — deixe o status como Backlog apenas para estacionar isso deliberadamente. O responsável não será acordado até que o status mude para A fazer ou Em progresso.",
     "no_assignee": "Sem responsável",
-    "search_assignees": "Pesquisar responsáveis..."
+    "search_assignees": "Pesquisar responsáveis...",
+    "upload_warnings_body_few": "{{count}} arquivos preparados não puderam ser adicionados.",
+    "upload_warnings_body_many": "{{count}} arquivos preparados não puderam ser adicionados."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Tentar fechar novamente",
@@ -820,7 +840,9 @@
     "model_profile_requested": "Solicitado: {{model}}",
     "model_profile_applied": "Aplicado: {{model}}",
     "model_profile_source": "Fonte: {{source}}",
-    "model_profile_fallback": "Alternativa: {{reason}}"
+    "model_profile_fallback": "Alternativa: {{reason}}",
+    "older_items_few": "{{count}} itens mais antigos não exibidos",
+    "older_items_many": "{{count}} itens mais antigos não exibidos"
   },
   "blocked_notice": {
     "needs_next_step": "Esta tarefa ainda precisa de um próximo passo.",
@@ -928,7 +950,21 @@
     "question_count_other": "{{count}} perguntas",
     "include_task": "Include {{title}}",
     "confirm": "Confirm",
-    "decline": "Decline"
+    "decline": "Decline",
+    "all_selected_few": "Todas {{count}} tarefas rascunho selecionadas",
+    "all_selected_many": "Todas {{count}} tarefas rascunho selecionadas",
+    "created_all_few": "Criadas todas as {{count}} tarefas rascunho.",
+    "created_all_many": "Criadas todas as {{count}} tarefas rascunho.",
+    "created_and_skipped_few": "Criadas {{count}} tarefas rascunho e ignoradas {{skipped}} durante a revisão.",
+    "created_and_skipped_many": "Criadas {{count}} tarefas rascunho e ignoradas {{skipped}} durante a revisão.",
+    "draft_count_few": "{{count}} tarefas rascunho",
+    "draft_count_many": "{{count}} tarefas rascunho",
+    "followon_hidden_few": "{{count}} tarefas de acompanhamento ocultas na visualização",
+    "followon_hidden_many": "{{count}} tarefas de acompanhamento ocultas na visualização",
+    "partial_selected_few": "{{selected}} de {{count}} tarefas rascunho selecionadas",
+    "partial_selected_many": "{{selected}} de {{count}} tarefas rascunho selecionadas",
+    "question_count_few": "{{count}} perguntas",
+    "question_count_many": "{{count}} perguntas"
   },
   "related_work": {
     "references": "Referências",
@@ -1190,5 +1226,7 @@
   "rendering_n_of_m": "Exibindo {{shown}} de {{total}} tarefas",
   "scroll_to_load_more": "Role para carregar mais tarefas",
   "status_label": "Status",
-  "what_should_the_agent_recheck": "O que o agente deve verificar novamente?"
+  "what_should_the_agent_recheck": "O que o agente deve verificar novamente?",
+  "sub_tasks_few": "{{count}} sub-tarefas",
+  "sub_tasks_many": "{{count}} sub-tarefas"
 }
