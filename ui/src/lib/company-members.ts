@@ -40,6 +40,7 @@ function activeUniqueMembers(members: CompanyUserRecord[] | null | undefined) {
 export function buildCompanyUserLabelMap(members: CompanyUserRecord[] | null | undefined): Map<string, string> {
   const labels = new Map<string, string>();
   for (const member of members ?? []) {
+    if (member.principalId === "local-board") continue;
     labels.set(member.principalId, baseMemberLabel(member));
   }
   return labels;
@@ -50,6 +51,7 @@ export function buildCompanyUserProfileMap(
 ): Map<string, CompanyUserProfile> {
   const profiles = new Map<string, CompanyUserProfile>();
   for (const member of members ?? []) {
+    if (member.principalId === "local-board") continue;
     profiles.set(member.principalId, {
       label: baseMemberLabel(member),
       image: member.user?.image ?? null,
