@@ -20,12 +20,6 @@ import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { isViewerActiveExecutionParticipant } from "../lib/issue-execution-state";
-
-// Statuses to disable on the StatusIcon dropdown when the viewer is the active
-// executionPolicy participant — the gate handles those transitions because they
-// require a comment in the same PATCH body. Other statuses (e.g. cancelled)
-// stay reachable.
-const STATUS_GATE_DISABLED = ["done", "in_progress"] as const;
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -177,6 +171,21 @@ const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "h
 const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
+
+// Statuses to disable on the StatusIcon dropdown when the viewer is the active
+// executionPolicy participant — the gate handles those transitions because they
+// require a comment in the same PATCH body. Other statuses (e.g. cancelled)
+// stay reachable.
+const STATUS_GATE_DISABLED = ["done", "in_progress"] as const;
+
+// Marker on updateIssue variables. The execution-policy gate sets it so the
+// shared mutation skips its onError toast — the gate already shows the inline
+// server message and preserves the comment for retry, so the toast would be
+// a redundant second signal for the same failure.
+const SUPPRESS_ERROR_TOAST_KEY = "__suppressErrorToast" as const;
+type UpdateIssueInput = Record<string, unknown> & {
+  [SUPPRESS_ERROR_TOAST_KEY]?: true;
+};
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
   pause: "Pause subtree",
   resume: "Resume subtree",
@@ -1666,8 +1675,12 @@ export function IssueDetail() {
   });
 
   const updateIssue = useMutation({
-    mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
-    onMutate: async (data) => {
+    mutationFn: (input: UpdateIssueInput) => {
+      const { [SUPPRESS_ERROR_TOAST_KEY]: _suppress, ...data } = input;
+      return issuesApi.update(issueId!, data);
+    },
+    onMutate: async (input: UpdateIssueInput) => {
+      const { [SUPPRESS_ERROR_TOAST_KEY]: _suppress, ...data } = input;
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
       if (selectedCompanyId) {
         await queryClient.cancelQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
@@ -1696,13 +1709,18 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
       invalidateIssueCollections();
     },
-    onError: (err, _variables, context) => {
+    onError: (err, variables, context) => {
       for (const [queryKey, previousIssue] of context?.previousDetailQueries ?? []) {
         queryClient.setQueryData(queryKey, previousIssue);
       }
       if (context?.selectedCompanyId) {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
+      // The execution-policy gate already shows the server message inline and
+      // preserves the typed comment for retry, so suppressing this toast for
+      // gate-driven submissions avoids a redundant second error signal for the
+      // same failure.
+      if (variables?.[SUPPRESS_ERROR_TOAST_KEY]) return;
       pushToast({
         title: "Issue update failed",
         body: err instanceof Error ? err.message : "Unable to save issue changes",
@@ -1842,9 +1860,10 @@ export function IssueDetail() {
   const handleExecutionDecisionSubmit = useCallback(
     async (input: { status: "done" | "in_progress"; comment: string }) => {
       // Single PATCH so the server's commentRequired guard at
-      // server/src/services/issue-execution-policy.ts is satisfied. The mutation's
-      // existing onError handler shows a toast; the gate also surfaces err.message inline.
-      await updateIssue.mutateAsync(input);
+      // server/src/services/issue-execution-policy.ts is satisfied. The marker
+      // suppresses the shared mutation's onError toast — the gate's inline
+      // error is the single user-visible error signal for this path.
+      await updateIssue.mutateAsync({ ...input, [SUPPRESS_ERROR_TOAST_KEY]: true });
     },
     [updateIssue.mutateAsync],
   );
