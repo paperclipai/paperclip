@@ -68,8 +68,27 @@
   "cards": {
     "inference_ledger": "Καθολικό inference",
     "inference_ledger_desc": "Δαπάνη inference με εμβέλεια αίτησης για την επιλεγμένη περίοδο.",
+    "inference_ledger_points": {
+      "point1": "tokens + χρεωθέντα δολάρια",
+      "point2": "πάροχος, χρεώστης, μοντέλο",
+      "point3": "λογιστική συνδρομής και υπερβάσεων"
+    },
     "finance_ledger": "Οικονομικό καθολικό",
     "finance_ledger_desc": "Χρεώσεις επιπέδου λογαριασμού που δεν αντιστοιχούν σε μεμονωμένη αίτηση inference.",
+    "finance_ledger_points": {
+      "point1": "αναπληρώσεις, επιστροφές, προμήθειες",
+      "point2": "χρέωση Bedrock για δέσμευση ή εκπαίδευση",
+      "point3": "λήξη και προσαρμογή πιστώσεων"
+    },
+    "live_quotas": "Ζωντανές ποσοστώσεις",
+    "live_quotas_desc": "Παράθυρα παρόχου ή χρεώστη που μπορούν να σταματήσουν την κυκλοφορία σε πραγματικό χρόνο.",
+    "live_quotas_points": {
+      "point1": "παράθυρα ποσόστωσης παρόχου",
+      "point2": "πιστωτικά συστήματα χρεώστη",
+      "point3": "τα σφάλματα εμφανίζονται απευθείας"
+    },
+    "accounting_model_title": "Μοντέλο λογιστικής",
+    "accounting_model_desc": "Το Paperclip διαχωρίζει πλέον τη χρήση inference σε επίπεδο αίτησης από τα οικονομικά γεγονότα σε επίπεδο λογαριασμού. Αυτό εξασφαλίζει δίκαιες αναφορές παρόχου όταν ο χρεώστης είναι OpenRouter, Cloudflare, Bedrock ή άλλος διαμεσολαβητής.",
     "by_agent": "Ανά πράκτορα",
     "by_agent_desc": "Τι κατανάλωσε κάθε πράκτορας στην επιλεγμένη περίοδο.",
     "by_project": "Ανά έργο",
@@ -91,6 +110,14 @@
     "project_budgets_title": "Προϋπολογισμοί έργων"
   },
   "incident_card": {
+    "hard_stop": "σκληρή διακοπή",
+    "resolved": "Επιλύθηκε",
+    "dismissed": "Απορρίφθηκε",
+    "escalated": "Κλιμακώθηκε",
+    "pending_approval": "Εκκρεμεί έγκριση",
+    "open": "Ανοιχτό",
+    "spending_reached": "Η δαπάνη έφτασε {{observed}} με όριο {{limit}}.",
+    "new_budget_usd": "Νέος προϋπολογισμός (USD)",
     "project_paused": "Η εκτέλεση έργου είναι σε παύση. Νέες εργασίες σε αυτό το έργο δεν θα ξεκινήσουν μέχρι να επιλύσετε το περιστατικό προϋπολογισμού.",
     "scope_paused": "Αυτή η εμβέλεια είναι σε παύση. Νέα heartbeats δεν θα ξεκινήσουν μέχρι να επιλύσετε το περιστατικό προϋπολογισμού.",
     "applying": "Εφαρμογή...",
@@ -122,7 +149,10 @@
     "budget_usd": "Προϋπολογισμός (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Σε παύση λόγω προϋπολογισμού"
+    "paused_by_budget": "Σε παύση λόγω προϋπολογισμού",
+    "healthy": "Ο προϋπολογισμός είναι εντάξει",
+    "warning": "Προειδοποίηση προϋπολογισμού",
+    "critical": "Σε παύση λόγω προϋπολογισμού"
   },
   "empty": {
     "select_company": "Επιλέξτε μια εταιρία για προβολή κόστους.",
@@ -159,7 +189,11 @@
     "api_runs_only": "~{{apiRuns}} εκτελέσεις api",
     "sub_runs_only": "~{{subRuns}} εκτελέσεις sub",
     "percent_used": "{{percent}}% χρησιμοποιήθηκε",
-    "resets": "επαναφορά {{date}}"
+    "resets": "επαναφορά {{date}}",
+    "runs_label": "εκτελέσεις",
+    "total_label": "σύνολο",
+    "of_provider_tokens": "{{percent}}% tokens παρόχου",
+    "of_provider_cost": "{{percent}}% δαπάνης παρόχου"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} μετρημένη εκτέλεση",
@@ -168,7 +202,11 @@
     "subscription_runs_other": "{{count}} εκτελέσεις συνδρομής",
     "this_week": "αυτή την εβδομάδα",
     "billing_types": "Τύποι χρέωσης",
-    "upstream_providers": "Ανοδικοί πάροχοι"
+    "upstream_providers": "Ανοδικοί πάροχοι",
+    "provider_count_one": "{{count}} πάροχος",
+    "provider_count_other": "{{count}} πάροχοι",
+    "model_count_one": "{{count}} μοντέλο",
+    "model_count_other": "{{count}} μοντέλα"
   },
   "finance_kind": {
     "title": "Μείγμα οικονομικών γεγονότων",
