@@ -16,6 +16,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { bookforgeIncidentRoutes } from "./routes/bookforge-incidents.js";
+import { bookforgeApprovedTargetRoutes } from "./routes/bookforge-approved-targets.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
@@ -198,6 +199,7 @@ export async function createApp(
     pluginWorkerManager: workerManager,
   }));
   api.use(bookforgeIncidentRoutes(db));
+  api.use(bookforgeApprovedTargetRoutes(db));
   api.use(issueTreeControlRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));

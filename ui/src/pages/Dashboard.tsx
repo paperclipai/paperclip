@@ -59,6 +59,12 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: bookforgeApprovedTarget } = useQuery({
+    queryKey: queryKeys.bookforgeApprovedTarget(selectedCompanyId!),
+    queryFn: () => dashboardApi.bookforgeApprovedTarget(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const { data: activity } = useQuery({
     queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }],
     queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
@@ -215,6 +221,43 @@ export function Dashboard() {
       )}
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
+      {bookforgeApprovedTarget && (
+        <div
+          className={cn(
+            "rounded-xl border px-4 py-3",
+            bookforgeApprovedTarget.status === "active"
+              ? "border-emerald-500/20 bg-emerald-500/10"
+              : bookforgeApprovedTarget.status === "mismatch_blocked" || bookforgeApprovedTarget.status === "active_with_stale_config_warning"
+                ? "border-red-500/25 bg-red-500/10"
+                : "border-amber-500/25 bg-amber-500/10",
+          )}
+        >
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">
+                Bookforge approved target: {bookforgeApprovedTarget.activeTarget?.yaml ?? bookforgeApprovedTarget.candidateTarget?.yaml ?? "none"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Status: {bookforgeApprovedTarget.status.replaceAll("_", " ")} · authority: {bookforgeApprovedTarget.authority}
+                {bookforgeApprovedTarget.candidateTarget?.projectName ? ` · project: ${bookforgeApprovedTarget.candidateTarget.projectName}` : ""}
+                {bookforgeApprovedTarget.candidateTarget?.itemId ? ` · item: ${bookforgeApprovedTarget.candidateTarget.itemId}` : ""}
+              </p>
+              {bookforgeApprovedTarget.stopConditions.length > 0 && (
+                <p className="text-xs text-red-200">
+                  Stop condition: {bookforgeApprovedTarget.stopConditions.join(", ")}. Do not start paid Bookforge production until this is clarified.
+                </p>
+              )}
+              {bookforgeApprovedTarget.warnings.length > 0 && (
+                <p className="text-xs text-amber-100/80">
+                  Warning: {bookforgeApprovedTarget.warnings.join(", ")}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {data && (
         <>
