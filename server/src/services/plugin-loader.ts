@@ -1826,7 +1826,11 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass the DB UUID (`pluginId`) as the third arg so dispatch can correlate
+        // each tool to the worker manager (keyed by DB UUID, not by plugin key).
+        // Without this, `workerManager.isRunning(tool.pluginDbId)` checks the plugin
+        // KEY against a UUID-keyed map and fails closed — see PLA-323.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(
