@@ -29,7 +29,10 @@ EnvironmentFile=/etc/paperclip/telegram-bot.env
 # Bot has no native deps, no tsx loader needed.
 ExecStart=/usr/bin/node dist/index.js
 
-Restart=on-failure
+# Restart=always (not on-failure): graceful external SIGTERM (exit 0) still
+# triggers recovery — same hardening applied to tg_paperclip.service after the
+# 2026-05-08 13:40 UTC outage. For long-term stop, use `systemctl disable --now`.
+Restart=always
 RestartSec=10
 
 # Dedup state lives in NOTIFIER_DEDUP_FILE (default /var/lib/paperclip-tg-bot/seen.json).
