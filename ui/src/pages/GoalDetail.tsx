@@ -181,10 +181,10 @@ export function GoalDetail() {
       <Tabs defaultValue="children">
         <TabsList>
           <TabsTrigger value="children">
-            Sub-Goals ({childGoals.length})
+            {t("detail.tab_sub_goals", { count: childGoals.length })}
           </TabsTrigger>
           <TabsTrigger value="projects">
-            Projects ({linkedProjects.length})
+            {t("detail.tab_projects", { count: linkedProjects.length })}
           </TabsTrigger>
         </TabsList>
 
@@ -196,11 +196,11 @@ export function GoalDetail() {
               onClick={() => openNewGoal({ parentId: goalId })}
             >
               <Plus className="h-3.5 w-3.5 mr-1.5" />
-              Sub Goal
+              {t("detail.add_sub_goal")}
             </Button>
           </div>
           {childGoals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No sub-goals.</p>
+            <p className="text-sm text-muted-foreground">{t("detail.no_sub_goals")}</p>
           ) : (
             <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}
