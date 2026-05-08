@@ -21,6 +21,7 @@ export type CreateIssueInput = {
   title: string;
   description: string;
   assigneeAgentId: string;
+  status?: string;
 };
 
 export type IssueComment = {
@@ -120,6 +121,7 @@ export class PaperclipClient {
         title: input.title,
         description: input.description,
         assigneeAgentId: input.assigneeAgentId,
+        ...(input.status ? { status: input.status } : {}),
       },
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
     });

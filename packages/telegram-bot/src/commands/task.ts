@@ -22,6 +22,9 @@ export function makeTaskCommand(opts: { ceoAgentId: string }): CommandHandler {
           title: deriveTitle(text),
           description: text,
           assigneeAgentId: opts.ceoAgentId,
+          // Land in `todo` (active queue), not `backlog` (default), so the
+          // CEO agent picks it up on next heartbeat without manual triage.
+          status: "todo",
         },
         { onBehalfOfChatId: ctx.chatId },
       );
