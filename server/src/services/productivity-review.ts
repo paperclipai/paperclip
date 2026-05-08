@@ -57,6 +57,7 @@ type ProductivityReviewEvidence = {
   sourceIssue: IssueRow;
   sourceAgent: AgentRow;
   noCommentStreak: number;
+  zeroTokenSkipped: number;
   totalRunCount: number;
   terminalRunCount: number;
   activeRunCount: number;
@@ -132,6 +133,19 @@ function readPositiveInteger(value: number, fallback: number) {
 function coerceDate(value: Date | string | null | undefined) {
   if (!value) return null;
   return value instanceof Date ? value : new Date(value);
+}
+
+function isZeroTokenRun(run: HeartbeatRunRow): boolean {
+  if (!run.usageJson) return true;
+  try {
+    const usage = run.usageJson as Record<string, unknown>;
+    const inputTokens = (usage.inputTokens ?? usage.input_tokens) as number | undefined;
+    const outputTokens = (usage.outputTokens ?? usage.output_tokens) as number | undefined;
+    if (inputTokens === 0 && outputTokens === 0) return true;
+  } catch {
+    // If usageJson can't be read, treat as a real run
+  }
+  return false;
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
@@ -420,8 +434,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
     );
     let noCommentStreak = 0;
+    let zeroTokenSkipped = 0;
     for (const run of terminalRuns) {
       if (commentRunIds.has(run.id)) break;
+      if (isZeroTokenRun(run)) {
+        zeroTokenSkipped += 1;
+        continue;
+      }
       noCommentStreak += 1;
     }
 
@@ -478,6 +497,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
+
+    // If all terminal runs had 0 tokens, this is a persistent infrastructure/bootstrap
+    // failure loop, not a genuine productivity concern. Skip all triggers.
+    if (terminalRuns.length > 0 && zeroTokenSkipped === terminalRuns.length) {
+      return null;
+    }
+
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 
@@ -489,6 +515,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         `${runCountLastHour} runs/${assigneeRunCommentCountLastHour} assignee-run comments in 1h; ${runCountLastSixHours} runs/${assigneeRunCommentCountLastSixHours} assignee-run comments in 6h`,
       );
     }
+    if (zeroTokenSkipped > 0) {
+      triggerReasons.push(
+        `${zeroTokenSkipped} terminal runs had 0 tokens (bootstrap/infrastructure failure, skipped from streak)`,
+      );
+    }
 
     return {
       trigger,
@@ -496,6 +527,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       sourceIssue,
       sourceAgent,
       noCommentStreak,
+      zeroTokenSkipped,
       totalRunCount: latestRuns.length,
       terminalRunCount: terminalRuns.length,
       activeRunCount,
