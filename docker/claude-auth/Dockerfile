@@ -1,17 +1,23 @@
 # syntax=docker/dockerfile:1.20
 FROM node:lts-alpine
-# util-linux provides `script` which creates a PTY for claude login
-RUN apk add --no-cache util-linux && \
+
+# Build tools needed to compile node-pty native module
+RUN apk add --no-cache python3 make g++ linux-headers && \
     npm install -g @anthropic-ai/claude-code@latest
+
+# Install server dependencies (node-pty compiles a native addon here)
+WORKDIR /app
+RUN npm init -y && npm install node-pty ws
 
 # Pre-seed settings so Claude skips the first-run theme wizard
 RUN mkdir -p /root/.claude && \
     printf '{"theme":"dark","hasCompletedOnboarding":true,"onboardingVersion":5}\n' \
     > /root/.claude/settings.json
 
-COPY <<'SERVER' /server.js
+COPY <<'SERVER' /app/server.js
 const http = require('http');
-const { spawn } = require('child_process');
+const { WebSocketServer } = require('ws');
+const pty = require('node-pty');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -19,121 +25,140 @@ const os = require('os');
 const PORT = process.env.PORT || 3000;
 const CRED_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 
-let lines = [];
-let proc = null;
+let ptyProc = null;
+let outputBuf = '';
+const clients = new Set();
 
-function strip(s) {
-  return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '');
+function broadcast(msg) {
+  const s = JSON.stringify(msg);
+  for (const c of clients) if (c.readyState === 1) c.send(s);
+}
+
+function checkCreds() {
+  if (fs.existsSync(CRED_PATH)) {
+    try { broadcast({ type: 'creds', data: fs.readFileSync(CRED_PATH, 'utf8') }); } catch(_) {}
+  }
 }
 
 function startLogin() {
-  lines.push('[Starting claude login...]\n');
-  // script -q -e -c CMD /dev/null runs CMD inside a PTY so claude login
-  // doesn't detect a non-interactive terminal and bail immediately.
-  // stdin of `script` is forwarded into the PTY (used to send the auth code).
-  proc = spawn('script', ['-q', '-e', '-c', 'claude login', '/dev/null'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', FORCE_COLOR: '0' }
+  outputBuf = '';
+  if (ptyProc) { try { ptyProc.kill(); } catch(_) {} ptyProc = null; }
+
+  ptyProc = pty.spawn('claude', ['login'], {
+    name: 'xterm-color',
+    cols: 120,
+    rows: 40,
+    cwd: '/',
+    env: { ...process.env }
   });
 
-  proc.stdout.on('data', d => { lines.push(strip(d.toString())); });
-  proc.stderr.on('data', d => { lines.push(strip(d.toString())); });
+  ptyProc.onData(data => {
+    outputBuf += data;
+    broadcast({ type: 'data', data });
+    checkCreds();
+  });
 
-  proc.on('exit', code => {
-    lines.push(`\n[claude login exited: ${code}]\n`);
-    if (fs.existsSync(CRED_PATH)) {
-      const c = fs.readFileSync(CRED_PATH, 'utf8');
-      lines.push('\n__CREDS__\n' + c + '\n__CREDS__\n');
-    }
+  ptyProc.onExit(({ exitCode }) => {
+    const msg = `\r\n[claude login exited: ${exitCode}]\r\n`;
+    outputBuf += msg;
+    broadcast({ type: 'data', data: msg });
+    checkCreds();
   });
 }
 
 startLogin();
 
-function submitCode(code) {
-  if (proc && proc.stdin.writable) {
-    proc.stdin.write(code.trim() + '\n');
-    lines.push(`[Submitted code]\n`);
-  }
-}
-
-const HTML = (body) => `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Claude Auth</title>
-<meta http-equiv="refresh" content="4">
-<style>
-  body{font-family:monospace;background:#111;color:#ddd;padding:24px;max-width:900px;margin:0 auto}
-  h2{color:#a78bfa}
-  pre{background:#000;padding:16px;white-space:pre-wrap;word-break:break-all;max-height:420px;overflow-y:auto;border:1px solid #333;font-size:13px}
-  input{width:100%;box-sizing:border-box;padding:10px;font-size:15px;background:#000;color:#ddd;border:1px solid #555;margin-bottom:12px}
-  button{padding:10px 24px;background:#7c3aed;color:#fff;border:none;cursor:pointer;font-size:15px;border-radius:4px}
-  .ok{border:2px solid #22c55e;padding:16px;margin-top:16px;background:#0a1f0a}
-  .ok pre{max-height:none}
-  .step{color:#fbbf24;margin:4px 0}
-</style></head><body>${body}</body></html>`;
-
-http.createServer((req, res) => {
-  if (req.method === 'POST' && req.url === '/code') {
-    let b = '';
-    req.on('data', d => b += d);
-    req.on('end', () => {
-      submitCode(new URLSearchParams(b).get('code') || '');
-      res.writeHead(302, { Location: '/' });
-      res.end();
+const HTML = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Claude Auth</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    *{box-sizing:border-box}
+    body{background:#1a1a1a;margin:0;padding:20px;font-family:monospace;color:#ddd}
+    h2{color:#a78bfa;margin:0 0 8px}
+    .note{color:#fbbf24;font-size:13px;margin:0 0 12px}
+    #tc{border:1px solid #444;border-radius:4px;overflow:hidden}
+    .creds{background:#0a1f0a;border:2px solid #22c55e;padding:16px;margin-top:16px;border-radius:4px}
+    .creds pre{color:#22c55e;white-space:pre-wrap;word-break:break-all;margin:8px 0;font-size:13px;background:#000;padding:12px;border-radius:3px}
+    .btn{margin-top:10px;padding:8px 18px;background:#7c3aed;color:#fff;border:none;cursor:pointer;border-radius:4px;font-size:14px}
+    .btn:hover{background:#6d28d9}
+    .btn+.btn{margin-left:8px}
+  </style>
+</head>
+<body>
+  <h2>Claude Auth</h2>
+  <p class="note">Full interactive terminal &mdash; use arrow keys to pick a theme, Enter to confirm, then follow the login prompts.</p>
+  <div id="tc"></div>
+  <div id="creds" style="display:none" class="creds">
+    <strong style="color:#22c55e">&#10003; Login complete!</strong><br>
+    Copy the JSON below and set it as <code>CLAUDE_CREDENTIALS_JSON</code> in Railway (Paperclip service env vars), then redeploy Paperclip.
+    <pre id="cj"></pre>
+    <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cj').textContent).then(()=>this.textContent='Copied!')">Copy to clipboard</button>
+    <button class="btn" onclick="location.href='/restart'">Restart login</button>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script>
+    const term = new Terminal({
+      theme:{background:'#000000',foreground:'#dddddd'},
+      cursorBlink:true, fontSize:14, fontFamily:'monospace', scrollback:2000
     });
-    return;
-  }
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('tc'));
+    fit.fit();
 
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = () => ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'data' || m.type === 'history') term.write(m.data);
+      else if (m.type === 'creds') {
+        document.getElementById('cj').textContent = m.data;
+        document.getElementById('creds').style.display = 'block';
+      }
+    };
+    ws.onclose = () => term.writeln('\r\n\r\n[Disconnected — reload to reconnect]');
+
+    term.onData(d => { if (ws.readyState === 1) ws.send(JSON.stringify({type:'data',data:d})); });
+    term.onResize(({cols,rows}) => { if (ws.readyState === 1) ws.send(JSON.stringify({type:'resize',cols,rows})); });
+    window.addEventListener('resize', () => fit.fit());
+  </script>
+</body>
+</html>`;
+
+const server = http.createServer((req, res) => {
   if (req.url === '/restart') {
-    lines = [];
-    if (proc) try { proc.kill(); } catch(_) {}
     startLogin();
     res.writeHead(302, { Location: '/' });
     res.end();
     return;
   }
-
   res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end(HTML);
+});
 
-  const all = lines.join('');
-  const credsMatch = all.match(/__CREDS__\n([\s\S]+?)\n__CREDS__/);
-  const output = all.replace(/__CREDS__[\s\S]*__CREDS__/g, '').trim();
-  const urlMatch = output.match(/https:\/\/claude\.ai\/[^\s\n"]+/);
-  const url = urlMatch ? urlMatch[0] : null;
+const wss = new WebSocketServer({ server, path: '/ws' });
+wss.on('connection', ws => {
+  clients.add(ws);
+  if (outputBuf) ws.send(JSON.stringify({ type: 'history', data: outputBuf }));
+  checkCreds();
+  ws.on('message', raw => {
+    try {
+      const m = JSON.parse(raw);
+      if (m.type === 'data' && ptyProc) ptyProc.write(m.data);
+      else if (m.type === 'resize' && ptyProc) ptyProc.resize(m.cols, m.rows);
+    } catch(_) {}
+  });
+  ws.on('close', () => clients.delete(ws));
+});
 
-  if (credsMatch) {
-    res.end(HTML(`
-      <h2>&#10003; Claude Login Complete</h2>
-      <div class="ok">
-        <strong style="color:#22c55e">Copy the JSON below and set it as <code>CLAUDE_CREDENTIALS_JSON</code> in Railway (Paperclip service):</strong>
-        <pre>${credsMatch[1].replace(/</g,'&lt;')}</pre>
-      </div>
-      <p>Then remove <code>CLAUDE_CODE_OAUTH_TOKEN</code> if set, and redeploy the Paperclip service.</p>
-      <p><a href="/restart" style="color:#a78bfa">Restart login</a></p>
-    `));
-    return;
-  }
-
-  res.end(HTML(`
-    <h2>Claude Auth Helper</h2>
-    <p class="step">Auto-refreshes every 4s. Waiting for the login URL...</p>
-
-    ${url ? `
-    <p style="margin:12px 0"><strong>Step 1:</strong>
-      <a href="${url}" target="_blank" style="color:#60a5fa;word-break:break-all">${url}</a>
-    </p>
-    <p class="step">Step 2: Authorize in your browser. If it shows a code, paste it below.</p>
-    <form method="POST" action="/code">
-      <input name="code" placeholder="Paste the code shown by your browser here" autofocus>
-      <button type="submit">Submit Code</button>
-    </form>
-    ` : `<p class="step">Waiting for Claude to print the login URL...</p>`}
-
-    <h3>Claude output:</h3>
-    <pre>${output.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
-    <p><a href="/restart" style="color:#a78bfa">Restart login</a></p>
-  `));
-}).listen(PORT, () => console.log(`Claude auth helper on port ${PORT}`));
+server.listen(PORT, () => console.log('Claude auth terminal on port ' + PORT));
 SERVER
 
 ENV NODE_NO_WARNINGS=1
-CMD ["node", "/server.js"]
+CMD ["node", "/app/server.js"]
