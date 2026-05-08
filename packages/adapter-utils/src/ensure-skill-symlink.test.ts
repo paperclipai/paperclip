@@ -75,7 +75,7 @@ describe("ensurePaperclipSkillSymlink", () => {
     await fs.symlink(sourceA, target);
     
     // Try to ensure it points to sourceB, but with preserve option
-    const result = await ensurePaperclipSkillSymlink(sourceB, target, undefined, {
+    const result = await ensurePaperclipSkillSymlink(sourceB, target, {
       preserveExistingValidMismatchedLinks: true
     });
     

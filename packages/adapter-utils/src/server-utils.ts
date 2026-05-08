@@ -1607,9 +1607,9 @@ export interface SkillSymlinkOptions {
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
+  options: SkillSymlinkOptions = {},
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
     fs.symlink(linkSource, linkTarget),
-  options: SkillSymlinkOptions = {},
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
