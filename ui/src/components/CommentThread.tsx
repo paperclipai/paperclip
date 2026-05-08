@@ -168,8 +168,13 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
-function humanizeValue(value: string | null): string {
-  if (!value) return "None";
+function humanizeValue(value: string | null, t?: (key: string, opts?: Record<string, unknown>) => string): string {
+  if (!value) return t ? t("timeline.none") : "None";
+  if (t) {
+    const key = `common:status_labels.${value}`;
+    const result = t(key);
+    if (result !== key) return result;
+  }
   return value.replace(/_/g, " ");
 }
 
@@ -212,14 +217,6 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
-}
 
 function runTimestamp(run: LinkedRunItem) {
   return run.finishedAt ?? run.startedAt ?? run.createdAt;
@@ -518,11 +515,11 @@ function TimelineEventCard({
               {t("timeline.status_label")}
             </span>
             <span className="text-muted-foreground">
-              {humanizeValue(event.statusChange.from)}
+              {humanizeValue(event.statusChange.from, t)}
             </span>
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {humanizeValue(event.statusChange.to)}
+              {humanizeValue(event.statusChange.to, t)}
             </span>
           </div>
         ) : null}
@@ -545,7 +542,7 @@ function TimelineEventCard({
         {event.workspaceChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Workspace
+              {t("timeline.workspace_label")}
             </span>
             <span className="text-muted-foreground">
               {formatTimelineWorkspaceLabel(event.workspaceChange.from)}
@@ -599,8 +596,9 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const { t } = useTranslation("activity");
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("timeline.no_entries")}</p>;
   }
 
   return (
@@ -649,7 +647,7 @@ const TimelineList = memo(function TimelineList({
                   <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
                     {actorName}
                   </Link>
-                  <span className="text-muted-foreground">run</span>
+                  <span className="text-muted-foreground">{t("timeline.run_label")}</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -657,7 +655,7 @@ const TimelineList = memo(function TimelineList({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span className={cn("font-medium", runStatusClass(run.status))}>
-                    {formatRunStatusLabel(run.status)}
+                    {humanizeValue(run.status, t)}
                   </span>
                   <a
                     href={`#run-${run.runId}`}
@@ -671,22 +669,22 @@ const TimelineList = memo(function TimelineList({
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                   {run.environment ? (
                     <span>
-                      Environment <span className="text-foreground">{run.environment.name}</span>
+                      {t("timeline.environment_label")} <span className="text-foreground">{run.environment.name}</span>
                       <span> · {run.environment.driver}</span>
                     </span>
                   ) : null}
                   {run.environmentLease?.provider ? (
                     <span>
-                      Provider <span className="text-foreground">{run.environmentLease.provider}</span>
+                      {t("timeline.provider_label")} <span className="text-foreground">{run.environmentLease.provider}</span>
                     </span>
                   ) : null}
                   {run.environmentLease ? (
                     <span>
-                      Lease{" "}
+                      {t("timeline.lease_label")}{" "}
                       <span className="font-mono text-foreground">
                         {run.environmentLease.id.slice(0, 8)}
                       </span>
-                      <span> · {run.environmentLease.status}</span>
+                      <span> · {humanizeValue(run.environmentLease.status, t)}</span>
                     </span>
                   ) : null}
                   {run.environmentLease?.workspacePath ? (
@@ -696,7 +694,7 @@ const TimelineList = memo(function TimelineList({
                   ) : null}
                   {run.environmentLease?.failureReason ? (
                     <span className="text-destructive">
-                      Failure: {run.environmentLease.failureReason}
+                      {t("timeline.failure_label")}: {run.environmentLease.failureReason}
                     </span>
                   ) : null}
                 </div>

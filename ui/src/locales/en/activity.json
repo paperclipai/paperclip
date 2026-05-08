@@ -144,9 +144,17 @@
     "unassigned": "Unassigned",
     "status_label": "Status",
     "assignee_label": "Assignee",
+    "workspace_label": "Workspace",
     "updated_task": "updated this task",
     "requested_follow_up": "requested follow-up",
-    "system": "System"
+    "system": "System",
+    "none": "None",
+    "no_entries": "No timeline entries yet.",
+    "run_label": "run",
+    "environment_label": "Environment",
+    "provider_label": "Provider",
+    "lease_label": "Lease",
+    "failure_label": "Failure"
   },
   "system": "System",
   "board": "Board",

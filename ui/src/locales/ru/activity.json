@@ -144,9 +144,17 @@
     "unassigned": "Не назначено",
     "status_label": "Статус",
     "assignee_label": "Исполнитель",
+    "workspace_label": "Рабочее пространство",
     "updated_task": "обновил задачу",
     "requested_follow_up": "запросил продолжение",
-    "system": "Система"
+    "system": "Система",
+    "none": "Нет",
+    "no_entries": "Нет записей в хронике.",
+    "run_label": "запуск",
+    "environment_label": "Среда",
+    "provider_label": "Провайдер",
+    "lease_label": "Аренда",
+    "failure_label": "Сбой"
   },
   "system": "Система",
   "board": "Доска",
