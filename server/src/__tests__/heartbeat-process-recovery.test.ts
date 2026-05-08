@@ -1036,6 +1036,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
   });
 
+  it("ignores done board-owned blockers when reconciling stranded todo work", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+    });
+    const blockerIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Board decision already completed",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+      createdByUserId: "local-board",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.awaitingHumanParked).toBe(0);
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+  });
+
   it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
     const { issueId } = await seedStrandedIssueFixture({
       status: "todo",

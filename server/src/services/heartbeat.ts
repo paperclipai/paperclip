@@ -4583,10 +4583,13 @@ export function heartbeatService(db: Db) {
 
       if (issue.status === "todo") {
         const relations = await issuesSvc.getRelationSummaries(issue.id);
-        const hasHumanOwnedBlocker = relations.blockedBy.some((blocker) =>
-          typeof blocker.assigneeUserId === "string" && blocker.assigneeUserId.length > 0,
+        const hasHumanOwnedOpenBlocker = relations.blockedBy.some((blocker) =>
+          blocker.status !== "done"
+          && blocker.status !== "cancelled"
+          && typeof blocker.assigneeUserId === "string"
+          && blocker.assigneeUserId.length > 0,
         );
-        if (hasHumanOwnedBlocker) {
+        if (hasHumanOwnedOpenBlocker) {
           const updated = await issuesSvc.update(issue.id, {
             status: "awaiting_human",
           });

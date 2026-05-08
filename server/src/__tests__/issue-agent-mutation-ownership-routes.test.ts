@@ -577,6 +577,40 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.body.status).toBe("awaiting_human");
   });
 
+  it("keeps blocked when board-owned blocker is already done", async () => {
+    const boardBlockerId = "abababab-abab-4bab-8bab-abababababab";
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) {
+        return makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId });
+      }
+      if (id === boardBlockerId) {
+        return makeIssue({
+          id: boardBlockerId,
+          status: "done",
+          assigneeAgentId: null,
+          assigneeUserId: "board-user",
+        });
+      }
+      return null;
+    });
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [boardBlockerId] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+    expect(res.body.status).toBe("blocked");
+  });
+
   it("keeps blocked when blockers are agent-owned", async () => {
     const agentBlockerId = "99999999-9999-4999-8999-999999999999";
     mockIssueService.getById.mockImplementation(async (id: string) => {

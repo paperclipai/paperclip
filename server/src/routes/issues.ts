@@ -1921,15 +1921,16 @@ export function issueRoutes(
         : (await svc.getRelationSummaries(existing.id)).blockedBy.map((relation) => relation.id);
       if (blockerIssueIds.length > 0) {
         const blockers = await Promise.all(
-          blockerIssueIds.map((blockerId) => svc.getById(blockerId)),
+          blockerIssueIds.map((blockerId: string) => svc.getById(blockerId)),
         );
-        const hasHumanOwnedBlocker = blockers.some((blocker) => (
+        const hasHumanOwnedOpenBlocker = blockers.some((blocker) => (
           blocker
           && blocker.companyId === existing.companyId
+          && !isClosedIssueStatus(blocker.status)
           && typeof blocker.assigneeUserId === "string"
           && blocker.assigneeUserId.length > 0
         ));
-        if (hasHumanOwnedBlocker) {
+        if (hasHumanOwnedOpenBlocker) {
           updateFields.status = "awaiting_human";
         }
       }
