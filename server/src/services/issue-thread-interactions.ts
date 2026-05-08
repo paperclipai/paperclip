@@ -27,6 +27,7 @@ import {
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  PARKED_ISSUE_STATUSES,
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
@@ -136,6 +137,10 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
     .update(issues)
     .set({ updatedAt: new Date() })
     .where(eq(issues.id, issueId));
+}
+
+function isParkedIssueStatus(status: string): boolean {
+  return (PARKED_ISSUE_STATUSES as readonly string[]).includes(status);
 }
 
 function isTerminalIssueStatus(status: string) {
@@ -524,7 +529,7 @@ export function issueThreadInteractionService(db: Db) {
         current: args.current,
         actor: args.actor,
       })) {
-        const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+        const returnStatus = isParkedIssueStatus(issueContext.status) ? issueContext.status : "todo";
         const returnedIssue = await issueService(db).update(args.issue.id, {
           status: returnStatus,
           assigneeAgentId: args.current.createdByAgentId,
@@ -596,7 +601,31 @@ export function issueThreadInteractionService(db: Db) {
     if (!updated) {
       throw conflict("Interaction has already been resolved");
     }
-    await touchIssue(db, args.issue.id);
+
+    const issueContext = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, args.issue.id))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+      throw notFound("Issue not found");
+    }
+
+    if (issueContext.status === "awaiting_human") {
+      await issueService(db).update(args.issue.id, {
+        status: "todo",
+        actorAgentId: args.actor.agentId ?? null,
+        actorUserId: args.actor.userId ?? null,
+      });
+    } else {
+      await touchIssue(db, args.issue.id);
+    }
+
     return hydrateInteraction(updated);
   }
 
@@ -718,6 +747,32 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+
+      // Auto-park: when an *agent* creates an interaction asking for a human
+      // answer (`ask_user_questions`) or human confirmation
+      // (`request_confirmation`), and the issue is currently `in_progress`,
+      // automatically transition it to `awaiting_human` so AI agents do not
+      // try to keep working on it. The interaction-resolution paths above
+      // wake the assignee back up and re-set status to `todo` when the
+      // parked-for-human state should be cleared.
+      if (
+        actor.agentId
+        && (data.kind === "ask_user_questions" || data.kind === "request_confirmation")
+      ) {
+        const currentIssueRow = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .then((rows) => rows[0] ?? null);
+        if (currentIssueRow && currentIssueRow.status === "in_progress") {
+          await issueService(db).update(issue.id, {
+            status: "awaiting_human",
+            actorAgentId: actor.agentId,
+            actorUserId: actor.userId ?? null,
+          });
+        }
+      }
+
       return hydrateInteraction(created);
     },
 
@@ -1145,7 +1200,30 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
-      await touchIssue(db, issue.id);
+      const issueContext = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issueContext || issueContext.companyId !== issue.companyId) {
+        throw notFound("Issue not found");
+      }
+
+      if (issueContext.status === "awaiting_human") {
+        await issueService(db).update(issue.id, {
+          status: "todo",
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.userId ?? null,
+        });
+      } else {
+        await touchIssue(db, issue.id);
+      }
+
       return hydrateInteraction(updated);
     },
   };

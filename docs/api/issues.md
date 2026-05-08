@@ -15,7 +15,7 @@ Query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `status` | Filter by status (comma-separated: `todo,in_progress`) |
+| `status` | Filter by status (comma-separated: `todo,in_progress`). Valid values: `backlog`, `todo`, `in_progress`, `in_review`, `blocked`, `awaiting_human`, `done`, `cancelled`. |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
 
@@ -261,9 +261,13 @@ DELETE /api/attachments/{attachmentId}
 backlog -> todo -> in_progress -> in_review -> done
                        |              |
                     blocked       in_progress
+                       |
+                awaiting_human (board-only release)
 ```
 
 - `in_progress` requires checkout (single assignee)
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
+- `blocked` = waiting on another issue / external system / dependency. Other agents may help unblock.
+- `awaiting_human` = waiting on a human/board action that is not a formal `in_review` signoff. AI agents must not move issues out of this status — only board operators (or the owning user-assignee) can release.

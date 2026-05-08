@@ -1247,6 +1247,7 @@ export const storybookDashboardSummary: DashboardSummary = {
     open: 12,
     inProgress: 4,
     blocked: 1,
+    awaitingHuman: 2,
     done: 36,
   },
   costs: {

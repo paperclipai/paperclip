@@ -1325,6 +1325,13 @@ function describeSessionResetReason(
   return null;
 }
 
+const HUMAN_ACTION_WAKE_REASONS_FOR_AUTO_CHECKOUT = new Set([
+  "issue_commented",
+  "issue_reopened_via_comment",
+  "interaction_resolved",
+  "approval_approved",
+]);
+
 function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
@@ -1340,6 +1347,7 @@ function shouldAutoCheckoutIssueForWake(input: {
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
     issueStatus !== "blocked" &&
+    issueStatus !== "awaiting_human" &&
     issueStatus !== "in_progress"
   ) {
     return false;
@@ -1349,6 +1357,15 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (!wakeReason) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason.startsWith("execution_")) return false;
+
+  // For human-blocked issues, only re-engage the assignee on wakes that
+  // indicate the human/board has actually acted (e.g. comment, reopen,
+  // interaction resolution, approval). Generic execution-recovery wakes
+  // must not auto-checkout an `awaiting_human` issue, otherwise the AI
+  // would silently start working on something parked for a human.
+  if (issueStatus === "awaiting_human" && !HUMAN_ACTION_WAKE_REASONS_FOR_AUTO_CHECKOUT.has(wakeReason)) {
+    return false;
+  }
 
   return true;
 }
@@ -4529,6 +4546,7 @@ export function heartbeatService(db: Db) {
       dispatchRequeued: 0,
       continuationRequeued: 0,
       orphanBlockersAssigned: 0,
+      awaitingHumanParked: 0,
       escalated: 0,
       skippedRoutineExecutions: 0,
       skipped: 0,
@@ -4561,6 +4579,44 @@ export function heartbeatService(db: Db) {
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
+      }
+
+      if (issue.status === "todo") {
+        const relations = await issuesSvc.getRelationSummaries(issue.id);
+        const hasHumanOwnedOpenBlocker = relations.blockedBy.some((blocker) =>
+          blocker.status !== "done"
+          && blocker.status !== "cancelled"
+          && typeof blocker.assigneeUserId === "string"
+          && blocker.assigneeUserId.length > 0,
+        );
+        if (hasHumanOwnedOpenBlocker) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "awaiting_human",
+          });
+          if (updated) {
+            result.awaitingHumanParked += 1;
+            result.issueIds.push(issue.id);
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: null,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issue.identifier,
+                status: "awaiting_human",
+                previousStatus: "todo",
+                source: "heartbeat.reconcile_human_blocked_todo_issue",
+              },
+            });
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
@@ -5194,7 +5250,7 @@ export function heartbeatService(db: Db) {
       })
     ) {
       try {
-        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked", "awaiting_human"], run.id);
         context[BIZBOX_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;

@@ -24,8 +24,8 @@ If `BIZBOX_APPROVAL_ID` is set:
 
 ## 4. Get Assignments
 
-- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,in_review,blocked`
-- Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
+- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,in_review,blocked,awaiting_human`
+- Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it. Never claim or work on `awaiting_human` -- those issues are parked waiting on a human/board action; only the board can move them out.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `BIZBOX_TASK_ID` is set and assigned to you, prioritize that task.
 
@@ -41,7 +41,8 @@ Status quick guide:
 - `todo`: ready to execute, but not yet checked out.
 - `in_progress`: actively owned work. Agents should reach this by checkout, not by manually flipping status.
 - `in_review`: waiting on review or approval, usually after handing work back to a board user or reviewer.
-- `blocked`: cannot move until something specific changes. Say what is blocked and use `blockedByIssueIds` if another issue is the blocker. For `routine_execution` parent issues, this is a healthy parked wait state and the routine run should stay open until dependency wakeup resumes the work or the issue is cancelled.
+- `blocked`: cannot move until something specific changes that another agent or system can act on. Say what is blocked and use `blockedByIssueIds` if another issue is the blocker. For `routine_execution` parent issues, this is a healthy parked wait state and the routine run should stay open until dependency wakeup resumes the work or the issue is cancelled.
+- `awaiting_human`: parked specifically waiting on a human/board decision, answer, or approval that is not a formal `in_review` signoff. Use this (instead of `blocked`) whenever you create a `request_confirmation` or `ask_user_questions` interaction, or otherwise need the board to act before you can continue. AI agents (including you) must not move an `awaiting_human` issue back to `todo`/`in_progress` -- only the board can release it.
 - `done`: finished.
 - `cancelled`: intentionally dropped.
 

@@ -69,12 +69,14 @@ export function dashboardService(db: Db) {
         open: 0,
         inProgress: 0,
         blocked: 0,
+        awaitingHuman: 0,
         done: 0,
       };
       for (const row of taskRows) {
         const count = Number(row.count);
         if (row.status === "in_progress") taskCounts.inProgress += count;
         if (row.status === "blocked") taskCounts.blocked += count;
+        if (row.status === "awaiting_human") taskCounts.awaitingHuman += count;
         if (row.status === "done") taskCounts.done += count;
         if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
       }

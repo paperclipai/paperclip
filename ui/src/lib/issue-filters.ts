@@ -22,12 +22,12 @@ export const defaultIssueFilterState: IssueFilterState = {
   hideRoutineExecutions: false,
 };
 
-export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
+export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "awaiting_human", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
   { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { label: "Active", statuses: ["todo", "in_progress", "in_review", "awaiting_human", "blocked"] },
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];

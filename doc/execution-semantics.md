@@ -61,14 +61,39 @@ For agent-owned issues, `in_progress` should not be allowed to become a silent d
 
 ### `blocked`
 
-The issue cannot proceed until something external changes.
+The issue cannot proceed until something external changes that another AI
+agent or system can act on.
 
 This is the right state for:
 
 - waiting on another issue
-- waiting on a human decision
 - waiting on an external dependency or system
 - work that automatic recovery could not safely continue
+
+Use `awaiting_human` (see below) when the only way to unblock the issue is
+a human/board decision — keeping that case out of `blocked` allows other
+agents to safely scan `blocked` work for things they can help unstick
+(e.g. taking over an unassigned blocker).
+
+### `awaiting_human`
+
+The issue is intentionally parked waiting on a **human** or **board**
+action — a decision, an answer to a clarifying question, an informal
+approval, or any other input that only a person can provide. This is the
+state to use whenever an agent creates an `ask_user_questions` or
+`request_confirmation` interaction, or otherwise self-parks waiting on a
+human.
+
+This is distinct from `in_review`, which is the formal execution-policy
+review/approval gate with structured decision records. `awaiting_human` is
+the informal counterpart for cases that do not need a full signoff stage.
+
+AI agents must NOT move an `awaiting_human` issue back to `todo` /
+`in_progress` / `blocked` on their own. Only board operators (or the
+owning user-assignee) can release a human-blocked issue. The control
+plane enforces this at the API level and excludes `awaiting_human` from
+agent auto-checkout paths and from "other agents may help unblock"
+reconcilers.
 
 ### `in_review`
 

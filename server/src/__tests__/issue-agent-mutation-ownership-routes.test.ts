@@ -461,4 +461,187 @@ describe("agent issue mutation checkout ownership", () => {
       title: "Claimable update",
     });
   });
+
+  it("forbids agents from moving an awaiting_human issue back to an active status", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "awaiting_human", assigneeAgentId: null }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only board operators can move an issue out of awaiting_human");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows agents to set status to awaiting_human (self-park)", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+    );
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "awaiting_human" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(res.body.status).toBe("awaiting_human");
+  });
+
+  it("normalizes blocked to awaiting_human when blocker is board-owned", async () => {
+    const boardBlockerId = "88888888-8888-4888-8888-888888888888";
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) {
+        return makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId });
+      }
+      if (id === boardBlockerId) {
+        return makeIssue({
+          id: boardBlockerId,
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: "board-user",
+        });
+      }
+      return null;
+    });
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [boardBlockerId] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "awaiting_human" }),
+    );
+    expect(res.body.status).toBe("awaiting_human");
+  });
+
+  it("normalizes blocked to awaiting_human when existing blocker is board-owned", async () => {
+    const boardBlockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) {
+        return makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId });
+      }
+      if (id === boardBlockerId) {
+        return makeIssue({
+          id: boardBlockerId,
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: "board-user",
+        });
+      }
+      return null;
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        {
+          id: boardBlockerId,
+          identifier: "TES-8",
+          title: "Board input: product vision",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: "board-user",
+        },
+      ],
+      blocks: [],
+    });
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "awaiting_human" }),
+    );
+    expect(res.body.status).toBe("awaiting_human");
+  });
+
+  it("keeps blocked when board-owned blocker is already done", async () => {
+    const boardBlockerId = "abababab-abab-4bab-8bab-abababababab";
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) {
+        return makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId });
+      }
+      if (id === boardBlockerId) {
+        return makeIssue({
+          id: boardBlockerId,
+          status: "done",
+          assigneeAgentId: null,
+          assigneeUserId: "board-user",
+        });
+      }
+      return null;
+    });
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [boardBlockerId] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+    expect(res.body.status).toBe("blocked");
+  });
+
+  it("keeps blocked when blockers are agent-owned", async () => {
+    const agentBlockerId = "99999999-9999-4999-8999-999999999999";
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) {
+        return makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId });
+      }
+      if (id === agentBlockerId) {
+        return makeIssue({
+          id: agentBlockerId,
+          status: "todo",
+          assigneeAgentId: ownerAgentId,
+          assigneeUserId: null,
+        });
+      }
+      return null;
+    });
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [agentBlockerId] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+    expect(res.body.status).toBe("blocked");
+  });
 });

@@ -16,6 +16,7 @@ import {
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
+  PARKED_ISSUE_STATUSES,
   createChildIssueSchema,
   createIssueSchema,
   feedbackTargetTypeSchema,
@@ -182,13 +183,17 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+function isParkedIssueStatus(status: string | null | undefined): status is "blocked" | "awaiting_human" {
+  return (PARKED_ISSUE_STATUSES as readonly string[]).includes(status ?? "");
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodoForAgent(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus) && !isParkedIssueStatus(input.issueStatus)) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
   return true;
@@ -604,6 +609,29 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  /**
+   * Agents may park an issue into `awaiting_human` (so they can flag that
+   * they need a human/board response), but they must NOT be able to flip an
+   * `awaiting_human` issue back to an active status — only board operators
+   * (or owning user-assignees) can release a human-blocked issue.
+   */
+  function assertAgentMayTransitionAwaitingHuman(
+    req: Request,
+    res: Response,
+    issue: { status: string },
+    requestedStatus: unknown,
+  ) {
+    if (req.actor.type !== "agent") return true;
+    if (issue.status !== "awaiting_human") return true;
+    if (typeof requestedStatus !== "string") return true;
+    if (requestedStatus === "awaiting_human") return true;
+    res.status(403).json({
+      error: "Only board operators can move an issue out of awaiting_human",
+      details: { currentStatus: issue.status, requestedStatus },
+    });
+    return false;
   }
 
   async function resolveActiveIssueRun(issue: {
@@ -1786,10 +1814,11 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!assertAgentMayTransitionAwaitingHuman(req, res, existing, req.body.status)) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
-    const isBlocked = existing.status === "blocked";
+    const isBlocked = isParkedIssueStatus(existing.status);
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       existing.companyId,
       req.body.assigneeAgentId as string | null | undefined,
@@ -1884,6 +1913,27 @@ export function issueRoutes(
         : previousExecutionPolicy;
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+    }
+
+    if (req.actor.type === "agent" && updateFields.status === "blocked") {
+      const blockerIssueIds = Array.isArray(req.body.blockedByIssueIds)
+        ? req.body.blockedByIssueIds
+        : (await svc.getRelationSummaries(existing.id)).blockedBy.map((relation) => relation.id);
+      if (blockerIssueIds.length > 0) {
+        const blockers = await Promise.all(
+          blockerIssueIds.map((blockerId: string) => svc.getById(blockerId)),
+        );
+        const hasHumanOwnedOpenBlocker = blockers.some((blocker) => (
+          blocker
+          && blocker.companyId === existing.companyId
+          && !isClosedIssueStatus(blocker.status)
+          && typeof blocker.assigneeUserId === "string"
+          && blocker.assigneeUserId.length > 0
+        ));
+        if (hasHumanOwnedOpenBlocker) {
+          updateFields.status = "awaiting_human";
+        }
+      }
     }
 
     const transition = applyIssueExecutionPolicyTransition({
@@ -2248,7 +2298,7 @@ export function issueRoutes(
       issue.status !== "backlog" &&
       req.body.status !== undefined;
     const statusChangedFromBlockedToTodo =
-      existing.status === "blocked" &&
+      isParkedIssueStatus(existing.status) &&
       issue.status === "todo" &&
       (req.body.status !== undefined || reopened);
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
@@ -3130,15 +3180,17 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
-    const isBlocked = issue.status === "blocked";
+    const isBlocked = isParkedIssueStatus(issue.status);
+    const implicitMoveToTodoRequested = shouldImplicitlyMoveCommentedIssueToTodoForAgent({
+      issueStatus: issue.status,
+      assigneeAgentId: issue.assigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
+    const suppressImplicitMoveForAgentAwaitingHuman = actor.actorType === "agent" && issue.status === "awaiting_human";
     const effectiveMoveToTodoRequested =
-      reopenRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodoForAgent({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+      reopenRequested || (suppressImplicitMoveForAgentAwaitingHuman ? false : implicitMoveToTodoRequested);
+    const requestedStatusForCommentReopen = effectiveMoveToTodoRequested ? "todo" : null;
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -3150,6 +3202,7 @@ export function issueRoutes(
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
     if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {
+      if (requestedStatusForCommentReopen && !assertAgentMayTransitionAwaitingHuman(req, res, issue, requestedStatusForCommentReopen)) return;
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });

@@ -254,7 +254,7 @@ The issue list is the default view when clicking "Issues" in the sidebar.
 ```
 
 **Top toolbar:**
-- **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
+- **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + awaiting_human + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
 - **Settings gear:** Configure issue display defaults, custom fields.
 - **Filter button:** Opens a filter bar below the toolbar.
 - **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
@@ -451,7 +451,7 @@ Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons 
 
 Accessible via Display dropdown → Board layout.
 
-Columns represent statuses: Backlog | Todo | In Progress | In Review | Done
+Columns represent statuses: Backlog | Todo | In Progress | In Review | Awaiting Human | Blocked | Done
 
 Each card shows:
 - Issue key (muted)

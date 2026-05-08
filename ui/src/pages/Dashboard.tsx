@@ -259,7 +259,8 @@ export function Dashboard() {
               description={
                 <span>
                   {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
+                  {data.tasks.blocked} blocked{", "}
+                  {data.tasks.awaitingHuman} awaiting human
                 </span>
               }
             />

@@ -498,6 +498,13 @@
       "when": 1778172000000,
       "tag": "0070_human_intervention_latch",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1778209428904,
+      "tag": "0071_issues_open_routine_execution_awaiting_human",
+      "breakpoints": true
     }
   ]
 }

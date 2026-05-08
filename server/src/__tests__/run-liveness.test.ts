@@ -129,4 +129,17 @@ describe("run liveness classifier", () => {
 
     expect(classification.livenessState).toBe("blocked");
   });
+
+  it("classifies awaiting_human issue status as blocked liveness", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issue: {
+        ...baseInput.issue,
+        status: "awaiting_human",
+      },
+    });
+
+    expect(classification.livenessState).toBe("blocked");
+    expect(classification.livenessReason).toContain("awaiting_human");
+  });
 });

@@ -173,7 +173,7 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "todo" | "done" | "blocked") {
+function makeIssue(status: "todo" | "done" | "blocked" | "awaiting_human") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -492,6 +492,57 @@ describe("issue comment reopen routes", () => {
           wakeReason: "issue_reopened_via_comment",
           reopenedFrom: "blocked",
         }),
+      }),
+    );
+  });
+
+  it("forbids agent reopen requests on awaiting_human issues via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("awaiting_human"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-agent-awaiting-human-reopen",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "continue", reopen: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only board operators can move an issue out of awaiting_human");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows agent comments on awaiting_human issues without reopening", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("awaiting_human"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-agent-awaiting-human-comment",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "need more context" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
       }),
     );
   });

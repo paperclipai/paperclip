@@ -200,7 +200,7 @@ Invariant:
 - `parent_id` uuid fk `issues.id` null
 - `title` text not null
 - `description` text null
-- `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- `status` enum: `backlog | todo | in_progress | in_review | done | blocked | awaiting_human | cancelled`
 - `priority` enum: `critical | high | medium | low`
 - `assignee_agent_id` uuid fk `agents.id` null
 - `created_by_agent_id` uuid fk `agents.id` null
@@ -423,10 +423,11 @@ Allowed transitions:
 Allowed transitions:
 
 - `backlog -> todo | cancelled`
-- `todo -> in_progress | blocked | cancelled`
-- `in_progress -> in_review | blocked | done | cancelled`
+- `todo -> in_progress | blocked | awaiting_human | cancelled`
+- `in_progress -> in_review | blocked | awaiting_human | done | cancelled`
 - `in_review -> in_progress | done | cancelled`
-- `blocked -> todo | in_progress | cancelled`
+- `blocked -> todo | in_progress | awaiting_human | cancelled`
+- `awaiting_human -> todo | in_progress | blocked | cancelled` (board only out of `awaiting_human`)
 - terminal: `done`, `cancelled`
 
 Side effects:

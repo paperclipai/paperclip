@@ -18,6 +18,7 @@ export interface DashboardSummary {
     open: number;
     inProgress: number;
     blocked: number;
+    awaitingHuman: number;
     done: number;
   };
   costs: {

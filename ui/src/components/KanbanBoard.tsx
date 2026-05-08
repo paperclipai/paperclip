@@ -27,6 +27,7 @@ const boardStatuses = [
   "todo",
   "in_progress",
   "in_review",
+  "awaiting_human",
   "blocked",
   "done",
   "cancelled",

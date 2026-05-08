@@ -125,9 +125,36 @@ export const ISSUE_STATUSES = [
   "in_review",
   "done",
   "blocked",
+  "awaiting_human",
   "cancelled",
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
+
+/**
+ * Statuses that are considered "open" / non-terminal — i.e. work that may
+ * still progress. Used by routine wakeups, dashboard counters, and reconciler
+ * queries to identify issues that are still in-flight.
+ */
+export const OPEN_ISSUE_STATUSES = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+  "awaiting_human",
+] as const;
+
+/**
+ * Parked statuses where the issue is intentionally idle waiting on
+ * something external (another issue, system, or human). The control plane
+ * should not treat these as stranded work.
+ *
+ * - `blocked`: waiting on another issue / system / dependency. Other AI
+ *   agents may be able to take action to unblock.
+ * - `awaiting_human`: waiting on a human/board action. AI agents must NOT
+ *   try to unblock these on their own.
+ */
+export const PARKED_ISSUE_STATUSES = ["blocked", "awaiting_human"] as const;
 
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
@@ -135,6 +162,7 @@ export const INBOX_MINE_ISSUE_STATUSES = [
   "in_progress",
   "in_review",
   "blocked",
+  "awaiting_human",
   "done",
 ] as const;
 export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(",");
