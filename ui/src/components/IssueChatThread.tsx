@@ -1054,6 +1054,7 @@ function IssueChatToolPart({
   result?: unknown;
   isError?: boolean;
 }) {
+  const { t } = useTranslation("issues");
   const [open, setOpen] = useState(false);
   const rawArgsText = argsText ?? "";
   const parsedArgs = args ?? parseToolPayload(rawArgsText);
@@ -1105,7 +1106,7 @@ function IssueChatToolPart({
             {nonIntentDetails.length > 0 ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Input
+                  {t("input")}
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
@@ -1123,7 +1124,7 @@ function IssueChatToolPart({
             ) : rawArgsText ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Input
+                  {t("input")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
               </div>
@@ -1131,7 +1132,7 @@ function IssueChatToolPart({
             {result !== undefined ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Result
+                  {t("result")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
               </div>
@@ -1289,7 +1290,7 @@ function IssueChatUserMessage({
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-            Follow-up
+            {t("follow_up")}
           </Badge>
         ) : null}
       </div>
@@ -1429,7 +1430,7 @@ function IssueChatAssistantMessage({
     ? custom.authorName
     : typeof custom.runAgentName === "string"
       ? custom.runAgentName
-      : "Agent";
+      : t("agent");
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
@@ -1513,7 +1514,7 @@ function IssueChatAssistantMessage({
               <span className="text-sm font-medium text-foreground">{authorName}</span>
               {followUpRequested ? (
                 <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-                  Follow-up
+                  {t("follow_up")}
                 </Badge>
               ) : null}
               {isRunning ? (
