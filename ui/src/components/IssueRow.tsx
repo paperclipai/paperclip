@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Eye, X } from "lucide-react";
+import { Eye, Flag, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -11,6 +11,7 @@ import {
 import { cn } from "../lib/utils";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
+import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -85,6 +86,24 @@ export function IssueRow({
       {checklistStepNumber}.
     </span>
   ) : null;
+  const planningModeIndicator = issue.workMode === "planning" ? (
+    <span
+      className="ml-1.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      title="This issue is in planning mode."
+    >
+      Planning
+    </span>
+  ) : null;
+  const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
+    <span
+      data-testid="issue-row-parked-blocker"
+      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
+    >
+      <Flag className="h-2.5 w-2.5" aria-hidden />
+      Blocked by parked work
+    </span>
+  ) : null;
 
   return (
     <Link
@@ -106,6 +125,8 @@ export function IssueRow({
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
         {productivityReviewIndicator}
+        {planningModeIndicator}
+        {parkedBlockerIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
@@ -130,6 +151,8 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
+              {planningModeIndicator}
+              {parkedBlockerIndicator}
             </>
           )}
           {mobileMeta ? (

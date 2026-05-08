@@ -15,6 +15,7 @@ import type {
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
@@ -25,6 +26,8 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+
+export type { IssueWorkMode };
 
 export interface IssueAncestorProject {
   id: string;
@@ -178,6 +181,34 @@ export interface SuccessfulRunHandoffState {
   createdAt: Date | string | null;
 }
 
+export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
+
+export interface IssueScheduledRetry {
+  runId: string;
+  status: IssueScheduledRetryStatus;
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | string | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+export type IssueRetryNowOutcome =
+  | "promoted"
+  | "already_promoted"
+  | "no_scheduled_retry"
+  | "gate_suppressed";
+
+export interface IssueRetryNowResponse {
+  outcome: IssueRetryNowOutcome;
+  message: string;
+  scheduledRetry: IssueScheduledRetry | null;
+}
+
 export interface IssueRelation {
   id: string;
   companyId: string;
@@ -302,6 +333,7 @@ export interface Issue {
   title: string;
   description: string | null;
   status: IssueStatus;
+  workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -341,6 +373,7 @@ export interface Issue {
   blockerAttention?: IssueBlockerAttention;
   productivityReview?: IssueProductivityReview | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -430,6 +463,7 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  sourceRunId?: string | null;
   sections: IssueCommentMetadataSection[];
 }
 
@@ -454,6 +488,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   projectId?: string | null;

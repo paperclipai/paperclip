@@ -67,6 +67,7 @@ export type AdapterManagedRuntimeAsset = RemoteManagedRuntimeAsset;
 
 export interface PreparedAdapterExecutionTargetRuntime {
   target: AdapterExecutionTarget;
+  workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
   restoreWorkspace(): Promise<void>;
@@ -165,6 +166,33 @@ export function adapterExecutionTargetRemoteCwd(
   localCwd: string,
 ): string {
   return target?.kind === "remote" ? target.remoteCwd : localCwd;
+}
+
+export function overrideAdapterExecutionTargetRemoteCwd(
+  target: AdapterExecutionTarget | null | undefined,
+  remoteCwd: string | null | undefined,
+): AdapterExecutionTarget | null | undefined {
+  const nextRemoteCwd = remoteCwd?.trim();
+  if (!target || target.kind !== "remote" || !nextRemoteCwd) {
+    return target;
+  }
+  if (target.remoteCwd === nextRemoteCwd) {
+    return target;
+  }
+  if (target.transport === "ssh") {
+    return {
+      ...target,
+      remoteCwd: nextRemoteCwd,
+      spec: {
+        ...target.spec,
+        remoteCwd: nextRemoteCwd,
+      },
+    };
+  }
+  return {
+    ...target,
+    remoteCwd: nextRemoteCwd,
+  };
 }
 
 export function resolveAdapterExecutionTargetCwd(
@@ -858,9 +886,11 @@ export function readAdapterExecutionTarget(input: {
 }
 
 export async function prepareAdapterExecutionTargetRuntime(input: {
+  runId: string;
   target: AdapterExecutionTarget | null | undefined;
   adapterKey: string;
   workspaceLocalDir: string;
+  workspaceRemoteDir?: string;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -872,6 +902,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   if (target.kind === "local") {
     return {
       target,
+      workspaceRemoteDir: null,
       runtimeRootDir: null,
       assetDirs: {},
       restoreWorkspace: async () => {},
@@ -881,12 +912,15 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   if (target.transport === "ssh") {
     const prepared = await prepareRemoteManagedRuntime({
       spec: target.spec,
+      runId: input.runId,
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
+      workspaceRemoteDir: input.workspaceRemoteDir,
       assets: input.assets,
     });
     return {
       target,
+      workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
       restoreWorkspace: prepared.restoreWorkspace,
@@ -904,6 +938,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     },
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
+    workspaceRemoteDir: input.workspaceRemoteDir,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
@@ -912,6 +947,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   });
   return {
     target,
+    workspaceRemoteDir: prepared.workspaceRemoteDir,
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
     restoreWorkspace: prepared.restoreWorkspace,

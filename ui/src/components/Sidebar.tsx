@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
@@ -47,10 +48,6 @@ export function Sidebar() {
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
 
-  function openSearch() {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
-  }
-
   const pluginContext = {
     companyId: selectedCompanyId,
     companyPrefix: selectedCompany?.issuePrefix ?? null,
@@ -62,12 +59,16 @@ export function Sidebar() {
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <SidebarCompanyMenu />
         <Button
+          asChild
           variant="ghost"
           size="icon-sm"
           className="text-muted-foreground shrink-0"
-          onClick={openSearch}
+          aria-label="Search"
+          title="Search"
         >
-          <Search className="h-4 w-4" />
+          <NavLink to="/search">
+            <Search className="h-4 w-4" />
+          </NavLink>
         </Button>
       </div>
 
@@ -101,7 +102,6 @@ export function Sidebar() {
 
         <SidebarSection label={t('sidebar.section_work')}>
           <SidebarNavItem to="/issues" label={t('nav.issues')} icon={CircleDot} />
-          <SidebarNavItem to="/search" label={t('nav.search')} icon={Search} />
           <SidebarNavItem to="/routines" label={t('nav.routines')} icon={Repeat} />
           <SidebarNavItem to="/goals" label={t('nav.goals')} icon={Target} />
           {showWorkspacesLink ? (

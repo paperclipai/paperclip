@@ -240,6 +240,8 @@
     "select_company": "Select company",
     "switch_workspace": "Switch workspace",
     "no_workspaces": "No workspaces",
+    "edit_order": "Edit",
+    "done_order": "Done",
     "open_switcher": "Open {{company}} workspace switcher",
     "open_switcher_generic": "Open workspace switcher"
   },

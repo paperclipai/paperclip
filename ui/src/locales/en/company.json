@@ -266,6 +266,8 @@
       "edit": "Edit",
       "stop_editing": "Stop editing",
       "source": "Source",
+      "copy_source_path": "Copy source path",
+      "copied_path": "Copied path",
       "pin": "Pin",
       "untracked": "untracked",
       "tracking": "tracking",

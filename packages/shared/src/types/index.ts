@@ -144,6 +144,7 @@ export type {
 } from "./work-product.js";
 export type {
   Issue,
+  IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
   IssueBlockerAttentionReason,
@@ -152,6 +153,10 @@ export type {
   IssueProductivityReviewTrigger,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
+  IssueScheduledRetry,
+  IssueScheduledRetryStatus,
+  IssueRetryNowOutcome,
+  IssueRetryNowResponse,
   IssueReferenceSource,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,

@@ -1,9 +1,10 @@
 import type { IssueBlockerAttention, IssueRelationIssueSummary, SuccessfulRunHandoffState } from "@paperclipai/shared";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Flag } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
+import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
 
 export function IssueBlockedNotice({
   issueStatus,
@@ -29,6 +30,24 @@ export function IssueBlockedNotice({
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
 
   const isStalled = blockerAttention?.state === "stalled";
+  const parkedBlockers = (() => {
+    const seen = new Set<string>();
+    const collected: IssueRelationIssueSummary[] = [];
+    const sources: IssueRelationIssueSummary[] = [...blockers];
+    for (const blocker of blockers) {
+      for (const terminal of blocker.terminalBlockers ?? []) {
+        sources.push(terminal);
+      }
+    }
+    for (const blocker of sources) {
+      if (!isAssignedBacklogBlocker(blocker)) continue;
+      if (seen.has(blocker.id)) continue;
+      seen.add(blocker.id);
+      collected.push(blocker);
+    }
+    return collected;
+  })();
+  const showParkedRow = parkedBlockers.length > 0;
   const stalledLeafIdentifier =
     blockerAttention?.sampleStalledBlockerIdentifier ?? blockerAttention?.sampleBlockerIdentifier ?? null;
   const stalledLeafBlockers = (() => {
@@ -166,6 +185,18 @@ export function IssueBlockedNotice({
                     {t("blocked_notice.ultimately_waiting")}
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
+                </div>
+              ) : null}
+              {showParkedRow ? (
+                <div
+                  data-testid="issue-blocked-notice-parked-row"
+                  className="flex flex-wrap items-center gap-1.5 pt-0.5"
+                >
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
+                    <Flag className="h-3 w-3" aria-hidden />
+                    Blocked by parked work
+                  </span>
+                  {parkedBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}
             </>

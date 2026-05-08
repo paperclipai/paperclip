@@ -1782,6 +1782,7 @@ function enrichWakeContextSnapshot(input: {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
+  normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
   return {
     contextSnapshot,
@@ -1790,6 +1791,35 @@ function enrichWakeContextSnapshot(input: {
     taskKey,
     wakeCommentId,
   };
+}
+
+const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+  "interactionId",
+  "interactionKind",
+  "interactionStatus",
+  "continuationPolicy",
+] as const;
+
+function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined) {
+  return readNonEmptyString(payload?.mutation) === "interaction";
+}
+
+function clearInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>) {
+  for (const key of INTERACTION_CONTINUATION_CONTEXT_KEYS) {
+    delete contextSnapshot[key];
+  }
+}
+
+function hasInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>) {
+  return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) => readNonEmptyString(contextSnapshot[key]));
+}
+
+function normalizeInteractionContinuationWakeContext(
+  contextSnapshot: Record<string, unknown>,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  if (isInteractionResolutionWakePayload(payload)) return;
+  clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
 export function mergeCoalescedContextSnapshot(
@@ -1810,6 +1840,9 @@ export function mergeCoalescedContextSnapshot(
     // The merged context should carry canonical comment ids; the next wake will
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
+  if (!hasInteractionContinuationWakeContext(incoming)) {
+    clearInteractionContinuationWakeContext(merged);
   }
   return merged;
 }
@@ -1833,6 +1866,7 @@ async function buildPaperclipWakePayload(input: {
         title: string;
         status: string;
         priority: string;
+        workMode: string;
       }
     | null;
 }) {
@@ -1850,6 +1884,7 @@ async function buildPaperclipWakePayload(input: {
             title: issues.title,
             status: issues.status,
             priority: issues.priority,
+            workMode: issues.workMode,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
@@ -1936,6 +1971,7 @@ async function buildPaperclipWakePayload(input: {
           title: issueSummary.title,
           status: issueSummary.status,
           priority: issueSummary.priority,
+          workMode: issueSummary.workMode,
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -1955,6 +1991,8 @@ async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
+    interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
+    interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -2016,11 +2054,16 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     identifier: string | null;
     title: string;
+    workMode?: string | null;
     description?: string | null;
   } | null;
   wakeComment?: {
     id: string;
     body: string;
+  } | null;
+  interaction?: {
+    kind?: string | null;
+    status?: string | null;
   } | null;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
@@ -2034,6 +2077,10 @@ export function buildPaperclipTaskMarkdown(input: {
   };
   const issue = input.issue;
   const wakeComment = input.wakeComment ?? null;
+  const acceptedPlanContinuation =
+    !wakeComment &&
+    input.interaction?.kind === "request_confirmation" &&
+    input.interaction.status === "accepted";
   if (!issue && !wakeComment) return null;
 
   const lines = [
@@ -2045,6 +2092,21 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
+    if (issue.workMode === "planning") {
+      let directive = "Make the plan only. Do not write code or perform implementation work.";
+      if (wakeComment) {
+        directive = "Update the plan only. Do not write code or perform implementation work.";
+      }
+      if (acceptedPlanContinuation) {
+        directive = "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+      }
+      lines.push(
+        `- Work mode: ${quoteTaskScalar("planning")}`,
+        "",
+        "Planning mode directive:",
+        directive,
+      );
+    }
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
@@ -2328,6 +2390,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         title: issues.title,
         description: issues.description,
         status: issues.status,
+        workMode: issues.workMode,
         priority: issues.priority,
         projectId: issues.projectId,
         projectWorkspaceId: issues.projectWorkspaceId,
@@ -4649,6 +4712,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId: string | null;
         details: Record<string, unknown>;
       };
+  type BlockedScheduledRetryGate = Extract<ScheduledRetryGate, { allowed: false }>;
 
   async function evaluateScheduledRetryGate(input: {
     run: typeof heartbeatRuns.$inferSelect;
@@ -4895,6 +4959,111 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     return cancelled;
+  }
+
+  async function promoteScheduledRetryRun(
+    dueRun: typeof heartbeatRuns.$inferSelect,
+    now: Date,
+  ): Promise<
+    | { outcome: "promoted"; run: typeof heartbeatRuns.$inferSelect }
+    | {
+        outcome: "gate_suppressed";
+        run: typeof heartbeatRuns.$inferSelect;
+        reason: string;
+        errorCode: BlockedScheduledRetryGate["errorCode"];
+      }
+    | { outcome: "not_promoted"; run: typeof heartbeatRuns.$inferSelect | null }
+  > {
+    const agent = await getAgent(dueRun.agentId);
+    if (!agent) {
+      const gate = {
+        allowed: false as const,
+        reason: "Scheduled retry suppressed because the agent no longer exists",
+        errorCode: "agent_not_invokable" as const,
+        issueId: readNonEmptyString(parseObject(dueRun.contextSnapshot).issueId),
+        details: { agentId: dueRun.agentId },
+      };
+      const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
+      return cancelled
+        ? {
+            outcome: "gate_suppressed",
+            run: cancelled,
+            reason: gate.reason,
+            errorCode: gate.errorCode,
+          }
+        : { outcome: "not_promoted", run: null };
+    }
+
+    const contextSnapshot = parseObject(dueRun.contextSnapshot);
+    const gate = await evaluateScheduledRetryGate({
+      run: dueRun,
+      agent,
+      contextSnapshot,
+      retryReason: dueRun.scheduledRetryReason,
+      enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
+    });
+    if (!gate.allowed) {
+      if (
+        gate.errorCode === "issue_not_found" &&
+        dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
+      ) {
+        // Preserve legacy transient retry behavior for runs that only carry a
+        // loose task context rather than a persisted issue row.
+      } else {
+        const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
+        return cancelled
+          ? {
+              outcome: "gate_suppressed",
+              run: cancelled,
+              reason: gate.reason,
+              errorCode: gate.errorCode,
+            }
+          : { outcome: "not_promoted", run: null };
+      }
+    }
+
+    const promoted = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "queued",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, dueRun.id),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          lte(heartbeatRuns.scheduledRetryAt, now),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!promoted) return { outcome: "not_promoted", run: null };
+
+    await appendRunEvent(promoted, await nextRunEventSeq(promoted.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "Scheduled retry became due and was promoted to the queued run pool",
+      payload: {
+        scheduledRetryAttempt: promoted.scheduledRetryAttempt,
+        scheduledRetryAt: promoted.scheduledRetryAt ? new Date(promoted.scheduledRetryAt).toISOString() : null,
+        scheduledRetryReason: promoted.scheduledRetryReason,
+      },
+    });
+
+    publishLiveEvent({
+      companyId: promoted.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: promoted.id,
+        agentId: promoted.agentId,
+        invocationSource: promoted.invocationSource,
+        triggerDetail: promoted.triggerDetail,
+        wakeupRequestId: promoted.wakeupRequestId,
+      },
+    });
+
+    return { outcome: "promoted", run: promoted };
   }
 
   async function scheduleBoundedRetryForRun(
@@ -5321,86 +5490,191 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const promotedRunIds: string[] = [];
 
     for (const dueRun of dueRuns) {
-      const agent = await getAgent(dueRun.agentId);
-      if (!agent) {
-        await cancelScheduledRetryForGate(dueRun, {
-          allowed: false,
-          reason: "Scheduled retry suppressed because the agent no longer exists",
-          errorCode: "agent_not_invokable",
-          issueId: readNonEmptyString(parseObject(dueRun.contextSnapshot).issueId),
-          details: { agentId: dueRun.agentId },
-        }, now);
-        continue;
+      const result = await promoteScheduledRetryRun(dueRun, now);
+      if (result.outcome === "promoted") {
+        promotedRunIds.push(result.run.id);
       }
-
-      const contextSnapshot = parseObject(dueRun.contextSnapshot);
-      const gate = await evaluateScheduledRetryGate({
-        run: dueRun,
-        agent,
-        contextSnapshot,
-        retryReason: dueRun.scheduledRetryReason,
-        enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
-      });
-      if (!gate.allowed) {
-        if (
-          gate.errorCode === "issue_not_found" &&
-          dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
-        ) {
-          // Preserve legacy transient retry behavior for runs that only carry a
-          // loose task context rather than a persisted issue row.
-        } else {
-          await cancelScheduledRetryForGate(dueRun, gate, now);
-          continue;
-        }
-      }
-
-      const promoted = await db
-        .update(heartbeatRuns)
-        .set({
-          status: "queued",
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(heartbeatRuns.id, dueRun.id),
-            eq(heartbeatRuns.status, "scheduled_retry"),
-            lte(heartbeatRuns.scheduledRetryAt, now),
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!promoted) continue;
-
-      promotedRunIds.push(promoted.id);
-
-      await appendRunEvent(promoted, await nextRunEventSeq(promoted.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "info",
-        message: "Scheduled retry became due and was promoted to the queued run pool",
-        payload: {
-          scheduledRetryAttempt: promoted.scheduledRetryAttempt,
-          scheduledRetryAt: promoted.scheduledRetryAt ? new Date(promoted.scheduledRetryAt).toISOString() : null,
-          scheduledRetryReason: promoted.scheduledRetryReason,
-        },
-      });
-
-      publishLiveEvent({
-        companyId: promoted.companyId,
-        type: "heartbeat.run.queued",
-        payload: {
-          runId: promoted.id,
-          agentId: promoted.agentId,
-          invocationSource: promoted.invocationSource,
-          triggerDetail: promoted.triggerDetail,
-          wakeupRequestId: promoted.wakeupRequestId,
-        },
-      });
     }
 
     return {
       promoted: promotedRunIds.length,
       runIds: promotedRunIds,
+    };
+  }
+
+  async function getIssueRetryRun(
+    companyId: string,
+    issueId: string,
+    statuses: Array<"scheduled_retry" | "queued" | "running" | "cancelled">,
+  ) {
+    if (statuses.length === 0) return null;
+    return db
+      .select({
+        run: heartbeatRuns,
+        agentName: agents.name,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, statuses),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.retryOfRunId} is not null`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.updatedAt), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function summarizeIssueScheduledRetryRun(
+    row: { run: typeof heartbeatRuns.$inferSelect; agentName: string | null },
+  ) {
+    return {
+      runId: row.run.id,
+      status: row.run.status as "scheduled_retry" | "queued" | "running" | "cancelled",
+      agentId: row.run.agentId,
+      agentName: row.agentName,
+      retryOfRunId: row.run.retryOfRunId,
+      scheduledRetryAt: row.run.scheduledRetryAt,
+      scheduledRetryAttempt: row.run.scheduledRetryAttempt,
+      scheduledRetryReason: row.run.scheduledRetryReason,
+      error: row.run.error,
+      errorCode: row.run.errorCode,
+    };
+  }
+
+  async function retryScheduledRetryNow(input: {
+    issueId: string;
+    actor?: { actorType?: "user" | "agent" | "system"; actorId?: string | null };
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const issue = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) throw notFound("Issue not found");
+
+    const scheduled = await getIssueRetryRun(issue.companyId, issue.id, ["scheduled_retry"]);
+    if (!scheduled) {
+      const alreadyPromoted = await getIssueRetryRun(issue.companyId, issue.id, ["queued", "running"]);
+      if (alreadyPromoted) {
+        return {
+          outcome: "already_promoted" as const,
+          message: "Scheduled retry was already promoted",
+          scheduledRetry: summarizeIssueScheduledRetryRun(alreadyPromoted),
+        };
+      }
+      return {
+        outcome: "no_scheduled_retry" as const,
+        message: "No live scheduled retry exists for this issue",
+        scheduledRetry: null,
+      };
+    }
+
+    const contextSnapshot = {
+      ...parseObject(scheduled.run.contextSnapshot),
+      scheduledRetryAt: now.toISOString(),
+      retryNowRequestedAt: now.toISOString(),
+      retryNowRequestedByActorType: input.actor?.actorType ?? null,
+      retryNowRequestedByActorId: input.actor?.actorId ?? null,
+    };
+
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx
+        .update(heartbeatRuns)
+        .set({
+          scheduledRetryAt: now,
+          contextSnapshot,
+          updatedAt: now,
+        })
+        .where(and(eq(heartbeatRuns.id, scheduled.run.id), eq(heartbeatRuns.status, "scheduled_retry")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+
+      if (row.wakeupRequestId) {
+        const wakeupPayload = {
+          ...(parseObject(
+            await tx
+              .select({ payload: agentWakeupRequests.payload })
+              .from(agentWakeupRequests)
+              .where(eq(agentWakeupRequests.id, row.wakeupRequestId))
+              .then((rows) => rows[0]?.payload ?? null),
+          )),
+          scheduledRetryAt: now.toISOString(),
+          retryNowRequestedAt: now.toISOString(),
+        };
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            payload: wakeupPayload,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, row.wakeupRequestId));
+      }
+
+      return row;
+    });
+
+    if (!updated) {
+      const alreadyPromoted = await getIssueRetryRun(issue.companyId, issue.id, ["queued", "running"]);
+      if (alreadyPromoted) {
+        return {
+          outcome: "already_promoted" as const,
+          message: "Scheduled retry was already promoted",
+          scheduledRetry: summarizeIssueScheduledRetryRun(alreadyPromoted),
+        };
+      }
+      return {
+        outcome: "no_scheduled_retry" as const,
+        message: "No live scheduled retry exists for this issue",
+        scheduledRetry: null,
+      };
+    }
+
+    await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "Scheduled retry was requested to run now",
+      payload: {
+        issueId: issue.id,
+        scheduledRetryAttempt: updated.scheduledRetryAttempt,
+        scheduledRetryAt: updated.scheduledRetryAt ? new Date(updated.scheduledRetryAt).toISOString() : null,
+        scheduledRetryReason: updated.scheduledRetryReason,
+        requestedByActorType: input.actor?.actorType ?? null,
+        requestedByActorId: input.actor?.actorId ?? null,
+      },
+    });
+
+    const promotion = await promoteScheduledRetryRun(updated, now);
+    const promotedRow = await getIssueRetryRun(issue.companyId, issue.id, ["queued", "running", "cancelled"]);
+    const scheduledRetry = promotedRow
+      ? summarizeIssueScheduledRetryRun(promotedRow)
+      : summarizeIssueScheduledRetryRun({ run: promotion.run ?? updated, agentName: scheduled.agentName });
+
+    if (promotion.outcome === "promoted") {
+      return {
+        outcome: "promoted" as const,
+        message: "Scheduled retry was promoted to the queued run pool",
+        scheduledRetry,
+      };
+    }
+    if (promotion.outcome === "gate_suppressed") {
+      return {
+        outcome: "gate_suppressed" as const,
+        message: promotion.reason,
+        scheduledRetry,
+      };
+    }
+    return {
+      outcome: "already_promoted" as const,
+      message: "Scheduled retry was already promoted",
+      scheduledRetry,
     };
   }
 
@@ -6564,6 +6838,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           title: issueContext.title,
           status: issueContext.status,
           priority: issueContext.priority,
+          workMode: issueContext.workMode,
           description: issueContext.description,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
@@ -6596,6 +6871,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             title: issueRef.title,
             status: issueRef.status,
             priority: issueRef.priority,
+            workMode: issueRef.workMode,
           }
         : null,
     });
@@ -6610,10 +6886,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            workMode: issueRef.workMode,
             description: issueRef.description,
           }
         : null,
       wakeComment: wakeCommentContext,
+      interaction: {
+        kind: readNonEmptyString(context.interactionKind),
+        status: readNonEmptyString(context.interactionStatus),
+      },
     });
     if (issueRef) {
       context.paperclipIssue = {
@@ -6621,6 +6902,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issueRef.identifier,
         title: issueRef.title,
         description: issueRef.description,
+        workMode: issueRef.workMode,
       };
     } else {
       delete context.paperclipIssue;
@@ -8764,7 +9046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
-        contextSnapshot,
+        enrichedContextSnapshot,
       );
       const mergedRun = await db
         .update(heartbeatRuns)
@@ -9312,6 +9594,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reapOrphanedRuns,
 
     promoteDueScheduledRetries,
+    retryScheduledRetryNow,
 
     resumeQueuedRuns,
 
