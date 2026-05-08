@@ -597,6 +597,35 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.env.HERMES_YOLO_MODE).toBeUndefined();
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
+
+  it("does not grant Bookforge code-access defaults based only on an agent name", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Bookforge Helper Outside Lab",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.cwd).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.env.HERMES_YOLO_MODE).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
 });
 
 describe("resolveExternalAdapterRegistration", () => {

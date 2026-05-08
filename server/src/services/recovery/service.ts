@@ -72,8 +72,8 @@ function isBookforgeRepairGateIssue(issue: Pick<typeof issues.$inferSelect, "ori
     issue.originKind === BOOKFORGE_INCIDENT_ORIGIN_KIND ||
     issue.originKind === "bookforge_runtime_control" ||
     title.startsWith("bookforge repair gate") ||
-    title.includes("runtime governor") ||
-    title.includes("bookforge") && title.includes("resume gate")
+    (title.includes("bookforge") && title.includes("runtime governor")) ||
+    (title.includes("bookforge") && title.includes("resume gate"))
   );
 }
 

@@ -787,7 +787,7 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const bookforgeMonitorCompanyId = process.env.PAPERCLIP_BOOKFORGE_COMPANY_ID ?? "2925a47a-961a-4212-8b36-ce711e2f6ec0";
-  if (process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED !== "false") {
+  if (process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED === "true") {
     createBookforgeRuntimeMonitor(db as any, {
       companyId: bookforgeMonitorCompanyId,
       bookforgeBaseUrl: process.env.PAPERCLIP_BOOKFORGE_BASE_URL ?? "http://127.0.0.1:5012",

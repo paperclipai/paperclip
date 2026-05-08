@@ -351,7 +351,7 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 }
 
 const BOOKFORGE_LAB_COMPANY_ID = "2925a47a-961a-4212-8b36-ce711e2f6ec0";
-const BOOKFORGE_REPO_PATH = "/Users/begilhan/Bookforge V2 PublicationForge";
+const BOOKFORGE_REPO_PATH = process.env.PAPERCLIP_BOOKFORGE_REPO_PATH ?? "/Users/begilhan/Bookforge V2 PublicationForge";
 const BOOKFORGE_DEFAULT_TOOLSETS = "terminal,file,skills,session_search";
 const BOOKFORGE_DEFAULT_TIMEOUT_SEC = 1800;
 const BOOKFORGE_DEFAULT_MAX_TURNS = 40;
@@ -363,8 +363,7 @@ function isBookforgeLabHermesRun(ctx: { agent?: unknown }): boolean {
       : null;
   if (!agent) return false;
   const companyId = typeof agent.companyId === "string" ? agent.companyId : "";
-  const name = typeof agent.name === "string" ? agent.name : "";
-  return companyId === BOOKFORGE_LAB_COMPANY_ID || name.toLowerCase().includes("bookforge");
+  return companyId === BOOKFORGE_LAB_COMPANY_ID;
 }
 
 function readHermesBoolean(value: unknown): boolean | null {

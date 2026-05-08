@@ -5,6 +5,7 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_BOOKFORGE_MONITOR_ENABLED = process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED;
 
 const {
   createAppMock,
@@ -16,6 +17,7 @@ const {
   feedbackServiceFactoryMock,
   fakeServer,
   loadConfigMock,
+  createBookforgeRuntimeMonitorMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -26,6 +28,10 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const createBookforgeRuntimeMonitorMock = vi.fn(() => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+  }));
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -47,6 +53,7 @@ const {
     feedbackServiceFactoryMock,
     fakeServer,
     loadConfigMock,
+    createBookforgeRuntimeMonitorMock,
   };
 });
 
@@ -138,10 +145,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/bookforge-runtime-monitor.js", () => ({
-  createBookforgeRuntimeMonitor: vi.fn(() => ({
-    start: vi.fn(),
-    stop: vi.fn(),
-  })),
+  createBookforgeRuntimeMonitor: createBookforgeRuntimeMonitorMock,
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -209,6 +213,7 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED;
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -222,6 +227,15 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+    expect(createBookforgeRuntimeMonitorMock).not.toHaveBeenCalled();
+  });
+
+  it("only starts the Bookforge runtime monitor when explicitly enabled", async () => {
+    process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED = "true";
+
+    await startServer();
+
+    expect(createBookforgeRuntimeMonitorMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -232,6 +246,7 @@ describe("startServer authenticated auth origin setup", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED;
   });
 
   it("derives trusted origins from the detected listen port before auth initializes", async () => {
@@ -297,6 +312,12 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+
+    if (ORIGINAL_PAPERCLIP_BOOKFORGE_MONITOR_ENABLED === undefined) {
+      delete process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED;
+    } else {
+      process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED = ORIGINAL_PAPERCLIP_BOOKFORGE_MONITOR_ENABLED;
+    }
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {

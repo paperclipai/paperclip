@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const bookforgeApprovedTargets = pgTable(
@@ -11,9 +11,9 @@ export const bookforgeApprovedTargets = pgTable(
     itemId: text("item_id"),
     projectName: text("project_name"),
     bookTitle: text("book_title"),
-    budgetCapCents: text("budget_cap_cents"),
+    budgetCapCents: integer("budget_cap_cents"),
     qualityThreshold: text("quality_threshold"),
-    resumeAllowed: text("resume_allowed").notNull().default("false"),
+    resumeAllowed: boolean("resume_allowed").notNull().default(false),
     approvedBy: text("approved_by"),
     approvalIssueId: text("approval_issue_id"),
     approvalCommentId: text("approval_comment_id"),
