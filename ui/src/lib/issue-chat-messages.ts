@@ -348,10 +348,10 @@ function authorNameForComment(
     return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
   }
   const authorUserId = comment.authorUserId ?? null;
-  if (!authorUserId) return "You";
+  if (!authorUserId) return i18n.t("chat.you", { ns: "issues" });
   const userLabel = userLabelMap?.get(authorUserId)?.trim();
   if (userLabel) return userLabel;
-  return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";
+  return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? i18n.t("chat.you", { ns: "issues" });
 }
 
 function formatStatusLabel(status: string) {
@@ -436,8 +436,8 @@ function createTimelineEventMessage(args: {
   const actorName = event.actorType === "agent"
     ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
     : event.actorType === "system"
-      ? "System"
-      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
+      ? i18n.t("chat.system", { ns: "issues" })
+      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? i18n.t("chat.board", { ns: "issues" }));
 
   const lines: string[] = [
     event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
@@ -450,10 +450,10 @@ function createTimelineEventMessage(args: {
   if (event.assigneeChange) {
     const from = event.assigneeChange.from.agentId
       ? (agentMap?.get(event.assigneeChange.from.agentId)?.name ?? event.assigneeChange.from.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? i18n.t("chat.unassigned", { ns: "issues" }));
     const to = event.assigneeChange.to.agentId
       ? (agentMap?.get(event.assigneeChange.to.agentId)?.name ?? event.assigneeChange.to.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? i18n.t("chat.unassigned", { ns: "issues" }));
     lines.push(`Assignee: ${from} -> ${to}`);
   }
   if (event.workspaceChange) {
@@ -579,23 +579,25 @@ function runDurationLabel(run: {
   const durationMs = end ? Math.max(0, toTimestamp(end) - toTimestamp(start)) : null;
   const durationText = formatDurationWords(durationMs);
   const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
+  const t = (key: string, opts?: Record<string, unknown>) =>
+    i18n.t(`run_duration.${key}`, { ns: "issues", ...opts });
   switch (run.status) {
     case "succeeded":
-      return durationText ? `Worked for ${durationText}` : "Finished work";
+      return durationText ? t("worked_for", { duration: durationText }) : t("finished_work");
     case "failed":
     case "error":
-      return durationText ? `Failed after ${durationText}` : "Run failed";
+      return durationText ? t("failed_after", { duration: durationText }) : t("run_failed");
     case "timed_out":
-      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+      return durationText ? t("timed_out_after", { duration: durationText }) : t("run_timed_out");
     case "cancelled":
       if (stopReason === "paused") {
-        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+        return durationText ? t("paused_by_board_after", { duration: durationText }) : t("paused_by_board");
       }
-      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+      return durationText ? t("cancelled_after", { duration: durationText }) : t("run_cancelled");
     case "queued":
-      return "Queued";
+      return t("queued");
     case "running":
-      return "Working...";
+      return t("working");
     default:
       return formatStatusLabel(run.status);
   }
@@ -632,7 +634,7 @@ function createHistoricalTranscriptMessage(args: {
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
-  const waitingText = hasOutput ? "" : "Run finished";
+  const waitingText = hasOutput ? "" : i18n.t("run_duration.run_finished", { ns: "issues" });
   const content = parts.length > 0
     ? parts
     : waitingText
@@ -829,10 +831,10 @@ function createLiveRunMessage(args: {
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
-      ? "Queued..."
+      ? i18n.t("run_duration.queued_ellipsis", { ns: "issues" })
       : parts.length > 0
         ? ""
-        : "Working...";
+        : i18n.t("run_duration.working", { ns: "issues" });
 
   const content = parts;
 

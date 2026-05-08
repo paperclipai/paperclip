@@ -721,6 +721,8 @@
     "run_timed_out": "Run timed out",
     "cancelled_after": "Cancelled after {{duration}}",
     "run_cancelled": "Run cancelled",
+    "paused_by_board_after": "Paused by board after {{duration}}",
+    "paused_by_board": "Paused by board",
     "queued": "Queued",
     "queued_ellipsis": "Queued...",
     "working": "Working...",

@@ -743,6 +743,8 @@
     "run_timed_out": "Таймаут запуска",
     "cancelled_after": "Отменён через {{duration}}",
     "run_cancelled": "Запуск отменён",
+    "paused_by_board_after": "Остановлено доской через {{duration}}",
+    "paused_by_board": "Остановлено доской",
     "queued": "В очереди",
     "queued_ellipsis": "В очереди...",
     "working": "Выполняется...",
