@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -535,6 +536,364 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  async function insertBlockerIssue(input: {
+    companyId: string;
+    sourceIssueId: string;
+    issuePrefix: string;
+    issueNumber: number;
+    status: "todo" | "in_progress" | "done" | "cancelled";
+  }) {
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId: input.companyId,
+      title: `Blocker ${input.issueNumber}`,
+      status: input.status,
+      priority: "medium",
+      issueNumber: input.issueNumber,
+      identifier: `${input.issuePrefix}-${input.issueNumber}`,
+      originKind: "manual",
+    });
+    await db.insert(issueRelations).values({
+      companyId: input.companyId,
+      issueId: blockerId,
+      relatedIssueId: input.sourceIssueId,
+      type: "blocks",
+    });
+    return blockerId;
+  }
+
+  async function insertChildIssue(input: {
+    companyId: string;
+    parentIssueId: string;
+    assigneeAgentId: string | null;
+    status: "todo" | "in_progress" | "done" | "cancelled";
+    issuePrefix: string;
+    issueNumber: number;
+  }) {
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId: input.companyId,
+      title: `Child ${input.issueNumber}`,
+      status: input.status,
+      priority: "medium",
+      assigneeAgentId: input.assigneeAgentId,
+      parentId: input.parentIssueId,
+      issueNumber: input.issueNumber,
+      identifier: `${input.issuePrefix}-${input.issueNumber}`,
+      originKind: "manual",
+    });
+    return childId;
+  }
+
+  it("suppresses long_active_duration when source has a non-terminal blocker (delegated_blocker)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertBlockerIssue({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      issueNumber: 100,
+      status: "in_progress",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("creates a long_active_duration review when source has no blockers and no children (genuine idle)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("creates a long_active_duration review when all children are terminal but parent still in_progress", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: seeded.companyId,
+      name: "Other",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await insertChildIssue({
+      companyId: seeded.companyId,
+      parentIssueId: seeded.issueId,
+      assigneeAgentId: otherAgentId,
+      status: "done",
+      issuePrefix: seeded.issuePrefix,
+      issueNumber: 200,
+    });
+    await insertChildIssue({
+      companyId: seeded.companyId,
+      parentIssueId: seeded.issueId,
+      assigneeAgentId: otherAgentId,
+      status: "cancelled",
+      issuePrefix: seeded.issuePrefix,
+      issueNumber: 201,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("suppresses long_active_duration when source has a non-terminal child assigned to a different agent (delegated_children)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: seeded.companyId,
+      name: "Other",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await insertChildIssue({
+      companyId: seeded.companyId,
+      parentIssueId: seeded.issueId,
+      assigneeAgentId: otherAgentId,
+      status: "todo",
+      issuePrefix: seeded.issuePrefix,
+      issueNumber: 300,
+    });
+    await insertChildIssue({
+      companyId: seeded.companyId,
+      parentIssueId: seeded.issueId,
+      assigneeAgentId: otherAgentId,
+      status: "todo",
+      issuePrefix: seeded.issuePrefix,
+      issueNumber: 301,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not suppress no_comment_streak even when blockers are populated", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await insertBlockerIssue({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      issueNumber: 400,
+      status: "in_progress",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
+  it("suppresses long_active_duration when source has unresolved blockers (case a)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId: seeded.companyId,
+      title: "Delegated blocker",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: seeded.managerId,
+      issueNumber: 2,
+      identifier: `${seeded.issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId: seeded.companyId,
+      issueId: blockerId,
+      relatedIssueId: seeded.issueId,
+      type: "blocks",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still creates long_active_duration review when no blockers and no children (case b)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("still flags forgot-to-close-parent when all children are done (case c)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: "Done child 1",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: seeded.managerId,
+        parentId: seeded.issueId,
+        issueNumber: 2,
+        identifier: `${seeded.issuePrefix}-2`,
+      },
+      {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: "Done child 2",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: seeded.managerId,
+        parentId: seeded.issueId,
+        issueNumber: 3,
+        identifier: `${seeded.issuePrefix}-3`,
+      },
+    ]);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("suppresses long_active_duration in GLA-437 repro: open children blocking the parent (case d)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const childOneId = randomUUID();
+    const childTwoId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: childOneId,
+        companyId: seeded.companyId,
+        title: "Open delegated child 1",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: seeded.managerId,
+        parentId: seeded.issueId,
+        issueNumber: 2,
+        identifier: `${seeded.issuePrefix}-2`,
+      },
+      {
+        id: childTwoId,
+        companyId: seeded.companyId,
+        title: "Open delegated child 2",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: seeded.managerId,
+        parentId: seeded.issueId,
+        issueNumber: 3,
+        identifier: `${seeded.issuePrefix}-3`,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      {
+        companyId: seeded.companyId,
+        issueId: childOneId,
+        relatedIssueId: seeded.issueId,
+        type: "blocks",
+      },
+      {
+        companyId: seeded.companyId,
+        issueId: childTwoId,
+        relatedIssueId: seeded.issueId,
+        type: "blocks",
+      },
+    ]);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {

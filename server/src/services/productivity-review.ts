@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -482,7 +483,49 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
-    const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
+
+    let longActiveSuppressed = false;
+    if (longActive && !noComment && !highChurn && sourceIssue.status === "in_progress") {
+      const blockerIssueIds = await db
+        .select({ id: issueRelations.issueId })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, sourceIssue.companyId),
+            eq(issueRelations.relatedIssueId, sourceIssue.id),
+            eq(issueRelations.type, "blocks"),
+          ),
+        )
+        .then((rows) => rows.map((row) => row.id));
+      if (blockerIssueIds.length > 0) {
+        const unresolved = await listUnresolvedBlockerIssueIds(
+          db,
+          sourceIssue.companyId,
+          blockerIssueIds,
+        );
+        if (unresolved.length > 0) longActiveSuppressed = true;
+      } else if (sourceIssue.assigneeAgentId) {
+        const delegatedChild = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, sourceIssue.companyId),
+              eq(issues.parentId, sourceIssue.id),
+              inArray(issues.status, ["todo", "in_progress", "blocked", "in_review"]),
+              ne(issues.assigneeAgentId, sourceIssue.assigneeAgentId),
+            ),
+          )
+          .limit(1);
+        if (delegatedChild.length > 0) longActiveSuppressed = true;
+      }
+    }
+
+    const trigger = choosePrimaryTrigger({
+      noComment,
+      longActive: longActive && !longActiveSuppressed,
+      highChurn,
+    });
     if (!trigger) return null;
 
     const triggerReasons: string[] = [];
