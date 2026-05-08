@@ -16,6 +16,7 @@ import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
+import { installIssueEntityStoreSubscriber } from "./lib/issueEntityStore";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
@@ -36,6 +37,8 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+installIssueEntityStoreSubscriber(queryClient);
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
   const { selectedCompany } = useCompany();

@@ -1443,10 +1443,16 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
+      showArchived: req.query.showArchived === "true" || req.query.showArchived === "1",
+      fields: req.query.fields === "summary" ? "summary" as const : undefined,
       q: req.query.q as string | undefined,
       limit,
       offset,
     });
+    if (req.query.fields === "summary") {
+      res.json(result);
+      return;
+    }
     const handoffStates = await listSuccessfulRunHandoffStates(
       db,
       companyId,

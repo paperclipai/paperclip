@@ -9,6 +9,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { queryKeys } from "../lib/queryKeys";
+import { useIssuesByIds } from "../lib/issueEntityStore";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
@@ -41,6 +42,19 @@ export function mergeIssuePagesStable(pages: Issue[][]): Issue[] {
   return merged;
 }
 
+
+export function mergeIdPagesStable(pages: string[][]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const page of pages) {
+    for (const id of page) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(id);
+    }
+  }
+  return merged;
+}
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
   const currentSearch = url.searchParams.get("q") ?? "";
@@ -122,7 +136,7 @@ export function Issues() {
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
   const {
-    data: issuePages,
+    data: issueIdPages,
     isLoading,
     isFetchingNextPage,
     error,
@@ -150,10 +164,15 @@ export function Issues() {
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
     enabled: !!selectedCompanyId,
+    select: (data) => ({
+      pages: data.pages.map((page) => page.map((i) => i.id)),
+      pageParams: data.pageParams,
+    }),
     placeholderData: (previousData) => previousData,
   });
 
-  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []), [issuePages]);
+  const issueIds = useMemo(() => mergeIdPagesStable(issueIdPages?.pages ?? []), [issueIdPages]);
+  const issues = useIssuesByIds(selectedCompanyId, issueIds);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
   const loadMoreServerIssues = useCallback(() => {

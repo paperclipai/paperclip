@@ -49,6 +49,8 @@ export const issuesApi = {
       descendantOf?: string;
       includeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
+      showArchived?: boolean;
+      fields?: "summary";
       q?: string;
       limit?: number;
       offset?: number;
@@ -73,6 +75,8 @@ export const issuesApi = {
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
+    if (filters?.showArchived) params.set("showArchived", "true");
+    if (filters?.fields) params.set("fields", filters.fields);
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));

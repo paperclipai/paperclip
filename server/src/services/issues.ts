@@ -139,6 +139,8 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
+  showArchived?: boolean;
+  fields?: "summary";
   q?: string;
   limit?: number;
   offset?: number;
@@ -1487,6 +1489,16 @@ const issueListSelect = {
   updatedAt: issues.updatedAt,
 };
 
+const issueSummarySelect = {
+  id: issues.id,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  assigneeAgentId: issues.assigneeAgentId,
+  identifier: issues.identifier,
+  updatedAt: issues.updatedAt,
+};
+
 function withActiveRuns(
   issueRows: IssueWithLabels[],
   runMap: Map<string, IssueActiveRunRow>,
@@ -2335,7 +2347,9 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
-      conditions.push(isNull(issues.hiddenAt));
+      if (!filters?.showArchived) {
+        conditions.push(isNull(issues.hiddenAt));
+      }
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
@@ -2349,6 +2363,25 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
+      const isSummaryMode = filters?.fields === "summary";
+
+      if (isSummaryMode) {
+        const summaryQuery = db
+          .select(issueSummarySelect)
+          .from(issues)
+          .where(and(...conditions))
+          .orderBy(
+            hasSearch ? asc(searchOrder) : asc(priorityOrder),
+            asc(priorityOrder),
+            desc(issues.updatedAt),
+            desc(issues.id),
+          );
+        const summaryPageQuery = offset > 0
+          ? (limit === undefined ? summaryQuery.offset(offset) : summaryQuery.limit(limit).offset(offset))
+          : (limit === undefined ? summaryQuery : summaryQuery.limit(limit));
+        return await summaryPageQuery;
+      }
+
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select(issueListSelect)

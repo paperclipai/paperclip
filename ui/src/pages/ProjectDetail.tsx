@@ -15,6 +15,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useIssuesByIds } from "../lib/issueEntityStore";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
@@ -179,11 +180,13 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
-  const { data: issues, isLoading, error } = useQuery({
+  const { data: issueIds, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
     queryFn: () => issuesApi.list(companyId, { projectId }),
+    select: (issues) => issues.map((i) => i.id),
     enabled: !!companyId,
   });
+  const issues = useIssuesByIds(companyId, issueIds);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -239,11 +242,13 @@ function ProjectPluginOperationsList({
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
-  const { data: issues, isLoading, error } = useQuery({
+  const { data: issueIds, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
+    select: (issues) => issues.map((i) => i.id),
     enabled: !!companyId && !!projectId,
   });
+  const issues = useIssuesByIds(companyId, issueIds);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>

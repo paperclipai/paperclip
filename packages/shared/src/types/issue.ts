@@ -392,6 +392,11 @@ export interface Issue {
   updatedAt: Date;
 }
 
+export type IssueSummary = Pick<
+  Issue,
+  "id" | "title" | "status" | "priority" | "assigneeAgentId" | "identifier" | "updatedAt"
+>;
+
 export interface IssueComment {
   id: string;
   companyId: string;

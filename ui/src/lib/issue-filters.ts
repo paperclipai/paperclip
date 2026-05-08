@@ -20,6 +20,7 @@ export type IssueFilterState = {
   workspaces: string[];
   liveOnly?: boolean;
   hideRoutineExecutions: boolean;
+  showArchived: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -32,6 +33,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   workspaces: [],
   liveOnly: false,
   hideRoutineExecutions: false,
+  showArchived: false,
 };
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
@@ -73,6 +75,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
+    showArchived: candidate.showArchived === true,
   };
 }
 
@@ -127,6 +130,9 @@ export function applyIssueFilters(
   workspaceContext: IssueFilterWorkspaceContext = {},
 ): Issue[] {
   let result = issues;
+  if (!state.showArchived) {
+    result = result.filter((issue) => !issue.hiddenAt);
+  }
   if (state.liveOnly) {
     result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
   }
@@ -183,5 +189,6 @@ export function countActiveIssueFilters(
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
+  if (state.showArchived) count += 1;
   return count;
 }
