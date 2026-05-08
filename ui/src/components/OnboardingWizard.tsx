@@ -19,6 +19,7 @@ import {
   PopoverTrigger
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { LanguageSwitcher } from "./LanguageSwitcher/LanguageSwitcher";
 import { cn } from "../lib/utils";
 import {
   extractModelName,
@@ -1173,6 +1174,9 @@ export function OnboardingWizard() {
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
+                  {step === 1 && (
+                    <LanguageSwitcher />
+                  )}
                   {step > 1 && step > (onboardingOptions.initialStep ?? 1) && (
                     <Button
                       variant="ghost"
