@@ -582,6 +582,13 @@
       "when": 1777918317299,
       "tag": "0082_natural_nightcrawler",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1778112237154,
+      "tag": "0083_remarkable_tusk",
+      "breakpoints": true
     }
   ]
 }

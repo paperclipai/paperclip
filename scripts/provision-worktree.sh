@@ -31,6 +31,10 @@ source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
+allow_global_paperclip_cli() {
+  [[ "${PAPERCLIP_WORKTREE_DISABLE_GLOBAL_CLI:-}" != "true" ]]
+}
+
 run_isolated_worktree_init() {
   local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
   local base_cli_entry="$base_cwd/cli/src/index.ts"
@@ -43,7 +47,7 @@ run_isolated_worktree_init() {
     return 0
   fi
 
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  if allow_global_paperclip_cli && command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
       pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
@@ -51,7 +55,7 @@ run_isolated_worktree_init() {
     return 0
   fi
 
-  if command -v paperclipai >/dev/null 2>&1; then
+  if allow_global_paperclip_cli && command -v paperclipai >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
       paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
@@ -63,7 +67,7 @@ run_isolated_worktree_init() {
 }
 
 paperclipai_command_available() {
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  if allow_global_paperclip_cli && command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     return 0
   fi
 
@@ -73,7 +77,7 @@ paperclipai_command_available() {
     return 0
   fi
 
-  if command -v paperclipai >/dev/null 2>&1; then
+  if allow_global_paperclip_cli && command -v paperclipai >/dev/null 2>&1; then
     return 0
   fi
 

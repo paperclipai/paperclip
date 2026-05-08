@@ -10,6 +10,9 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
+  type AutonomyJsonValue,
+  type AutonomyRunKernelState,
+  type AutonomyTerminalClassification,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -27,6 +30,7 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  autonomyRunTransitions,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -142,6 +146,19 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { autonomyKernelService } from "./autonomy-kernel/index.js";
+import type { AutonomyKernelOptions, AutonomyKernelService, KernelDecision, PreflightRunRequest } from "./autonomy-kernel/types.js";
+import {
+  createEvidenceExtractorService,
+  type EvidenceExtractionSourceKind,
+  type ExtractedEvidenceInput,
+} from "./autonomy-kernel/evidence-extractors.js";
+import {
+  createEvidenceValidatorRegistry,
+  type EvidenceValidationResult,
+  type ValidatorEvidenceCandidate,
+} from "./autonomy-kernel/validators.js";
+import { createDefaultEvidenceValidatorAdapters } from "./autonomy-kernel/evidence-verifiers.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   redactCurrentUserText,
@@ -999,6 +1016,58 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readJsonScalar(value: unknown): string | number | boolean | null {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return null;
+}
+
+export function buildHeartbeatAutonomyPreflightRequest(input: {
+  companyId: string;
+  agentId: string;
+  runId: string;
+  source: WakeupOptions["source"];
+  triggerDetail: WakeupOptions["triggerDetail"] | null;
+  reason: string | null;
+  contextSnapshot: Record<string, unknown>;
+  issueId: string | null;
+  requestedByActorType?: WakeupOptions["requestedByActorType"];
+  requestedByActorId?: string | null;
+}): PreflightRunRequest {
+  const laneKey = readNonEmptyString(input.contextSnapshot.laneKey) ?? "default";
+  const governedAction = readNonEmptyString(input.contextSnapshot.governedAction);
+  const workspaceId = readNonEmptyString(input.contextSnapshot.workspaceId) ??
+    readNonEmptyString(input.contextSnapshot.projectWorkspaceId) ??
+    readNonEmptyString(input.contextSnapshot.executionWorkspaceId);
+
+  return {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    runId: input.runId,
+    issueId: input.issueId,
+    laneKey,
+    requestedByActorType: input.requestedByActorType ?? "system",
+    requestedByActorId: input.requestedByActorId ?? null,
+    governedAction,
+    requiresWorkspace: Boolean(workspaceId),
+    metadata: {
+      source: input.source ?? null,
+      triggerDetail: input.triggerDetail ?? null,
+      reason: input.reason,
+      laneKey,
+      workspaceId,
+      issueId: input.issueId,
+      wakeReason: readJsonScalar(input.contextSnapshot.wakeReason),
+      wakeSource: readJsonScalar(input.contextSnapshot.wakeSource),
+      projectId: readJsonScalar(input.contextSnapshot.projectId),
+      taskKey: readJsonScalar(input.contextSnapshot.taskKey),
+      governedAction,
+      skipDependencyGraphPreflight: true,
+    },
+  };
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -2272,9 +2341,29 @@ function resolveNextSessionState(input: {
 
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 
+type HeartbeatEvidenceKernel = Pick<AutonomyKernelService, "preflightRun"> &
+  Partial<Pick<AutonomyKernelService, "recordTransition" | "recordEvidence" | "validateEvidence">>;
+
+export interface HeartbeatEvidenceBridge {
+  extractEvidenceCandidates(input: {
+    companyId: string;
+    runId: string;
+    issueId?: string | null;
+    agentId?: string | null;
+    laneKey?: string | null;
+    text: string;
+    sourceKind: EvidenceExtractionSourceKind;
+    sourceId?: string | null;
+  }): ExtractedEvidenceInput[];
+  validateEvidenceCandidate(candidate: ValidatorEvidenceCandidate): Promise<EvidenceValidationResult>;
+}
+
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  autonomyKernelOptions?: AutonomyKernelOptions;
+  autonomyKernel?: HeartbeatEvidenceKernel;
+  evidenceBridge?: HeartbeatEvidenceBridge;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -2303,6 +2392,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const autonomyKernel = options.autonomyKernel ?? autonomyKernelService(db, {
+    enforceAgentContracts: false,
+    ...options.autonomyKernelOptions,
+  });
+  const defaultEvidenceBridge = (() => {
+    const extractor = createEvidenceExtractorService();
+    const validator = createEvidenceValidatorRegistry({ adapters: createDefaultEvidenceValidatorAdapters(db) });
+    return {
+      extractEvidenceCandidates: extractor.extractEvidenceCandidates,
+      validateEvidenceCandidate: validator.validateEvidenceCandidate,
+    } satisfies HeartbeatEvidenceBridge;
+  })();
+  const evidenceBridge = options.evidenceBridge ?? defaultEvidenceBridge;
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -3678,6 +3780,312 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  async function getLatestAutonomyRunState(runId: string): Promise<AutonomyRunKernelState | null> {
+    const latest = await db
+      .select({ toState: autonomyRunTransitions.toState })
+      .from(autonomyRunTransitions)
+      .where(eq(autonomyRunTransitions.runId, runId))
+      .orderBy(desc(autonomyRunTransitions.transitionedAt), desc(autonomyRunTransitions.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return latest?.toState as AutonomyRunKernelState | null;
+  }
+
+  function readRunAutonomyIssueId(run: typeof heartbeatRuns.$inferSelect): string | null {
+    return readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  }
+
+  function readRunAutonomyLaneKey(run: typeof heartbeatRuns.$inferSelect): string {
+    return readNonEmptyString(parseObject(run.contextSnapshot).laneKey) ?? "default";
+  }
+
+  function classifyHeartbeatTerminalStatus(
+    status: string,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "error">,
+  ): AutonomyTerminalClassification | null {
+    if (status === "succeeded") return "failed_no_evidence";
+    if (status === "failed") return "failed_agent_runtime";
+    if (status === "timed_out") return "timed_out";
+    if (status === "cancelled") {
+      const errorCode = readNonEmptyString(run.errorCode);
+      const error = readNonEmptyString(run.error)?.toLowerCase() ?? "";
+      return errorCode === "user_cancelled" || errorCode === "manual_cancelled" || error.includes("user")
+        ? "cancelled_by_user"
+        : "cancelled_by_policy";
+    }
+    return null;
+  }
+
+  function jsonValueToEvidenceText(value: unknown, depth = 0): string {
+    if (value === null || value === undefined || depth > 4) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (Array.isArray(value)) return value.map((item) => jsonValueToEvidenceText(item, depth + 1)).filter(Boolean).join("\n");
+    if (typeof value === "object") {
+      return Object.entries(value as Record<string, unknown>)
+        .map(([key, nested]) => {
+          const text = jsonValueToEvidenceText(nested, depth + 1);
+          return text ? `${key}: ${text}` : "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    return "";
+  }
+
+  function asEvidencePayload(value: unknown): Record<string, AutonomyJsonValue> {
+    const parsed = parseObject(value);
+    return parsed as Record<string, AutonomyJsonValue>;
+  }
+
+  function augmentHeartbeatEvidenceCandidate(
+    candidate: ExtractedEvidenceInput,
+    run: typeof heartbeatRuns.$inferSelect,
+    text: string,
+  ): ExtractedEvidenceInput {
+    if (candidate.type !== "test_run" && candidate.type !== "build") return candidate;
+    return {
+      ...candidate,
+      payload: {
+        ...candidate.payload,
+        trustedExitCode: run.exitCode ?? null,
+        resultText: text.slice(0, HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS),
+      },
+    };
+  }
+
+  async function collectHeartbeatEvidenceCandidates(run: typeof heartbeatRuns.$inferSelect): Promise<ExtractedEvidenceInput[]> {
+    const issueId = readRunAutonomyIssueId(run);
+    const laneKey = readRunAutonomyLaneKey(run);
+    const sources: Array<{ sourceKind: EvidenceExtractionSourceKind; sourceId?: string | null; text: string }> = [];
+    const resultText = jsonValueToEvidenceText(run.resultJson);
+    const runText = [
+      run.stdoutExcerpt ? `stdout:\n${run.stdoutExcerpt}` : "",
+      run.stderrExcerpt ? `stderr:\n${run.stderrExcerpt}` : "",
+      resultText ? `result:\n${resultText}` : "",
+      typeof run.exitCode === "number" ? `exitCode: ${run.exitCode}` : "",
+      run.logSha256 ? `log sha256: ${run.logSha256}` : "",
+    ].filter(Boolean).join("\n");
+    if (runText.trim()) sources.push({ sourceKind: "run", sourceId: run.id, text: runText });
+
+    const events = await db
+      .select({ id: heartbeatRunEvents.id, message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, run.id))
+      .orderBy(asc(heartbeatRunEvents.seq))
+      .limit(200);
+    for (const event of events) {
+      const eventText = [event.message ?? "", jsonValueToEvidenceText(event.payload)].filter(Boolean).join("\n");
+      if (eventText.trim()) sources.push({ sourceKind: "log", sourceId: String(event.id), text: eventText });
+    }
+
+    const candidates: ExtractedEvidenceInput[] = [];
+    const seen = new Set<string>();
+    for (const source of sources) {
+      const extracted = evidenceBridge.extractEvidenceCandidates({
+        companyId: run.companyId,
+        runId: run.id,
+        issueId,
+        agentId: run.agentId,
+        laneKey,
+        text: source.text,
+        sourceKind: source.sourceKind,
+        sourceId: source.sourceId ?? null,
+      });
+      for (const candidate of extracted) {
+        const augmented = augmentHeartbeatEvidenceCandidate(candidate, run, source.text);
+        const key = [augmented.type, augmented.uri ?? "", augmented.title, augmented.sourceType, augmented.sourceId ?? ""].join("\u0000");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(augmented);
+      }
+    }
+    return candidates;
+  }
+
+  async function classifyHeartbeatSucceededWithEvidence(run: typeof heartbeatRuns.$inferSelect): Promise<{
+    terminalClassification: AutonomyTerminalClassification;
+    evidenceEntryIds: string[];
+    metadata: Record<string, string | number | boolean | null>;
+  }> {
+    const metadata: Record<string, string | number | boolean | null> = {
+      heartbeatStatus: "succeeded",
+      errorCode: run.errorCode ?? null,
+      noGenericSuccess: true,
+      evidenceValidatorsImplemented: true,
+      evidenceCandidateCount: 0,
+      acceptedEvidenceCount: 0,
+      rejectedEvidenceCount: 0,
+      evidenceLedgerAvailable: typeof autonomyKernel.recordEvidence === "function" && typeof autonomyKernel.validateEvidence === "function",
+    };
+    try {
+      const candidates = await collectHeartbeatEvidenceCandidates(run);
+      metadata.evidenceCandidateCount = candidates.length;
+      if (candidates.length === 0) return { terminalClassification: "failed_no_evidence", evidenceEntryIds: [], metadata };
+
+      const evidenceEntryIds: string[] = [];
+      let acceptedCount = 0;
+      let rejectedCount = 0;
+      for (const candidate of candidates) {
+        const recorded = typeof autonomyKernel.recordEvidence === "function"
+          ? await autonomyKernel.recordEvidence(candidate)
+          : null;
+        if (recorded) evidenceEntryIds.push(recorded.id);
+        const verdict = await evidenceBridge.validateEvidenceCandidate({
+          type: candidate.type,
+          title: candidate.title,
+          summary: candidate.summary ?? null,
+          uri: candidate.uri ?? null,
+          payload: {
+            ...asEvidencePayload(candidate.payload),
+            companyId: candidate.companyId,
+            runId: candidate.runId ?? null,
+            issueId: candidate.issueId ?? null,
+            agentId: candidate.agentId ?? null,
+            laneKey: candidate.laneKey ?? null,
+          },
+          sourceType: candidate.sourceType,
+          sourceId: candidate.sourceId ?? null,
+        });
+        if (verdict.verdict === "accepted") acceptedCount += 1;
+        else rejectedCount += 1;
+        if (recorded && typeof autonomyKernel.validateEvidence === "function") {
+          await autonomyKernel.validateEvidence({
+            companyId: run.companyId,
+            evidenceEntryId: recorded.id,
+            verdict: verdict.verdict,
+            validatorName: verdict.validatorName,
+            validatorVersion: verdict.validatorVersion,
+            validatorMessage: verdict.reason,
+            validatorPayload: verdict.validatorPayload ?? null,
+          });
+        }
+      }
+      metadata.acceptedEvidenceCount = acceptedCount;
+      metadata.rejectedEvidenceCount = rejectedCount;
+      return {
+        terminalClassification: acceptedCount > 0 ? "succeeded_with_evidence" : "failed_invalid_evidence",
+        evidenceEntryIds,
+        metadata,
+      };
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "heartbeat succeeded evidence validation failed");
+      metadata.evidenceValidationError = true;
+      return { terminalClassification: "failed_invalid_evidence", evidenceEntryIds: [], metadata };
+    }
+  }
+
+  async function recordHeartbeatRunAutonomyTransition(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    toState: AutonomyRunKernelState;
+    fromState?: AutonomyRunKernelState | null;
+    terminalClassification?: AutonomyTerminalClassification | null;
+    evidenceEntryIds?: string[];
+    reason?: string | null;
+    metadata?: Record<string, string | number | boolean | null> | null;
+    transitionedAt?: Date;
+  }) {
+    const fromState = input.fromState === undefined ? await getLatestAutonomyRunState(input.run.id) : input.fromState;
+    if (fromState === input.toState || fromState === "terminal") return;
+    try {
+      if (typeof autonomyKernel.recordTransition !== "function") return;
+      await autonomyKernel.recordTransition({
+        companyId: input.run.companyId,
+        runId: input.run.id,
+        issueId: readRunAutonomyIssueId(input.run),
+        agentId: input.run.agentId,
+        laneKey: readRunAutonomyLaneKey(input.run),
+        fromState,
+        toState: input.toState,
+        terminalClassification: input.terminalClassification ?? null,
+        reason: input.reason ?? null,
+        actorType: "kernel",
+        actorId: null,
+        evidenceEntryIds: input.evidenceEntryIds ?? [],
+        metadata: input.metadata ?? null,
+        transitionedAt: input.transitionedAt,
+      });
+    } catch (err) {
+      logger.warn({ err, runId: input.run.id, fromState, toState: input.toState }, "failed to record autonomy run transition");
+    }
+  }
+
+  async function recordInitialHeartbeatRunAutonomyTransitions(
+    run: typeof heartbeatRuns.$inferSelect,
+    dbClient: Pick<Db, "insert" | "select"> = db,
+  ) {
+    const baseTransitionTime = Date.now();
+    const transitionTime = (offsetMs: number) => new Date(baseTransitionTime + offsetMs);
+    const rawIssueId = readRunAutonomyIssueId(run);
+    const issueId = rawIssueId
+      ? await dbClient
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, rawIssueId), eq(issues.companyId, run.companyId)))
+        .limit(1)
+        .then((rows) => rows[0]?.id ?? null)
+      : null;
+    const laneKey = readRunAutonomyLaneKey(run);
+    const base = {
+      companyId: run.companyId,
+      runId: run.id,
+      issueId,
+      agentId: run.agentId,
+      laneKey,
+      terminalClassification: null,
+      actorType: "kernel" as const,
+      actorId: null,
+      evidenceEntryIds: [],
+      incidentIds: [],
+    };
+    try {
+      await dbClient.insert(autonomyRunTransitions).values([
+        {
+          ...base,
+          id: randomUUID(),
+          fromState: null,
+          toState: "planned",
+          reason: "Heartbeat wakeup planned",
+          metadata: { transitionOrder: 0, transitionedAtMs: baseTransitionTime },
+          transitionedAt: transitionTime(0),
+          createdAt: transitionTime(0),
+        },
+        {
+          ...base,
+          id: randomUUID(),
+          fromState: "planned",
+          toState: "preflight",
+          reason: "Heartbeat wakeup preflight passed",
+          metadata: { transitionOrder: 1, transitionedAtMs: baseTransitionTime + 1 },
+          transitionedAt: transitionTime(1),
+          createdAt: transitionTime(1),
+        },
+        {
+          ...base,
+          id: randomUUID(),
+          fromState: "preflight",
+          toState: "authorized",
+          reason: "Heartbeat wakeup authorized by autonomy kernel",
+          metadata: { transitionOrder: 2, transitionedAtMs: baseTransitionTime + 2 },
+          transitionedAt: transitionTime(2),
+          createdAt: transitionTime(2),
+        },
+        {
+          ...base,
+          id: randomUUID(),
+          fromState: "authorized",
+          toState: "queued",
+          reason: "Heartbeat run queued",
+          metadata: { transitionOrder: 3, transitionedAtMs: baseTransitionTime + 3 },
+          transitionedAt: transitionTime(3),
+          createdAt: transitionTime(3),
+        },
+      ]);
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "failed to record initial autonomy run transitions");
+    }
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -3707,6 +4115,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+
+      if (status === "running") {
+        await recordHeartbeatRunAutonomyTransition({
+          run: updated,
+          toState: "running",
+          reason: "Heartbeat run started execution",
+        });
+      } else if (HEARTBEAT_RUN_TERMINAL_STATUSES.includes(status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number])) {
+        const evidenceDecision = status === "succeeded" ? await classifyHeartbeatSucceededWithEvidence(updated) : null;
+        const terminalClassification = evidenceDecision?.terminalClassification ?? classifyHeartbeatTerminalStatus(status, updated);
+        if (terminalClassification) {
+          await recordHeartbeatRunAutonomyTransition({
+            run: updated,
+            toState: "terminal",
+            terminalClassification,
+            evidenceEntryIds: evidenceDecision?.evidenceEntryIds ?? [],
+            reason: updated.error ?? `Heartbeat run finalized with ${status}`,
+            metadata: evidenceDecision?.metadata ?? {
+              heartbeatStatus: status,
+              errorCode: updated.errorCode ?? null,
+              noGenericSuccess: false,
+              evidenceValidatorsImplemented: true,
+            },
+          });
+        }
+      }
     }
 
     return updated;
@@ -4445,6 +4879,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+      await recordInitialHeartbeatRunAutonomyTransitions(queuedRun, tx);
+
       await tx
         .update(issues)
         .set({
@@ -4651,6 +5087,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: now,
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      await recordInitialHeartbeatRunAutonomyTransitions(retryRun, tx);
 
       if (issueId) {
         await tx
@@ -5379,6 +5817,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+      await recordInitialHeartbeatRunAutonomyTransitions(scheduledRun, tx);
+
       if (issueId) {
         await tx
           .update(issues)
@@ -5846,6 +6286,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
     publishRunLifecyclePluginEvent(claimed);
+    await recordHeartbeatRunAutonomyTransition({
+      run: claimed,
+      toState: "running",
+      reason: "Heartbeat run started execution",
+    });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
@@ -8271,6 +8716,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
+        await recordInitialHeartbeatRunAutonomyTransitions(newRun, tx);
+
         await tx
           .update(issues)
           .set({
@@ -8394,6 +8841,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: now,
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      await recordInitialHeartbeatRunAutonomyTransitions(queuedRun, tx);
 
       await tx
         .update(issues)
@@ -8540,6 +8989,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    const runId = randomUUID();
+    const preflight = await autonomyKernel.preflightRun(
+      buildHeartbeatAutonomyPreflightRequest({
+        companyId: agent.companyId,
+        agentId,
+        runId,
+        source,
+        triggerDetail,
+        reason,
+        contextSnapshot: enrichedContextSnapshot,
+        issueId,
+        requestedByActorType: opts.requestedByActorType,
+        requestedByActorId: opts.requestedByActorId ?? null,
+      }),
+    );
+    if (preflight.status !== "allow") {
+      await db.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason: `autonomy_preflight.${preflight.status}`,
+        payload: {
+          ...(payload ?? {}),
+          autonomyPreflight: {
+            status: preflight.status,
+            reason: preflight.reason,
+            incidentIds: preflight.incidentIds,
+            approvalGateIds: preflight.approvalGateIds,
+            runId,
+          },
+        },
+        status: "skipped",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: new Date(),
+      });
+      logger.warn(
+        {
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          laneKey: readNonEmptyString(enrichedContextSnapshot.laneKey) ?? "default",
+          source,
+          triggerDetail,
+          status: preflight.status,
+          incidentIds: preflight.incidentIds,
+          approvalGateIds: preflight.approvalGateIds,
+        },
+        "autonomy preflight blocked heartbeat wakeup",
+      );
       return null;
     }
 
@@ -8967,6 +9471,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const newRun = await tx
           .insert(heartbeatRuns)
           .values({
+            id: runId,
             companyId: agent.companyId,
             agentId,
             invocationSource: source,
@@ -8987,6 +9492,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: new Date(),
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        await recordInitialHeartbeatRunAutonomyTransitions(newRun, tx);
 
         // executionRunId is NOT stamped here (enqueueWakeup queues the run but
         // doesn't start it). It will be stamped in claimQueuedRun() once the run
@@ -9096,6 +9603,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const newRun = await db
       .insert(heartbeatRuns)
       .values({
+        id: runId,
         companyId: agent.companyId,
         agentId,
         invocationSource: source,
@@ -9117,6 +9625,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+    await recordInitialHeartbeatRunAutonomyTransitions(newRun);
     publishLiveEvent({
       companyId: newRun.companyId,
       type: "heartbeat.run.queued",

@@ -5,6 +5,8 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  autonomyEvidenceEntries,
+  autonomyIncidents,
   companies,
   createDb,
   environments,
@@ -2914,5 +2916,127 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+});
+
+describeEmbeddedPostgres("issueService.update agent evidence-gated status transitions", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-evidence-gate-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(autonomyEvidenceEntries);
+    await db.delete(autonomyIncidents);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssue() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `G${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Evidence Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Evidence gated issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      createdByAgentId: agentId,
+    });
+
+    return { companyId, agentId, issueId };
+  }
+
+  it("rejects agent transition to in_review without accepted evidence and records one incident", async () => {
+    const { companyId, agentId, issueId } = await seedIssue();
+
+    await expect(svc.update(issueId, { status: "in_review", actorAgentId: agentId })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("in_progress");
+
+    const incidents = await db
+      .select({ type: autonomyIncidents.type, status: autonomyIncidents.status, issueId: autonomyIncidents.issueId, agentId: autonomyIncidents.agentId })
+      .from(autonomyIncidents)
+      .where(eq(autonomyIncidents.companyId, companyId));
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({
+      type: "RUN_FAILED_NO_EVIDENCE",
+      status: "open",
+      issueId,
+      agentId,
+    });
+
+    await expect(svc.update(issueId, { status: "in_review", actorAgentId: agentId })).rejects.toMatchObject({
+      status: 422,
+    });
+    const repeatedIncidents = await db.select({ id: autonomyIncidents.id }).from(autonomyIncidents).where(eq(autonomyIncidents.companyId, companyId));
+    expect(repeatedIncidents).toHaveLength(1);
+  });
+
+  it("allows agent transition to done with matching accepted autonomy evidence", async () => {
+    const { companyId, agentId, issueId } = await seedIssue();
+    await db.insert(autonomyEvidenceEntries).values({
+      companyId,
+      issueId,
+      agentId,
+      type: "test",
+      status: "accepted",
+      verdict: "accepted",
+      sourceType: "test",
+      sourceId: "accepted-evidence",
+      title: "Accepted evidence",
+      summary: "Tests passed.",
+    });
+
+    await expect(svc.update(issueId, { status: "done", actorAgentId: agentId })).resolves.toMatchObject({
+      id: issueId,
+      status: "done",
+    });
+
+    const incidents = await db.select({ id: autonomyIncidents.id }).from(autonomyIncidents).where(eq(autonomyIncidents.companyId, companyId));
+    expect(incidents).toHaveLength(0);
+  });
+
+  it("allows human transition to in_review without autonomy evidence", async () => {
+    const { issueId } = await seedIssue();
+
+    await expect(svc.update(issueId, { status: "in_review", actorUserId: "human-operator" })).resolves.toMatchObject({
+      id: issueId,
+      status: "in_review",
+    });
   });
 });

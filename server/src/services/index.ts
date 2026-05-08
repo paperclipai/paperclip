@@ -33,6 +33,7 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export { autonomyKernelService } from "./autonomy-kernel/index.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,

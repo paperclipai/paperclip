@@ -7,6 +7,8 @@ import {
   agents,
   approvals,
   assets,
+  autonomyEvidenceEntries,
+  autonomyIncidents,
   companies,
   companyMemberships,
   documents,
@@ -99,6 +101,85 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+const AGENT_EVIDENCE_REQUIRED_STATUSES = new Set(["in_review", "done"]);
+
+async function assertAgentStatusTransitionHasAcceptedEvidence(
+  dbOrTx: any,
+  input: {
+    issue: typeof issues.$inferSelect;
+    toStatus: string | undefined;
+    actorAgentId?: string | null;
+    actorRunId?: string | null;
+  },
+) {
+  if (!input.toStatus || !AGENT_EVIDENCE_REQUIRED_STATUSES.has(input.toStatus) || !input.actorAgentId) return;
+
+  const predicates = [
+    eq(autonomyEvidenceEntries.companyId, input.issue.companyId),
+    eq(autonomyEvidenceEntries.issueId, input.issue.id),
+    eq(autonomyEvidenceEntries.verdict, "accepted"),
+    eq(autonomyEvidenceEntries.status, "accepted"),
+    or(eq(autonomyEvidenceEntries.agentId, input.actorAgentId), isNull(autonomyEvidenceEntries.agentId)),
+  ];
+  if (input.actorRunId) {
+    predicates.push(or(eq(autonomyEvidenceEntries.runId, input.actorRunId), isNull(autonomyEvidenceEntries.runId)) as any);
+  }
+
+  const acceptedEvidence = await dbOrTx
+    .select({ id: autonomyEvidenceEntries.id })
+    .from(autonomyEvidenceEntries)
+    .where(and(...predicates))
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  if (acceptedEvidence) return;
+
+  const idempotencyKey = `issue-transition-no-evidence:${input.issue.companyId}:${input.issue.id}:${input.actorAgentId}:${input.toStatus}`;
+  const existingIncident = await dbOrTx
+    .select({ id: autonomyIncidents.id })
+    .from(autonomyIncidents)
+    .where(
+      and(
+        eq(autonomyIncidents.companyId, input.issue.companyId),
+        eq(autonomyIncidents.idempotencyKey, idempotencyKey),
+        eq(autonomyIncidents.status, "open"),
+      ),
+    )
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+  const incident = existingIncident ?? (await dbOrTx
+    .insert(autonomyIncidents)
+    .values({
+      companyId: input.issue.companyId,
+      type: "RUN_FAILED_NO_EVIDENCE",
+      severity: "error",
+      status: "open",
+      laneKey: null,
+      runId: input.actorRunId ?? null,
+      issueId: input.issue.id,
+      agentId: input.actorAgentId,
+      sourceType: "issue",
+      sourceId: input.issue.id,
+      title: "Issue transition rejected without accepted evidence",
+      message: `Agent attempted to move issue ${input.issue.identifier ?? input.issue.id} to ${input.toStatus} without accepted autonomy evidence. Comments alone cannot advance or close work.`,
+      remediation: "Attach accepted evidence from the autonomy ledger, or have a human operator make an explicit override.",
+      stopsLane: false,
+      idempotencyKey,
+      metadata: {
+        attemptedStatus: input.toStatus,
+        actorRunId: input.actorRunId ?? null,
+      },
+    })
+    .returning({ id: autonomyIncidents.id })
+    .then((rows: Array<{ id: string }>) => rows[0]));
+
+  throw unprocessable("Accepted autonomy evidence is required before an agent can advance or close an issue", {
+    issueId: input.issue.id,
+    attemptedStatus: input.toStatus,
+    incidentId: incident.id,
+  });
 }
 
 function readStringFromRecord(record: unknown, key: string) {
@@ -3035,6 +3116,8 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        actorRunId?: string | null;
+        skipEvidenceGateForWorkflowDecision?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -3050,6 +3133,8 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        actorRunId,
+        skipEvidenceGateForWorkflowDecision,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -3061,6 +3146,14 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        if (existing.status !== issueData.status && !skipEvidenceGateForWorkflowDecision) {
+          await assertAgentStatusTransitionHasAcceptedEvidence(dbOrTx, {
+            issue: existing,
+            toStatus: issueData.status,
+            actorAgentId,
+            actorRunId,
+          });
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

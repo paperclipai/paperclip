@@ -168,6 +168,7 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_HOME;
   delete process.env.PAPERCLIP_INSTANCE_ID;
   delete process.env.PAPERCLIP_WORKTREES_DIR;
+  delete process.env.PAPERCLIP_WORKTREE_DISABLE_GLOBAL_CLI;
   delete process.env.DATABASE_URL;
   await resetRuntimeServicesForTests();
 });
@@ -1059,6 +1060,7 @@ describe("realizeExecutionWorkspace", () => {
     await fs.writeFile(path.join(repoRoot, "server", "index.js"), "export {};\n", "utf8");
     await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
     await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+    process.env.PAPERCLIP_WORKTREE_DISABLE_GLOBAL_CLI = "true";
     await runPnpm(repoRoot, ["install"]);
     await runGit(repoRoot, ["add", "."]);
     await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);
@@ -1136,6 +1138,7 @@ describe("realizeExecutionWorkspace", () => {
     );
     await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
     await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+    process.env.PAPERCLIP_WORKTREE_DISABLE_GLOBAL_CLI = "true";
 
     await fs.mkdir(path.join(repoRoot, "node_modules"), { recursive: true });
     await fs.writeFile(path.join(repoRoot, "node_modules", ".keep"), "", "utf8");
@@ -1292,6 +1295,7 @@ describe("realizeExecutionWorkspace", () => {
         env: {
           ...process.env,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKTREE_DISABLE_GLOBAL_CLI: "true",
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
         },
@@ -1367,6 +1371,7 @@ describe("realizeExecutionWorkspace", () => {
     await fs.writeFile(path.join(repoRoot, "server", "index.js"), "export {};\n", "utf8");
     await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
     await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+    process.env.PAPERCLIP_WORKTREE_DISABLE_GLOBAL_CLI = "true";
     await runPnpm(repoRoot, ["install"]);
     await runGit(repoRoot, ["add", "."]);
     await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);

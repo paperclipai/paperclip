@@ -49,6 +49,14 @@ export function ApprovalCard({
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
+  const approveLabel =
+    typeof payload?.acceptActionLabel === "string" && payload.acceptActionLabel.trim()
+      ? payload.acceptActionLabel.trim()
+      : "Approve";
+  const rejectLabel =
+    typeof payload?.rejectActionLabel === "string" && payload.rejectActionLabel.trim()
+      ? payload.rejectActionLabel.trim()
+      : "Reject";
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
 
   return (
@@ -118,7 +126,7 @@ export function ApprovalCard({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  {pendingAction === "approve" ? "Approving..." : "Approve"}
+                  {pendingAction === "approve" ? "Approving..." : approveLabel}
                 </Button>
                 <Button
                   variant="destructive"
@@ -126,7 +134,7 @@ export function ApprovalCard({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                  {pendingAction === "reject" ? "Rejecting..." : rejectLabel}
                 </Button>
               </>
             )}
