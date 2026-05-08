@@ -1,0 +1,43 @@
+[Unit]
+Description=Paperclip Telegram bot (inbound commands + outbound notifier for CEO)
+Documentation=https://paperclip.thethirdchair.ru/THE/issues/THE-341
+After=network-online.target tg_paperclip.service
+Wants=network-online.target
+Requires=tg_paperclip.service
+
+[Service]
+Type=simple
+User=paperclip
+WorkingDirectory=/opt/paperclip/packages/telegram-bot
+
+# Variables provided in EnvironmentFile (chmod 600, owned by root:paperclip):
+#   TELEGRAM_BOT_TOKEN         (from @BotFather, given by Динар)
+#   PAPERCLIP_API_URL=http://localhost:3100
+#   PAPERCLIP_BOT_API_KEY      (generated via Paperclip admin UI → Service Accounts)
+#   PAPERCLIP_COMPANY_ID=45cd7642-53da-4c19-82bd-58e8e03cf452
+#   TELEGRAM_BOT_INTERNAL_SECRET (must match the value in /opt/paperclip/.env)
+#   TELEGRAM_BOT_INTERNAL_PORT=3110
+#   DINAR_USER_ID              (uuid of CEO's user — leave blank on first deploy; outbound notifier auto-disables)
+#   DINAR_TG_CHAT_ID           (Telegram chat_id — only known after /login completes)
+#   CEO_AGENT_ID=262a08ea-c041-4af7-a310-e2a0fedc8348      (default; override only if changed)
+#   NOTIFIER_INTERVAL_MS=30000
+#   NOTIFIER_DEDUP_FILE=/var/lib/paperclip-tg-bot/seen.json
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/paperclip/telegram-bot.env
+
+# Pre-build is performed manually before the first start — see runbook.
+# Bot has no native deps, no tsx loader needed.
+ExecStart=/usr/bin/node dist/index.js
+
+Restart=on-failure
+RestartSec=10
+
+# Dedup state lives in NOTIFIER_DEDUP_FILE (default /var/lib/paperclip-tg-bot/seen.json).
+# Pre-create that directory with `install -d -o paperclip -g paperclip /var/lib/paperclip-tg-bot`.
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paperclip-tg-bot
+
+[Install]
+WantedBy=multi-user.target

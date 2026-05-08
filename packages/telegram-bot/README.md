@@ -103,5 +103,17 @@ pnpm --filter @paperclipai/telegram-bot test
 
 ## Production deploy
 
-См. [THE-341.4](/THE/issues/THE-345). systemd-unit запускает `node dist/index.js`
-с env из `/etc/paperclip/telegram-bot.env`.
+См. полный runbook в [`doc/runbooks/telegram-bot.md`](../../doc/runbooks/telegram-bot.md)
+([THE-345](/THE/issues/THE-345)). Кратко: systemd-юнит
+[`docker/systemd/paperclip-tg-bot.service`](../../docker/systemd/paperclip-tg-bot.service)
+запускает `node dist/index.js` с env из `/etc/paperclip/telegram-bot.env`
+(шаблон — [`.env.example`](./.env.example)). Деплой в две стадии:
+
+1. **Stage 1 (inbound-only)** — без `DINAR_USER_ID`/`DINAR_TG_CHAT_ID`. Notifier
+   автоматически выключается. Достаточно для проверки `/login`, `/task`, `/issue`,
+   `/approve`, `/deny`.
+2. **Stage 2 (outbound notifier)** — добавить `DINAR_USER_ID` (uuid из `auth_users`)
+   и `DINAR_TG_CHAT_ID` (chat_id записан после `/login`), рестарт юнита.
+
+Логи: `journalctl -u paperclip-tg-bot -f`.
+Рестарт: `sudo systemctl restart paperclip-tg-bot`.
