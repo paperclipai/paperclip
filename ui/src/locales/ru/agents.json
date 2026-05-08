@@ -176,7 +176,8 @@
     }
   },
   "action_buttons": {
-    "pause": "Пауза"
+    "pause": "Пауза",
+    "resume": "Возобновить"
   },
   "properties": {
     "status": "Статус",

@@ -176,7 +176,8 @@
     }
   },
   "action_buttons": {
-    "pause": "Pausieren"
+    "pause": "Pausieren",
+    "resume": "Fortsetzen"
   },
   "properties": {
     "status": "Status",

@@ -75,7 +75,8 @@
     "dismiss_from_inbox": "Dispensar da caixa de entrada",
     "assignment": "Atribuição",
     "timer": "Temporizador",
-    "on_demand": "Sob demanda"
+    "on_demand": "Sob demanda",
+    "run_now": "Executar agora"
   },
   "status": {
     "all": "Todos",

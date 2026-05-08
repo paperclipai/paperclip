@@ -176,7 +176,8 @@
     }
   },
   "action_buttons": {
-    "pause": "暂停"
+    "pause": "暂停",
+    "resume": "恢复"
   },
   "properties": {
     "status": "状态",

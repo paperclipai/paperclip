@@ -75,7 +75,8 @@
     "dismiss_from_inbox": "从收件箱移除",
     "assignment": "分配",
     "timer": "定时器",
-    "on_demand": "按需"
+    "on_demand": "按需",
+    "run_now": "立即运行"
   },
   "status": {
     "all": "全部",

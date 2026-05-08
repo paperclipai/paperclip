@@ -75,7 +75,8 @@
     "dismiss_from_inbox": "Descartar de la bandeja de entrada",
     "assignment": "Asignación",
     "timer": "Temporizador",
-    "on_demand": "A demanda"
+    "on_demand": "A demanda",
+    "run_now": "Ejecutar ahora"
   },
   "status": {
     "all": "Todos",

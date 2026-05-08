@@ -75,7 +75,8 @@
     "dismiss_from_inbox": "Закрити з вхідних",
     "assignment": "Призначення",
     "timer": "Таймер",
-    "on_demand": "На вимогу"
+    "on_demand": "На вимогу",
+    "run_now": "Запустити зараз"
   },
   "status": {
     "all": "Всі",

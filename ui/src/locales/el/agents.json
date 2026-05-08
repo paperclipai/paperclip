@@ -176,7 +176,8 @@
     }
   },
   "action_buttons": {
-    "pause": "Παύση"
+    "pause": "Παύση",
+    "resume": "Συνέχεια"
   },
   "properties": {
     "status": "Κατάσταση",

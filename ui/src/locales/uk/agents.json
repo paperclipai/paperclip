@@ -176,7 +176,8 @@
     }
   },
   "action_buttons": {
-    "pause": "Призупинити"
+    "pause": "Призупинити",
+    "resume": "Відновити"
   },
   "properties": {
     "status": "Статус",
