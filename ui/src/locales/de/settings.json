@@ -110,7 +110,13 @@
     "de": "Deutsch",
     "pt": "Português",
     "zh": "中文",
-    "el": "Griechisch"
+    "el": "Griechisch",
+    "ar": "Arabisch",
+    "fr": "Französisch",
+    "it": "Italienisch",
+    "ja": "Japanisch",
+    "ko": "Koreanisch",
+    "tr": "Türkisch"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Laufzeit-Dashboard",

@@ -79,7 +79,8 @@
     "timer": "Timer",
     "on_demand": "On-demand",
     "reset": "Reset",
-    "run_now": "Run now"
+    "run_now": "Run now",
+    "copy_failed": "Kopieren fehlgeschlagen"
   },
   "status": {
     "all": "All",
@@ -113,7 +114,9 @@
     "planned": "Planned",
     "draft": "Draft",
     "skipped": "Skipped",
-    "blocked": "Blocked"
+    "blocked": "Blocked",
+    "off": "Aus",
+    "on": "Ein"
   },
   "status_labels": {
     "backlog": "Backlog",
@@ -240,7 +243,9 @@
     "switch_workspace": "Switch workspace",
     "no_workspaces": "No workspaces",
     "open_switcher": "Open {{company}} workspace switcher",
-    "open_switcher_generic": "Open workspace switcher"
+    "open_switcher_generic": "Open workspace switcher",
+    "done_order": "Fertig",
+    "edit_order": "Bearbeiten"
   },
   "not_found": {
     "breadcrumb": "Nicht gefunden",
@@ -800,7 +805,10 @@
     "paused": "Pausiert",
     "enter_valid_amount": "Geben Sie einen gültigen nicht-negativen Dollar-Betrag ein.",
     "scope_type_agent": "Agent",
-    "scope_type_project": "Projekt"
+    "scope_type_project": "Projekt",
+    "of_limit": "{{percent}}% des Limits",
+    "project_paused": "Ausführung für dieses Projekt pausiert, bis das Budget erhöht oder der Vorfall abgelehnt wird.",
+    "scope_paused": "Heartbeat-Ausführungen für diesen Bereich pausiert, bis das Budget erhöht oder der Vorfall abgelehnt wird."
   },
   "search": {
     "title": "Suche",
@@ -1176,7 +1184,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions..."
+    "loading_revisions": "Loading revisions...",
+    "actor_agent": "Agent",
+    "actor_board": "Board",
+    "actor_system": "System",
+    "content_header": "Inhalt",
+    "diff_title": "Vergleich",
+    "new_label": "Neu",
+    "old_label": "Alt",
+    "rev_label": "Rev. {{number}}",
+    "same_revision": "Beide Seiten sind dieselbe Revision.",
+    "select_revision": "Revision auswählen",
+    "select_two_revisions": "Zwei Revisionen zum Vergleichen auswählen."
   },
   "language_switcher": {
     "change_language": "Sprache ändern"

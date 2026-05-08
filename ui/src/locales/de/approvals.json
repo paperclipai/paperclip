@@ -23,7 +23,8 @@
     "approved": "Genehmigt",
     "pending": "Ausstehend",
     "rejected": "Abgelehnt",
-    "revision_requested": "Überarbeitung angefordert"
+    "revision_requested": "Überarbeitung angefordert",
+    "cancelled": "Abgebrochen"
   },
   "payload": {
     "type_hire_agent": "Agent einstellen",

@@ -77,7 +77,26 @@
     "by_biller": "Nach Abrechner",
     "by_biller_desc": "Kontoebene-Finanzereignisse, gruppiert nach Belastungs- oder Gutschriftsquelle.",
     "budget_control": "Budget-Kontrollebene",
-    "budget_control_desc": "Harte Ausgabenlimits für Agenten und Projekte. Das Anbieter-Abonnementkontingent bleibt separat und erscheint unter Anbieter."
+    "budget_control_desc": "Harte Ausgabenlimits für Agenten und Projekte. Das Anbieter-Abonnementkontingent bleibt separat und erscheint unter Anbieter.",
+    "accounting_model_title": "Abrechnungsmodell",
+    "accounting_model_desc": "Paperclip trennt jetzt Inferenz-Nutzung auf Anfrage-Ebene und Finanzereignisse auf Konto-Ebene. Dies ermöglicht ehrliche Anbieter-Berichterstattung, wenn OpenRouter, Cloudflare, Bedrock oder ein anderer Vermittler der Zahler ist.",
+    "live_quotas": "Live-Kontingente",
+    "live_quotas_desc": "Anbieter- oder Zahler-Fenster, die den Datenverkehr in Echtzeit stoppen können.",
+    "finance_ledger_points": {
+      "point1": "Aufladungen, Rückerstattungen, Gebühren",
+      "point2": "Bedrock-Reservierungs- oder Trainingsgebühren",
+      "point3": "Ablauf und Anpassung von Credits"
+    },
+    "inference_ledger_points": {
+      "point1": "Token + bezahlte Dollar",
+      "point2": "Anbieter, Zahler, Modell",
+      "point3": "Abonnement- und Überschreitungsabrechnung"
+    },
+    "live_quotas_points": {
+      "point1": "Anbieter-Kontingentfenster",
+      "point2": "Zahler-Kreditsysteme",
+      "point3": "Fehler werden direkt angezeigt"
+    }
   },
   "budgets": {
     "company_policy": "Unternehmensweite Monatsrichtlinie.",
@@ -96,7 +115,15 @@
     "applying": "Wird angewendet...",
     "raise_budget": "Budget erhöhen & fortsetzen",
     "keep_paused": "Pausiert lassen",
-    "budget_must_exceed": "Das neue Budget muss die aktuell beobachteten Ausgaben übersteigen."
+    "budget_must_exceed": "Das neue Budget muss die aktuell beobachteten Ausgaben übersteigen.",
+    "dismissed": "Abgelehnt",
+    "escalated": "Eskaliert",
+    "hard_stop": "Hartes Stopp",
+    "new_budget_usd": "Neues Budget (USD)",
+    "open": "Offen",
+    "pending_approval": "Genehmigung ausstehend",
+    "resolved": "Gelöst",
+    "spending_reached": "Ausgaben haben {{observed}} beim Limit {{limit}} erreicht."
   },
   "policy_card": {
     "lifetime_budget": "Lebenszeit-Budget",
@@ -122,7 +149,10 @@
     "budget_usd": "Budget (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Durch Budget pausiert"
+    "paused_by_budget": "Durch Budget pausiert",
+    "critical": "Budget pausiert",
+    "healthy": "Budget in Ordnung",
+    "warning": "Budget-Warnung"
   },
   "empty": {
     "select_company": "Wählen Sie ein Unternehmen, um Kosten anzuzeigen.",
@@ -159,7 +189,11 @@
     "api_runs_only": "~{{apiRuns}} API-Ausführungen",
     "sub_runs_only": "~{{subRuns}} Abo-Ausführungen",
     "percent_used": "{{percent}}% genutzt",
-    "resets": "zurückgesetzt {{date}}"
+    "resets": "zurückgesetzt {{date}}",
+    "of_provider_cost": "{{percent}}% der Anbieterkosten",
+    "of_provider_tokens": "{{percent}}% der Anbieter-Token",
+    "runs_label": "Ausführungen",
+    "total_label": "Gesamt"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} gemessene Ausführung",
@@ -168,7 +202,11 @@
     "subscription_runs_other": "{{count}} Abo-Ausführungen",
     "this_week": "diese Woche",
     "billing_types": "Abrechnungstypen",
-    "upstream_providers": "Vorgelagerte Anbieter"
+    "upstream_providers": "Vorgelagerte Anbieter",
+    "model_count_one": "{{count}} Modell",
+    "model_count_other": "{{count}} Modelle",
+    "provider_count_one": "{{count}} Anbieter",
+    "provider_count_other": "{{count}} Anbieter"
   },
   "finance_kind": {
     "title": "Finanzereignis-Mix",

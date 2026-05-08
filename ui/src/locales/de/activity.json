@@ -146,7 +146,15 @@
     "assignee_label": "Zugewiesen",
     "updated_task": "hat diese Aufgabe aktualisiert",
     "requested_follow_up": "bat um Rückverfolgung",
-    "system": "System"
+    "system": "System",
+    "environment_label": "Umgebung",
+    "failure_label": "Fehler",
+    "lease_label": "Lease",
+    "no_entries": "Keine Einträge in der Chronik.",
+    "none": "Keine",
+    "provider_label": "Anbieter",
+    "run_label": "Ausführung",
+    "workspace_label": "Arbeitsbereich"
   },
   "system": "System",
   "board": "Tafel",

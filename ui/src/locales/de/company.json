@@ -283,7 +283,9 @@
       "save": "Speichern",
       "saving": "Wird gespeichert...",
       "select_file": "Wählen Sie eine Datei zur Prüfung.",
-      "bundled_read_only": "Gebündelte Paperclip-Skills sind schreibgeschützt."
+      "bundled_read_only": "Gebündelte Paperclip-Skills sind schreibgeschützt.",
+      "copied_path": "Pfad kopiert",
+      "copy_source_path": "Quellpfad kopieren"
     },
     "sources": {
       "managed": "{{source}} verwaltet",
@@ -454,7 +456,9 @@
     "open_assigned_issues_one": "{{count}} offene zugewiesene Aufgabe",
     "open_assigned_issues_other": "{{count}} offene zugewiesene Aufgaben",
     "more_issues_one": "{{count}} weitere Aufgabe",
-    "more_issues_other": "{{count}} weitere Aufgaben"
+    "more_issues_other": "{{count}} weitere Aufgaben",
+    "agent_option_label": "{{name}} ({{role}})",
+    "member_fallback_name": "dieses Mitglied"
   },
   "companies": {
     "breadcrumb": "Unternehmen",

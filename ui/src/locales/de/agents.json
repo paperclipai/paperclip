@@ -75,6 +75,8 @@
       "created_by_run": "Durch diese Ausführung erstellt",
       "reused_existing": "Bestehenden Arbeitsbereich wiederverwendet"
     },
+    "copy_as_markdown": "Als Markdown kopieren",
+    "signal": "Signal",
     "save_failed": "Speichern fehlgeschlagen",
     "save_config": "Speichern",
     "saving_config": "Wird gespeichert…",
@@ -470,7 +472,20 @@
     "failed_load_run_log": "Ausführungsprotokoll konnte nicht geladen werden",
     "instructions_placeholder": "# Agenten-Anweisungen",
     "skill_view_link": "Anzeigen",
-    "approve_agent": "Agenten genehmigen"
+    "approve_agent": "Agenten genehmigen",
+    "clear_session_text": "Sitzung für diese Probleme zurücksetzen",
+    "clearing_session": "Sitzung wird zurückgesetzt...",
+    "failed_load_workspace_log": "Arbeitsbereich-Betriebsprotokoll konnte nicht geladen werden",
+    "no_log_events": "Keine Protokollereignisse.",
+    "no_persisted_log_lines": "Keine gespeicherten Protokollzeilen.",
+    "load_more_log": "Mehr Protokolle laden",
+    "transcript": "Transkript",
+    "transcript_mode_nice": "Übersichtlich",
+    "transcript_mode_raw": "Roh"
+  },
+  "icon_picker": {
+    "no_match": "Keine Treffer",
+    "search_placeholder": "Icons suchen..."
   },
   "run_errors": {
     "exited_with_code": "Claude wurde mit Code {{code}} beendet",
