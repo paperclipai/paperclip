@@ -7,22 +7,22 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import styles from "./LanguageSwitcher.module.css";
+import { cn } from "@/lib/utils";
 
 export function LanguageSwitcher() {
   const { i18n, t } = useTranslation("common");
   const current = i18n.language as SupportedLanguage;
   return (
-    <div className={`language-switcher ${styles.languageSwitcher}`}>
+    <div className="inline-flex items-center">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             aria-label={t("language_switcher.change_language")}
-            className={styles.trigger}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-accent/50 cursor-pointer"
           >
-            <Languages className={styles.icon} />
-            <span className={styles.label}>{LANGUAGE_NATIVE_NAMES[current] ?? current}</span>
+            <Languages className="size-3.5 shrink-0" />
+            <span>{LANGUAGE_NATIVE_NAMES[current] ?? current}</span>
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
@@ -30,7 +30,7 @@ export function LanguageSwitcher() {
             <DropdownMenuItem
               key={lang}
               onSelect={() => setLanguage(lang)}
-              className={lang === current ? styles.active : undefined}
+              className={cn(lang === current && "bg-accent/50 font-semibold")}
             >
               {LANGUAGE_NATIVE_NAMES[lang]}
             </DropdownMenuItem>
