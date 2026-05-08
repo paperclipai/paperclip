@@ -1176,7 +1176,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions..."
+    "loading_revisions": "Φόρτωση αναθεωρήσεων...",
+    "diff_title": "Σύγκριση",
+    "rev_label": "εκδ. {{number}}",
+    "actor_board": "πίνακας",
+    "actor_agent": "πράκτορας",
+    "actor_system": "σύστημα",
+    "old_label": "Παλιά",
+    "new_label": "Νέα",
+    "select_revision": "Επιλέξτε αναθεώρηση",
+    "select_two_revisions": "Επιλέξτε δύο αναθεωρήσεις για σύγκριση.",
+    "same_revision": "Και οι δύο πλευρές είναι η ίδια αναθεώρηση.",
+    "content_header": "Περιεχόμενο"
   },
   "language_switcher": {
     "change_language": "Αλλαγή γλώσσας"
