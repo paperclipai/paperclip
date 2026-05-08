@@ -77,7 +77,26 @@
     "by_biller": "按计费方",
     "by_biller_desc": "按收费或贷记方分组的账户级财务事件。",
     "budget_control": "预算控制平面",
-    "budget_control_desc": "智能体和项目的硬性消耗限制。提供商订阅配额单独保留，显示在提供商下。"
+    "budget_control_desc": "智能体和项目的硬性消耗限制。提供商订阅配额单独保留，显示在提供商下。",
+    "accounting_model_desc": "此时段的账本记录模式。",
+    "accounting_model_title": "记账模式",
+    "finance_ledger_points": {
+      "point1": "账户级非推理费用",
+      "point2": "发票、信用和调整",
+      "point3": "与订阅及财务事件对账"
+    },
+    "inference_ledger_points": {
+      "point1": "按请求范围的推理消耗",
+      "point2": "按智能体、项目和提供商分组",
+      "point3": "实时累积，无需等待发票"
+    },
+    "live_quotas": "实时配额",
+    "live_quotas_desc": "提供商订阅窗口中的实时 token 消耗。",
+    "live_quotas_points": {
+      "point1": "Anthropic 订阅滚动窗口",
+      "point2": "本周 token 使用与配额对比",
+      "point3": "按输入/输出和计费类型细分"
+    }
   },
   "budgets": {
     "company_policy": "全公司月度策略。",
@@ -96,7 +115,15 @@
     "applying": "应用中...",
     "raise_budget": "提高预算并恢复",
     "keep_paused": "保持暂停",
-    "budget_must_exceed": "新预算必须超过当前已观测的消耗。"
+    "budget_must_exceed": "新预算必须超过当前已观测的消耗。",
+    "dismissed": "已忽略",
+    "escalated": "已上报",
+    "hard_stop": "硬性停止",
+    "new_budget_usd": "新预算（USD）",
+    "open": "开放",
+    "pending_approval": "待审批",
+    "resolved": "已解决",
+    "spending_reached": "已达到支出限额 {{amount}}"
   },
   "policy_card": {
     "lifetime_budget": "终身预算",
@@ -122,7 +149,10 @@
     "budget_usd": "预算（USD）"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "因预算暂停"
+    "paused_by_budget": "因预算暂停",
+    "critical": "严重",
+    "healthy": "健康",
+    "warning": "警告"
   },
   "empty": {
     "select_company": "请选择公司以查看费用。",
@@ -159,7 +189,11 @@
     "api_runs_only": "约 {{apiRuns}} 次 API 运行",
     "sub_runs_only": "约 {{subRuns}} 次订阅运行",
     "percent_used": "已使用 {{percent}}%",
-    "resets": "{{date}} 重置"
+    "resets": "{{date}} 重置",
+    "of_provider_cost": "提供商费用的 {{percent}}%",
+    "of_provider_tokens": "提供商 token 的 {{percent}}%",
+    "runs_label": "次运行",
+    "total_label": "总计"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} 次按量计费运行",
@@ -168,7 +202,11 @@
     "subscription_runs_other": "{{count}} 次订阅运行",
     "this_week": "本周",
     "billing_types": "计费类型",
-    "upstream_providers": "上游提供商"
+    "upstream_providers": "上游提供商",
+    "model_count_one": "{{count}} 个模型",
+    "model_count_other": "{{count}} 个模型",
+    "provider_count_one": "{{count}} 个提供商",
+    "provider_count_other": "{{count}} 个提供商"
   },
   "finance_kind": {
     "title": "财务事件构成",
