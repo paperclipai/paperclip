@@ -138,7 +138,7 @@ export function PluginPage() {
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{t("actions.loading")}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {

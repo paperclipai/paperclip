@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import type { DocumentRevision } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
@@ -41,6 +42,7 @@ export function DocumentDiffModal({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation("common");
   const { data: revisions } = useQuery({
     queryKey: queryKeys.issues.documentRevisions(issueId, documentKey),
     queryFn: () => issuesApi.listDocumentRevisions(issueId, documentKey),
@@ -135,7 +137,7 @@ export function DocumentDiffModal({
 
         <div className="overflow-auto flex-1 rounded-md border border-border text-xs">
           {!revisions ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Loading revisions...</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{t("documents.loading_revisions")}</div>
           ) : !leftRevision || !rightRevision ? (
             <div className="p-6 text-center text-muted-foreground text-sm">Select two revisions to compare.</div>
           ) : leftRevision.id === rightRevision.id ? (

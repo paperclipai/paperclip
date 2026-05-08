@@ -1171,5 +1171,8 @@
     "repo_root": "Repo root",
     "workspace_path": "Workspace path",
     "last_checked": "Last checked {{time}}"
+  },
+  "documents": {
+    "loading_revisions": "Loading revisions..."
   }
 }
