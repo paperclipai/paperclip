@@ -57,7 +57,7 @@ function requireSuccessfulResult(result: RunProcessResult, action: string): void
 
 export function createCommandManagedRuntimeClient(input: {
   runner: CommandManagedRuntimeRunner;
-  remoteCwd: string;
+  commandCwd: string;
   timeoutMs: number;
   shellCommand?: "bash" | "sh" | null;
 }): SandboxManagedRuntimeClient {
@@ -66,7 +66,7 @@ export function createCommandManagedRuntimeClient(input: {
     const result = await input.runner.execute({
       command: shellCommand,
       args: ["-lc", script],
-      cwd: input.remoteCwd,
+      cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
     });
@@ -117,7 +117,7 @@ export function createCommandManagedRuntimeClient(input: {
       const result = await input.runner.execute({
         command: shellCommand,
         args: ["-lc", `rm -rf ${shellQuote(remotePath)}`],
-        cwd: input.remoteCwd,
+        cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
@@ -126,7 +126,7 @@ export function createCommandManagedRuntimeClient(input: {
       const result = await input.runner.execute({
         command: shellCommand,
         args: ["-lc", command],
-        cwd: input.remoteCwd,
+        cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
       });
       requireSuccessfulResult(result, command);
@@ -149,6 +149,7 @@ export async function prepareCommandManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  const commandCwd = input.spec.remoteCwd;
   const runtimeSpec: SandboxRemoteExecutionSpec = {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",
@@ -159,7 +160,7 @@ export async function prepareCommandManagedRuntime(input: {
   };
   const client = createCommandManagedRuntimeClient({
     runner: input.runner,
-    remoteCwd: workspaceRemoteDir,
+    commandCwd,
     timeoutMs,
     shellCommand: input.spec.shellCommand,
   });
@@ -176,7 +177,7 @@ export async function prepareCommandManagedRuntime(input: {
       const probe = await input.runner.execute({
         command: shellCommand,
         args: ["-lc", `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`],
-        cwd: workspaceRemoteDir,
+        cwd: commandCwd,
         timeoutMs,
       });
       if (!probe.timedOut && (probe.exitCode ?? 1) === 0) {
@@ -195,7 +196,7 @@ export async function prepareCommandManagedRuntime(input: {
     const result = await input.runner.execute({
       command: shellCommand,
       args: ["-lc", installCommand],
-      cwd: workspaceRemoteDir,
+      cwd: commandCwd,
       timeoutMs,
     });
     // A failed install is not always fatal: the CLI may already be on PATH

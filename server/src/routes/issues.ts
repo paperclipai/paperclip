@@ -17,6 +17,7 @@ import {
   checkoutIssueSchema,
   createChildIssueSchema,
   createIssueSchema,
+  resolveCreateIssueStatusDefault,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -136,6 +137,44 @@ type SuccessfulRunHandoffActivityRow = {
   details: Record<string, unknown> | null;
   createdAt: Date;
 };
+
+function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    next();
+    return;
+  }
+
+  const resolution = resolveCreateIssueStatusDefault(req.body as Record<string, unknown>);
+  res.locals.createIssueStatusDefault = resolution;
+  if (resolution.defaulted) {
+    req.body = {
+      ...req.body,
+      status: resolution.status,
+    };
+  }
+  next();
+}
+
+function buildCreateIssueActivityStatusDetails(
+  issue: { assigneeAgentId: string | null; status: string },
+  res: Response,
+) {
+  const statusDefault = res.locals.createIssueStatusDefault as
+    | ReturnType<typeof resolveCreateIssueStatusDefault>
+    | undefined;
+  const assignmentWakeSkipped = !issue.assigneeAgentId || issue.status === "backlog";
+  return {
+    status: issue.status,
+    statusDefaulted: statusDefault?.defaulted ?? false,
+    statusDefaultReason: statusDefault?.reason ?? "explicit",
+    assignmentWakeSkipped,
+    assignmentWakeSkipReason: assignmentWakeSkipped
+      ? issue.assigneeAgentId
+        ? "assigned_backlog"
+        : "no_agent_assignee"
+      : null,
+  };
+}
 
 const SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
   "issue.successful_run_handoff_required",
@@ -1498,6 +1537,7 @@ export function issueRoutes(
       relations,
       blockerAttention,
       productivityReview,
+      scheduledRetry,
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
@@ -1510,6 +1550,7 @@ export function issueRoutes(
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+        svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
@@ -1525,6 +1566,7 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
+        scheduledRetry,
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
@@ -1606,6 +1648,7 @@ export function issueRoutes(
       productivityReview,
       referenceSummary,
       successfulRunHandoffStates,
+      scheduledRetry,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -1616,6 +1659,7 @@ export function issueRoutes(
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
+      svc.getCurrentScheduledRetry(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1631,6 +1675,7 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      scheduledRetry,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
       relatedWork: referenceSummary,
@@ -2243,7 +2288,7 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
+  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -2283,6 +2328,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -2332,7 +2378,7 @@ export function issueRoutes(
     });
   });
 
-  router.post("/issues/:id/children", validate(createChildIssueSchema), async (req, res) => {
+  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await svc.getById(parentId);
     if (!parent) {
@@ -2374,6 +2420,7 @@ export function issueRoutes(
         parentId: parent.id,
         identifier: issue.identifier,
         title: issue.title,
+        ...buildCreateIssueActivityStatusDetails(issue, res),
         inheritedExecutionWorkspaceFromIssueId: parent.id,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
@@ -2436,6 +2483,44 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const result = await heartbeat.retryScheduledRetryNow({
+      issueId: issue.id,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "issue.scheduled_retry_retry_now",
+      entityType: "issue",
+      entityId: issue.id,
+      agentId: result.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+      runId: result.scheduledRetry?.runId ?? null,
+      details: {
+        outcome: result.outcome,
+        message: result.message,
+        scheduledRetry: result.scheduledRetry,
+      },
+    });
+
+    res.json(result);
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {

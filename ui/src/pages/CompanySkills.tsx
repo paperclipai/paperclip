@@ -20,6 +20,8 @@ import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { CopyText } from "../components/CopyText";
+import { Identity } from "../components/Identity";
 import {
   Dialog,
   DialogContent,
@@ -49,6 +51,7 @@ import {
   Paperclip,
   Pencil,
   Plus,
+  Copy,
   RefreshCw,
   Save,
   Search,
@@ -169,6 +172,12 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
 function shortRef(ref: string | null | undefined) {
   if (!ref) return null;
   return ref.slice(0, 7);
+}
+
+function middleTruncate(value: string, maxLength = 72) {
+  if (value.length <= maxLength) return value;
+  const edgeLength = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, edgeLength)}...${value.slice(value.length - edgeLength)}`;
 }
 
 function formatProjectScanSummary(result: CompanySkillProjectScanResult) {
@@ -530,8 +539,6 @@ function SkillPane({
   onSave: () => void;
   savePending: boolean;
 }) {
-  const { pushToast } = useToastActions();
-
   if (!detail) {
     if (loading) {
       return <PageSkeleton variant="detail" />;
@@ -550,6 +557,7 @@ function SkillPane({
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
   const currentPin = shortRef(detail.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
+  const displaySourcePath = detail.sourcePath ? middleTruncate(detail.sourcePath) : null;
   const removeBlocked = usedBy.length > 0;
   const removeDisabledReason = removeBlocked
     ? "Detach this skill from all agents before removing it."
@@ -595,20 +603,28 @@ function SkillPane({
 
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
-              <span className="flex items-center gap-2">
+              <span className="flex min-w-0 items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                {detail.sourcePath ? (
-                  <button
-                    className="truncate hover:text-foreground text-muted-foreground transition-colors cursor-pointer"
-                    onClick={() => {
-                      navigator.clipboard.writeText(detail.sourcePath!);
-                      pushToast({ title: "Copied path to workspace" });
-                    }}
-                  >
-                    {source.label}
-                  </button>
+                {detail.sourcePath && displaySourcePath ? (
+                  <>
+                    <span
+                      className="block min-w-0 max-w-[min(34rem,55vw)] truncate font-mono text-xs text-muted-foreground"
+                      title={detail.sourcePath}
+                    >
+                      {displaySourcePath}
+                    </span>
+                    <CopyText
+                      text={detail.sourcePath}
+                      copiedLabel="Copied path"
+                      ariaLabel="Copy source path"
+                      title="Copy source path"
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </CopyText>
+                  </>
                 ) : (
                   <span className="truncate">{source.label}</span>
                 )}
@@ -662,14 +678,14 @@ function SkillPane({
             {usedBy.length === 0 ? (
               <span className="text-muted-foreground">No agents attached</span>
             ) : (
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
+              <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {usedBy.map((agent) => (
                   <Link
                     key={agent.id}
                     to={`/agents/${agent.urlKey}/skills`}
-                    className="text-foreground no-underline hover:underline"
+                    className="group rounded-md border border-transparent p-2 no-underline hover:border-border hover:bg-accent/40"
                   >
-                    {agent.name}
+                    <Identity name={agent.name} size="sm" />
                   </Link>
                 ))}
               </div>

@@ -3,15 +3,16 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
+import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
@@ -25,6 +26,10 @@ import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { formatMonitorOffset } from "../lib/issue-monitor";
+import { formatRetryReason } from "../lib/runRetryState";
+import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
+import { RetryErrorBand } from "./IssueScheduledRetryCard";
+import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -32,6 +37,7 @@ import { IssueReferencePill } from "./IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   Dialog,
   DialogClose,
@@ -43,8 +49,9 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -122,10 +129,6 @@ function runningRuntimeServiceWithUrl(
   return runtimeServices?.find((service) => service.status === "running" && service.url?.trim()) ?? null;
 }
 
-function executionWorkspaceIssuesHref(workspaceId: string) {
-  return `/execution-workspaces/${workspaceId}/issues`;
-}
-
 function toDateTimeLocalValue(value: string | null | undefined) {
   if (!value) return "";
   const date = new Date(value);
@@ -149,6 +152,82 @@ function PropertyRow({ label, children }: { label: string; children: React.React
       <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
   );
+}
+
+const ISSUE_THINKING_EFFORT_OPTIONS = {
+  claude_local: [
+    { value: "", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ],
+  codex_local: [
+    { value: "", label: "Default" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "X-High" },
+  ],
+  opencode_local: [
+    { value: "", label: "Default" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "X-High" },
+    { value: "max", label: "Max" },
+  ],
+} as const;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function compactRecord(record: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined),
+  );
+}
+
+function thinkingEffortOptionsFor(adapterType: string | null | undefined) {
+  if (adapterType === "codex_local") return ISSUE_THINKING_EFFORT_OPTIONS.codex_local;
+  if (adapterType === "opencode_local") return ISSUE_THINKING_EFFORT_OPTIONS.opencode_local;
+  return ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+}
+
+function thinkingEffortKeyFor(adapterType: string | null | undefined) {
+  if (adapterType === "codex_local") return "modelReasoningEffort";
+  if (adapterType === "opencode_local") return "variant";
+  return "effort";
+}
+
+function thinkingEffortValueFor(adapterType: string | null | undefined, adapterConfig: Record<string, unknown>) {
+  if (adapterType === "codex_local") {
+    return String(adapterConfig.modelReasoningEffort ?? adapterConfig.reasoningEffort ?? adapterConfig.effort ?? "");
+  }
+  if (adapterType === "opencode_local") {
+    return String(adapterConfig.variant ?? "");
+  }
+  return String(adapterConfig.effort ?? "");
+}
+
+function overrideLane(overrides: Issue["assigneeAdapterOverrides"]): IssueModelLane {
+  if (overrides?.modelProfile === "cheap") return "cheap";
+  if (overrides?.adapterConfig) return "custom";
+  return "primary";
+}
+
+function sortAdapterModels(models: AdapterModel[]) {
+  return [...models].sort((a, b) => {
+    const providerA = extractProviderIdWithFallback(a.id);
+    const providerB = extractProviderIdWithFallback(b.id);
+    const byProvider = providerA.localeCompare(providerB);
+    if (byProvider !== 0) return byProvider;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 function RemovableIssueReferencePill({
@@ -317,7 +396,9 @@ export function IssueProperties({
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [scheduledRetryOpen, setScheduledRetryOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
+  const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
@@ -341,12 +422,6 @@ export function IssueProperties({
     queryFn: () => accessApi.listUserDirectory(companyId!),
     enabled: !!companyId,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
-
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId!),
     queryFn: () => projectsApi.list(companyId!),
@@ -414,16 +489,10 @@ export function IssueProperties({
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
   const issueProject = issue.project ?? currentProject;
-  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const issueUsesMainWorkspace = useMemo(
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const workspaceTasksExecutionWorkspaceId = useMemo(() => {
-    if (!isolatedWorkspacesEnabled) return null;
-    if (issueUsesMainWorkspace) return null;
-    return issue.executionWorkspaceId ?? issue.currentExecutionWorkspace?.id ?? null;
-  }, [isolatedWorkspacesEnabled, issue, issueUsesMainWorkspace]);
   const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
   const liveWorkspaceService = useMemo(() => {
     if (issueUsesMainWorkspace) return null;
@@ -482,6 +551,219 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const assigneeAdapterType = assignee?.adapterType ?? null;
+  const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
+  const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
+  const supportsAssigneeOverrides = Boolean(
+    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
+  );
+  const assigneeSupportsCheapLane = Boolean(
+    supportsAssigneeOverrides
+      && (assigneeAdapterType === "claude_local"
+        || assigneeAdapterType === "codex_local"
+        || assigneeAdapterType === "opencode_local"),
+  );
+  const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
+  const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
+  const assigneeOverrideModel =
+    typeof assigneeOverrideAdapterConfig.model === "string" ? assigneeOverrideAdapterConfig.model : "";
+  const assigneeOverrideThinkingEffort = thinkingEffortValueFor(
+    assigneeAdapterType,
+    assigneeOverrideAdapterConfig,
+  );
+  const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
+    && assigneeOverrideAdapterConfig.chrome === true;
+  const { data: assigneeAdapterModels } = useQuery({
+    queryKey:
+      companyId && assigneeAdapterType
+        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType)
+        : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
+    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
+  });
+  const { data: assigneeCheapProfiles } = useQuery({
+    queryKey: companyId && assigneeAdapterType
+      ? queryKeys.agents.adapterModelProfiles(companyId, assigneeAdapterType)
+      : ["agents", "none", "adapter-model-profiles", assigneeAdapterType ?? "none"],
+    queryFn: () => agentsApi.adapterModelProfiles(companyId!, assigneeAdapterType!),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && assigneeSupportsCheapLane,
+  });
+  const assigneeCheapProfile = useMemo(
+    () => (assigneeCheapProfiles ?? []).find((profile) => profile.key === "cheap") ?? null,
+    [assigneeCheapProfiles],
+  );
+  const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
+    const models = sortAdapterModels(assigneeAdapterModels ?? []);
+    const options = models.map((model) => ({
+      id: model.id,
+      label: model.label,
+      searchText: `${model.id} ${extractProviderIdWithFallback(model.id)}`,
+    }));
+    if (assigneeOverrideModel && !options.some((option) => option.id === assigneeOverrideModel)) {
+      options.unshift({
+        id: assigneeOverrideModel,
+        label: assigneeOverrideModel,
+        searchText: assigneeOverrideModel,
+      });
+    }
+    return options;
+  }, [assigneeAdapterModels, assigneeOverrideModel]);
+  const updateAssigneeAdapterOverrides = (next: Issue["assigneeAdapterOverrides"]) => {
+    onUpdate({ assigneeAdapterOverrides: next });
+  };
+  const buildAssigneeOverrideWithConfig = (adapterConfig: Record<string, unknown>) => {
+    const nextConfig = compactRecord(adapterConfig);
+    const next = compactRecord({
+      useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
+      ...(Object.keys(nextConfig).length > 0 ? { adapterConfig: nextConfig } : {}),
+    });
+    return Object.keys(next).length > 0 ? next : null;
+  };
+  const updateAssigneeOverrideConfig = (patch: Record<string, unknown>) => {
+    updateAssigneeAdapterOverrides(
+      buildAssigneeOverrideWithConfig({
+        ...assigneeOverrideAdapterConfig,
+        ...patch,
+      }),
+    );
+  };
+  const updateAssigneeOverrideThinkingEffort = (nextValue: string) => {
+    const nextConfig = { ...assigneeOverrideAdapterConfig };
+    delete nextConfig.modelReasoningEffort;
+    delete nextConfig.reasoningEffort;
+    delete nextConfig.effort;
+    delete nextConfig.variant;
+    if (nextValue) {
+      nextConfig[thinkingEffortKeyFor(assigneeAdapterType)] = nextValue;
+    }
+    updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(nextConfig));
+  };
+  const setAssigneeOverrideLane = (lane: IssueModelLane) => {
+    if (lane === "primary") {
+      updateAssigneeAdapterOverrides(null);
+      return;
+    }
+    if (lane === "cheap") {
+      updateAssigneeAdapterOverrides(
+        compactRecord({
+          useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
+          modelProfile: "cheap",
+        }),
+      );
+      return;
+    }
+    updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(assigneeOverrideAdapterConfig) ?? { adapterConfig: {} });
+  };
+  const assigneeOptionsTrigger = (() => {
+    if (assigneeOverrideLane === "cheap") {
+      return <span className="text-sm">Cheap model</span>;
+    }
+    if (assigneeOverrideLane === "custom") {
+      const details = [
+        assigneeOverrideModel,
+        assigneeOverrideThinkingEffort,
+        assigneeOverrideChrome ? "Chrome" : "",
+      ].filter(Boolean);
+      return (
+        <span className="min-w-0 text-sm break-words">
+          Custom{details.length > 0 ? ` · ${details.join(" · ")}` : " adapter options"}
+        </span>
+      );
+    }
+    return <span className="text-sm text-muted-foreground">Primary model</span>;
+  })();
+  const assigneeOptionsContent = supportsAssigneeOverrides ? (
+    <div className="w-full space-y-3 p-2">
+      <div className="space-y-1.5">
+        <div className="text-xs text-muted-foreground">Model lane</div>
+        <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Model lane">
+          {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
+            <button
+              key={lane}
+              type="button"
+              role="radio"
+              aria-checked={assigneeOverrideLane === lane}
+              className={cn(
+                "flex-1 px-2 py-1 text-xs capitalize transition-colors hover:bg-accent/40",
+                assigneeOverrideLane === lane && "bg-accent text-foreground",
+              )}
+              onClick={() => setAssigneeOverrideLane(lane)}
+            >
+              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Custom"}
+            </button>
+          ))}
+        </div>
+        {assigneeOverrideLane === "cheap" ? (
+          <p className="text-[11px] text-muted-foreground">
+            Sends <code>modelProfile: "cheap"</code>{" "}
+            {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
+              ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
+              : assigneeCheapProfile
+                ? <>· uses the agent&apos;s configured cheap profile</>
+                : <>· falls back to the primary model if no cheap profile is configured</>}
+          </p>
+        ) : null}
+      </div>
+      {assigneeOverrideLane === "custom" ? (
+        <>
+          <div className="space-y-1.5">
+            <div className="text-xs text-muted-foreground">Model</div>
+            <InlineEntitySelector
+              value={assigneeOverrideModel}
+              options={modelOverrideOptions}
+              placeholder="Default model"
+              disablePortal
+              noneLabel="Default model"
+              searchPlaceholder="Search models..."
+              emptyMessage="No models found."
+              onChange={(model) => updateAssigneeOverrideConfig({ model: model || undefined })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-xs text-muted-foreground">Thinking effort</div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {thinkingEffortOptionsFor(assigneeAdapterType).map((option) => (
+                <button
+                  key={option.value || "default"}
+                  className={cn(
+                    "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
+                    assigneeOverrideThinkingEffort === option.value && "bg-accent",
+                  )}
+                  onClick={() => updateAssigneeOverrideThinkingEffort(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {assigneeAdapterType === "claude_local" ? (
+            <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
+              <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+              <ToggleSwitch
+                checked={assigneeOverrideChrome}
+                onCheckedChange={(next) => updateAssigneeOverrideConfig({ chrome: next ? true : undefined })}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  ) : (
+    <div className="w-full space-y-2 p-2">
+      <p className="text-xs text-muted-foreground">
+        {assignee
+          ? "This assignee's adapter does not expose editable issue overrides."
+          : "Select a compatible agent assignee to edit these overrides."}
+      </p>
+      <button
+        type="button"
+        className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        onClick={() => updateAssigneeAdapterOverrides(null)}
+      >
+        Clear adapter options
+      </button>
+    </div>
+  );
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
@@ -650,6 +932,169 @@ export function IssueProperties({
     <span className="text-xs text-muted-foreground">
       Attempt {issue.monitorAttemptCount}
     </span>
+  ) : null;
+
+  const scheduledRetry = issue.scheduledRetry ?? null;
+  const retryNow = useRetryNowMutation(issue.id);
+  const showScheduledRetryRow = scheduledRetry && scheduledRetry.status === "scheduled_retry";
+  const scheduledRetryDueAtIso = scheduledRetry?.scheduledRetryAt
+    ? new Date(scheduledRetry.scheduledRetryAt).toISOString()
+    : null;
+  const scheduledRetryRelative = scheduledRetryDueAtIso
+    ? formatMonitorOffset(scheduledRetryDueAtIso)
+    : null;
+  const scheduledRetryAbsolute = scheduledRetry?.scheduledRetryAt
+    ? formatDateTime(scheduledRetry.scheduledRetryAt)
+    : null;
+  const scheduledRetryShortDate = scheduledRetry?.scheduledRetryAt
+    ? formatDate(new Date(scheduledRetry.scheduledRetryAt))
+    : null;
+  const scheduledRetryReasonLabel = formatRetryReason(scheduledRetry?.scheduledRetryReason);
+  const scheduledRetryAttempt =
+    typeof scheduledRetry?.scheduledRetryAttempt === "number"
+    && Number.isFinite(scheduledRetry.scheduledRetryAttempt)
+    && scheduledRetry.scheduledRetryAttempt > 0
+      ? scheduledRetry.scheduledRetryAttempt
+      : null;
+  const scheduledRetryIsContinuation =
+    scheduledRetry?.scheduledRetryReason === "max_turns_continuation";
+  const scheduledRetryRelativeLabel = (() => {
+    if (!scheduledRetryRelative) return "Pending schedule";
+    const action = scheduledRetryIsContinuation ? "Continuation" : "Retry";
+    if (scheduledRetryRelative === "now") return `${action} due now`;
+    return `${action} ${scheduledRetryRelative}`;
+  })();
+  const scheduledRetryRetryNowSuccess = retryNow.isSuccess
+    && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
+  const scheduledRetryAttemptBadge = scheduledRetryAttempt !== null ? (
+    <span className="text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
+  ) : null;
+  const scheduledRetryTrigger = (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-400" aria-hidden="true" />
+      <span
+        className="min-w-0 text-sm break-words text-foreground"
+        title={scheduledRetryAbsolute ?? undefined}
+      >
+        {scheduledRetryRelativeLabel}
+      </span>
+      {scheduledRetryShortDate ? (
+        <span className="text-xs text-muted-foreground" title={scheduledRetryAbsolute ?? undefined}>
+          {scheduledRetryShortDate}
+        </span>
+      ) : null}
+    </span>
+  );
+  const scheduledRetryContent = scheduledRetry ? (
+    <div className="flex w-full flex-col gap-2 p-2 text-xs">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-foreground">
+          {scheduledRetryIsContinuation ? "Scheduled continuation" : "Scheduled retry"}
+        </span>
+        {scheduledRetryAttempt !== null ? (
+          <span className="rounded-full border border-border bg-muted/30 px-2 py-0.5 text-xs text-muted-foreground">
+            Attempt {scheduledRetryAttempt}
+          </span>
+        ) : null}
+      </div>
+      <dl className="grid grid-cols-[6rem_1fr] gap-y-1">
+        {scheduledRetryReasonLabel ? (
+          <>
+            <dt className="text-muted-foreground">Reason</dt>
+            <dd className="text-foreground">{scheduledRetryReasonLabel}</dd>
+          </>
+        ) : null}
+        {scheduledRetryAbsolute ? (
+          <>
+            <dt className="text-muted-foreground">Next attempt</dt>
+            <dd className="text-foreground">
+              {scheduledRetryAbsolute}
+              {scheduledRetryRelative ? (
+                <span className="ml-1 text-muted-foreground">· {scheduledRetryRelative}</span>
+              ) : null}
+            </dd>
+          </>
+        ) : null}
+        {scheduledRetry.retryOfRunId ? (
+          <>
+            <dt className="text-muted-foreground">Replaces run</dt>
+            <dd className="text-foreground">
+              <Link
+                to={`/agents/${scheduledRetry.agentId}/runs/${scheduledRetry.retryOfRunId}`}
+                className="font-mono text-foreground hover:underline"
+              >
+                {scheduledRetry.retryOfRunId.slice(0, 8)}
+              </Link>
+            </dd>
+          </>
+        ) : null}
+        {scheduledRetry.agentName ? (
+          <>
+            <dt className="text-muted-foreground">Agent</dt>
+            <dd className="text-foreground">
+              <Link
+                to={`/agents/${scheduledRetry.agentId}`}
+                className="text-foreground hover:underline"
+              >
+                {scheduledRetry.agentName}
+              </Link>
+            </dd>
+          </>
+        ) : null}
+        {scheduledRetry.error ? (
+          <>
+            <dt className="text-muted-foreground">Last error</dt>
+            <dd className="text-foreground break-words">{scheduledRetry.error}</dd>
+          </>
+        ) : null}
+      </dl>
+      <RetryErrorBand
+        error={retryNow.lastError}
+        onRetry={() => {
+          retryNow.reset();
+          retryNow.mutate();
+        }}
+      />
+      <Separator className="my-1" />
+      <div className="flex items-center justify-between gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="default"
+          onClick={() => retryNow.mutate()}
+          disabled={retryNow.isPending || scheduledRetryRetryNowSuccess}
+          data-testid="issue-scheduled-retry-properties-retry-now"
+        >
+          {retryNow.isPending ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              Retrying…
+            </span>
+          ) : scheduledRetryRetryNowSuccess ? (
+            <span className="inline-flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              Retry now
+            </span>
+          )}
+        </Button>
+        <span className="text-right text-xs text-muted-foreground">
+          {retryNow.isPending
+            ? "Promoting scheduled retry"
+            : scheduledRetryRetryNowSuccess
+              ? retryNow.data?.outcome === "already_promoted"
+                ? "Already promoted — run starting"
+                : "Promoted — run starting"
+              : scheduledRetryIsContinuation
+                ? "Pulls continuation forward immediately"
+                : "Pulls retry forward immediately"}
+        </span>
+      </div>
+    </div>
   ) : null;
   const monitorContent = (
     <div className="flex w-full flex-col gap-2">
@@ -1334,6 +1779,31 @@ export function IssueProperties({
           {assigneeContent}
         </PropertyPicker>
 
+        {showAssigneeAdapterOptions ? (
+          <PropertyPicker
+            inline={inline}
+            label="Model"
+            open={assigneeOptionsOpen}
+            onOpenChange={setAssigneeOptionsOpen}
+            triggerContent={assigneeOptionsTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-72")}
+            extra={
+              <button
+                type="button"
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                onClick={() => updateAssigneeAdapterOverrides(null)}
+                aria-label="Clear adapter options"
+                title="Clear adapter options"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            }
+          >
+            {assigneeOptionsContent}
+          </PropertyPicker>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Project"
@@ -1491,6 +1961,21 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
+        {showScheduledRetryRow && scheduledRetryContent ? (
+          <PropertyPicker
+            inline={inline}
+            label="Scheduled retry"
+            open={scheduledRetryOpen}
+            onOpenChange={setScheduledRetryOpen}
+            triggerContent={scheduledRetryTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+            extra={scheduledRetryAttemptBadge}
+          >
+            {scheduledRetryContent}
+          </PropertyPicker>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Monitor"
@@ -1535,17 +2020,6 @@ export function IssueProperties({
                   className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                 >
                   View workspace
-                  <ExternalLink className="h-3 w-3" />
-                </Link>
-              </PropertyRow>
-            )}
-            {workspaceTasksExecutionWorkspaceId && (
-              <PropertyRow label="Tasks">
-                <Link
-                  to={executionWorkspaceIssuesHref(workspaceTasksExecutionWorkspaceId)}
-                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
-                >
-                  View workspace tasks
                   <ExternalLink className="h-3 w-3" />
                 </Link>
               </PropertyRow>
