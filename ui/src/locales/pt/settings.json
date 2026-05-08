@@ -110,7 +110,13 @@
     "de": "Deutsch",
     "pt": "Português",
     "zh": "中文",
-    "el": "Grego"
+    "el": "Grego",
+    "fr": "Français",
+    "it": "Italiano",
+    "ja": "日本語",
+    "ko": "한국어",
+    "tr": "Türkçe",
+    "ar": "العربية"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Dashboard de Runtime",
