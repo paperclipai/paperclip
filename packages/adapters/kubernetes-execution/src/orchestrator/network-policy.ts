@@ -2,12 +2,20 @@ import type { V1NetworkPolicy } from "@kubernetes/client-node";
 import type { KubernetesApiClient } from "../types.js";
 import { tenantBaseLabels, PAPERCLIP_ROLE, ROLE_AGENT_RUNTIME } from "./labels.js";
 
-const RFC1918_AND_INTERNAL_DENY = [
+// IPv4-only private/internal ranges to exclude from the catch-all egress rule.
+// fd00::/8 (IPv6 ULA) is listed separately in RFC1918_IPV6_DENY because the
+// Kubernetes NetworkPolicy ipBlock.except entries must be a strict subset of
+// the parent cidr. Mixing IPv6 ranges inside an IPv4 cidr (0.0.0.0/0) is
+// rejected with a 422 by the k8s API.
+const RFC1918_IPV4_DENY = [
   "10.0.0.0/8",
   "172.16.0.0/12",
   "192.168.0.0/16",
   "169.254.0.0/16",   // link-local incl. cloud metadata
   "100.64.0.0/10",    // CGNAT
+];
+
+const RFC1918_IPV6_DENY = [
   "fd00::/8",         // IPv6 ULA
 ];
 
@@ -69,9 +77,14 @@ export function buildAgentEgressPolicy(input: AgentEgressInput): V1NetworkPolicy
     });
   }
 
-  // Internet egress (denies internal ranges)
+  // Internet egress — two ipBlock entries keep IPv4 and IPv6 CIDRs separate.
+  // The k8s API validates that each except entry is a strict subset of its
+  // parent cidr, so IPv6 ranges (fd00::/8) cannot live inside 0.0.0.0/0.
   egress.push({
-    to: [{ ipBlock: { cidr: "0.0.0.0/0", except: RFC1918_AND_INTERNAL_DENY } }],
+    to: [
+      { ipBlock: { cidr: "0.0.0.0/0", except: RFC1918_IPV4_DENY } },
+      { ipBlock: { cidr: "::/0",       except: RFC1918_IPV6_DENY } },
+    ],
     ports: [{ port: 443, protocol: "TCP" }],
   });
 

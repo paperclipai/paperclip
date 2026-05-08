@@ -18,7 +18,7 @@ describe("buildDefaultDenyPolicies", () => {
 });
 
 describe("buildAgentEgressPolicy", () => {
-  it("denies RFC1918 + link-local + CGNAT + IPv6 ULA in the internet rule", () => {
+  it("denies RFC1918 + link-local + CGNAT in the IPv4 internet rule and IPv6 ULA in the IPv6 rule", () => {
     const p = buildAgentEgressPolicy({
       namespace: "paperclip-acme", companyId: "c-1", companySlug: "acme",
       topology: "in-cluster",
@@ -29,12 +29,16 @@ describe("buildAgentEgressPolicy", () => {
     });
     const internetRule = p.spec?.egress?.find(e => e.to?.some(t => t.ipBlock));
     expect(internetRule).toBeDefined();
-    const ipBlock = internetRule!.to!.find(t => t.ipBlock)!.ipBlock!;
-    expect(ipBlock.cidr).toBe("0.0.0.0/0");
-    expect(ipBlock.except).toEqual(expect.arrayContaining([
+    // IPv4 block: 0.0.0.0/0 with IPv4-only exceptions
+    const ipv4Block = internetRule!.to!.find(t => t.ipBlock?.cidr === "0.0.0.0/0")!.ipBlock!;
+    expect(ipv4Block.except).toEqual(expect.arrayContaining([
       "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-      "169.254.0.0/16", "100.64.0.0/10", "fd00::/8",
+      "169.254.0.0/16", "100.64.0.0/10",
     ]));
+    expect(ipv4Block.except).not.toContain("fd00::/8");
+    // IPv6 block: ::/0 with IPv6 ULA exception
+    const ipv6Block = internetRule!.to!.find(t => t.ipBlock?.cidr === "::/0")!.ipBlock!;
+    expect(ipv6Block.except).toContain("fd00::/8");
   });
 
   it("includes a DNS egress rule on UDP and TCP port 53 to kube-dns", () => {
