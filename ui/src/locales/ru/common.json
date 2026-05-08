@@ -721,7 +721,7 @@
     "duration_m": "{{count}}m"
   },
   "sidebar": {
-    "new_issue": "Новая проблема",
+    "new_issue": "Новая задача",
     "section_work": "Работа",
     "section_company": "Компания",
     "agents_heading": "Агенты",
