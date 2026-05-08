@@ -451,6 +451,11 @@
     "archive_failed": "Error al archivar el proyecto",
     "unarchive_failed": "Error al desarchivar el proyecto"
   },
+  "status_labels": {
+    "active": "Activo",
+    "paused": "Pausado",
+    "archived": "Archivado"
+  },
   "join_requests": {
     "breadcrumb": "Solicitudes de unión",
     "title": "Cola de solicitudes de unión",

@@ -477,6 +477,11 @@
     "archive_failed": "Projekt konnte nicht archiviert werden",
     "unarchive_failed": "Projekt konnte nicht wiederhergestellt werden"
   },
+  "status_labels": {
+    "active": "Aktiv",
+    "paused": "Pausiert",
+    "archived": "Archiviert"
+  },
   "join_requests": {
     "breadcrumb": "Beitrittsanfragen",
     "title": "Beitrittsanfragen-Warteschlange",

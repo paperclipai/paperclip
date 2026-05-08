@@ -459,6 +459,11 @@
     "archive_failed": "Не вдалося архівувати проєкт",
     "unarchive_failed": "Не вдалося розархівувати проєкт"
   },
+  "status_labels": {
+    "active": "Активні",
+    "paused": "Призупинені",
+    "archived": "Архівовано"
+  },
   "join_requests": {
     "breadcrumb": "Запити на вступ",
     "title": "Черга запитів на вступ",

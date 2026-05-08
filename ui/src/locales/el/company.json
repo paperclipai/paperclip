@@ -451,6 +451,11 @@
     "archive_failed": "Αποτυχία αρχειοθέτησης έργου",
     "unarchive_failed": "Αποτυχία αναρχειοθέτησης έργου"
   },
+  "status_labels": {
+    "active": "Ενεργό",
+    "paused": "Διακοπή",
+    "archived": "Αρχειοθετημένο"
+  },
   "join_requests": {
     "breadcrumb": "Αιτήματα εγγραφής",
     "title": "Ουρά αιτημάτων εγγραφής",

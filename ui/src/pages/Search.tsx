@@ -475,16 +475,13 @@ function SearchTabContent({
         ) : null}
         <ul className="space-y-1 text-xs text-muted-foreground">
           <li>
-            <span className="font-medium text-foreground">{t("search.identifier_lookup")}</span> type{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-[11px]">PAP-123</code> to jump straight to an issue.
+            <span className="font-medium text-foreground">{t("search.identifier_lookup")}</span> {t("search.identifier_lookup_hint")}
           </li>
           <li>
-            <span className="font-medium text-foreground">{t("search.quoted_phrases")}</span> wrap a phrase in quotes to match the
-            exact sequence.
+            <span className="font-medium text-foreground">{t("search.quoted_phrases")}</span> {t("search.quoted_phrases_hint")}
           </li>
           <li>
-            <span className="font-medium text-foreground">{t("search.command_palette")}</span> reopens the command palette pre-seeded with your
-            current query.
+            <span className="font-medium text-foreground">{t("search.command_palette")}</span> {t("search.command_palette_hint")}
           </li>
         </ul>
       </div>

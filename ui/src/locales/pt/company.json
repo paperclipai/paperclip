@@ -451,6 +451,11 @@
     "archive_failed": "Falha ao arquivar projeto",
     "unarchive_failed": "Falha ao desarquivar projeto"
   },
+  "status_labels": {
+    "active": "Ativo",
+    "paused": "Pausado",
+    "archived": "Arquivado"
+  },
   "join_requests": {
     "breadcrumb": "Solicitações de Adesão",
     "title": "Fila de Solicitações de Adesão",

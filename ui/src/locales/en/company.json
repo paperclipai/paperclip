@@ -477,6 +477,11 @@
     "archive_failed": "Failed to archive project",
     "unarchive_failed": "Failed to unarchive project"
   },
+  "status_labels": {
+    "active": "Active",
+    "paused": "Paused",
+    "archived": "Archived"
+  },
   "join_requests": {
     "breadcrumb": "Join Requests",
     "title": "Join Request Queue",

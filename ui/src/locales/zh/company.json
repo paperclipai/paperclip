@@ -451,6 +451,11 @@
     "archive_failed": "归档项目失败",
     "unarchive_failed": "取消归档项目失败"
   },
+  "status_labels": {
+    "active": "活跃",
+    "paused": "已暂停",
+    "archived": "已归档"
+  },
   "join_requests": {
     "breadcrumb": "加入请求",
     "title": "加入请求队列",
