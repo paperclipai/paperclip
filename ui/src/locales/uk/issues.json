@@ -117,7 +117,8 @@
     "execution_approval_pending": "Погодження очікує",
     "execution_approval_pending_with": "Погодження очікує з {{name}}",
     "execution_approval_changes": "Запрошено зміни для погодження",
-    "execution_approval_changes_by": "Зміни для погодження запрошено від {{name}}"
+    "execution_approval_changes_by": "Зміни для погодження запрошено від {{name}}",
+    "issue_chip_label": "Задача {{label}}: {{title}}"
   },
   "monitor": {
     "scheduled": "Моніторинг запланований",
@@ -436,7 +437,28 @@
     "called_tools_many": "викликав {{count}} інструментів",
     "called_tools_other": "викликав {{count}} інструментів",
     "no_assignee_selected": "Виконавця не вибрано",
-    "no_assignee_body": "\"Виберіть виконавця або натисніть «Надіслати» ще раз, щоб опублікувати без нього.\""
+    "no_assignee_body": "\"Виберіть виконавця або натисніть «Надіслати» ще раз, щоб опублікувати без нього.\"",
+    "attachment_unsupported_file_type": "Цей тип файлу не можна прикріпити тут",
+    "duration": {
+      "hours_few": "{{count}} години",
+      "hours_many": "{{count}} годин",
+      "hours_one": "{{count}} година",
+      "hours_other": "{{count}} годин",
+      "minutes_few": "{{count}} хвилини",
+      "minutes_many": "{{count}} хвилин",
+      "minutes_one": "{{count}} хвилину",
+      "minutes_other": "{{count}} хвилин",
+      "seconds_few": "{{count}} секунди",
+      "seconds_many": "{{count}} секунд",
+      "seconds_one": "{{count}} секунду",
+      "seconds_other": "{{count}} секунд"
+    },
+    "more_composer_options": "Параметри редактора",
+    "planning_label": "Планування",
+    "planning_mode_active_title": "Режим планування увімкнено. Натисніть, щоб переключитися на стандартний.",
+    "run_word": "запуск",
+    "switch_to_planning": "Переключити на планування",
+    "switch_to_standard": "Переключити на стандартний"
   },
   "columns": {
     "button": "Стовпці",
@@ -586,7 +608,9 @@
     "open_issue": "Відкрити {{issueRef}}",
     "work_mode_standard": "Стандартна",
     "work_mode_planning": "Планування",
-    "assignee_backlog_note": "Призначення передбачає виконуваний намір — залишайте статус «Беклог» лише для навмисного паркування. Виконавець не буде розбуджений, поки статус не зміниться на «До виконання» або «В процесі»."
+    "assignee_backlog_note": "Призначення передбачає виконуваний намір — залишайте статус «Беклог» лише для навмисного паркування. Виконавець не буде розбуджений, поки статус не зміниться на «До виконання» або «В процесі».",
+    "no_assignee": "Без виконавця",
+    "search_assignees": "Пошук виконавців..."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Повторити закриття",
@@ -725,7 +749,9 @@
     "queued": "В черзі",
     "queued_ellipsis": "В черзі...",
     "working": "Виконується...",
-    "run_finished": "Запуск завершено"
+    "run_finished": "Запуск завершено",
+    "paused_by_board": "Зупинено дошкою",
+    "paused_by_board_after": "Зупинено дошкою через {{duration}}"
   },
   "ledger": {
     "liveness_completed_label": "Завершено",
@@ -1173,5 +1199,34 @@
     "minimal": "Мінімальний",
     "xhigh": "Дуже високий",
     "max": "Максимальний"
-  }
+  },
+  "already_promoted_run_starting": "Вже підвищено — запуск починається",
+  "attach_image": "Прикріпити зображення",
+  "called_tool_one": "викликано 1 інструмент",
+  "called_tool_other": "викликано {{count}} інструментів",
+  "choose_existing_workspace": "Виберіть існуючий робочий простір",
+  "copy": "Копіювати",
+  "copy_comment_as_markdown": "Скопіювати коментар як markdown",
+  "copy_failed": "Помилка копіювання",
+  "environment": "Оточення",
+  "executable_assignee_will_be_woken": "Виконувано — виконавець буде розбуджено",
+  "failure": "Помилка",
+  "interrupt": "Перервати",
+  "interrupting": "Переривання...",
+  "last_attempt_failed": "Остання спроба не вдалася: {{error}}. Paperclip повторюватиме спроби автоматично.",
+  "lease": "Оренда",
+  "leave_a_comment": "Залишити коментар...",
+  "no_issues_match_filters": "Немає задач, що відповідають поточним фільтрам або пошуку.",
+  "parked_assignee_will_not_be_woken": "Припаркована — виконавець не буде розбуджено",
+  "posting": "Публікація...",
+  "promoted_run_starting": "Підвищено — запуск починається",
+  "provider": "Постачальник",
+  "queued_comments": "Коментарі в черзі ({{count}})",
+  "ran_command_one": "виконано 1 команду",
+  "ran_command_other": "виконано {{count}} команд",
+  "remove_blocker_q": "Видалити блокувальник?",
+  "rendering_n_of_m": "Відображення {{shown}} із {{total}} задач",
+  "scroll_to_load_more": "Прокрутіть для завантаження додаткових задач",
+  "status_label": "Статус",
+  "what_should_the_agent_recheck": "Що агент повинен перевірити повторно?"
 }

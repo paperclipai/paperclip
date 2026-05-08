@@ -32,7 +32,9 @@
       "remove_logo": "Видалити логотип",
       "removing_logo": "Видалення...",
       "clear_color": "Очистити",
-      "uploading_logo": "Завантаження логотипу..."
+      "uploading_logo": "Завантаження логотипу...",
+      "failed_to_save": "Не вдалося зберегти",
+      "saving": "Збереження..."
     },
     "status": {
       "saved": "Збережено",
@@ -49,7 +51,12 @@
       "terms_version": "Версія умов:",
       "enabled_at": "Увімкнено",
       "currently_disabled": "Поширення зараз вимкнено.",
-      "read_tos": "Прочитати умови використання"
+      "read_tos": "Прочитати умови використання",
+      "enabled_at_by": "Увімкнено {{date}} користувачем {{user}}",
+      "sharing_disabled": "Обмін відгуками вимкнено",
+      "sharing_enabled": "Обмін відгуками увімкнено",
+      "sharing_update_failed": "Не вдалося оновити параметр обміну відгуками",
+      "unknown_error": "Невідома помилка"
     },
     "openclaw": {
       "generate_snippet": "Згенерувати запрошення для агента OpenClaw.",
@@ -58,7 +65,9 @@
       "snippet_label": "Промпт запрошення OpenClaw",
       "copied": "Скопійовано",
       "copy_snippet": "Копіювати фрагмент",
-      "copied_snippet": "Фрагмент скопійовано"
+      "copied_snippet": "Фрагмент скопійовано",
+      "failed_to_create": "Не вдалося створити запрошення",
+      "generate_snippet_hint": "Створює короткочасне запрошення агента OpenClaw і відображає промпт для копіювання."
     },
     "packages": {
       "moved_notice": "Імпорт та експорт перенесено на окремі сторінки доступні з",
@@ -71,7 +80,9 @@
       "archive_notice": "Архівуйте цю компанію, щоб приховати її з бічної панелі. Запис залишиться в базі даних.",
       "archive_button": "Архівувати компанію",
       "archiving": "Архівування...",
-      "confirm_archive": "Архівувати компанію"
+      "confirm_archive": "Архівувати компанію",
+      "already_archived": "Вже архівовано",
+      "archive_failed": "Не вдалося архівувати компанію"
     }
   },
   "import": {
@@ -146,7 +157,30 @@
     "export_button": "Експортувати",
     "loading_data": "Завантаження даних...",
     "select_company": "Оберіть компанію для експорту.",
-    "company_export_title": "Експорт {{name}}"
+    "company_export_title": "Експорт {{name}}",
+    "binary_not_available": "Попередній перегляд бінарних файлів недоступний для цього типу.",
+    "export_count_few": "Експортувати {{count}} файли",
+    "export_count_many": "Експортувати {{count}} файлів",
+    "export_count_one": "Експортувати {{count}} файл",
+    "export_count_other": "Експортувати {{count}} файлів",
+    "org_chart_breadcrumb": "Орг. структура",
+    "selection_count_few": "{{selected}} / {{total}} файли вибрано",
+    "selection_count_many": "{{selected}} / {{total}} файлів вибрано",
+    "selection_count_one": "{{selected}} / {{total}} файл вибрано",
+    "selection_count_other": "{{selected}} / {{total}} файлів вибрано",
+    "show_more_issues_count": "Показати більше задач ({{visible}} із {{total}})",
+    "toast_downloaded_body_few": "{{count}} файли експортовано як {{path}}.zip",
+    "toast_downloaded_body_many": "{{count}} файлів експортовано як {{path}}.zip",
+    "toast_downloaded_body_one": "{{count}} файл експортовано як {{path}}.zip",
+    "toast_downloaded_body_other": "{{count}} файлів експортовано як {{path}}.zip",
+    "toast_downloaded_title": "Експорт завантажено",
+    "toast_failed_build": "Не вдалося створити пакет експорту.",
+    "toast_failed_load": "Не вдалося завантажити дані експорту.",
+    "toast_failed_title": "Експорт не виконано",
+    "warnings_count_few": "{{count}} попередження",
+    "warnings_count_many": "{{count}} попереджень",
+    "warnings_count_one": "{{count}} попередження",
+    "warnings_count_other": "{{count}} попереджень"
   },
   "invites": {
     "no_company": "Оберіть компанію для управління запрошеннями.",
@@ -257,7 +291,9 @@
       "save": "Зберегти",
       "saving": "Збереження...",
       "select_file": "Оберіть файл для перевірки.",
-      "bundled_read_only": "Вбудовані навички Paperclip доступні лише для читання."
+      "bundled_read_only": "Вбудовані навички Paperclip доступні лише для читання.",
+      "copied_path": "Шлях скопійовано",
+      "copy_source_path": "Скопіювати шлях до джерела"
     },
     "sources": {
       "managed": "{{source}} (керований)",
@@ -436,7 +472,9 @@
     "more_issues_one": "ще {{count}} задача",
     "more_issues_few": "ще {{count}} задачі",
     "more_issues_many": "ще {{count}} задач",
-    "more_issues_other": "ще {{count}} задач"
+    "more_issues_other": "ще {{count}} задач",
+    "agent_option_label": "{{name}} ({{role}})",
+    "member_fallback_name": "цей учасник"
   },
   "companies": {
     "breadcrumb": "Компанії",
@@ -491,7 +529,10 @@
     "toast_approved": "Запит на вступ схвалено",
     "toast_rejected": "Запит на вступ відхилено",
     "unknown_human": "Невідомий запитувач-людина",
-    "unknown_agent": "Невідомий запитувач-агент"
+    "unknown_agent": "Невідомий запитувач-агент",
+    "breadcrumb_inbox": "Вхідні",
+    "company_fallback": "Компанія",
+    "description_extra": "Ця черга використовує ті самі операції схвалення, що й вбудовані картки вхідних."
   },
   "invite": {
     "invalid_token": "Недійсний токен запрошення.",
@@ -799,7 +840,42 @@
       "last7": "Останні 7 днів",
       "last30": "Останні 30 днів",
       "all": "За весь час"
-    }
+    },
+    "agent_attribution": "Атрибуція агентів",
+    "billed_through": "Рахунок через {{provider}}",
+    "breadcrumb_users": "Користувачі",
+    "completions": "виконань",
+    "done": "виконано",
+    "hero_7day_actions": "Дії за 7 днів",
+    "hero_all_time_tokens": "Токени за весь час",
+    "hero_comments": "{{n}} коментарів",
+    "hero_completed": "Завершено",
+    "hero_created": "Створено {{n}}",
+    "hero_open_assigned": "Відкриті призначені",
+    "hero_rate": "Частота {{rate}}",
+    "hero_spent": "Витрачено {{amount}}",
+    "issue_linked_usage": "Використання по задачах",
+    "joined": "приєднався {{date}}",
+    "last_14_days": "Останні 14 днів",
+    "no_agent_usage": "Використання токенів по задачах ще немає.",
+    "no_provider_usage": "Використання провайдерів ще не атрибутовано.",
+    "no_recent_activity": "Прямих дій користувача ще не зареєстровано.",
+    "no_recent_tasks": "Зачеплених задач ще немає.",
+    "not_found": "Профіль користувача для цієї компанії не знайдено.",
+    "provider_mix": "Розподіл провайдерів",
+    "recent_activity": "Остання активність",
+    "recent_tasks": "Останні задачі",
+    "select_company": "Виберіть компанію для перегляду профілів користувачів.",
+    "stat_actions": "Дії",
+    "stat_comments": "Коментарі",
+    "stat_completed": "Завершено",
+    "stat_created": "Створено",
+    "stat_open": "Відкриті",
+    "stat_spend": "Витрати",
+    "stat_tokens": "Токени",
+    "stat_touched": "Зачеплено",
+    "tokens_per_day": "токенів / день",
+    "tokens_total": "токенів всього"
   },
   "no_skills_match_this_filter": "No skills match this filter.",
   "select_a_skill_to_inspect_its_files": "Select a skill to inspect its files.",

@@ -173,7 +173,9 @@
       "assignment": "Завдання",
       "on_demand": "На запит",
       "automation": "Автоматизація"
-    }
+    },
+    "copy_as_markdown": "Копіювати як Markdown",
+    "signal": "сигнал"
   },
   "action_buttons": {
     "pause": "Призупинити",
@@ -470,7 +472,18 @@
     "failed_load_run_log": "Не вдалося завантажити лог запуску",
     "instructions_placeholder": "# Інструкції агента",
     "skill_view_link": "Переглянути",
-    "approve_agent": "Схвалити агента"
+    "approve_agent": "Схвалити агента",
+    "clear_session_text": "очистити сеанс для цих проблем",
+    "clearing_session": "очищення сеансу...",
+    "failed_load_workspace_log": "Не вдалося завантажити журнал операцій робочого простору",
+    "failure_details": "Деталі збою",
+    "jump_to_live": "Перейти в реальний час",
+    "load_more_log": "Завантажити ще логи",
+    "no_log_events": "Немає подій журналу.",
+    "no_persisted_log_lines": "Немає збережених рядків журналу.",
+    "transcript": "Стенограма",
+    "transcript_mode_nice": "гарно",
+    "transcript_mode_raw": "сирий"
   },
   "run_errors": {
     "exited_with_code": "Claude завершив роботу з кодом {{code}}",
@@ -481,5 +494,9 @@
     "run_succeeded": "Запуск успішний",
     "adapter_invocation": "Виклик адаптера",
     "used_skill": "Використована навичка"
+  },
+  "icon_picker": {
+    "no_match": "Немає збігів",
+    "search_placeholder": "Пошук іконок..."
   }
 }

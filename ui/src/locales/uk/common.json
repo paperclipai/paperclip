@@ -79,7 +79,8 @@
     "timer": "Timer",
     "on_demand": "On-demand",
     "reset": "Reset",
-    "run_now": "Run now"
+    "run_now": "Run now",
+    "copy_failed": "Помилка копіювання"
   },
   "status": {
     "all": "All",
@@ -113,7 +114,9 @@
     "planned": "Planned",
     "draft": "Draft",
     "skipped": "Skipped",
-    "blocked": "Blocked"
+    "blocked": "Blocked",
+    "off": "Вимк",
+    "on": "Увімк"
   },
   "status_labels": {
     "backlog": "Backlog",
@@ -240,7 +243,9 @@
     "switch_workspace": "Switch workspace",
     "no_workspaces": "No workspaces",
     "open_switcher": "Open {{company}} workspace switcher",
-    "open_switcher_generic": "Open workspace switcher"
+    "open_switcher_generic": "Open workspace switcher",
+    "done_order": "Готово",
+    "edit_order": "Змінити"
   },
   "not_found": {
     "breadcrumb": "Не знайдено",
@@ -800,7 +805,10 @@
     "paused": "Призупинено",
     "enter_valid_amount": "Введіть дійсну невід'ємну суму в доларах США.",
     "scope_type_agent": "Агент",
-    "scope_type_project": "Проект"
+    "scope_type_project": "Проект",
+    "of_limit": "{{percent}}% від ліміту",
+    "project_paused": "Виконання призупинено для цього проекту до підвищення бюджету або відхилення інциденту.",
+    "scope_paused": "Heartbeat-запуски призупинено для цієї області до підвищення бюджету або відхилення інциденту."
   },
   "search": {
     "title": "Пошук",
@@ -1176,7 +1184,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions..."
+    "loading_revisions": "Loading revisions...",
+    "actor_agent": "агент",
+    "actor_board": "дошка",
+    "actor_system": "система",
+    "content_header": "Вміст",
+    "diff_title": "Порівняння",
+    "new_label": "Нова",
+    "old_label": "Стара",
+    "rev_label": "ред. {{number}}",
+    "same_revision": "Обидві сторони — одна редакція.",
+    "select_revision": "Виберіть редакцію",
+    "select_two_revisions": "Виберіть дві редакції для порівняння."
   },
   "language_switcher": {
     "change_language": "Змінити мову"

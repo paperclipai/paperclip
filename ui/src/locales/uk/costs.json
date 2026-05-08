@@ -52,7 +52,9 @@
     "estimated_in_range": "оцінка за період",
     "debits_credits": "{{debits}} дебетів · {{credits}} кредитів",
     "events_in_range_one": "{{count}} подія за період",
-    "events_in_range_other": "{{count}} подій за період"
+    "events_in_range_other": "{{count}} подій за період",
+    "events_in_range_few": "{{count}} події за період",
+    "events_in_range_many": "{{count}} подій за період"
   },
   "budget": {
     "of": "{{spend}} з {{budget}}",
@@ -77,7 +79,26 @@
     "by_biller": "За білером",
     "by_biller_desc": "Фінансові події на рівні акаунту, згруповані за ініціатором.",
     "budget_control": "Управління бюджетом",
-    "budget_control_desc": "Жорсткі ліміти витрат для агентів і проєктів. Квота підписки провайдера ведеться окремо і відображається в розділі Провайдери."
+    "budget_control_desc": "Жорсткі ліміти витрат для агентів і проєктів. Квота підписки провайдера ведеться окремо і відображається в розділі Провайдери.",
+    "accounting_model_desc": "Paperclip тепер розділяє використання інференсу на рівні запитів і фінансові події на рівні акаунту. Це забезпечує чесну звітність провайдера, коли платником є OpenRouter, Cloudflare, Bedrock або інший посередник.",
+    "accounting_model_title": "Модель обліку",
+    "finance_ledger_points": {
+      "point1": "поповнення, повернення, комісії",
+      "point2": "плата Bedrock за резервування або навчання",
+      "point3": "закінчення та коригування кредитів"
+    },
+    "inference_ledger_points": {
+      "point1": "токени + оплачені долари",
+      "point2": "провайдер, платник, модель",
+      "point3": "облік підписки та перевищень"
+    },
+    "live_quotas": "Живі квоти",
+    "live_quotas_desc": "Вікна провайдера або платника, які можуть зупинити трафік у реальному часі.",
+    "live_quotas_points": {
+      "point1": "вікна квот провайдера",
+      "point2": "кредитні системи платника",
+      "point3": "помилки безпосередньо відображаються"
+    }
   },
   "budgets": {
     "company_policy": "Загальна місячна політика компанії.",
@@ -96,7 +117,15 @@
     "applying": "Застосування...",
     "raise_budget": "Підвищити бюджет і відновити",
     "keep_paused": "Залишити призупиненим",
-    "budget_must_exceed": "Новий бюджет має перевищувати поточні спостережені витрати."
+    "budget_must_exceed": "Новий бюджет має перевищувати поточні спостережені витрати.",
+    "dismissed": "Відхилено",
+    "escalated": "Ескальовано",
+    "hard_stop": "жорстка зупинка",
+    "new_budget_usd": "Новий бюджет (USD)",
+    "open": "Відкрито",
+    "pending_approval": "Очікує затвердження",
+    "resolved": "Вирішено",
+    "spending_reached": "Витрати досягли {{observed}} при ліміті {{limit}}."
   },
   "policy_card": {
     "lifetime_budget": "Бюджет на весь термін",
@@ -122,7 +151,10 @@
     "budget_usd": "Бюджет (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Призупинено через бюджет"
+    "paused_by_budget": "Призупинено через бюджет",
+    "critical": "Призупинено за бюджетом",
+    "healthy": "Бюджет в порядку",
+    "warning": "Попередження бюджету"
   },
   "empty": {
     "select_company": "Оберіть компанію для перегляду витрат.",
@@ -159,7 +191,11 @@
     "api_runs_only": "~{{apiRuns}} api запусків",
     "sub_runs_only": "~{{subRuns}} підп. запусків",
     "percent_used": "{{percent}}% використано",
-    "resets": "оновлюється {{date}}"
+    "resets": "оновлюється {{date}}",
+    "of_provider_cost": "{{percent}}% витрат провайдера",
+    "of_provider_tokens": "{{percent}}% токенів провайдера",
+    "runs_label": "запусків",
+    "total_label": "всього"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} тарифікований запуск",
@@ -172,7 +208,11 @@
     "subscription_runs_other": "{{count}} запусків за підпискою",
     "this_week": "цього тижня",
     "billing_types": "Типи тарифікації",
-    "upstream_providers": "Провайдери"
+    "upstream_providers": "Провайдери",
+    "model_count_one": "{{count}} модель",
+    "model_count_other": "{{count}} моделей",
+    "provider_count_one": "{{count}} провайдер",
+    "provider_count_other": "{{count}} провайдерів"
   },
   "finance_kind": {
     "title": "Структура фінансових подій",

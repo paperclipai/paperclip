@@ -23,7 +23,8 @@
     "approved": "Погоджено",
     "pending": "Очікує",
     "rejected": "Відхилено",
-    "revision_requested": "Потрібне доопрацювання"
+    "revision_requested": "Потрібне доопрацювання",
+    "cancelled": "Скасовано"
   },
   "payload": {
     "type_hire_agent": "Найняти агента",
