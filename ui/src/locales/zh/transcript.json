@@ -15,5 +15,10 @@
   "command_failed": "命令失败",
   "no_input": "无 {{name}} 输入",
   "inspect_input": "检查 {{name}} 输入",
-  "streaming": "流式传输"
+  "streaming": "流式传输",
+  "user": "用户",
+  "input": "输入",
+  "result": "结果",
+  "using": "使用",
+  "used": "已使用"
 }

@@ -637,9 +637,11 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
 function TranscriptMessageBlock({
   block,
   density,
+  t,
 }: {
   block: Extract<TranscriptBlock, { type: "message" }>;
   density: TranscriptDensity;
+  t: (key: string) => string;
 }) {
   const isAssistant = block.role === "assistant";
   const compact = density === "compact";
@@ -649,7 +651,7 @@ function TranscriptMessageBlock({
       {!isAssistant && (
         <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           <User className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-          <span>User</span>
+          <span>{t("user")}</span>
         </div>
       )}
       <MarkdownBody
@@ -666,7 +668,7 @@ function TranscriptMessageBlock({
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
           </span>
-          Streaming
+          {t("streaming")}
         </div>
       )}
     </div>
@@ -933,9 +935,11 @@ function TranscriptCommandGroup({
 function TranscriptToolGroup({
   block,
   density,
+  t,
 }: {
   block: Extract<TranscriptBlock, { type: "tool_group" }>;
   density: TranscriptDensity;
+  t: (key: string) => string;
 }) {
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
@@ -948,10 +952,10 @@ function TranscriptToolGroup({
       ? humanizeLabel(uniqueNames[0])
       : `${uniqueNames.length} tools`;
   const title = isRunning
-    ? `Using ${toolLabel}`
+    ? `${t("using")} ${toolLabel}`
     : block.items.length === 1
-      ? `Used ${toolLabel}`
-      : `Used ${toolLabel} (${block.items.length} calls)`;
+      ? `${t("used")} ${toolLabel}`
+      : `${t("used")} ${toolLabel} (${block.items.length} calls)`;
   const subtitle = runningItem
     ? summarizeToolInput(runningItem.name, runningItem.input, density)
     : null;
@@ -1033,19 +1037,19 @@ function TranscriptToolGroup({
                   : item.status === "error" ? "text-red-700 dark:text-red-300"
                   : "text-emerald-700 dark:text-emerald-300"
                 )}>
-                  {item.status === "running" ? "Running" : item.status === "error" ? "Errored" : "Completed"}
+                  {item.status === "running" ? t("running") : item.status === "error" ? t("errored") : t("completed")}
                 </span>
               </div>
               <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
                 <div>
-                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Input</div>
+                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">{t("input")}</div>
                   <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
                     {formatToolPayload(item.input) || "<empty>"}
                   </pre>
                 </div>
                 {item.result && (
                   <div>
-                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Result</div>
+                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">{t("result")}</div>
                     <pre className={cn(
                       "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
                       item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
@@ -1509,13 +1513,13 @@ export function RunTranscriptView({
           key={`${block.type}-${block.ts}-${index}`}
           className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
         >
-          {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
+          {block.type === "message" && <TranscriptMessageBlock block={block} density={density} t={t} />}
           {block.type === "thinking" && (
             <TranscriptThinkingBlock block={block} density={density} className={thinkingClassName} />
           )}
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
           {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
-          {block.type === "tool_group" && <TranscriptToolGroup block={block} density={density} />}
+          {block.type === "tool_group" && <TranscriptToolGroup block={block} density={density} t={t} />}
           {block.type === "diff_group" && <TranscriptDiffGroup block={block} density={density} />}
           {block.type === "stderr_group" && <TranscriptStderrGroup block={block} density={density} />}
           {block.type === "system_group" && <TranscriptSystemGroup block={block} density={density} />}

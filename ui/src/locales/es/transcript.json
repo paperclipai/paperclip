@@ -15,5 +15,10 @@
   "command_failed": "Comando falló",
   "no_input": "Sin entrada {{name}}",
   "inspect_input": "Inspeccionar entrada {{name}}",
-  "streaming": "Transmitiendo"
+  "streaming": "Transmitiendo",
+  "user": "Usuario",
+  "input": "Entrada",
+  "result": "Resultado",
+  "using": "Usando",
+  "used": "Usado"
 }

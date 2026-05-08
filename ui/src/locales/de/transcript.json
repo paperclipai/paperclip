@@ -15,5 +15,10 @@
   "command_failed": "Befehl fehlgeschlagen",
   "no_input": "Keine {{name}} Eingabe",
   "inspect_input": "{{name}} Eingabe prüfen",
-  "streaming": "Wird gestreamt"
+  "streaming": "Wird gestreamt",
+  "user": "Benutzer",
+  "input": "Eingabe",
+  "result": "Ergebnis",
+  "using": "Verwendet",
+  "used": "Verwendet"
 }

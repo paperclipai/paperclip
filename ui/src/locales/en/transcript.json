@@ -15,5 +15,10 @@
   "command_failed": "Command failed",
   "no_input": "No {{name}} input",
   "inspect_input": "Inspect {{name}} input",
-  "streaming": "Streaming"
+  "streaming": "Streaming",
+  "user": "User",
+  "input": "Input",
+  "result": "Result",
+  "using": "Using",
+  "used": "Used"
 }
