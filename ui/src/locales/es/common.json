@@ -121,6 +121,7 @@
     "in_progress": "In progress",
     "in_review": "In review",
     "done": "Done",
+    "planned": "Planned",
     "blocked": "Blocked",
     "cancelled": "Cancelled",
     "running": "Running",
