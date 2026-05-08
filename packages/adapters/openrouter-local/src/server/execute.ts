@@ -256,10 +256,11 @@ export async function execute(
   const autoApprove = config.autoApprove === true;
   const apiClient = ctx.authToken ? new PaperclipApi({ authToken: ctx.authToken }) : null;
   const currentIssueId = resolveCurrentIssueId(context);
+  if (currentIssueId) paperclipEnv.PAPERCLIP_TASK_ID = currentIssueId;
 
   if (currentIssueId && apiClient) {
     try {
-      await apiClient.checkoutIssue(currentIssueId, agent.id);
+      await apiClient.checkoutIssue(currentIssueId, agent.id, ["in_progress", "todo", "backlog", "blocked"]);
     } catch (err) {
       if (err instanceof PaperclipApiError && err.status === 409) {
         await onLog("stdout", `[paperclip] Issue ${currentIssueId} is locked by another run. Aborting.\n`);
@@ -442,6 +443,7 @@ export async function execute(
       model: state.model,
       provider: state.provider,
       usage: usageSummary,
+      costUsd: state.costUsd,
       summary: state.finalAssistantText || null,
     };
   } catch (err) {
@@ -452,7 +454,12 @@ export async function execute(
         timedOut: true,
         model: state.model,
         provider: state.provider,
-        usage: { inputTokens: state.inputTokens, outputTokens: state.outputTokens },
+        usage: {
+          inputTokens: state.inputTokens,
+          outputTokens: state.outputTokens,
+          ...(state.cachedInputTokens > 0 ? { cachedInputTokens: state.cachedInputTokens } : {}),
+        },
+        costUsd: state.costUsd,
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
       };
@@ -472,6 +479,7 @@ export async function execute(
           ? { cachedInputTokens: state.cachedInputTokens }
           : {}),
       },
+      costUsd: state.costUsd,
       errorMessage: message,
       errorCode: "openrouter_local_call_failed",
     };

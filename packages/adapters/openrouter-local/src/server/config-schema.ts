@@ -15,11 +15,11 @@ export async function getConfigSchema(): Promise<AdapterConfigSchema> {
       {
         key: "model",
         label: "Model",
-        type: "select",
+        type: "combobox",
         default: DEFAULT_OPENROUTER_LOCAL_MODEL,
         required: true,
         options: models.map((m) => ({ value: m.id, label: m.label })),
-        hint: "Select a model from the OpenRouter catalog.",
+        hint: "Select a model from the catalog or enter a custom slug (e.g. 'openrouter/auto'). Note: The 'Cheap' model profile defaults to 'openai/gpt-4o-mini'.",
       },
       {
         key: "baseUrl",

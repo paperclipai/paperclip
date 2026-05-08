@@ -50,10 +50,10 @@ export class PaperclipApi {
     return this.request("PATCH", `/api/issues/${issueId}`, patch);
   }
 
-  checkoutIssue(issueId: string, agentId: string, expectedStatuses?: string[]): Promise<Record<string, unknown>> {
+  checkoutIssue(issueId: string, agentId: string, expectedStatuses: string[]): Promise<Record<string, unknown>> {
     return this.request("POST", `/api/issues/${issueId}/checkout`, {
       agentId,
-      ...(expectedStatuses ? { expectedStatuses } : {}),
+      expectedStatuses,
     });
   }
 
