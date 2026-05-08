@@ -1,5 +1,6 @@
+import { Fragment, useMemo } from "react";
 import { Link } from "@/lib/router";
-import { Menu } from "lucide-react";
+import { BellRing, CircleDot, LayoutDashboard, Menu, Search, ShieldCheck, Users } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -12,22 +13,53 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { Fragment, useMemo } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { BizboxBrandMark } from "./BizboxBrandMark";
+import { CompanyPatternIcon } from "./CompanyPatternIcon";
+import { TopNavItem } from "./TopNavItem";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
+const TOP_NAV_ITEMS = [
+  { to: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { to: "/issues", label: "Work", icon: CircleDot },
+  { to: "/agents/all", label: "Agents", icon: Users },
+  { to: "/approvals/pending", label: "Approvals", icon: ShieldCheck },
+  { to: "/inbox", label: "Inbox", icon: BellRing },
+] as const;
+
+const TOP_LEVEL_BREADCRUMB_LABELS = new Set([
+  "Dashboard",
+  "Inbox",
+  "Issues",
+  "Agents",
+  "Approvals",
+]);
+
 function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
-  const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
+  const { launchers } = usePluginLaunchers({
+    placementZones: ["globalToolbarButton"],
+    companyId: context.companyId,
+    enabled: !!context.companyId,
+  });
   if (slots.length === 0 && launchers.length === 0) return null;
   return (
-    <div className="flex items-center gap-1 ml-auto shrink-0 pl-2">
+    <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
       <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
       <PluginLauncherOutlet placementZones={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
     </div>
   );
+}
+
+function openSearch() {
+  document.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "k",
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  }));
 }
 
 export function BreadcrumbBar() {
@@ -44,55 +76,107 @@ export function BreadcrumbBar() {
   );
 
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+  const companyIdentity = selectedCompany ? (
+    <div className="hidden min-w-0 items-center gap-2 rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1.5 xl:flex">
+      <CompanyPatternIcon
+        companyName={selectedCompany.name}
+        logoUrl={selectedCompany.logoUrl}
+        brandColor={selectedCompany.brandColor}
+        className="h-8 w-8 rounded-xl text-sm"
+        logoFit="contain"
+      />
+      <div className="min-w-0">
+        <div className="truncate text-xs font-semibold text-foreground">{selectedCompany.name}</div>
+        <div className="truncate text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+          {selectedCompany.issuePrefix}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const searchButton = (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="rounded-full border border-white/8 bg-white/[0.04] px-3 text-muted-foreground hover:border-white/12 hover:bg-white/[0.06] hover:text-foreground"
+      onClick={openSearch}
+    >
+      <Search className="h-4 w-4" />
+      <span className="hidden xl:inline">Search</span>
+      <span className="hidden text-[10px] uppercase tracking-[0.18em] text-muted-foreground/80 xl:inline">Cmd+K</span>
+    </Button>
+  );
 
   if (isMobile && mobileToolbar) {
     return (
-      <div className="border-b border-border px-2 h-12 shrink-0 flex items-center">
+      <div className="brand-shell flex h-14 shrink-0 items-center border-b border-border/70 px-2">
         {mobileToolbar}
       </div>
     );
   }
 
-  if (breadcrumbs.length === 0) {
-    return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center justify-end">
-        {globalToolbarSlots}
-      </div>
-    );
-  }
-
-  const menuButton = isMobile && (
+  const menuButton = isMobile ? (
     <Button
       variant="ghost"
       size="icon-sm"
-      className="mr-2 shrink-0"
+      className="mr-1 shrink-0 rounded-full"
       onClick={toggleSidebar}
       aria-label="Open sidebar"
     >
       <Menu className="h-5 w-5" />
     </Button>
+  ) : null;
+
+  const nav = !isMobile ? (
+    <div className="hidden lg:flex lg:items-center lg:gap-2">
+      {TOP_NAV_ITEMS.map((item) => <TopNavItem key={item.to} {...item} />)}
+    </div>
+  ) : null;
+
+  const shellRight = (
+    <div className="flex items-center gap-2">
+      {companyIdentity}
+      {searchButton}
+      {globalToolbarSlots}
+    </div>
   );
 
-  // Single breadcrumb = page title (uppercase)
-  if (breadcrumbs.length === 1) {
+  if (breadcrumbs.length === 0) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+      <div className="brand-shell flex h-16 shrink-0 items-center gap-3 border-b border-border/70 px-4 md:px-6">
         {menuButton}
-        <div className="min-w-0 overflow-hidden flex-1">
-          <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
-            {breadcrumbs[0].label}
-          </h1>
-        </div>
-        {globalToolbarSlots}
+        {!isMobile ? <BizboxBrandMark /> : null}
+        {nav}
+        <div className="ml-auto">{shellRight}</div>
       </div>
     );
   }
 
-  // Multiple breadcrumbs = breadcrumb trail
+  if (breadcrumbs.length === 1) {
+    const showPageTitle = !TOP_LEVEL_BREADCRUMB_LABELS.has(breadcrumbs[0].label);
+    return (
+      <div className="brand-shell flex h-16 shrink-0 items-center gap-3 border-b border-border/70 px-4 md:px-6">
+        {menuButton}
+        {!isMobile ? <BizboxBrandMark compact /> : null}
+        {nav}
+        <div className="min-w-0 flex-1 overflow-hidden">
+          {showPageTitle ? (
+            <h1 className="truncate text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              {breadcrumbs[0].label}
+            </h1>
+          ) : null}
+        </div>
+        {shellRight}
+      </div>
+    );
+  }
+
   return (
-    <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+    <div className="brand-shell flex h-16 shrink-0 items-center gap-3 border-b border-border/70 px-4 md:px-6">
       {menuButton}
-      <div className="min-w-0 overflow-hidden flex-1">
+      {!isMobile ? <BizboxBrandMark compact /> : null}
+      {nav}
+      <div className="min-w-0 flex-1 overflow-hidden">
         <Breadcrumb className="min-w-0 overflow-hidden">
           <BreadcrumbList className="flex-nowrap">
             {breadcrumbs.map((crumb, i) => {
@@ -115,7 +199,7 @@ export function BreadcrumbBar() {
           </BreadcrumbList>
         </Breadcrumb>
       </div>
-      {globalToolbarSlots}
+      {shellRight}
     </div>
   );
 }

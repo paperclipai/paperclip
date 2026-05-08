@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { Company } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
+import { BizboxBrandMark } from "./BizboxBrandMark";
 
 function SortableCompanyItem({
   company,
@@ -199,14 +200,12 @@ export function CompanyRail() {
   );
 
   return (
-    <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+    <div className="brand-shell flex h-full w-[84px] shrink-0 flex-col items-center border-r border-border/60 bg-background/95">
+      <div className="flex h-16 w-full shrink-0 items-center justify-center">
+        <BizboxBrandMark compact className="gap-0" />
       </div>
 
-      {/* Company list */}
-      <div className="flex-1 flex flex-col items-center gap-2 py-3 w-full overflow-y-auto overflow-x-hidden scrollbar-none">
+      <div className="flex w-full flex-1 flex-col items-center gap-3 overflow-y-auto overflow-x-hidden py-3 scrollbar-none">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -235,16 +234,14 @@ export function CompanyRail() {
         </DndContext>
       </div>
 
-      {/* Separator before add button */}
-      <div className="w-8 h-px bg-border mx-auto shrink-0" />
+      <div className="mx-auto h-px w-10 shrink-0 bg-border/70" />
 
-      {/* Add company button */}
       <div className="flex items-center justify-center py-2 shrink-0">
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <button
               onClick={() => openOnboarding()}
-              className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
+              className="flex h-11 w-11 items-center justify-center rounded-[18px] border border-dashed border-border/80 bg-white/[0.03] text-muted-foreground transition-[border-color,color,transform] duration-150 hover:-translate-y-0.5 hover:border-primary/40 hover:text-primary"
               aria-label="Add company"
             >
               <Plus className="h-5 w-5" />

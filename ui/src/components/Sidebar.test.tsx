@@ -120,6 +120,7 @@ describe("Sidebar", () => {
     });
     await flushReact();
 
+    expect(container.textContent).toContain("Create New Issue");
     expect(container.textContent).not.toContain("Workspaces");
 
     await act(async () => {
@@ -145,6 +146,7 @@ describe("Sidebar", () => {
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
     expect(link?.getAttribute("href")).toBe("/workspaces");
+    expect(container.textContent).toContain("Company menu");
 
     await act(async () => {
       root.unmount();

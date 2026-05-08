@@ -44,7 +44,7 @@ vi.mock("./CompanySettingsSidebar", () => ({
 }));
 
 vi.mock("./BreadcrumbBar", () => ({
-  BreadcrumbBar: () => <div>Breadcrumbs</div>,
+  BreadcrumbBar: () => <div>Top navigation</div>,
 }));
 
 vi.mock("./PropertiesPanel", () => ({
@@ -209,7 +209,7 @@ describe("Layout", () => {
     await flushReact();
 
     expect(mockHealthApi.get).toHaveBeenCalled();
-    expect(container.textContent).toContain("Breadcrumbs");
+    expect(container.textContent).toContain("Top navigation");
     expect(container.textContent).toContain("Outlet content");
     expect(container.textContent).not.toContain("Authenticated private");
     expect(container.textContent).not.toContain(

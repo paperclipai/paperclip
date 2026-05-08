@@ -58,29 +58,27 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
+    <aside className="brand-shell flex h-full min-h-0 w-72 flex-col border-r border-sidebar-border bg-sidebar/95">
+      <div className="flex shrink-0 items-center gap-2 px-4 py-4">
         <SidebarCompanyMenu />
         <Button
           variant="ghost"
           size="icon-sm"
-          className="text-muted-foreground shrink-0"
+          className="shrink-0 rounded-full border border-white/8 bg-white/[0.03] text-muted-foreground hover:border-white/14 hover:bg-white/[0.06] hover:text-foreground"
           onClick={openSearch}
         >
           <Search className="h-4 w-4" />
         </Button>
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
-        <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
+      <nav className="scrollbar-auto-hide flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 pb-4">
+        <div className="brand-panel-subtle flex flex-col gap-1 rounded-[1.35rem] p-2">
           <button
             onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+            className="flex items-center gap-2.5 rounded-2xl bg-[linear-gradient(135deg,rgba(255,174,82,0.22),rgba(255,120,32,0.14))] px-3 py-2.5 text-[13px] font-semibold text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-all hover:brightness-110"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">Create New Issue</span>
           </button>
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
@@ -100,7 +98,7 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
+        <SidebarSection label="Workflows">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/deliverables" label="Deliverables" icon={Package} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
@@ -117,7 +115,7 @@ export function Sidebar() {
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
+        <SidebarSection label="Company Ops">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />

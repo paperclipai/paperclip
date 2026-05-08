@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { ArrowRight, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Sparkles, TriangleAlert } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -35,7 +35,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 }
 
 export function Dashboard() {
-  const { selectedCompanyId, companies } = useCompany();
+  const { selectedCompanyId, companies, selectedCompany } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
@@ -192,6 +192,14 @@ export function Dashboard() {
   }
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
+  const boardPulse = data
+    ? [
+        { label: "Active now", value: data.agents.running, tone: "primary" as const },
+        { label: "Blocked tasks", value: data.tasks.blocked, tone: "warning" as const },
+        { label: "Approvals waiting", value: data.pendingApprovals + data.budgets.pendingApprovals, tone: "warning" as const },
+        { label: "Monthly spend", value: formatCents(data.costs.monthSpendCents), tone: "neutral" as const },
+      ]
+    : [];
 
   return (
     <div className="space-y-6">
@@ -218,8 +226,75 @@ export function Dashboard() {
 
       {data && (
         <>
+          <section className="brand-panel overflow-hidden rounded-[2rem]">
+            <div className="grid gap-6 px-5 py-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.9fr)] lg:px-7 lg:py-7">
+              <div className="relative min-w-0">
+                <div className="brand-chip inline-flex rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                  Live company overview
+                </div>
+                <h1 className="mt-4 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+                  {selectedCompany?.name ?? "Your AI company"} is running on Bizbox.
+                </h1>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+                  {selectedCompany?.description?.trim()
+                    ? selectedCompany.description
+                    : "Track agents, work, approvals, and spend from one board so a human can understand what the company is doing at a glance."}
+                </p>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <Link to="/issues" className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/[0.16] px-4 py-2 text-sm font-medium text-foreground transition hover:brightness-110">
+                    Open work queue
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                  <Link to="/agents/all" className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-muted-foreground transition hover:border-white/16 hover:text-foreground">
+                    Inspect agents
+                  </Link>
+                  <Link to="/approvals/pending" className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-muted-foreground transition hover:border-white/16 hover:text-foreground">
+                    Board approvals
+                  </Link>
+                </div>
+              </div>
+              <div className="brand-panel-subtle grid gap-3 rounded-[1.6rem] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Board pulse</p>
+                    <p className="mt-1 text-sm text-muted-foreground">The first screen should tell you what is active, blocked, and expensive.</p>
+                  </div>
+                  {(data.budgets.activeIncidents > 0 || data.tasks.blocked > 0) ? (
+                    <div className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-red-200">
+                      <TriangleAlert className="h-3.5 w-3.5" />
+                      Attention needed
+                    </div>
+                  ) : (
+                    <div className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
+                      Company healthy
+                    </div>
+                  )}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {boardPulse.map((item) => (
+                    <div
+                      key={item.label}
+                      className={cn(
+                        "rounded-[1.25rem] border px-4 py-3",
+                        item.tone === "primary"
+                          ? "border-primary/20 bg-primary/[0.12]"
+                          : item.tone === "warning"
+                            ? "border-amber-400/18 bg-amber-400/[0.08]"
+                            : "border-white/8 bg-white/[0.03]",
+                      )}
+                    >
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{item.label}</div>
+                      <div className="mt-2 text-2xl font-semibold text-foreground">{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+
           {data.budgets.activeIncidents > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+            <div className="flex items-start justify-between gap-3 rounded-[1.4rem] border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.14),rgba(255,255,255,0.02))] px-4 py-4">
               <div className="flex items-start gap-2.5">
                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
                 <div>
@@ -237,11 +312,11 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
+              label="Agents available to the company"
               to="/agents"
               description={
                 <span>
@@ -254,7 +329,7 @@ export function Dashboard() {
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}
-              label="Tasks In Progress"
+              label="Tasks moving right now"
               to="/issues"
               description={
                 <span>
@@ -266,7 +341,7 @@ export function Dashboard() {
             <MetricCard
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
+              label="Current month spend"
               to="/costs"
               description={
                 <span>
@@ -279,7 +354,7 @@ export function Dashboard() {
             <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
+              label="Board approvals waiting"
               to="/approvals"
               description={
                 <span>
@@ -291,7 +366,7 @@ export function Dashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
@@ -317,10 +392,11 @@ export function Dashboard() {
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                <h3 className="mb-1 text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Recent Activity
                 </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <p className="mb-3 text-sm text-muted-foreground">Recent board-visible changes across agents, tasks, and approvals.</p>
+                <div className="brand-panel overflow-hidden rounded-[1.5rem] divide-y divide-border">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -338,15 +414,16 @@ export function Dashboard() {
 
             {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              <h3 className="mb-1 text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                 Recent Tasks
               </h3>
+              <p className="mb-3 text-sm text-muted-foreground">The freshest work items across the company, sorted by latest movement.</p>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                <div className="brand-panel rounded-[1.5rem] p-4">
+                  <p className="text-sm text-muted-foreground">No tasks yet. Create the first issue to make the company legible.</p>
                 </div>
               ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="brand-panel overflow-hidden rounded-[1.5rem] divide-y divide-border">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
