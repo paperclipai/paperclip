@@ -461,9 +461,7 @@
       "owner_protected": "Владельцы совета не могут быть удалены из доступа к компании.",
       "admin_protected": "Администраторы компании не могут быть удалены из доступа к компании.",
       "actor_not_member": "Только активные участники компании могут удалять пользователей.",
-      "target_role_too_high": "Вы можете удалять только пользователей с более низкой ролью в компании.",
-      "member_fallback_name": "этот участник",
-      "agent_option_label": "{{name}} ({{role}})"
+      "target_role_too_high": "Вы можете удалять только пользователей с более низкой ролью в компании."
     },
     "open_assigned_issues_one": "{{count}} открытая назначенная задача",
     "open_assigned_issues_few": "{{count}} открытые назначенные задачи",
@@ -472,7 +470,9 @@
     "more_issues_one": "ещё {{count}} задача",
     "more_issues_few": "ещё {{count}} задачи",
     "more_issues_many": "ещё {{count}} задач",
-    "more_issues_other": "ещё {{count}} задач"
+    "more_issues_other": "ещё {{count}} задач",
+    "member_fallback_name": "этот участник",
+    "agent_option_label": "{{name}} ({{role}})"
   },
   "companies": {
     "breadcrumb": "Компании",
