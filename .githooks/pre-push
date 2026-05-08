@@ -12,9 +12,8 @@ case "$current_branch" in
     script="$root/scripts/check-i18n-only-diff.sh"
     if [[ -f "$script" ]]; then
       echo "[pre-push] Running i18n-only guardrail..."
-      # Baseline: last commit with legitimate structural code before stricter
-      # guardrail patterns were adopted. Commits after this are pure i18n-only.
-      guardrail_baseline="fdfbcbc2"
+      # Baseline: last commit before stray-files cleanup — commits after are pure i18n-only.
+      guardrail_baseline="81385f57"
       bash "$script" "${guardrail_baseline}..HEAD" || {
         echo "[pre-push] i18n guardrail FAILED — push aborted. Fix violations above."
         exit 1
