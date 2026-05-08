@@ -1,10 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueThreadInteractions, issueWorkProducts } from "@paperclipai/db";
-import type {
-  OutcomeContract,
-  OutcomeEvaluation,
-} from "@paperclipai/shared";
+import type { OutcomeContract, OutcomeContractSigner, OutcomeEvaluation } from "@paperclipai/shared";
 
 export async function evaluateOutcomeContract(
   db: Db,
@@ -16,6 +13,10 @@ export async function evaluateOutcomeContract(
       return evaluateMergedPr(db, issueId, contract);
     case "signed_off_decision":
       return evaluateSignedOffDecision(db, issueId, contract);
+    default: {
+      const _exhaustive: never = contract.kind;
+      throw new Error(`Unknown outcome contract kind: ${_exhaustive}`);
+    }
   }
 }
 
@@ -24,7 +25,7 @@ async function evaluateMergedPr(
   issueId: string,
   contract: OutcomeContract,
 ): Promise<OutcomeEvaluation> {
-  const requirePrimary = contract.params?.requirePrimary === true;
+  const requirePrimary = contract.params?.["requirePrimary"] === true;
 
   const conditions = [
     eq(issueWorkProducts.issueId, issueId),
@@ -40,11 +41,9 @@ async function evaluateMergedPr(
     .select({ id: issueWorkProducts.id })
     .from(issueWorkProducts)
     .where(and(...conditions))
-    .then((r) => r);
+    .limit(1);
 
-  if (rows.length > 0) {
-    return { satisfied: true };
-  }
+  if (rows.length > 0) return { satisfied: true };
 
   const hint = requirePrimary
     ? "Link a merged primary GitHub PR via POST /api/issues/{id}/work-products with type='pull_request', status='merged', isPrimary=true"
@@ -52,14 +51,20 @@ async function evaluateMergedPr(
 
   return {
     satisfied: false,
-    missing: [
-      {
-        code: "no_merged_pr",
-        message: "No merged pull request found for this issue.",
-        hint,
-      },
-    ],
+    missing: [{ code: "no_merged_pr", message: "No merged pull request found for this issue.", hint }],
   };
+}
+
+function signerMatchesRow(
+  signers: OutcomeContractSigner[],
+  resolvedByAgentId: string | null,
+  resolvedByUserId: string | null,
+): boolean {
+  return signers.some((signer) => {
+    if (signer.kind === "agent") return resolvedByAgentId === signer.id;
+    if (signer.kind === "user") return resolvedByUserId === signer.id;
+    return false;
+  });
 }
 
 async function evaluateSignedOffDecision(
@@ -72,7 +77,6 @@ async function evaluateSignedOffDecision(
       id: issueThreadInteractions.id,
       resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
       resolvedByUserId: issueThreadInteractions.resolvedByUserId,
-      status: issueThreadInteractions.status,
     })
     .from(issueThreadInteractions)
     .where(
@@ -81,8 +85,7 @@ async function evaluateSignedOffDecision(
         eq(issueThreadInteractions.kind, "request_confirmation"),
         eq(issueThreadInteractions.status, "accepted"),
       ),
-    )
-    .then((r) => r);
+    );
 
   if (rows.length === 0) {
     return {
@@ -98,33 +101,22 @@ async function evaluateSignedOffDecision(
   }
 
   const signers = contract.signers;
-  if (!signers || signers.length === 0) {
-    return { satisfied: true };
-  }
+  if (!signers || signers.length === 0) return { satisfied: true };
 
-  const signerMatch = rows.some((row) => {
-    return signers.some((signer) => {
-      if (signer.kind === "agent") {
-        return row.resolvedByAgentId === signer.id;
-      }
-      if (signer.kind === "user") {
-        return row.resolvedByUserId === signer.id;
-      }
-      return false;
-    });
-  });
+  const matched = rows.some((row) =>
+    signerMatchesRow(signers, row.resolvedByAgentId ?? null, row.resolvedByUserId ?? null),
+  );
 
-  if (signerMatch) {
-    return { satisfied: true };
-  }
+  if (matched) return { satisfied: true };
 
+  const signerList = signers.map((s) => `${s.kind}:${s.id}`).join(", ");
   return {
     satisfied: false,
     missing: [
       {
         code: "signer_mismatch",
-        message: "The confirmation was accepted, but not by one of the required signers.",
-        hint: `Required signers: ${signers.map((s) => `${s.kind}:${s.id}`).join(", ")}. Have the correct signer accept a request_confirmation interaction.`,
+        message: "A confirmation was accepted, but not by one of the required signers.",
+        hint: `Required signers: ${signerList}. Have the correct signer accept a request_confirmation interaction.`,
       },
     ],
   };

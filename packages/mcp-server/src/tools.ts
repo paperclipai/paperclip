@@ -593,6 +593,33 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         }),
     ),
     makeTool(
+      "paperclipLinkPr",
+      "Link a GitHub pull request to an issue as a work product. Use this to satisfy a merged_pr outcome contract — set status='merged' once the PR is merged.",
+      z.object({
+        issueId: issueIdSchema,
+        title: z.string().min(1).describe("PR title"),
+        url: z.string().url().describe("GitHub PR URL"),
+        externalId: z.string().optional().nullable().describe("GitHub PR number or node id"),
+        status: z
+          .enum(["active", "draft", "ready_for_review", "merged", "closed"])
+          .default("active")
+          .describe("Current PR status; use 'merged' once merged"),
+        isPrimary: z.boolean().optional().default(false).describe("Mark as the primary PR for this issue"),
+      }),
+      async ({ issueId, title, url, externalId, status, isPrimary }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/work-products`, {
+          body: {
+            type: "pull_request",
+            provider: "github",
+            title,
+            url,
+            externalId: externalId ?? null,
+            status,
+            isPrimary,
+          },
+        }),
+    ),
+    makeTool(
       "paperclipApiRequest",
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,

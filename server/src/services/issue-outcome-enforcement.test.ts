@@ -5,14 +5,12 @@ import type { OutcomeContract } from "@paperclipai/shared";
 type Row = Record<string, unknown>;
 
 function makeDb(rows: Row[]) {
+  const leaf = {
+    limit: (_n: number) => Promise.resolve(rows),
+    then: (cb: (rows: Row[]) => unknown) => Promise.resolve(cb(rows)),
+  };
   return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          then: (cb: (rows: Row[]) => unknown) => Promise.resolve(cb(rows)),
-        }),
-      }),
-    }),
+    select: () => ({ from: () => ({ where: () => leaf }) }),
   } as any;
 }
 
