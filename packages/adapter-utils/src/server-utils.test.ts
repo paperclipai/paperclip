@@ -205,6 +205,36 @@ describe("materializePaperclipSkillCopy", () => {
 });
 
 describe("runChildProcess", () => {
+  it("refuses broad environment commands before stdout or stderr reaches log callbacks", async () => {
+    const logChunks: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+
+    const result = await runChildProcess(
+      randomUUID(),
+      "sh",
+      ["-lc", "cat /proc/*/environ"],
+      {
+        cwd: process.cwd(),
+        env: {
+          PAPERCLIP_SENTINEL_SECRET: "should-not-appear",
+        },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (stream, chunk) => {
+          logChunks.push({ stream, chunk });
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 126,
+      timedOut: false,
+      stdout: "",
+    });
+    expect(result.stderr).toContain("Runtime command refused before execution");
+    expect(JSON.stringify(result)).not.toContain("should-not-appear");
+    expect(JSON.stringify(logChunks)).not.toContain("should-not-appear");
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

@@ -46,6 +46,12 @@ describe("runtime command preflight", () => {
     expect(blocked("sh", ["-lc", "tr '\\0' '\\n' < /proc/123/environ"])).toMatchObject({
       code: "broad_runtime_env_inspection",
     });
+    expect(blocked("sh", ["-lc", "cat /proc/*/environ"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
+    expect(blocked("sh", ["-lc", "cat /proc/[0-9]*/environ"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
     expect(blocked("sh", ["-lc", "cat /proc/$$/environ"])).toMatchObject({
       code: "broad_runtime_env_inspection",
     });
@@ -53,6 +59,9 @@ describe("runtime command preflight", () => {
       code: "broad_runtime_env_inspection",
     });
     expect(blocked("sh", ["-lc", "cat /proc/${PPID}/environ"])).toMatchObject({
+      code: "broad_runtime_env_inspection",
+    });
+    expect(blocked("sh", ["-lc", "cat /proc/$(printf 1)/environ"])).toMatchObject({
       code: "broad_runtime_env_inspection",
     });
   });
