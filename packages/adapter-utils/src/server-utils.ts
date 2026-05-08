@@ -1595,11 +1595,21 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+export interface SkillSymlinkOptions {
+  /**
+   * If true, skip repairing the symlink if it points to an existing directory
+   * even if that directory is not the intended source.
+   * Default: false (repair mismatched links even if they are valid).
+   */
+  preserveExistingValidMismatchedLinks?: boolean;
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
     fs.symlink(linkSource, linkTarget),
+  options: SkillSymlinkOptions = {},
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -1619,9 +1629,14 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
-  const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
-  if (linkedPathExists) {
-    return "skipped";
+  if (options.preserveExistingValidMismatchedLinks) {
+    const linkedPathExists = await fs
+      .stat(resolvedLinkedPath)
+      .then(() => true)
+      .catch(() => false);
+    if (linkedPathExists) {
+      return "skipped";
+    }
   }
 
   await fs.unlink(target);
