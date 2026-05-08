@@ -6,6 +6,15 @@ export interface DashboardRunActivityDay {
   total: number;
 }
 
+export interface DashboardOverrideReason {
+  commentId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  reason: string;
+  createdAt: string;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -33,4 +42,8 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  outcomeOverrides: {
+    last30Days: number;
+    recentReasons: DashboardOverrideReason[];
+  };
 }

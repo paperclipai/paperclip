@@ -493,6 +493,8 @@ export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
   sections: IssueCommentMetadataSection[];
+  outcomeOverride?: boolean | null;
+  actorUserId?: string | null;
 }
 
 export interface IssueCommentPresentation {

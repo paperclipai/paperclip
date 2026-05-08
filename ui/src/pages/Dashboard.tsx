@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, ShieldAlert } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -312,6 +312,45 @@ export function Dashboard() {
             className="grid gap-4 md:grid-cols-2"
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
           />
+
+          {/* Outcome Override Metric */}
+          <div className="rounded-xl border bg-card p-4 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldAlert className={cn("h-4 w-4 shrink-0", data.outcomeOverrides.last30Days > 0 ? "text-amber-500" : "text-green-500")} />
+              <h3 className="text-sm font-semibold">
+                Outcome Overrides
+              </h3>
+              <span className="ml-auto text-xs text-muted-foreground">Last 30 days</span>
+            </div>
+            {data.outcomeOverrides.last30Days === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No overrides in the last 30 days — enforcement is holding.
+              </p>
+            ) : (
+              <>
+                <p className={cn("text-sm font-medium mb-3", "text-amber-600 dark:text-amber-400")}>
+                  {data.outcomeOverrides.last30Days} override{data.outcomeOverrides.last30Days === 1 ? "" : "s"} in the last 30 days
+                </p>
+                <div className="divide-y divide-border border border-border overflow-hidden text-sm">
+                  {data.outcomeOverrides.recentReasons.map((entry) => (
+                    <div key={entry.commentId} className="px-3 py-2">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <Link
+                          to={`/issues/${entry.issueIdentifier ?? entry.issueId}`}
+                          className="text-xs font-mono text-muted-foreground hover:underline shrink-0"
+                        >
+                          {entry.issueIdentifier ?? entry.issueId.slice(0, 8)}
+                        </Link>
+                        <span className="truncate text-xs text-muted-foreground">{entry.issueTitle}</span>
+                        <span className="ml-auto text-xs text-muted-foreground shrink-0">{timeAgo(entry.createdAt)}</span>
+                      </div>
+                      <p className="text-sm line-clamp-2 text-foreground/80">{entry.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}

@@ -302,6 +302,7 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  outcomeOverrides: { last30Days: 0, recentReasons: [] },
 };
 
 describe("inbox helpers", () => {

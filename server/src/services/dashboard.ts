@@ -1,10 +1,12 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
+const DASHBOARD_OVERRIDE_WINDOW_DAYS = 30;
+const DASHBOARD_OVERRIDE_REASONS_LIMIT = 10;
 
 function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -128,6 +130,43 @@ export function dashboardService(db: Db) {
         bucket.total += count;
       }
 
+      const overrideWindowStart = new Date(
+        now.getTime() - DASHBOARD_OVERRIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+      );
+      const outcomeOverrideFilter = sql`${issueComments.metadata} @> '{"outcomeOverride":true}'::jsonb`;
+
+      const [{ overrideCount }] = await db
+        .select({ overrideCount: sql<number>`count(*)::integer` })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            outcomeOverrideFilter,
+            gte(issueComments.createdAt, overrideWindowStart),
+          ),
+        );
+
+      const overrideReasonRows = await db
+        .select({
+          commentId: issueComments.id,
+          issueId: issueComments.issueId,
+          reason: issueComments.body,
+          createdAt: issueComments.createdAt,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+        })
+        .from(issueComments)
+        .innerJoin(issues, eq(issueComments.issueId, issues.id))
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            outcomeOverrideFilter,
+            gte(issueComments.createdAt, overrideWindowStart),
+          ),
+        )
+        .orderBy(desc(issueComments.createdAt))
+        .limit(DASHBOARD_OVERRIDE_REASONS_LIMIT);
+
       const utilization =
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
@@ -156,6 +195,17 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        outcomeOverrides: {
+          last30Days: Number(overrideCount),
+          recentReasons: overrideReasonRows.map((r) => ({
+            commentId: r.commentId,
+            issueId: r.issueId,
+            issueIdentifier: r.issueIdentifier,
+            issueTitle: r.issueTitle,
+            reason: r.reason,
+            createdAt: r.createdAt.toISOString(),
+          })),
+        },
       };
     },
   };

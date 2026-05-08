@@ -2747,7 +2747,7 @@ export function issueRoutes(
 
     // Outcome contract gate: fires after execution policy stages clear, at the "done" door.
     const effectiveNextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
-    const outcomeContract = existing.outcomeContract as import("@paperclipai/shared").OutcomeContract | null | undefined;
+    const outcomeContract = existing.outcomeContract as OutcomeContract | null | undefined;
     let outcomeOverride = false;
     if (effectiveNextStatus === "done" && outcomeContract) {
       const isBoardUser = actor.actorType === "user";
@@ -3130,11 +3130,18 @@ export function issueRoutes(
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      });
+      comment = await svc.addComment(
+        id,
+        commentBody,
+        {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        },
+        outcomeOverride
+          ? { metadata: { version: 1 as const, sections: [], outcomeOverride: true, actorUserId: actor.actorType === "user" ? actor.actorId : null } }
+          : undefined,
+      );
       await issueReferencesSvc.syncComment(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
