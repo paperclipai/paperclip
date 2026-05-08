@@ -43,6 +43,7 @@ export function companyService(db: Db) {
     status: companies.status,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
+    orchestratorPolicy: companies.orchestratorPolicy,
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     attachmentMaxBytes: companies.attachmentMaxBytes,

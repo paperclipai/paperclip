@@ -12,11 +12,13 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+const orchestratorPolicySchema = z.enum(["ceo", "originator", "none"]);
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  orchestratorPolicy: orchestratorPolicySchema.optional().default("none"),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
 });
 
@@ -32,6 +34,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
+    orchestratorPolicy: orchestratorPolicySchema.optional(),
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),

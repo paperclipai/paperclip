@@ -103,6 +103,17 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   };
 }
 
+function isTerminalIssueStatus(status: string | null | undefined) {
+  return status === "done" || status === "cancelled";
+}
+
+function hasExplicitIssueAssignee(issue: {
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+}) {
+  return Boolean(issue.assigneeAgentId || issue.assigneeUserId);
+}
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -1716,6 +1727,158 @@ export function issueService(db: Db) {
     }
   }
 
+  async function resolveCompanyOrchestratorAssignment(
+    dbOrTx: Pick<Db, "select">,
+    input: {
+      companyId: string;
+      originatorAgentId: string | null;
+      originatorUserId: string | null;
+    },
+  ) {
+    const company = await dbOrTx
+      .select({ orchestratorPolicy: companies.orchestratorPolicy })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company || company.orchestratorPolicy === "none") return null;
+
+    if (company.orchestratorPolicy === "originator") {
+      if (input.originatorAgentId) {
+        return {
+          policy: company.orchestratorPolicy,
+          assigneeAgentId: input.originatorAgentId,
+          assigneeUserId: null,
+        };
+      }
+      if (input.originatorUserId) {
+        return {
+          policy: company.orchestratorPolicy,
+          assigneeAgentId: null,
+          assigneeUserId: input.originatorUserId,
+        };
+      }
+      return null;
+    }
+
+    const ceoCandidates = await dbOrTx
+      .select({
+        id: agents.id,
+        reportsTo: agents.reportsTo,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, input.companyId), eq(agents.role, "ceo")));
+    const assignableCandidates = ceoCandidates.filter(
+      (candidate) => candidate.status !== "pending_approval" && candidate.status !== "terminated",
+    );
+    const rootCeo = assignableCandidates.find((candidate) => candidate.reportsTo === null) ?? assignableCandidates[0] ?? null;
+    return rootCeo
+      ? {
+          policy: company.orchestratorPolicy,
+          assigneeAgentId: rootCeo.id,
+          assigneeUserId: null,
+        }
+      : null;
+  }
+
+  async function maybeAssignParentOrchestrator(
+    dbOrTx: Pick<Db, "insert" | "select" | "update">,
+    input: {
+      companyId: string;
+      parentId: string | null | undefined;
+      triggerIssueId?: string | null;
+      triggerAgentId?: string | null;
+      triggerUserId?: string | null;
+    },
+  ) {
+    if (!input.parentId) return null;
+
+    const parent = await dbOrTx
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        createdByAgentId: issues.createdByAgentId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.parentId)))
+      .then((rows) => rows[0] ?? null);
+    if (!parent || isTerminalIssueStatus(parent.status) || hasExplicitIssueAssignee(parent)) {
+      return null;
+    }
+
+    const [{ childCount }] = await dbOrTx
+      .select({ childCount: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.parentId, input.parentId)));
+    if ((childCount ?? 0) <= 1) return null;
+
+    const nextAssignment = await resolveCompanyOrchestratorAssignment(dbOrTx, {
+      companyId: input.companyId,
+      originatorAgentId: parent.createdByAgentId ?? null,
+      originatorUserId: parent.createdByUserId ?? null,
+    });
+    if (!nextAssignment) return null;
+
+    const [updated] = await dbOrTx
+      .update(issues)
+      .set({
+        ...nextAssignment,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.id, input.parentId),
+        isNull(issues.assigneeAgentId),
+        isNull(issues.assigneeUserId),
+      ))
+      .returning();
+    if (!updated) return null;
+
+    const actorType = input.triggerAgentId ? "agent" : input.triggerUserId ? "user" : "system";
+    const actorId = input.triggerAgentId ?? input.triggerUserId ?? "system";
+
+    await dbOrTx.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType,
+      actorId,
+      agentId: input.triggerAgentId ?? null,
+      action: "issue.parent_orchestrator_assigned",
+      entityType: "issue",
+      entityId: updated.id,
+      details: {
+        event: "parent_orchestrator_assigned",
+        policy: nextAssignment.policy,
+        parentIdentifier: parent.identifier,
+        triggerIssueId: input.triggerIssueId ?? null,
+        childCount,
+        assigneeAgentId: updated.assigneeAgentId ?? null,
+        assigneeUserId: updated.assigneeUserId ?? null,
+      },
+    });
+
+    if (updated.assigneeAgentId && updated.status !== "backlog") {
+      await dbOrTx.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: updated.assigneeAgentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "parent_orchestrator_assigned",
+        payload: {
+          issueId: updated.id,
+          triggerIssueId: input.triggerIssueId ?? null,
+          mutation: "parent_orchestrator_assigned",
+        },
+        requestedByActorType: actorType,
+        requestedByActorId: actorId,
+      });
+    }
+    return updated;
+  }
+
   async function assertValidProjectWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -2822,6 +2985,13 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        await maybeAssignParentOrchestrator(tx, {
+          companyId,
+          parentId: issue.parentId,
+          triggerIssueId: issue.id,
+          triggerAgentId: issueData.createdByAgentId ?? null,
+          triggerUserId: issueData.createdByUserId ?? null,
+        });
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });

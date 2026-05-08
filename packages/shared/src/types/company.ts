@@ -9,6 +9,7 @@ export interface Company {
   pausedAt: Date | null;
   issuePrefix: string;
   issueCounter: number;
+  orchestratorPolicy: "ceo" | "originator" | "none";
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   attachmentMaxBytes: number;

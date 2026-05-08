@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   executionWorkspaces,
@@ -75,6 +76,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(agentWakeupRequests);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -1093,6 +1095,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(agentWakeupRequests);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -1452,6 +1455,122 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     ]);
   });
 
+  it("assigns the parent orchestrator after creating a second child under an unassigned parent", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const goalId = randomUUID();
+    const originatorAgentId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      orchestratorPolicy: "originator",
+    });
+
+    await db.insert(agents).values({
+      id: originatorAgentId,
+      companyId,
+      name: "Originator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Ship child helpers",
+      level: "task",
+      status: "active",
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      goalId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: originatorAgentId,
+    });
+
+    const firstChild = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      goalId,
+      title: "First child",
+      createdByAgentId: originatorAgentId,
+    });
+    expect(firstChild.assigneeAgentId).toBeNull();
+
+    const secondChild = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      goalId,
+      title: "Second child",
+      createdByAgentId: originatorAgentId,
+    });
+
+    const parent = await svc.getById(parentIssueId);
+    expect(parent).toMatchObject({
+      id: parentIssueId,
+      assigneeAgentId: originatorAgentId,
+      assigneeUserId: null,
+    });
+
+    const assignmentEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.parent_orchestrator_assigned"));
+    expect(assignmentEvents).toHaveLength(1);
+    expect(assignmentEvents[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: originatorAgentId,
+      entityId: parentIssueId,
+    });
+    expect(assignmentEvents[0]?.details).toMatchObject({
+      event: "parent_orchestrator_assigned",
+      policy: "originator",
+      triggerIssueId: secondChild.id,
+      childCount: 2,
+      assigneeAgentId: originatorAgentId,
+      assigneeUserId: null,
+    });
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, originatorAgentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      companyId,
+      agentId: originatorAgentId,
+      source: "assignment",
+      reason: "parent_orchestrator_assigned",
+    });
+    expect(wakeups[0]?.payload).toMatchObject({
+      issueId: parentIssueId,
+      triggerIssueId: secondChild.id,
+      mutation: "parent_orchestrator_assigned",
+    });
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -1519,6 +1638,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(agentWakeupRequests);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -1857,6 +1977,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(agentWakeupRequests);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -2237,6 +2358,7 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(agentWakeupRequests);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -2317,6 +2439,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
+    await db.delete(agentWakeupRequests);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);

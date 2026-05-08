@@ -11,6 +11,7 @@ export const companies = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
+    orchestratorPolicy: text("orchestrator_policy").notNull().default("none"),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     attachmentMaxBytes: integer("attachment_max_bytes")
