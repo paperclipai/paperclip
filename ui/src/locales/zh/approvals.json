@@ -23,7 +23,8 @@
     "approved": "已批准",
     "pending": "待处理",
     "rejected": "已拒绝",
-    "revision_requested": "已请求修改"
+    "revision_requested": "已请求修改",
+    "cancelled": "已取消"
   },
   "payload": {
     "type_hire_agent": "雇用智能体",
