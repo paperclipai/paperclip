@@ -329,8 +329,10 @@
   "row": {
     "mark_as_read": "Marcar como leído",
     "dismiss_from_inbox": "Descartar de la bandeja de entrada",
-    "productivity_review_title": "Productivity review: {{trigger}}",
-    "productivity_review_open": "Productivity review open"
+    "productivity_review_title": "Revisión de productividad: {{trigger}}",
+    "productivity_review_open": "Revisión de productividad abierta",
+    "needs_next_step": "Necesita siguiente paso",
+    "needs_next_step_desc": "Esta tarea necesita un siguiente paso"
   },
   "chat": {
     "agent": "Agente",

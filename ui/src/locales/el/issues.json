@@ -329,8 +329,10 @@
   "row": {
     "mark_as_read": "Σήμανση ως αναγνωσμένο",
     "dismiss_from_inbox": "Απόρριψη από εισερχόμενα",
-    "productivity_review_title": "Productivity review: {{trigger}}",
-    "productivity_review_open": "Productivity review open"
+    "productivity_review_title": "Αναθεώρηση παραγωγικότητας: {{trigger}}",
+    "productivity_review_open": "Αναθεώρηση παραγωγικότητας ανοιχτή",
+    "needs_next_step": "Χρειάζεται επόμενο βήμα",
+    "needs_next_step_desc": "Αυτό το ζήτημα χρειάζεται επόμενο βήμα"
   },
   "chat": {
     "agent": "Πράκτορας",

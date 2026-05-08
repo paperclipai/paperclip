@@ -504,6 +504,8 @@
     "title_placeholder": "Issue title",
     "description_placeholder": "Add description...",
     "assignee": "Assignee",
+    "no_assignee": "No assignee",
+    "search_assignees": "Search assignees...",
     "no_assignees_found": "No assignees found.",
     "project": "Project",
     "no_project": "No project",

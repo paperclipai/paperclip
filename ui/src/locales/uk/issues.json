@@ -339,8 +339,10 @@
   "row": {
     "mark_as_read": "Позначити прочитаним",
     "dismiss_from_inbox": "Закрити з вхідних",
-    "productivity_review_title": "Productivity review: {{trigger}}",
-    "productivity_review_open": "Productivity review open"
+    "productivity_review_title": "Огляд продуктивності: {{trigger}}",
+    "productivity_review_open": "Огляд продуктивності відкритий",
+    "needs_next_step": "Потрібен наступний крок",
+    "needs_next_step_desc": "Ця задача потребує наступного кроку"
   },
   "chat": {
     "agent": "Агент",

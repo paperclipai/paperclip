@@ -329,8 +329,10 @@
   "row": {
     "mark_as_read": "标为已读",
     "dismiss_from_inbox": "从收件箱移除",
-    "productivity_review_title": "Productivity review: {{trigger}}",
-    "productivity_review_open": "Productivity review open"
+    "productivity_review_title": "生产力评审：{{trigger}}",
+    "productivity_review_open": "生产力评审打开",
+    "needs_next_step": "需要下一步",
+    "needs_next_step_desc": "此任务需要下一步"
   },
   "chat": {
     "agent": "智能体",
