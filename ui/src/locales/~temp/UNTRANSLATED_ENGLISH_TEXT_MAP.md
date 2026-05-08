@@ -254,3 +254,100 @@ Columns:
 | pages/Routines.tsx | 852 | `"Creating..."` | routines |
 | pages/Routines.tsx | 852 | `"Create routine"` | routines |
 | pages/Routines.tsx | 877 | `"No routines yet."` | routines |
+
+---
+
+## 2026-05-08 — ZAI-127 upstream sync (ZAI-128 QA scan)
+
+| File | Line | String | Namespaces missing from |
+|---|---|---|---|
+| components/CommentThread.tsx | 277 | `"Copied"` | comments |
+| components/CommentThread.tsx | 277 | `"Copy failed"` | comments |
+| components/CommentThread.tsx | 277 | `"Copy"` | comments |
+| components/CommentThread.tsx | 291 | `"Copy comment as markdown"` | comments |
+| components/CommentThread.tsx | 374 | `"Queued"` | comments |
+| components/CommentThread.tsx | 379 | `"Follow-up"` | comments |
+| components/CommentThread.tsx | 399 | `"Queueing..."` | comments |
+| components/CommentThread.tsx | 399 | `"Sending..."` | comments |
+| components/CommentThread.tsx | 512 | `"Status"` | comments |
+| components/CommentThread.tsx | 527 | `"Assignee"` | comments |
+| components/CommentThread.tsx | 631 | `"run"` | comments |
+| components/CommentThread.tsx | 653 | `"Environment"` | comments |
+| components/CommentThread.tsx | 659 | `"Provider"` | comments |
+| components/CommentThread.tsx | 664 | `"Lease"` | comments |
+| components/CommentThread.tsx | 678 | `"Failure: "` | comments |
+| components/CommentThread.tsx | 956 | `"Queued Comments ({count})"` | comments |
+| components/CommentThread.tsx | 966 | `"Interrupting..."` | comments |
+| components/CommentThread.tsx | 966 | `"Interrupt"` | comments |
+| components/CommentThread.tsx | 996 | `"Leave a comment..."` | comments |
+| components/CommentThread.tsx | 1017 | `"Attach image"` | comments |
+| components/CommentThread.tsx | 1027 | `"Assignee"` | comments |
+| components/CommentThread.tsx | 1028 | `"No assignee"` | comments |
+| components/CommentThread.tsx | 1029 | `"Search assignees..."` | comments |
+| components/CommentThread.tsx | 1030 | `"No assignees found."` | comments |
+| components/CommentThread.tsx | 1034 | `"Assignee"` | comments |
+| components/CommentThread.tsx | 1062 | `"Posting..."` | comments |
+| components/CommentThread.tsx | 1062 | `"Comment"` | comments |
+| components/IssueProperties.tsx | 170 | `"Remove {issueLabel} as blocker"` | issues |
+| components/IssueProperties.tsx | 190 | `"Issue {issueLabel}: {issue.title}"` | issues |
+| components/IssueProperties.tsx | 205 | `"Issue {issueLabel}: {issue.title}"` | issues |
+| components/IssueProperties.tsx | 216 | `"Remove blocker?"` | issues |
+| components/IssueProperties.tsx | 218 | `"Remove {confirmLabel} as a blocker for this issue."` | issues |
+| components/IssueProperties.tsx | 223 | `"Cancel"` | issues |
+| components/IssueProperties.tsx | 226 | `"Remove blocker"` | issues |
+| components/IssueProperties.tsx | 745 | `"Add label"` | issues |
+| components/IssueProperties.tsx | 756 | `"Search labels..."` | issues |
+| components/IssueProperties.tsx | 795 | `"New label"` | issues |
+| components/IssueProperties.tsx | 811 | `"Creating…"` | issues |
+| components/IssueProperties.tsx | 811 | `"Create label"` | issues |
+| components/IssueProperties.tsx | 827 | `"Unassigned"` | issues |
+| components/IssueProperties.tsx | 833 | `"No assignee"` | issues |
+| components/IssueProperties.tsx | 839 | `"Assign to me"` | issues |
+| components/IssueProperties.tsx | 848 | `"Assign to {creatorUserLabel}"` | issues |
+| components/IssueProperties.tsx | 848 | `"Assign to requester"` | issues |
+| context/LiveUpdatesProvider.tsx | 85 | `"System"` | issues |
+| context/LiveUpdatesProvider.tsx | 87 | `"Board"` | issues |
+| context/LiveUpdatesProvider.tsx | 89 | `"Someone"` | issues |
+| context/LiveUpdatesProvider.tsx | 456 | `"{actor} created {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 459 | `"View {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 478 | `"{actor} updated {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 481 | `"View {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 492 | `"reopened from {reopenedFrom}"` | issues |
+| context/LiveUpdatesProvider.tsx | 493 | `"reopened"` | issues |
+| context/LiveUpdatesProvider.tsx | 497 | `"{actor} reopened and commented on {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 499 | `"{actor} commented and updated {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 500 | `"{actor} commented on {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 514 | `"View {issue.ref}"` | issues |
+| context/LiveUpdatesProvider.tsx | 531 | `"Agent"` | issues |
+| context/LiveUpdatesProvider.tsx | 532 | `"Someone"` | issues |
+| context/LiveUpdatesProvider.tsx | 534 | `"{label} wants to join"` | issues |
+| context/LiveUpdatesProvider.tsx | 535 | `"A new join request is waiting for approval."` | issues |
+| context/LiveUpdatesProvider.tsx | 537 | `"View inbox"` | issues |
+| context/LiveUpdatesProvider.tsx | 556 | `"{name} started"` | issues |
+| context/LiveUpdatesProvider.tsx | 557 | `"{name} errored"` | issues |
+| context/LiveUpdatesProvider.tsx | 567 | `"View agent"` | issues |
+| context/LiveUpdatesProvider.tsx | 586 | `"succeeded"` | issues |
+| context/LiveUpdatesProvider.tsx | 587 | `"failed"` | issues |
+| context/LiveUpdatesProvider.tsx | 588 | `"timed out"` | issues |
+| context/LiveUpdatesProvider.tsx | 589 | `"cancelled"` | issues |
+| context/LiveUpdatesProvider.tsx | 590 | `"{name} run {statusLabel}"` | issues |
+| context/LiveUpdatesProvider.tsx | 596 | `"Trigger: {triggerDetail}"` | issues |
+| context/LiveUpdatesProvider.tsx | 604 | `"View run"` | issues |
+| pages/IssueDetail.tsx | 524 | `"Back to inbox"` | issues |
+| pages/IssueDetail.tsx | 536 | `"Archive from inbox"` | issues |
+| pages/IssueDetail.tsx | 544 | `"More actions"` | issues |
+| pages/IssueDetail.tsx | 3067 | `"This issue is hidden"` | issues |
+| pages/IssueDetail.tsx | 3076 | `"Paused by board."` | issues |
+| pages/IssueDetail.tsx | 3076 | `"Subtree pause is active."` | issues |
+| pages/IssueDetail.tsx | 3080 | `"Issue execution is held until resume. Human comments can still wake the assignee for triage."` | issues |
+| pages/IssueDetail.tsx | 3081 | `"Root and descendant execution is held until resume. Human comments can still wake assignees for triage."` | issues |
+| pages/IssueDetail.tsx | 3086 | `"1 issue held"` | issues |
+| pages/IssueDetail.tsx | 3087 | `"{heldDescendantCount} descendant(s) held"` | issues |
+| pages/IssueDetail.tsx | 3100 | `"Resume work"` | issues |
+| pages/IssueDetail.tsx | 3100 | `"Resume subtree"` | issues |
+| pages/IssueDetail.tsx | 3111 | `"View affected ({count})"` | issues |
+| pages/IssueDetail.tsx | 3124 | `"Cancel subtree..."` | issues |
+| pages/IssueDetail.tsx | 3132 | `"This issue is paused by ancestor … Resume from the root issue to deliver deferred work."` | issues |
+| pages/IssueDetail.tsx | 3420 | `"Add a description..."` | issues |
+| pages/IssueDetail.tsx | 3622 | `"Delete attachment"` | issues |
+| pages/IssueDetail.tsx | 3651 | `"Delete attachment"` | issues |
