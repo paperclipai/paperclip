@@ -512,13 +512,13 @@ export function CompanyAccess() {
           <DialogHeader>
             <DialogTitle>{t("access.remove_member_title")}</DialogTitle>
             <DialogDescription>
-              {t("access.remove_member_description", { name: memberDisplayName(removingMember) })}
+              {t("access.remove_member_description", { name: memberDisplayName(removingMember, t) })}
             </DialogDescription>
           </DialogHeader>
           {removingMember && (
             <div className="space-y-5">
               <div className="rounded-lg border border-border px-3 py-3">
-                <div className="text-sm font-medium">{memberDisplayName(removingMember)}</div>
+                <div className="text-sm font-medium">{memberDisplayName(removingMember, t)}</div>
                 <div className="text-sm text-muted-foreground">{removingMember.user?.email || removingMember.principalId}</div>
                 <div className="mt-2 text-sm text-muted-foreground">
                   {assignedIssuesQuery.isLoading
@@ -540,7 +540,7 @@ export function CompanyAccess() {
                       <optgroup label={t("access.remove_member_group_humans")}>
                         {activeReassignmentUsers.map((member) => (
                           <option key={member.id} value={`user:${member.principalId}`}>
-                            {memberDisplayName(member)}
+                            {memberDisplayName(member, t)}
                           </option>
                         ))}
                       </optgroup>
@@ -596,8 +596,8 @@ export function CompanyAccess() {
   );
 }
 
-function memberDisplayName(member: CompanyMember | null) {
-  if (!member) return "this member";
+function memberDisplayName(member: CompanyMember | null, t: (key: string) => string) {
+  if (!member) return t("access.member_fallback_name");
   return member.user?.name?.trim() || member.user?.email || member.principalId;
 }
 
