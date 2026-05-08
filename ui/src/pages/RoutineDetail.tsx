@@ -468,8 +468,8 @@ export function RoutineDetail() {
       if (error instanceof ApiError && error.status === 409) {
         setSaveConflict(true);
         pushToast({
-          title: "Routine changed",
-          body: "Someone else updated this routine. Reload to see the latest revision.",
+          title: t("misc.routine_changed"),
+          body: t("misc.routine_changed_body"),
           tone: "warn",
         });
         return;
@@ -1232,7 +1232,7 @@ export function RoutineDetail() {
               if (response.secretMaterials.length > 0) {
                 setSecretMessage({
                   title: response.secretMaterials.length === 1
-                    ? "Webhook trigger restored"
+                    ? t("misc.webhook_restored")
                     : `${response.secretMaterials.length} webhook triggers restored`,
                   entries: response.secretMaterials.map((recreated) => ({
                     webhookUrl: recreated.webhookUrl,

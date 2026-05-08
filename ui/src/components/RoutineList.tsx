@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { MoreHorizontal, Play } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import i18n from "@/locales/i18n";
 
 export type RoutineListProjectSummary = {
   name: string;
@@ -35,7 +37,7 @@ export type RoutineListRowItem = {
 };
 
 export function formatLastRunTimestamp(value: Date | string | null | undefined) {
-  if (!value) return "Never";
+  if (!value) return i18n.t("misc.never", { ns: "routines" });
   return new Date(value).toLocaleString();
 }
 
@@ -84,6 +86,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
 }) {
+  const { t } = useTranslation("routines");
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
   const isStatusPending = statusMutationRoutineId === routine.id;
@@ -91,6 +94,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   const agent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) ?? null : null;
   const isDraft = !isArchived && !routine.assigneeAgentId;
   const runDisabled = runningRoutineId === routine.id || isArchived || disableRunNow;
+  const defaultConfigureLabel = configureLabel === "Edit" ? t("misc.edit") : configureLabel;
 
   return (
     <Link
@@ -115,11 +119,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
               className="h-2.5 w-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: project?.color ?? "#64748b" }}
             />
-            <span>{routine.projectId ? (project?.name ?? "Unknown project") : "No project"}</span>
+            <span>{routine.projectId ? (project?.name ?? t("misc.unknown_project")) : t("misc.no_project")}</span>
           </span>
           <span className="flex items-center gap-2">
             {agent?.icon ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" /> : null}
-            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
+            <span>{routine.assigneeAgentId ? (agent?.name ?? t("misc.unknown_agent")) : t("misc.no_default_agent")}</span>
           </span>
           <span>
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
@@ -140,7 +144,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             onClick={() => onRunNow(routine)}
           >
             <Play className="h-3.5 w-3.5" />
-            {runningRoutineId === routine.id ? "Running..." : "Run now"}
+            {runningRoutineId === routine.id ? t("misc.running") : t("actions.run_now")}
           </Button>
         ) : null}
 
@@ -165,27 +169,27 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
-              <Link to={href}>{configureLabel}</Link>
+              <Link to={href}>{defaultConfigureLabel}</Link>
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={runDisabled}
               onClick={() => onRunNow(routine)}
             >
-              {runningRoutineId === routine.id ? "Running..." : "Run now"}
+              {runningRoutineId === routine.id ? t("misc.running") : t("actions.run_now")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onToggleEnabled(routine, enabled)}
               disabled={isStatusPending || isArchived || disableToggle}
             >
-              {enabled ? "Pause" : "Enable"}
+              {enabled ? t("actions.pause") : t("actions.enable")}
             </DropdownMenuItem>
             {!hideArchiveAction && onToggleArchived ? (
               <DropdownMenuItem
                 onClick={() => onToggleArchived(routine)}
                 disabled={isStatusPending}
               >
-                {routine.status === "archived" ? "Restore" : "Archive"}
+                {routine.status === "archived" ? t("actions.restore") : t("actions.archive")}
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>
