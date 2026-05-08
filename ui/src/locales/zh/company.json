@@ -162,6 +162,9 @@
     "toast_create_failed": "创建邀请失败",
     "toast_revoked": "邀请已撤销",
     "toast_revoke_failed": "撤销邀请失败",
+    "errors": {
+      "unknown": "未知错误"
+    },
     "title": "公司邀请",
     "description": "创建公司访问的人工邀请链接。新邀请链接生成时将复制到剪贴板。",
     "create_title": "创建邀请",

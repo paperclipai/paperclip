@@ -188,6 +188,9 @@
     "toast_create_failed": "Einladung konnte nicht erstellt werden",
     "toast_revoked": "Einladung widerrufen",
     "toast_revoke_failed": "Einladung konnte nicht widerrufen werden",
+    "errors": {
+      "unknown": "Unbekannter Fehler"
+    },
     "title": "Unternehmens-Einladungen",
     "description": "Erstellen Sie persönliche Einladungslinks für den Unternehmenszugang. Neue Einladungslinks werden in Ihre Zwischenablage kopiert, wenn sie generiert werden.",
     "create_title": "Einladung erstellen",

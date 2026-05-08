@@ -114,7 +114,7 @@ export function CompanyInvites() {
     onError: (error) => {
       pushToast({
         title: t('invites.toast_create_failed'),
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: error instanceof Error ? error.message : t('invites.errors.unknown'),
         tone: "error",
       });
     },
@@ -129,7 +129,7 @@ export function CompanyInvites() {
     onError: (error) => {
       pushToast({
         title: t('invites.toast_revoke_failed'),
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: error instanceof Error ? error.message : t('invites.errors.unknown'),
         tone: "error",
       });
     },
@@ -297,7 +297,7 @@ export function CompanyInvites() {
                           {t(`common:invite_status.${invite.state}`, { defaultValue: invite.state })}
                         </span>
                       </td>
-                      <td className="px-5 py-3 align-top">{invite.humanRole ?? "—"}</td>
+                      <td className="px-5 py-3 align-top">{invite.humanRole ? t(`invites.roles.${invite.humanRole}_label`) : "—"}</td>
                       <td className="px-5 py-3 align-top">
                         <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || t('invites.unknown_inviter')}</div>
                         {invite.invitedByUser?.email && invite.invitedByUser.name ? (

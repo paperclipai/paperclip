@@ -162,6 +162,9 @@
     "toast_create_failed": "Falha ao criar convite",
     "toast_revoked": "Convite revogado",
     "toast_revoke_failed": "Falha ao revogar convite",
+    "errors": {
+      "unknown": "Erro desconhecido"
+    },
     "title": "Convites da Empresa",
     "description": "Crie links de convite para acesso humano à empresa. Novos links de convite são copiados para a área de transferência quando gerados.",
     "create_title": "Criar convite",

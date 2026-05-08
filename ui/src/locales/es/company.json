@@ -162,6 +162,9 @@
     "toast_create_failed": "Error al crear la invitación",
     "toast_revoked": "Invitación revocada",
     "toast_revoke_failed": "Error al revocar la invitación",
+    "errors": {
+      "unknown": "Error desconocido"
+    },
     "title": "Invitaciones de empresa",
     "description": "Cree enlaces de invitación para humanos para acceso a la empresa. Los nuevos enlaces de invitación se copian a su portapapeles cuando se generan.",
     "create_title": "Crear invitación",

@@ -188,6 +188,9 @@
     "toast_create_failed": "Failed to create invite",
     "toast_revoked": "Invite revoked",
     "toast_revoke_failed": "Failed to revoke invite",
+    "errors": {
+      "unknown": "Unknown error"
+    },
     "title": "Company Invites",
     "description": "Create human invite links for company access. New invite links are copied to your clipboard when they are generated.",
     "create_title": "Create invite",
