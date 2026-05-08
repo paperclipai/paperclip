@@ -97,6 +97,35 @@ function resolveAgentJwtSecretStatus(
   };
 }
 
+export function renderDevReadyBox(opts: {
+  uiUrl: string;
+  apiUrl: string;
+  bind: BindMode;
+  deploymentMode: DeploymentMode;
+}): string[] {
+  const lbl = (text: string) => text.padEnd(7);
+  const rawRows = [
+    "Paperclip dev is ready",
+    `${lbl("Web UI")}: ${opts.uiUrl}`,
+    `${lbl("API")}: ${opts.apiUrl}`,
+    `${lbl("Bind")}: ${opts.bind} (mode: ${opts.deploymentMode})`,
+    `${lbl("Stop")}: pnpm dev:stop`,
+  ];
+
+  const innerWidth = Math.max(...rawRows.map((r) => r.length)) + 2;
+  const br = (text: string) => color(text, "cyan");
+
+  return [
+    br(`╭${"─".repeat(innerWidth)}╮`),
+    ...rawRows.map((row, index) => {
+      const padded = ` ${row.padEnd(innerWidth - 1)}`;
+      const styled = index === 0 ? color(padded, "bold") : padded;
+      return `${br("│")}${styled}${br("│")}`;
+    }),
+    br(`╰${"─".repeat(innerWidth)}╯`),
+  ];
+}
+
 export function printStartupBanner(opts: StartupBannerOptions): void {
   const baseHost = opts.host === "0.0.0.0" ? "localhost" : opts.host;
   const baseUrl = `http://${baseHost}:${opts.listenPort}`;
@@ -174,4 +203,14 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   ];
 
   console.log(lines.filter((line): line is string => line !== null).join("\n"));
+
+  if (opts.uiMode === "vite-dev") {
+    const box = renderDevReadyBox({
+      uiUrl: `${baseUrl}/`,
+      apiUrl: `${apiUrl}/`,
+      bind: opts.bind,
+      deploymentMode: opts.deploymentMode,
+    });
+    console.log(["", ...box, ""].join("\n"));
+  }
 }
