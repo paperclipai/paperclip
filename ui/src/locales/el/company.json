@@ -29,6 +29,8 @@
     },
     "actions": {
       "save_changes": "Αποθήκευση αλλαγών",
+      "saving": "Αποθήκευση...",
+      "failed_to_save": "Αποτυχία αποθήκευσης",
       "remove_logo": "Αφαίρεση λογοτύπου",
       "removing_logo": "Αφαίρεση...",
       "clear_color": "Εκκαθάριση",
@@ -47,18 +49,25 @@
       "allow_sharing_hint": "Μόνο οι εξόδοι ΤΝ που ψηφίσατε ρητά είναι επιλέξιμες για κοινοποίηση ανατροφοδότησης.",
       "votes_saved_locally": "Οι ψήφοι αποθηκεύονται πάντα τοπικά. Αυτή η ρύθμιση ελέγχει αν οι ψηφισμένες εξόδοι ΤΝ μπορούν επίσης να επισημανθούν για κοινοποίηση με το Paperclip Labs.",
       "terms_version": "Έκδοση όρων:",
-      "enabled_at": "Ενεργοποιήθηκε",
+      "enabled_at": "Ενεργοποιήθηκε {{date}}",
+      "enabled_at_by": "Ενεργοποιήθηκε {{date}} από {{user}}",
       "currently_disabled": "Η κοινοποίηση είναι απενεργοποιημένη.",
-      "read_tos": "Διαβάστε τους όρους παροχής υπηρεσιών"
+      "read_tos": "Διαβάστε τους όρους παροχής υπηρεσιών",
+      "sharing_enabled": "Κοινοποίηση ανατροφοδότησης ενεργοποιήθηκε",
+      "sharing_disabled": "Κοινοποίηση ανατροφοδότησης απενεργοποιήθηκε",
+      "sharing_update_failed": "Αποτυχία ενημέρωσης ρύθμισης κοινοποίησης ανατροφοδότησης",
+      "unknown_error": "Άγνωστο σφάλμα"
     },
     "openclaw": {
       "generate_snippet": "Δημιουργία αποσπάσματος πρόσκλησης πράκτορα OpenClaw.",
+      "generate_snippet_hint": "Δημιουργεί ένα βραχύβιο prompt πρόσκλησης πράκτορα OpenClaw και εμφανίζει το prompt για αντιγραφή.",
       "generate_button": "Δημιουργία prompt πρόσκλησης OpenClaw",
       "generating": "Δημιουργία...",
       "snippet_label": "Prompt πρόσκλησης OpenClaw",
       "copied": "Αντιγράφηκε",
       "copy_snippet": "Αντιγραφή αποσπάσματος",
-      "copied_snippet": "Αντιγράφηκε το απόσπασμα"
+      "copied_snippet": "Αντιγράφηκε το απόσπασμα",
+      "failed_to_create": "Αποτυχία δημιουργίας πρόσκλησης"
     },
     "packages": {
       "moved_notice": "Η εισαγωγή και εξαγωγή μεταφέρθηκαν σε αποκλειστικές σελίδες προσβάσιμες από το",
@@ -70,8 +79,10 @@
     "danger": {
       "archive_notice": "Αρχειοθετήστε αυτήν την εταιρία για να την αποκρύψετε από την πλαϊνή μπάρα. Αυτό παραμένει στη βάση δεδομένων.",
       "archive_button": "Αρχειοθέτηση εταιρίας",
+      "already_archived": "Ήδη αρχειοθετημένο",
       "archiving": "Αρχειοθέτηση...",
-      "confirm_archive": "Αρχειοθέτηση εταιρίας"
+      "confirm_archive": "Αρχειοθέτηση εταιρίας",
+      "archive_failed": "Αποτυχία αρχειοθέτησης εταιρίας"
     }
   },
   "import": {
@@ -146,7 +157,22 @@
     "export_button": "Εξαγωγή",
     "loading_data": "Φόρτωση δεδομένων εξαγωγής...",
     "select_company": "Επιλέξτε μια εταιρία για εξαγωγή.",
-    "company_export_title": "Εξαγωγή {{name}}"
+    "company_export_title": "Εξαγωγή {{name}}",
+    "binary_not_available": "Η προεπισκόπηση δυαδικών αρχείων δεν είναι διαθέσιμη για αυτόν τον τύπο.",
+    "org_chart_breadcrumb": "Οργανόγραμμα",
+    "selection_count_one": "{{selected}} / {{total}} αρχείο επιλεγμένο",
+    "selection_count_other": "{{selected}} / {{total}} αρχεία επιλεγμένα",
+    "warnings_count_one": "{{count}} προειδοποίηση",
+    "warnings_count_other": "{{count}} προειδοποιήσεις",
+    "export_count_one": "Εξαγωγή {{count}} αρχείου",
+    "export_count_other": "Εξαγωγή {{count}} αρχείων",
+    "show_more_issues_count": "Εμφάνιση περισσότερων ζητημάτων ({{visible}} από {{total}})",
+    "toast_failed_title": "Αποτυχία εξαγωγής",
+    "toast_failed_load": "Αποτυχία φόρτωσης δεδομένων εξαγωγής.",
+    "toast_failed_build": "Αποτυχία δημιουργίας πακέτου εξαγωγής.",
+    "toast_downloaded_title": "Εξαγωγή ολοκληρώθηκε",
+    "toast_downloaded_body_one": "{{count}} αρχείο εξήχθη ως {{path}}.zip",
+    "toast_downloaded_body_other": "{{count}} αρχεία εξήχθησαν ως {{path}}.zip"
   },
   "invites": {
     "no_company": "Επιλέξτε μια εταιρία για διαχείριση προσκλήσεων.",
@@ -240,6 +266,8 @@
       "edit": "Επεξεργασία",
       "stop_editing": "Διακοπή επεξεργασίας",
       "source": "Πηγή",
+      "copy_source_path": "Αντιγραφή διαδρομής πηγής",
+      "copied_path": "Η διαδρομή αντιγράφηκε",
       "pin": "Καρφίτσωμα",
       "untracked": "μη παρακολουθούμενο",
       "tracking": "παρακολούθηση",
@@ -428,7 +456,9 @@
     "open_assigned_issues_one": "{{count}} ανοιχτή ανατεθειμένη εργασία",
     "open_assigned_issues_other": "{{count}} ανοιχτές ανατεθειμένες εργασίες",
     "more_issues_one": "{{count}} ακόμη εργασία",
-    "more_issues_other": "{{count}} ακόμη εργασίες"
+    "more_issues_other": "{{count}} ακόμη εργασίες",
+    "member_fallback_name": "αυτό το μέλος",
+    "agent_option_label": "{{name}} ({{role}})"
   },
   "companies": {
     "breadcrumb": "Εταιρίες",
@@ -483,7 +513,10 @@
     "toast_approved": "Το αίτημα εγγραφής εγκρίθηκε",
     "toast_rejected": "Το αίτημα εγγραφής απορρίφθηκε",
     "unknown_human": "Άγνωστος αιτών άνθρωπος",
-    "unknown_agent": "Άγνωστος αιτών πράκτορας"
+    "unknown_agent": "Άγνωστος αιτών πράκτορας",
+    "breadcrumb_inbox": "Εισερχόμενα",
+    "company_fallback": "Εταιρία",
+    "description_extra": "Αυτή η ουρά χρησιμοποιεί τις ίδιες λειτουργίες έγκρισης με τις ενσωματωμένες κάρτες εισερχομένων."
   },
   "invite": {
     "invalid_token": "Μη έγκυρο token πρόσκλησης.",
