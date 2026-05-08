@@ -41,6 +41,7 @@
     "copy": "Copy",
     "copy_code": "Copy code",
     "copied": "Copied",
+    "copy_failed": "Copy failed",
     "loading": "Loading...",
     "creating": "Creating...",
     "importing": "Importing...",
