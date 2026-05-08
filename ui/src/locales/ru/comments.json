@@ -1,0 +1,28 @@
+{
+  "copy_action": {
+    "copied": "Скопировано",
+    "copy_failed": "Ошибка копирования",
+    "copy": "Копировать",
+    "copy_as_markdown": "Копировать комментарий как Markdown"
+  },
+  "status": {
+    "queued": "В очереди",
+    "follow_up": "Дополнение",
+    "queueing": "Добавление в очередь...",
+    "sending": "Отправка..."
+  },
+  "metadata": {
+    "status_label": "Статус",
+    "assignee_label": "Ответственный",
+    "run_label": "запуск",
+    "environment_label": "Среда",
+    "provider_label": "Провайдер",
+    "lease_label": "Лизинг",
+    "failure_prefix": "Ошибка: "
+  },
+  "queued_comments_header": "Комментарии в очереди ({count})",
+  "interrupt_action": {
+    "interrupting": "Прерывание...",
+    "interrupt": "Прервать"
+  }
+}
