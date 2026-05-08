@@ -197,7 +197,11 @@
     "subscription_runs_other": "{{count}} subscription runs",
     "this_week": "this week",
     "billing_types": "Billing types",
-    "upstream_providers": "Upstream providers"
+    "upstream_providers": "Upstream providers",
+    "provider_count_one": "{{count}} provider",
+    "provider_count_other": "{{count}} providers",
+    "model_count_one": "{{count}} model",
+    "model_count_other": "{{count}} models"
   },
   "finance_kind": {
     "title": "Financial event mix",

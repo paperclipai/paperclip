@@ -199,7 +199,11 @@
     "subscription_runs_other": "{{count}} подписочных запусков",
     "this_week": "на этой неделе",
     "billing_types": "Типы тарификации",
-    "upstream_providers": "Провайдеры"
+    "upstream_providers": "Провайдеры",
+    "provider_count_one": "{{count}} провайдер",
+    "provider_count_other": "{{count}} провайдеров",
+    "model_count_one": "{{count}} модель",
+    "model_count_other": "{{count}} моделей"
   },
   "finance_kind": {
     "title": "Структура финансовых событий",

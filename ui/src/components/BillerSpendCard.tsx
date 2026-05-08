@@ -64,13 +64,13 @@ export function BillerSpendCard({
               {providerDisplayName(row.biller)}
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              <span className="font-mono">{formatTokens(row.inputTokens + row.cachedInputTokens)}</span> in
+              <span className="font-mono">{formatTokens(row.inputTokens + row.cachedInputTokens)}</span> {t('quota_card.in_label')}
               {" · "}
-              <span className="font-mono">{formatTokens(row.outputTokens)}</span> out
+              <span className="font-mono">{formatTokens(row.outputTokens)}</span> {t('quota_card.out_label')}
               {" · "}
-              {row.providerCount} provider{row.providerCount === 1 ? "" : "s"}
+              {t('biller_spend.provider_count', { count: row.providerCount })}
               {" · "}
-              {row.modelCount} model{row.modelCount === 1 ? "" : "s"}
+              {t('biller_spend.model_count', { count: row.modelCount })}
             </CardDescription>
           </div>
           <span className="text-xl font-bold tabular-nums shrink-0">
@@ -82,21 +82,19 @@ export function BillerSpendCard({
       <CardContent className="px-4 pb-4 pt-3 space-y-4">
         {budgetMonthlyCents > 0 && (
           <QuotaBar
-            label="Period spend"
+            label={t('quota_card.period_spend')}
             percentUsed={budgetPct}
             leftLabel={formatCents(row.costCents)}
-            rightLabel={`${Math.round(budgetPct)}% of allocation`}
+            rightLabel={t('quota_card.of_allocation', { percent: Math.round(budgetPct) })}
           />
         )}
 
         <div className="text-xs text-muted-foreground">
-          {row.apiRunCount > 0 ? `${row.apiRunCount} metered run${row.apiRunCount === 1 ? "" : "s"}` : "0 metered runs"}
+          {t('biller_spend.metered_runs', { count: row.apiRunCount })}
           {" · "}
-          {row.subscriptionRunCount > 0
-            ? `${row.subscriptionRunCount} subscription run${row.subscriptionRunCount === 1 ? "" : "s"}`
-            : "0 subscription runs"}
+          {t('biller_spend.subscription_runs', { count: row.subscriptionRunCount })}
           {" · "}
-          {formatCents(weekSpendCents)} this week
+          {formatCents(weekSpendCents)} {t('biller_spend.this_week')}
         </div>
 
         {billingTypeBreakdown.length > 0 && (
@@ -132,7 +130,7 @@ export function BillerSpendCard({
                     <div className="text-right tabular-nums">
                       <div className="font-medium">{formatCents(entry.costCents)}</div>
                       <div className="text-muted-foreground">
-                        {formatTokens(entry.inputTokens + entry.outputTokens)} tok
+                        {formatTokens(entry.inputTokens + entry.outputTokens)} {t('labels.tok')}
                       </div>
                     </div>
                   </div>
