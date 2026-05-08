@@ -144,4 +144,24 @@ describe("GET / root handler — API-only modes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ name: "Paperclip API", api: "/api" });
   });
+
+  it("returns 200 (not 404) for SPA routes when uiMode is static but dist is missing", async () => {
+    const app = await createApp({} as Db, { ...MINIMAL_OPTS, uiMode: "static" });
+    const res = await request(app).get("/BRA/issues");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: "Paperclip API", api: "/api" });
+  });
+
+  it("returns 200 (not 404) for SPA routes when uiMode is none", async () => {
+    const app = await createApp({} as Db, { ...MINIMAL_OPTS, uiMode: "none" });
+    const res = await request(app).get("/BRA/issues");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: "Paperclip API", api: "/api" });
+  });
+
+  it("returns 404 for /assets/* routes when dist is missing", async () => {
+    const app = await createApp({} as Db, { ...MINIMAL_OPTS, uiMode: "static" });
+    const res = await request(app).get("/assets/main.abc123.js");
+    expect(res.status).toBe(404);
+  });
 });
