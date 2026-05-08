@@ -125,7 +125,8 @@ def get_issue_result(issue_id: str, headers: dict, max_wait: int = 180) -> str:
         if status == "done":
             comments = api("GET", f"/api/issues/{issue_id}/comments?limit=10", None, headers)
             if isinstance(comments, list) and comments:
-                return comments[-1].get("body", "")
+                # API devuelve comentarios en orden descendente (más nuevo primero)
+                return comments[0].get("body", "")
             return ""
 
         if status in ("canceled", "failed"):
