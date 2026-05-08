@@ -478,6 +478,8 @@
     "run_started": "Ejecución iniciada",
     "run_finished": "Ejecución finalizada",
     "run_cancelled": "Ejecución cancelada",
-    "adapter_invocation": "Invocación del adaptador"
+    "run_succeeded": "Ejecución exitosa",
+    "adapter_invocation": "Invocación del adaptador",
+    "used_skill": "Habilidad utilizada"
   }
 }

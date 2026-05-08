@@ -478,6 +478,8 @@
     "run_started": "Ausführung gestartet",
     "run_finished": "Ausführung beendet",
     "run_cancelled": "Ausführung abgebrochen",
-    "adapter_invocation": "Adapter-Aufruf"
+    "run_succeeded": "Ausführung erfolgreich",
+    "adapter_invocation": "Adapter-Aufruf",
+    "used_skill": "Verwendete Fähigkeit"
   }
 }

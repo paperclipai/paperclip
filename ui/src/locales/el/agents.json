@@ -478,6 +478,8 @@
     "run_started": "Εκτέλεση ξεκίνησε",
     "run_finished": "Εκτέλεση τελείωσε",
     "run_cancelled": "Εκτέλεση ακυρώθηκε",
-    "adapter_invocation": "Κλήση προσαρμογέα"
+    "run_succeeded": "Εκτέλεση επιτυχής",
+    "adapter_invocation": "Κλήση προσαρμογέα",
+    "used_skill": "Χρησιμοποιημένη δεξιότητα"
   }
 }

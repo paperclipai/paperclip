@@ -478,6 +478,8 @@
     "run_started": "运行已开始",
     "run_finished": "运行已完成",
     "run_cancelled": "运行已取消",
-    "adapter_invocation": "适配器调用"
+    "run_succeeded": "运行成功",
+    "adapter_invocation": "适配器调用",
+    "used_skill": "使用的技能"
   }
 }
