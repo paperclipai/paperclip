@@ -21,6 +21,7 @@ import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import i18n from "../locales/i18n";
 import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
@@ -170,11 +171,8 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
 
 function humanizeValue(value: string | null, t?: (key: string, opts?: Record<string, unknown>) => string): string {
   if (!value) return t ? t("timeline.none") : "None";
-  if (t) {
-    const key = `common:status_labels.${value}`;
-    const result = t(key);
-    if (result !== key) return result;
-  }
+  const localized = i18n.t(`status_labels.${value}`, { ns: "common" });
+  if (localized !== `status_labels.${value}`) return localized;
   return value.replace(/_/g, " ");
 }
 
