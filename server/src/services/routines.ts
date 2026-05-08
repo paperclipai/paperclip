@@ -931,6 +931,36 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  // TER-1492: dedup target for the case where a previous routine_execution
+  // issue is still `blocked`. The blocker's heartbeat run has already
+  // terminated, so `findLiveExecutionIssue` (which requires a live heartbeat)
+  // does not see this issue. Without this lookup the dispatch loop spawns a
+  // new execution issue every tick while the predecessor sits blocked on the
+  // same unblock owner/action, inflating the board and burning budget.
+  async function findOpenBlockedExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          eq(issues.status, "blocked"),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1161,6 +1191,14 @@ export function routineService(
       title,
       description,
     });
+    // TER-1492: when the dispatch coalesces into a `blocked` predecessor, we
+    // need to post a comment on that predecessor surfacing the tick context.
+    // The comment must run on a connection that does not contend with the
+    // dispatch tx (the tx still holds row locks on the predecessor from the
+    // orphan-heal UPDATE), so we capture the intent inside the tx and post
+    // the comment only after the tx commits.
+    let pendingBlockedDedupComment: { issueId: string; body: string } | null = null;
+
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -1252,6 +1290,65 @@ export function routineService(
           return await coalesceIntoExistingIssue(activeIssue);
         }
 
+        // TER-1492: before creating a new execution issue, check whether a
+        // previous one is still `blocked`. The orphan-heal nulled out its
+        // executionRunId and findLiveExecutionIssue cannot see it, but
+        // spawning a parallel issue under the same blocker just produces a
+        // duplicate (see TER-1405/TER-1488 consolidation). Default behavior
+        // is to dedup; users that explicitly opt into `always_enqueue`
+        // bypass it and we log a warning so the fan-out is traceable.
+        const blockedPredecessor = await findOpenBlockedExecutionIssue(
+          input.routine,
+          txDb,
+          dispatchFingerprint,
+        );
+        if (blockedPredecessor) {
+          if (input.routine.concurrencyPolicy === "always_enqueue") {
+            logger.warn(
+              {
+                event: "routine_execution_blocked_predecessor_bypassed",
+                routineId: input.routine.id,
+                companyId: input.routine.companyId,
+                blockedIssueId: blockedPredecessor.id,
+                concurrencyPolicy: input.routine.concurrencyPolicy,
+                runSource: input.source,
+              },
+              "Routine has a blocked predecessor but concurrencyPolicy=always_enqueue; bypassing dedup",
+            );
+          } else {
+            logger.warn(
+              {
+                event: "routine_execution_skipped_due_to_blocked_predecessor",
+                routineId: input.routine.id,
+                companyId: input.routine.companyId,
+                blockedIssueId: blockedPredecessor.id,
+                runSource: input.source,
+                triggerId: input.trigger?.id ?? null,
+              },
+              "Skipping routine execution: predecessor issue is still blocked",
+            );
+
+            const triggerLabel = input.trigger?.id
+              ? `${input.source} (trigger ${input.trigger.id})`
+              : input.source;
+            // Capture the intended comment; we post it post-commit so the
+            // outer-connection write does not contend with the dispatch tx
+            // for row locks on the predecessor (which the tx still holds).
+            const dedupBody = [
+              `🔁 Routine tick at ${triggeredAt.toISOString()} via \`${triggerLabel}\`.`,
+              "",
+              "Skipping new execution issue — this predecessor is still `blocked`.",
+              "Subsequent ticks will collapse here until status changes.",
+            ].join("\n");
+            const coalescedRun = await coalesceIntoExistingIssue(blockedPredecessor);
+            pendingBlockedDedupComment = {
+              issueId: blockedPredecessor.id,
+              body: dedupBody,
+            };
+            return coalescedRun;
+          }
+        }
+
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
@@ -1291,30 +1388,7 @@ export function routineService(
             id: issueOriginId,
           });
           if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: existingIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          return await coalesceIntoExistingIssue(existingIssue);
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
@@ -1390,6 +1464,29 @@ export function routineService(
         return failed ?? createdRun;
       }
     });
+
+    // Post-commit: post the blocked-predecessor dedup comment now that the
+    // dispatch tx has released its row locks. This is best-effort — if the
+    // comment write fails the dedup decision still stands.
+    if (pendingBlockedDedupComment) {
+      try {
+        await issueSvc.addComment(
+          pendingBlockedDedupComment.issueId,
+          pendingBlockedDedupComment.body,
+          {},
+        );
+      } catch (commentErr) {
+        logger.warn(
+          {
+            event: "routine_execution_blocked_dedup_comment_failed",
+            routineId: input.routine.id,
+            blockedIssueId: pendingBlockedDedupComment.issueId,
+            error: commentErr instanceof Error ? commentErr.message : String(commentErr),
+          },
+          "Failed to post blocked-predecessor dedup comment; coalesce decision still applied",
+        );
+      }
+    }
 
     if (input.source === "schedule" || input.source === "webhook") {
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";
