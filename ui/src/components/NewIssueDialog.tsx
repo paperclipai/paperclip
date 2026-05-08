@@ -1249,7 +1249,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? t("dialog.new_sub_issue") : t("dialog.new_issue")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
