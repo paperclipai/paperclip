@@ -233,3 +233,25 @@ git config core.hooksPath .githooks
 - New `.ts` files are rejected outside approved infra paths (`scripts/`, `.github/`, `.githooks/`).
 
 **Bypass** (Stage 8 only): include the literal string `[stage-8-switcher]` in the commit message to allow adding the LanguageSwitcher component files and mounting it in a layout file.
+
+## 13. Repo Identity Guardrail (ALL agents)
+
+**CRITICAL — run this pre-flight check before any `git commit`, `git add`, or file write:**
+
+```sh
+git remote get-url origin
+```
+
+Expected output (fork):
+```
+https://github.com/HenkDz/paperclip.git
+```
+
+If the output is `https://github.com/paperclipai/paperclip.git` (the public upstream), **STOP IMMEDIATELY**. You are in the wrong repository. Do not commit, do not write files, do not push. Navigate to `C:\Users\vibecoder_blogger\PycharmProjects\paperclip_fork_Enterprise` before continuing.
+
+**Background**: In May 2026 the Localization Agent committed i18n changes to `paperclipai/paperclip` instead of the fork, requiring an emergency cleanup (ZAI-164). This check prevents a recurrence.
+
+The correct working directory for all board-sanctioned code changes is:
+```
+C:\Users\vibecoder_blogger\PycharmProjects\paperclip_fork_Enterprise
+```
