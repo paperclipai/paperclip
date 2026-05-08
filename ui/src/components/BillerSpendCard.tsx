@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
@@ -19,6 +20,7 @@ export function BillerSpendCard({
   totalCompanySpendCents,
   providerRows,
 }: BillerSpendCardProps) {
+  const { t } = useTranslation('costs');
   const providerBreakdown = useMemo(() => {
     const map = new Map<string, { provider: string; costCents: number; inputTokens: number; outputTokens: number }>();
     for (const entry of providerRows) {
@@ -102,7 +104,7 @@ export function BillerSpendCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Billing types
+                {t('biller_spend.billing_types')}
               </p>
               <div className="space-y-1.5">
                 {billingTypeBreakdown.map(([billingType, costCents]) => (
@@ -121,7 +123,7 @@ export function BillerSpendCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Upstream providers
+                {t('biller_spend.upstream_providers')}
               </p>
               <div className="space-y-1.5">
                 {providerBreakdown.map((entry) => (

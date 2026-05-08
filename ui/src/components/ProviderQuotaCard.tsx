@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,6 +49,7 @@ export function ProviderQuotaCard({
   quotaSource = null,
   quotaLoading = false,
 }: ProviderQuotaCardProps) {
+  const { t } = useTranslation('costs');
   // single-pass aggregation over rows — memoized so the 8 derived values are not
   // recomputed on every parent render tick (providers tab polls every 30s, and each
   // card is mounted twice: once in the "all" tab grid and once in its per-provider tab).
@@ -184,7 +186,7 @@ export function ProviderQuotaCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Rolling windows
+                {t('quota_card.rolling_windows')}
               </p>
               <div className="space-y-2.5">
                 {ROLLING_WINDOWS.map((w) => {
@@ -223,7 +225,7 @@ export function ProviderQuotaCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Subscription
+                {t('quota_card.subscription')}
               </p>
               <p className="text-xs text-muted-foreground">
                 <span className="font-mono text-foreground">{totalSubRuns}</span> runs
@@ -247,7 +249,7 @@ export function ProviderQuotaCard({
                     />
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {Math.round(subSharePct)}% of token usage via subscription
+                    {t('quota_card.subscription_share', { percent: Math.round(subSharePct) })}
                   </p>
                 </>
               )}
@@ -311,7 +313,7 @@ export function ProviderQuotaCard({
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  Subscription quota
+                  {t('quota_card.subscription_quota')}
                 </p>
                 {quotaSource && !isClaudeQuotaPanel && !isCodexQuotaPanel ? (
                   <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
