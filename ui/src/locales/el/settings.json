@@ -105,12 +105,18 @@
     "description": "Επιλέξτε τη γλώσσα εμφάνισης για τη διεπαφή Paperclip. Οι αλλαγές εφαρμόζονται αμέσως χωρίς επανεκκίνηση.",
     "en": "English",
     "ru": "Русский",
-    "uk": "Ukrainian",
+    "uk": "Українська",
     "es": "Español",
+    "fr": "Français",
     "de": "Deutsch",
+    "it": "Italiano",
     "pt": "Português",
     "zh": "中文",
-    "el": "Ελληνικά"
+    "ja": "日本語",
+    "ko": "한국어",
+    "el": "Ελληνικά",
+    "tr": "Türkçe",
+    "ar": "العربية"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Πίνακας ελέγχου χρόνου εκτέλεσης",
