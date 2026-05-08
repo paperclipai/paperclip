@@ -74,7 +74,10 @@
     "reinstall_btn": "Reinstalar",
     "reinstalling_btn": "Reinstalando...",
     "remove_btn": "Eliminar",
-    "removing_btn": "Eliminando..."
+    "removing_btn": "Eliminando...",
+    "path_example": "/mnt/e/Projects/my-adapter  o  E:\\Projects\\my-adapter",
+    "package_name_example": "my-paperclip-adapter",
+    "version_example": "latest"
   },
   "claude_local": {
     "instructions_file": "Archivo de instrucciones del agente",

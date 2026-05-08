@@ -74,7 +74,10 @@
     "reinstall_btn": "重新安装",
     "reinstalling_btn": "正在重新安装...",
     "remove_btn": "移除",
-    "removing_btn": "正在移除..."
+    "removing_btn": "正在移除...",
+    "path_example": "/mnt/e/Projects/my-adapter  或  E:\\Projects\\my-adapter",
+    "package_name_example": "my-paperclip-adapter",
+    "version_example": "latest"
   },
   "claude_local": {
     "instructions_file": "智能体指令文件",

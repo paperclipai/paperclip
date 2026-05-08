@@ -74,7 +74,10 @@
     "reinstall_btn": "Επανεγκατάσταση",
     "reinstalling_btn": "Γίνεται επανεγκατάσταση...",
     "remove_btn": "Αφαίρεση",
-    "removing_btn": "Αφαίρεση σε εξέλιξη..."
+    "removing_btn": "Αφαίρεση σε εξέλιξη...",
+    "path_example": "/mnt/e/Projects/my-adapter  ή  E:\\Projects\\my-adapter",
+    "package_name_example": "my-paperclip-adapter",
+    "version_example": "latest"
   },
   "claude_local": {
     "instructions_file": "Αρχείο οδηγιών πράκτορα",

@@ -74,7 +74,10 @@
     "reinstall_btn": "Перевстановити",
     "reinstalling_btn": "Перевстановлення...",
     "remove_btn": "Видалити",
-    "removing_btn": "Видалення..."
+    "removing_btn": "Видалення...",
+    "path_example": "/mnt/e/Projects/my-adapter  або  E:\\Projects\\my-adapter",
+    "package_name_example": "my-paperclip-adapter",
+    "version_example": "latest"
   },
   "claude_local": {
     "instructions_file": "Файл інструкцій агента",

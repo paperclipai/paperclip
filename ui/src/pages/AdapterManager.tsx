@@ -458,7 +458,7 @@ export function AdapterManager() {
                     <Input
                       id="adapterLocalPath"
                       className="flex-1 font-mono text-xs"
-                      placeholder="/mnt/e/Projects/my-adapter  or  E:\Projects\my-adapter"
+                      placeholder={t("manager.path_example")}
                       value={installPackage}
                       onChange={(e) => setInstallPackage(e.target.value)}
                     />
@@ -475,7 +475,7 @@ export function AdapterManager() {
                     <Label htmlFor="adapterPackageName">{t("manager.package_name")}</Label>
                     <Input
                       id="adapterPackageName"
-                      placeholder="my-paperclip-adapter"
+                      placeholder={t("manager.package_name_example")}
                       value={installPackage}
                       onChange={(e) => setInstallPackage(e.target.value)}
                     />
@@ -484,7 +484,7 @@ export function AdapterManager() {
                     <Label htmlFor="adapterVersion">{t("manager.version_optional")}</Label>
                     <Input
                       id="adapterVersion"
-                      placeholder="latest"
+                      placeholder={t("manager.version_example")}
                       value={installVersion}
                       onChange={(e) => setInstallVersion(e.target.value)}
                     />
