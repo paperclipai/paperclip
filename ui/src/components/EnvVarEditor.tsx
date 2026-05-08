@@ -147,7 +147,7 @@ export function EnvVarEditor({
     if (!key || plain.length === 0) return;
 
     const suggested = defaultSecretName(key) || "secret";
-    const name = window.prompt("Secret name", suggested)?.trim();
+    const name = window.prompt(t("env_var_editor.secret_name_prompt"), suggested)?.trim();
     if (!name) return;
 
     try {
@@ -155,7 +155,7 @@ export function EnvVarEditor({
       const created = await onCreateSecret(name, plain);
       updateRow(index, { source: "secret", secretId: created.id });
     } catch (error) {
-      setSealError(error instanceof Error ? error.message : "Failed to create secret");
+      setSealError(error instanceof Error ? error.message : t("env_var_editor.failed_create_secret"));
     }
   }
 
