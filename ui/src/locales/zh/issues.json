@@ -567,7 +567,10 @@
     "upload_warnings_title": "已创建 {{issueRef}}，但有上传警告",
     "upload_warnings_body_one": "{{count}} 个暂存文件无法添加。",
     "upload_warnings_body_other": "{{count}} 个暂存文件无法添加。",
-    "open_issue": "打开 {{issueRef}}"
+    "open_issue": "打开 {{issueRef}}",
+    "work_mode_standard": "标准",
+    "work_mode_planning": "规划",
+    "assignee_backlog_note": "分配意味着可执行意图 — 仅在有意停放时才将状态保留为待办事项。受托人在状态变为待办或进行中之前不会被唤醒。"
   },
   "workspace_close_dialog": {
     "action_retry_close": "重试关闭",

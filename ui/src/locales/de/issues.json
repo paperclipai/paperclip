@@ -567,7 +567,10 @@
     "upload_warnings_title": "{{issueRef}} mit Upload-Warnungen erstellt",
     "upload_warnings_body_one": "{{count}} bereitgestellte Datei konnte nicht hinzugefügt werden.",
     "upload_warnings_body_other": "{{count}} bereitgestellte Dateien konnten nicht hinzugefügt werden.",
-    "open_issue": "{{issueRef}} öffnen"
+    "open_issue": "{{issueRef}} öffnen",
+    "work_mode_standard": "Standard",
+    "work_mode_planning": "Planung",
+    "assignee_backlog_note": "Zuweisung impliziert ausführbare Absicht — lassen Sie den Status nur dann auf Backlog, um dies bewusst zu parken. Der Beauftragte wird erst geweckt, wenn der Status zu To-do oder In Bearbeitung wechselt."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Schließen erneut versuchen",

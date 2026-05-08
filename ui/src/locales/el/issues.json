@@ -567,7 +567,10 @@
     "upload_warnings_title": "Δημιουργήθηκε {{issueRef}} με προειδοποιήσεις ανεβάσματος",
     "upload_warnings_body_one": "{{count}} σταδιακό αρχείο δεν μπόρεσε να προστεθεί.",
     "upload_warnings_body_other": "{{count}} σταδιακά αρχεία δεν μπόρεσαν να προστεθούν.",
-    "open_issue": "Άνοιγμα {{issueRef}}"
+    "open_issue": "Άνοιγμα {{issueRef}}",
+    "work_mode_standard": "Τυπική",
+    "work_mode_planning": "Σχεδιασμός",
+    "assignee_backlog_note": "Η ανάθεση υπονοεί εκτελέσιμη πρόθεση — αφήστε την κατάσταση ως Backlog μόνο για να το παρκάρετε σκόπιμα. Ο ανατεθέντης δεν θα ξυπνήσει μέχρι η κατάσταση να αλλάξει σε Προς εκτέλεση ή Σε εξέλιξη."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Επανάληψη κλεισίματος",

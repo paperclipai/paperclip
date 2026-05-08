@@ -567,7 +567,10 @@
     "upload_warnings_title": "Se creó {{issueRef}} con advertencias de carga",
     "upload_warnings_body_one": "{{count}} archivo preparado no pudo añadirse.",
     "upload_warnings_body_other": "{{count}} archivos preparados no pudieron añadirse.",
-    "open_issue": "Abrir {{issueRef}}"
+    "open_issue": "Abrir {{issueRef}}",
+    "work_mode_standard": "Estándar",
+    "work_mode_planning": "Planificación",
+    "assignee_backlog_note": "Asignar implica intención ejecutable — deje el estado en Backlog solo para aparcar esto deliberadamente. El asignado no será despertado hasta que el estado cambie a Por hacer o En progreso."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Reintentar cierre",

@@ -585,7 +585,10 @@
     "upload_warnings_title": "Created {{issueRef}} with upload warnings",
     "upload_warnings_body_one": "{{count}} staged file could not be added.",
     "upload_warnings_body_other": "{{count}} staged files could not be added.",
-    "open_issue": "Open {{issueRef}}"
+    "open_issue": "Open {{issueRef}}",
+    "work_mode_standard": "Standard",
+    "work_mode_planning": "Planning",
+    "assignee_backlog_note": "Assigning implies executable intent — leave status as Backlog only to deliberately park this. The assignee will not be woken until status moves to Todo or In Progress."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Retry close",

@@ -583,7 +583,10 @@
     "upload_warnings_body_few": "{{count}} файли у черзі не вдалося додати.",
     "upload_warnings_body_many": "{{count}} файлів у черзі не вдалося додати.",
     "upload_warnings_body_other": "{{count}} файлів у черзі не вдалося додати.",
-    "open_issue": "Відкрити {{issueRef}}"
+    "open_issue": "Відкрити {{issueRef}}",
+    "work_mode_standard": "Стандартна",
+    "work_mode_planning": "Планування",
+    "assignee_backlog_note": "Призначення передбачає виконуваний намір — залишайте статус «Беклог» лише для навмисного паркування. Виконавець не буде розбуджений, поки статус не зміниться на «До виконання» або «В процесі»."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Повторити закриття",

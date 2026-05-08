@@ -607,7 +607,10 @@
     "upload_warnings_body_few": "{{count}} прикреплённых файла не удалось добавить.",
     "upload_warnings_body_many": "{{count}} прикреплённых файлов не удалось добавить.",
     "upload_warnings_body_other": "{{count}} прикреплённых файлов не удалось добавить.",
-    "open_issue": "Открыть {{issueRef}}"
+    "open_issue": "Открыть {{issueRef}}",
+    "work_mode_standard": "Стандартная",
+    "work_mode_planning": "Планирование",
+    "assignee_backlog_note": "Назначение подразумевает исполняемое намерение — оставляйте статус «Беклог» только для намеренной парковки. Исполнитель не будет разбужен, пока статус не изменится на «К выполнению» или «В процессе»."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Повторить закрытие",

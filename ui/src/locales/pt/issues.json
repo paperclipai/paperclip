@@ -567,7 +567,10 @@
     "upload_warnings_title": "Criado {{issueRef}} com avisos de upload",
     "upload_warnings_body_one": "{{count}} arquivo preparado não pôde ser adicionado.",
     "upload_warnings_body_other": "{{count}} arquivos preparados não puderam ser adicionados.",
-    "open_issue": "Abrir {{issueRef}}"
+    "open_issue": "Abrir {{issueRef}}",
+    "work_mode_standard": "Padrão",
+    "work_mode_planning": "Planejamento",
+    "assignee_backlog_note": "Atribuir implica intenção executável — deixe o status como Backlog apenas para estacionar isso deliberadamente. O responsável não será acordado até que o status mude para A fazer ou Em progresso."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Tentar fechar novamente",
