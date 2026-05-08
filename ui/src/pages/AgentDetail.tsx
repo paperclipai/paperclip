@@ -1364,7 +1364,7 @@ function CostsSection({
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
-  const { t } = useTranslation("agents");
+  const { t, i18n } = useTranslation("agents");
   const runsWithCost = runs
     .filter((r) => {
       const metrics = runMetrics(r);
@@ -1413,7 +1413,7 @@ function CostsSection({
                 const metrics = runMetrics(run);
                 return (
                   <tr key={run.id} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
+                    <td className="px-3 py-2">{formatDate(run.createdAt, i18n.language)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
@@ -1455,7 +1455,7 @@ function AgentConfigurePage({
   onSavingChange: (saving: boolean) => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
-  const { t } = useTranslation("agents");
+  const { t, i18n } = useTranslation("agents");
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
 
@@ -1516,7 +1516,7 @@ function AgentConfigurePage({
                       <div className="text-xs text-muted-foreground">
                         <span className="font-mono">{revision.id.slice(0, 8)}</span>
                         <span className="mx-1">·</span>
-                        <span>{formatDate(revision.createdAt)}</span>
+                        <span>{formatDate(revision.createdAt, i18n.language)}</span>
                         <span className="mx-1">·</span>
                         <span>{revision.source}</span>
                       </div>
@@ -4086,7 +4086,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 /* ---- Keys Tab ---- */
 
 function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
-  const { t } = useTranslation("agents");
+  const { t, i18n } = useTranslation("agents");
   const queryClient = useQueryClient();
   const [newKeyName, setNewKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
@@ -4214,7 +4214,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                 <div>
                   <span className="text-sm font-medium">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
-                    {t("detail.key_created")} {formatDate(key.createdAt)}
+                    {t("detail.key_created")} {formatDate(key.createdAt, i18n.language)}
                   </span>
                 </div>
                 <Button
@@ -4244,7 +4244,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                 <div>
                   <span className="text-sm line-through">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
-                    {t("detail_view.revoked_prefix")} {key.revokedAt ? formatDate(key.revokedAt) : ""}
+                    {t("detail_view.revoked_prefix")} {key.revokedAt ? formatDate(key.revokedAt, i18n.language) : ""}
                   </span>
                 </div>
               </div>

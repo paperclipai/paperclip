@@ -13,7 +13,7 @@ export function RunButton({
   label?: string;
   size?: "sm" | "default";
 }) {
-  const { t } = useTranslation();
+  const { t } = useTranslation("common");
   return (
     <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
@@ -35,7 +35,7 @@ export function PauseResumeButton({
   disabled?: boolean;
   size?: "sm" | "default";
 }) {
-  const { t } = useTranslation();
+  const { t } = useTranslation("agents");
 
   if (isPaused) {
     return (
