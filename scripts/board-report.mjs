@@ -29,6 +29,7 @@ const SENDER = process.env.BOARD_REPORT_FROM || 'jlqueguiner@gladia.io';
 const COMPANY_SHORTNAME = process.env.PAPERCLIP_COMPANY_SHORTNAME || 'GLA';
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const NOTIFIER_ENV_FILE = '/Users/jlqueguiner/.paperclip-worktrees/instances/paperclip-openrunner/secrets/notifier.env';
+const ASSET_LIBRARY_URL = (process.env.ASSET_LIBRARY_URL || 'http://127.0.0.1:7700').replace(/\/$/, '');
 const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const TOP_TODO = 8;
 const TOP_DONE = 15;
@@ -271,6 +272,19 @@ function issueDashboardUrl(identifier) {
   return `${PAPERCLIP_URL.replace(/\/$/, '')}/${COMPANY_SHORTNAME}/issues/${identifier}`;
 }
 
+const ASSET_REVIEW_TITLE_PREFIXES = ['[review-and-ship]', '[marketing-asset]'];
+
+function isAssetReviewIssue(issue) {
+  if (!issue) return false;
+  const title = String(issue.title || '').trim().toLowerCase();
+  return ASSET_REVIEW_TITLE_PREFIXES.some((p) => title.startsWith(p));
+}
+
+function assetCtaUrl(issueId, docKey) {
+  if (docKey) return `${ASSET_LIBRARY_URL}/asset/${issueId}/${encodeURIComponent(docKey)}`;
+  return `${ASSET_LIBRARY_URL}/asset/${issueId}`;
+}
+
 function decisionDashboardUrl(issueIdentifier, interactionId) {
   return `${issueDashboardUrl(issueIdentifier)}#interaction-${interactionId}`;
 }
@@ -278,16 +292,28 @@ function decisionDashboardUrl(issueIdentifier, interactionId) {
 function buildEmailHtml({ buckets, counts, slotLabel, dateLabel, generatedAt, cursorFromIso }) {
   const issueLi = (i, opts = {}) => {
     const url = issueDashboardUrl(i.identifier);
+    const isAsset = isAssetReviewIssue(i);
     const pri = i.priority && i.priority !== 'medium'
       ? ` <span style="color:#a00;font-size:11px;">[${escapeHtml(i.priority)}]</span>`
       : '';
+    const headlineUrl = isAsset
+      ? (i.documents && i.documents.length > 0 ? assetCtaUrl(i.id, i.documents[0]) : assetCtaUrl(i.id, null))
+      : url;
+    const tag = isAsset ? ' <span style="color:#7a3;font-size:11px;">[asset-review]</span>' : '';
     const lines = [
-      `<a href="${url}" style="color:#06c;font-weight:600;text-decoration:none;">${escapeHtml(i.identifier)}</a>${pri} — ${escapeHtml(i.title)}`,
+      `<a href="${headlineUrl}" style="color:#06c;font-weight:600;text-decoration:none;">${escapeHtml(i.identifier)}</a>${pri}${tag} — ${escapeHtml(i.title)}`,
     ];
+    if (isAsset && i.documents && i.documents.length > 0) {
+      const ctaLinks = i.documents.map((k) =>
+        `<a href="${escapeHtml(assetCtaUrl(i.id, k))}" style="color:#06c;text-decoration:none;">▶ ${escapeHtml(k)}</a>`
+      ).join(' · ');
+      lines.push(`<div style="font-size:12px;margin:2px 0 0 0;">└ asset library: ${ctaLinks}</div>`);
+      lines.push(`<div style="font-size:11px;color:#888;margin:2px 0 0 0;">└ <a href="${url}" style="color:#888;">issue thread →</a></div>`);
+    }
     if (i.lastComment?.excerpt) {
       lines.push(`<div style="color:#666;font-size:12px;margin:2px 0 0 0;">└ ${escapeHtml(i.lastComment.excerpt)}</div>`);
     }
-    if (opts.showDocs && i.documents && i.documents.length > 0) {
+    if (opts.showDocs && !isAsset && i.documents && i.documents.length > 0) {
       lines.push(`<div style="color:#888;font-size:12px;margin:2px 0 0 0;">└ deliverables: ${i.documents.map(escapeHtml).join(', ')}</div>`);
     }
     if (opts.showDecisions && i.decisions && i.decisions.length > 0) {
@@ -341,10 +367,19 @@ function buildEmailHtml({ buckets, counts, slotLabel, dateLabel, generatedAt, cu
 function buildEmailText({ buckets, counts, slotLabel, dateLabel, generatedAt, cursorFromIso }) {
   const issueLine = (i, opts = {}) => {
     const url = issueDashboardUrl(i.identifier);
+    const isAsset = isAssetReviewIssue(i);
     const pri = i.priority && i.priority !== 'medium' ? ` [${i.priority}]` : '';
-    const lines = [`${i.identifier}${pri} — ${i.title}`, `  ${url}`];
+    const tag = isAsset ? ' [asset-review]' : '';
+    const headlineUrl = isAsset
+      ? (i.documents?.length > 0 ? assetCtaUrl(i.id, i.documents[0]) : assetCtaUrl(i.id, null))
+      : url;
+    const lines = [`${i.identifier}${pri}${tag} — ${i.title}`, `  ${headlineUrl}`];
+    if (isAsset && i.documents?.length > 0) {
+      for (const k of i.documents) lines.push(`  ▶ ${k}: ${assetCtaUrl(i.id, k)}`);
+      lines.push(`  issue: ${url}`);
+    }
     if (i.lastComment?.excerpt) lines.push(`  └ ${i.lastComment.excerpt}`);
-    if (opts.showDocs && i.documents?.length > 0) lines.push(`  └ deliverables: ${i.documents.join(', ')}`);
+    if (opts.showDocs && !isAsset && i.documents?.length > 0) lines.push(`  └ deliverables: ${i.documents.join(', ')}`);
     if (opts.showDecisions && i.decisions?.length > 0) {
       for (const d of i.decisions) {
         const ask = d.payload?.summary || d.payload?.title || d.payload?.question || '';
