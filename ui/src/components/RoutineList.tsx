@@ -38,7 +38,7 @@ export type RoutineListRowItem = {
 
 export function formatLastRunTimestamp(value: Date | string | null | undefined) {
   if (!value) return i18n.t("misc.never", { ns: "routines" });
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString(i18n.language);
 }
 
 export function formatRoutineRunStatus(

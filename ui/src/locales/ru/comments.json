@@ -24,5 +24,12 @@
   "interrupt_action": {
     "interrupting": "Прерывание...",
     "interrupt": "Прервать"
-  }
+  },
+  "comment_input_placeholder": "Оставить комментарий...",
+  "attach_image": "Прикрепить изображение",
+  "no_assignee": "Нет исполнителя",
+  "search_assignees": "Поиск исполнителей...",
+  "no_assignees_found": "Исполнители не найдены.",
+  "comment_button": "Комментарий",
+  "posting": "Отправка..."
 }
