@@ -223,23 +223,33 @@ parents):
 3. Three valid outcomes:
    - PR exists and `MERGED` → leave task `done`.
    - PR exists and `OPEN` → leave task `done`; §Merge sweep will pick it up.
-   - **No PR** → re-open. PATCH parent → `in_review`, comment `"Auto-reopened: done with no PR. Architect run failed silently (Step 0 abort, cwd violation, or push fail). Re-running verify."`, create a fresh verify subtask.
+   - **No PR** → run the **on-main pre-check** (step 4) before re-opening.
 
-**Re-opening is mandatory. Do not rationalize.** The audit exists for the
-"work committed in worktree, never pushed, never PR'd" case. The
-Architect's next run pushes and opens the PR — that's why it has `gh`
-access. The board's only manual git role is merging PRs; if the audit
-needs the board to push to recover, the audit failed. Same reflex
-applies to "the work exists, why churn?", "the board will catch up",
-and "this is a known bottleneck": those are descriptions of the disease
-the audit cures.
+4. **On-main pre-check** (run before re-opening — guards against false positives where the board cherry-picked the work):
+   a. Pull SHA references from the task: scan task body + comments for `[a-f0-9]{7,40}` patterns, plus any commit hashes Worker may have left in `Stage: worker` trailer comments.
+   b. For each candidate SHA: `git -C $PAPERCLIP_PROJECT branch --contains <sha> origin/main` (run in the project repo). Non-empty output means the commit landed on main — accept the task as `done`, comment `"PR-evidence audit: matched commit <sha> on origin/main, accepting."` Skip re-open.
+   c. If the candidate SHA shows up only as a *dangling object* (`git fsck --dangling | grep <sha>`) and is NOT on main, surface to board: comment `"Dangling commit <sha> '<subject>' references this task but isn't on main. Board: cherry-pick to recover, or comment to close out."` Leave task `done`, do NOT re-open (re-opening would create a duplicate Worker run).
+   d. If no SHA references anywhere in the task, also try `git log origin/main --since={createdAt} --grep="{task-id}"` for commit messages mentioning the task ID. Match → accept as in (b).
+   e. Still no evidence after a-d → fall through to step 5 (re-open).
+
+5. **Re-open** (only reached if step 4 found no on-main evidence): PATCH parent → `in_review`, comment `"Auto-reopened: done with no PR and no commit on origin/main. Architect run failed silently (Step 0 abort, cwd violation, or push fail). Re-running verify."`, create a fresh verify subtask.
+
+**Re-opening is mandatory once step 4 fails. Do not rationalize.** The audit
+exists for the "work committed in worktree, never pushed, never PR'd"
+case. The Architect's next run pushes and opens the PR — that's why it
+has `gh` access. The board's only manual git role is merging PRs and
+occasional cherry-picks; if step 4 found a cherry-pick the audit
+accepts that as the merge path. Same reflex applies to "the work
+exists, why churn?", "the board will catch up", and "this is a known
+bottleneck": those are descriptions of the disease the audit cures —
+but step 4 is the cure for false positives.
 
 The only real risk is a re-open loop on a permanent Step 0 failure.
 Mitigation: track the re-open count in a comment trailer; if a task is
-auto-reopened 3 cycles in a row without producing a PR, stop and
-escalate to the board.
+auto-reopened 3 cycles in a row without producing a PR or matching a
+cherry-pick on main, stop and escalate to the board.
 
-4. If the worktree is already GC'd, the work may be unrecoverable. Don't promote backlog or create subtasks; comment and escalate to the board for triage.
+6. If the worktree is already GC'd AND step 4 found nothing, the work may be unrecoverable. Don't promote backlog or create subtasks; comment and escalate to the board for triage.
 
 ### What this catches
 
@@ -250,8 +260,8 @@ escalate to the board.
 
 ### What this does NOT catch
 
-- The case where the work was actually merged via a different branch name or via the board's manual push (false positive — task gets re-opened unnecessarily). Mitigation: when re-opening, also check `git log --since={updatedAt} --grep={task-id}` on origin/main to see if the work landed under a different branch. If so, leave done and comment "PR-evidence audit: matched commit on main, accepting".
 - Long-running batch verifies that span multiple Coordinator fires (verify subtask correctly stays `in_review` across fires; only flag once it goes `done`).
+- Tasks where Worker never recorded a SHA in any comment AND the cherry-pick commit message doesn't mention the task ID. Step 4 returns nothing in that case and step 5 re-opens. Acceptable — re-opening is cheaper than missed-loss.
 
 ## Worktree teardown
 
