@@ -3,9 +3,9 @@
 Тонкий Telegram-клиент поверх Paperclip API. Принимает команды от Динара (CEO),
 создаёт issues и approvals от его имени, отвечает в треды через replies.
 
-Это **inbound-часть** ([THE-343](https://paperclip.thethirdchair.ru/THE/issues/THE-343))
-бота из спеки [THE-341](https://paperclip.thethirdchair.ru/THE/issues/THE-341). Outbound-нотификатор
-живёт в `src/notifier/` (THE-341.3, отдельный тикет).
+Покрывает обе половины спеки [THE-341](https://paperclip.thethirdchair.ru/THE/issues/THE-341):
+- **Inbound** ([THE-343](https://paperclip.thethirdchair.ru/THE/issues/THE-343)) — команды Динара, login, replies в треды.
+- **Outbound notifier** ([THE-344](https://paperclip.thethirdchair.ru/THE/issues/THE-344)) — `src/notifier/` поллит Paperclip раз в 30s и шлёт high-signal события: pending interactions, pending approvals, blocked unblock-owner=Динар, done создание Динара. Дедуп через JSON-файл, фильтрация server-side по контракту [THE-346](https://paperclip.thethirdchair.ru/THE/issues/THE-346) (`createdByUserId` / `touchedByUserId` / `requestedByUserId`).
 
 ## Команды
 
@@ -40,6 +40,11 @@ TELEGRAM_BOT_INTERNAL_SECRET=$(openssl rand -hex 32)
 TELEGRAM_BOT_INTERNAL_PORT=3110
 # Опционально:
 CEO_AGENT_ID=262a08ea-c041-4af7-a310-e2a0fedc8348
+# Outbound notifier (включается только если оба заданы):
+DINAR_USER_ID=...                # uuid из auth_users
+DINAR_TG_CHAT_ID=...              # chat_id (после /login → ProfileSettings → Telegram link)
+NOTIFIER_INTERVAL_MS=30000        # default 30000
+# NOTIFIER_DEDUP_FILE=/var/lib/paperclip-tg-bot/seen.json   # default ~/.local/share/paperclip-tg-bot/seen.json
 EOF
 
 # Backend env (paperclip server) должен знать секрет:

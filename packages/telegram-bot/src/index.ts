@@ -10,6 +10,9 @@ import { issueCommand } from "./commands/issue.js";
 import { approveCommand, denyCommand } from "./commands/approve.js";
 import { replyHandler } from "./commands/reply.js";
 import type { CommandDeps, CommandHandler, IncomingMessageContext } from "./commands/types.js";
+import { NotifierApi } from "./notifier/api.js";
+import { NotifierDedup } from "./notifier/dedup.js";
+import { NotifierPoller } from "./notifier/poller.js";
 
 function ctxFromTelegraf(tCtx: import("telegraf").Context): IncomingMessageContext | null {
   const msg = tCtx.message;
@@ -81,16 +84,51 @@ export async function main(): Promise<void> {
     console.error("telegraf error", err);
   });
 
+  let notifier: NotifierPoller | null = null;
+  if (config.notifier) {
+    const notifierApi = new NotifierApi({
+      baseUrl: config.paperclipApiUrl,
+      apiKey: config.paperclipBotApiKey,
+      companyId: config.paperclipCompanyId,
+    });
+    const dedup = new NotifierDedup({ filePath: config.notifier.dedupFilePath });
+    notifier = new NotifierPoller({
+      api: notifierApi,
+      dedup,
+      replyStore,
+      send: async (chatId, text) => {
+        const msg = await bot.telegram.sendMessage(chatId, text);
+        return { message_id: msg.message_id };
+      },
+      dinarUserId: config.notifier.dinarUserId,
+      dinarChatId: config.notifier.dinarChatId,
+      intervalMs: config.notifier.intervalMs,
+      logger: {
+        info: (m, c) => console.log("[notifier]", m, c ?? ""),
+        warn: (m, c) => console.warn("[notifier]", m, c ?? ""),
+        error: (m, c) => console.error("[notifier]", m, c ?? ""),
+      },
+    });
+  }
+
   process.once("SIGINT", () => {
+    notifier?.stop();
     bot.stop("SIGINT");
     void internal.close();
   });
   process.once("SIGTERM", () => {
+    notifier?.stop();
     bot.stop("SIGTERM");
     void internal.close();
   });
 
   await bot.launch();
+  if (notifier) {
+    await notifier.start();
+    console.log("paperclip telegram-bot notifier started");
+  } else {
+    console.log("paperclip telegram-bot notifier disabled (DINAR_USER_ID / DINAR_TG_CHAT_ID unset)");
+  }
   console.log("paperclip telegram-bot started");
 }
 
