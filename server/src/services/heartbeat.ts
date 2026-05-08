@@ -3129,7 +3129,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const policy = parseSessionCompactionPolicy(agent);
     const hasConfigurableThresholds = policy.enabled && hasSessionCompactionThresholds(policy);
-    if (!hasConfigurableThresholds && HARD_SESSION_RAW_INPUT_TOKEN_LIMIT <= 0) {
+    if (!hasConfigurableThresholds) {
       return {
         rotate: false,
         reason: null,
