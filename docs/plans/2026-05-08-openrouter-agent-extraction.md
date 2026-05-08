@@ -54,7 +54,14 @@ Until that PR merges and is rebased into `main`, the display name will fall back
 ## Important constraints
 
 - Do NOT modify the core Paperclip server to add special-case knowledge of `openrouter_agent`. It must load purely through the existing external adapter mechanism.
-- The working branch is `feat/openrouter-local-adapter` on the local repo. All changes go there.
+- The working branch is `feat/openrouter-agent-adapter` on the `fork` remote (`marcpbailey/paperclip`), based on `origin/master` (not `main`). Before starting, rebase it onto the latest upstream:
+  ```sh
+  git checkout master && git merge --ff-only origin/master
+  git checkout feat/openrouter-agent-adapter
+  git rebase master
+  git push fork feat/openrouter-agent-adapter --force-with-lease
+  git checkout main
+  ```
 - Use `./paperclip-api.sh` (alias `pca`) for any API calls, never raw curl with keys.
 - `gh` CLI requires `op run --` prefix to resolve 1Password secrets.
 - The Docker container will need a rebuild after these changes — flag this at the end but do not execute it.
