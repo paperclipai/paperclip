@@ -91,6 +91,14 @@
     "project_budgets_title": "Project budgets"
   },
   "incident_card": {
+    "hard_stop": "hard stop",
+    "resolved": "Resolved",
+    "dismissed": "Dismissed",
+    "escalated": "Escalated",
+    "pending_approval": "Pending approval",
+    "open": "Open",
+    "spending_reached": "Spending reached {{observed}} against a limit of {{limit}}.",
+    "new_budget_usd": "New budget (USD)",
     "project_paused": "Project execution is paused. New work in this project will not start until you resolve the budget incident.",
     "scope_paused": "This scope is paused. New heartbeats will not start until you resolve the budget incident.",
     "applying": "Applying...",
