@@ -76,6 +76,12 @@ Every code change ships with tests:
 - Data-driven: content in JSON, systems in Rust
 - `AbilityMechanic`: reusable primitives, not one-off handlers
 
+### Common pitfalls (recurring Reviewer findings)
+
+- **Don't remove imports and use fully-qualified paths** as a shortcut for resolving name collisions. Keep short `use` imports — readability matters.
+- **Don't split combined `if` conditions into nested `if ... { if ... }`** — this introduces `clippy::collapsible_if` lint regressions.
+- **Don't inline a helper that DRYs two+ call sites.** If a function exists to avoid duplication, keep it. Inlining it into each caller creates copy-paste duplication.
+
 ### Pre-deletion grep rule (MANDATORY before deleting any pub item)
 
 Before deleting any `pub fn`, `pub struct`, `pub enum` variant, or trait
