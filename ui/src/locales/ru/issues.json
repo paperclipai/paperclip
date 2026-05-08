@@ -1178,5 +1178,7 @@
   "leave_a_comment": "Оставить комментарий...",
   "attach_image": "Прикрепить изображение",
   "posting": "Публикация...",
-  "rendering_n_of_m": "Отображение {{shown}} из {{total}} задач"
+  "rendering_n_of_m": "Отображение {{shown}} из {{total}} задач",
+  "status_label": "Статус",
+  "remove_blocker_q": "Удалить блокировщик?"
 }
