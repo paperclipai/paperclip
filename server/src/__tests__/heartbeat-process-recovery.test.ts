@@ -532,6 +532,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    resultJson?: Record<string, unknown> | null;
     issueOriginKind?: string;
     issueTitle?: string;
   }) {
@@ -607,6 +608,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ? null
         : ("runError" in input ? input.runError : "run failed before issue advanced"),
       livenessState: input.livenessState ?? null,
+      resultJson: input.resultJson ?? null,
     });
 
     await db.insert(issues).values([
@@ -940,6 +942,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("cancels an orphaned process-loss run instead of retrying when the target issue is already done", async () => {
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "done",
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "cancelled",
+      errorCode: "issue_terminal_status",
+    });
+    expect(runs[0]?.error).toContain("already done");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+    expect(wakeup?.error).toContain("already done");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("done");
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -1985,6 +2035,96 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(0);
   });
+
+  it("moves successful Bookforge smoke diagnostics to review instead of creating stale-run recovery", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "completed",
+      issueTitle: "Bookforge Lab smoke diagnostic — Treasurer safe command check",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.productiveContinuationObserved).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      "structured work product",
+      {
+        summary: "Wrote Bookforge queue-clear verification report.",
+        workProducts: [
+          {
+            kind: "report",
+            path: "/Users/begilhan/Bookforge V2 PublicationForge/reports/boo64_safe_lie_final_review_queue_clear_20260506_1432.json",
+          },
+        ],
+      },
+    ],
+    [
+      "partial timeout stdout",
+      {
+        partial: true,
+        stopReason: "timeout",
+        stdout:
+          "Bookforge health OK; worker idle; no pending/running/failed/quality-hold rows. Report: /Users/begilhan/Bookforge V2 PublicationForge/reports/boo64_safe_lie_final_review_queue_clear_20260506_1432.json",
+        stderr: "",
+      },
+    ],
+  ])(
+    "moves Bookforge timed-out runs with captured evidence from %s to review instead of creating generic recovery issues",
+    async (_source, resultJson) => {
+      const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "timed_out",
+        runErrorCode: "adapter_timed_out",
+        livenessState: "advanced",
+        issueOriginKind: "bookforge_incident",
+        issueTitle: "Bookforge final queue clear BOO-64",
+        resultJson,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.dispatchRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.productiveContinuationObserved).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("in_review");
+
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      const recoveryIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+      expect(recoveryIssues).toHaveLength(0);
+
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain("captured Bookforge evidence");
+      expect(comments[0]?.body).toContain("boo64_safe_lie_final_review_queue_clear_20260506_1432.json");
+    },
+  );
 
   it.each([
     ["failed", "adapter_failed"],

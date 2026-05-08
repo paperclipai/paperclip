@@ -115,6 +115,19 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function isTerminalIssueStatus(status: unknown) {
+  return status === "done" || status === "cancelled";
+}
+
+const activeRunNotForTerminalIssue = sql`not exists (
+  select 1
+  from ${issuesTable}
+  where (${heartbeatRuns.contextSnapshot} ->> 'issueId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    and ${issuesTable.id} = ((${heartbeatRuns.contextSnapshot} ->> 'issueId')::uuid)
+    and ${issuesTable.companyId} = ${heartbeatRuns.companyId}
+    and ${issuesTable.status} in ('done', 'cancelled')
+)`;
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -3130,6 +3143,7 @@ export function agentRoutes(
         and(
           eq(heartbeatRuns.companyId, companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          activeRunNotForTerminalIssue,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -3332,6 +3346,11 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
 
+    if (isTerminalIssueStatus(issue.status)) {
+      res.json([]);
+      return;
+    }
+
     const liveRuns = await db
       .select({
         id: heartbeatRuns.id,
@@ -3385,6 +3404,11 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+
+    if (isTerminalIssueStatus(issue.status)) {
+      res.json(null);
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (
