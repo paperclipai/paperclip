@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.20
 FROM node:lts-alpine
-RUN npm install -g @anthropic-ai/claude-code@latest
+# util-linux provides `script` which creates a PTY for claude login
+RUN apk add --no-cache util-linux && \
+    npm install -g @anthropic-ai/claude-code@latest
 
 # Pre-seed settings so Claude skips the first-run theme wizard
 RUN mkdir -p /root/.claude && \
@@ -19,7 +21,6 @@ const CRED_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 
 let lines = [];
 let proc = null;
-let done = false;
 
 function strip(s) {
   return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '');
@@ -27,9 +28,12 @@ function strip(s) {
 
 function startLogin() {
   lines.push('[Starting claude login...]\n');
-  proc = spawn('claude', ['login'], {
+  // script -q -e -c CMD /dev/null runs CMD inside a PTY so claude login
+  // doesn't detect a non-interactive terminal and bail immediately.
+  // stdin of `script` is forwarded into the PTY (used to send the auth code).
+  proc = spawn('script', ['-q', '-e', '-c', 'claude login', '/dev/null'], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', FORCE_COLOR: '0', CI: '1' }
+    env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', FORCE_COLOR: '0' }
   });
 
   proc.stdout.on('data', d => { lines.push(strip(d.toString())); });
@@ -40,7 +44,6 @@ function startLogin() {
     if (fs.existsSync(CRED_PATH)) {
       const c = fs.readFileSync(CRED_PATH, 'utf8');
       lines.push('\n__CREDS__\n' + c + '\n__CREDS__\n');
-      done = true;
     }
   });
 }
@@ -69,23 +72,19 @@ const HTML = (body) => `<!DOCTYPE html>
 </style></head><body>${body}</body></html>`;
 
 http.createServer((req, res) => {
-  // Handle code submission
   if (req.method === 'POST' && req.url === '/code') {
     let b = '';
     req.on('data', d => b += d);
     req.on('end', () => {
-      const code = new URLSearchParams(b).get('code') || '';
-      submitCode(code);
+      submitCode(new URLSearchParams(b).get('code') || '');
       res.writeHead(302, { Location: '/' });
       res.end();
     });
     return;
   }
 
-  // Handle restart
   if (req.url === '/restart') {
     lines = [];
-    done = false;
     if (proc) try { proc.kill(); } catch(_) {}
     startLogin();
     res.writeHead(302, { Location: '/' });
@@ -98,15 +97,14 @@ http.createServer((req, res) => {
   const all = lines.join('');
   const credsMatch = all.match(/__CREDS__\n([\s\S]+?)\n__CREDS__/);
   const output = all.replace(/__CREDS__[\s\S]*__CREDS__/g, '').trim();
-
   const urlMatch = output.match(/https:\/\/claude\.ai\/[^\s\n"]+/);
   const url = urlMatch ? urlMatch[0] : null;
 
   if (credsMatch) {
     res.end(HTML(`
-      <h2>✓ Claude Login Complete</h2>
+      <h2>&#10003; Claude Login Complete</h2>
       <div class="ok">
-        <strong style="color:#22c55e">Copy the JSON below and set it as <code>CLAUDE_CREDENTIALS_JSON</code> in Railway:</strong>
+        <strong style="color:#22c55e">Copy the JSON below and set it as <code>CLAUDE_CREDENTIALS_JSON</code> in Railway (Paperclip service):</strong>
         <pre>${credsMatch[1].replace(/</g,'&lt;')}</pre>
       </div>
       <p>Then remove <code>CLAUDE_CODE_OAUTH_TOKEN</code> if set, and redeploy the Paperclip service.</p>
@@ -117,15 +115,15 @@ http.createServer((req, res) => {
 
   res.end(HTML(`
     <h2>Claude Auth Helper</h2>
-    <p class="step">Auto-refreshes every 4s — page will update as Claude outputs the login URL.</p>
+    <p class="step">Auto-refreshes every 4s. Waiting for the login URL...</p>
 
     ${url ? `
     <p style="margin:12px 0"><strong>Step 1:</strong>
       <a href="${url}" target="_blank" style="color:#60a5fa;word-break:break-all">${url}</a>
     </p>
-    <p class="step">Step 2: Authorize in your browser. If it shows a code instead of redirecting, paste it below.</p>
+    <p class="step">Step 2: Authorize in your browser. If it shows a code, paste it below.</p>
     <form method="POST" action="/code">
-      <input name="code" placeholder="Paste the code shown by your browser here (if prompted)" autofocus>
+      <input name="code" placeholder="Paste the code shown by your browser here" autofocus>
       <button type="submit">Submit Code</button>
     </form>
     ` : `<p class="step">Waiting for Claude to print the login URL...</p>`}
