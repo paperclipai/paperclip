@@ -267,7 +267,7 @@ export function AdapterManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? t("manager.company_fallback"), href: "/dashboard" },
       { label: t("manager.settings_breadcrumb"), href: "/instance/settings/general" },
       { label: t("manager.adapters_label") },
     ]);
