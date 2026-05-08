@@ -28,6 +28,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useDragSelectScroll } from "../hooks/useDragSelectScroll";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
@@ -329,6 +330,7 @@ export function Layout() {
   }, [peeking, clearPeekTimer, setPeeking]);
 
   useCompanyPageMemory();
+  useDragSelectScroll(mainContentRef);
 
   useKeyboardShortcuts({
     enabled: keyboardShortcutsEnabled,
