@@ -979,7 +979,7 @@ describe("claude execute", () => {
   });
 
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
-    const root = await fs.mkdtemp(path.join(process.cwd(), ".paperclip-claude-execute-rate-limit-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
       commandWriter: (targetPath) =>
         writeFailingClaudeCommand(targetPath, {
