@@ -183,6 +183,16 @@ A healthy dispatch state means at least one of these is true:
 
 An assigned `todo` issue is stalled when dispatch was interrupted, no wake remains queued or running, and no recovery path has been opened.
 
+### Agent-assigned `backlog`
+
+This is parked state, not dispatch state.
+
+Assigning an issue normally implies executable intent. When create APIs receive an assignee and no explicit status, Paperclip defaults the issue to `todo` so the assignee has a wake path instead of silently inheriting the unassigned `backlog` default.
+
+An explicit assigned `backlog` issue remains valid when the creator is deliberately parking the work. It must not wake the assignee just because it has an assignee. Paperclip should make that choice visible in activity and UI so operators can distinguish intentional parking from a missed handoff.
+
+An assigned `backlog` issue becomes a liveness problem when another issue is blocked on it and there is no explicit waiting path such as a human owner, active run, queued wake, pending interaction or approval, monitor, or open recovery issue. In that case the blocked parent should surface "blocked by parked work" rather than treating the dependency chain as healthy.
+
 ### Agent-assigned `in_progress`
 
 This is active-work state.

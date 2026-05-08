@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuesList } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -179,6 +179,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -392,6 +393,70 @@ describe("IssuesList", () => {
     expect(dialogState.openNewIssue).toHaveBeenCalledWith({
       parentId: "parent-1",
       projectId: "project-1",
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses workspace group defaults when creating an issue from a grouped section", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "workspace", sortField: "updated", sortDir: "desc" }),
+    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "execution-workspace-1",
+        name: "Feature Branch",
+        mode: "isolated_workspace",
+        projectWorkspaceId: "project-workspace-1",
+      },
+    ]);
+
+    const issue = createIssue({
+      id: "issue-workspace",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+      executionWorkspaceId: "execution-workspace-1",
+    });
+    const project = {
+      id: "project-1",
+      name: "Paperclip App",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Primary workspace" }],
+      primaryWorkspace: { id: "project-workspace-1" },
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+    } as Project;
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[project]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      expect(button).not.toBeNull();
+    });
+
+    await act(async () => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({
+      executionWorkspaceId: "execution-workspace-1",
+      executionWorkspaceMode: "reuse_existing",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
     });
 
     act(() => {

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
 } from "./ssh.js";
+import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
 
 async function git(cwd: string, args: string[]): Promise<string> {
   return await new Promise((resolve, reject) => {
@@ -68,6 +69,42 @@ describe("ssh env-lab fixture", () => {
 
     const stopped = await readSshEnvLabFixtureStatus(statePath);
     expect(stopped.running).toBe(false);
+  });
+
+  it("forwards stdin to remote SSH commands", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping SSH stdin forwarding test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remotePath = path.posix.join(started.workspaceDir, "stdin-forwarded.txt");
+
+    await runSshCommand(
+      config,
+      `sh -lc 'cat > ${JSON.stringify(remotePath)}'`,
+      {
+        stdin: "hello over ssh stdin\n",
+        timeoutMs: 30_000,
+        maxBuffer: 256 * 1024,
+      },
+    );
+
+    const result = await runSshCommand(
+      config,
+      `sh -lc 'cat ${JSON.stringify(remotePath)}'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    expect(result.stdout).toBe("hello over ssh stdin\n");
   });
 
   it("does not treat an unrelated reused pid as the running fixture", async () => {
@@ -271,5 +308,246 @@ describe("ssh env-lab fixture", () => {
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     expect(await git(localRepo, ["status", "--short"])).toContain("M tracked.txt");
     expect(await git(localRepo, ["status", "--short"])).not.toContain("._tracked.txt");
+  });
+
+  it("preserves both concurrent SSH restores in a shared git workspace", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping concurrent SSH restore test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const preparedA = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-a",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const preparedB = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-b",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    expect(preparedA.workspaceRemoteDir).not.toBe(preparedB.workspaceRemoteDir);
+
+    await runSshCommand(
+      config,
+      `sh -lc 'printf "from run a\\n" > ${JSON.stringify(path.posix.join(preparedA.workspaceRemoteDir, "run-a.txt"))}'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await runSshCommand(
+      config,
+      `sh -lc 'printf "from run b\\n" > ${JSON.stringify(path.posix.join(preparedB.workspaceRemoteDir, "run-b.txt"))}'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await Promise.all([
+      preparedA.restoreWorkspace(),
+      preparedB.restoreWorkspace(),
+    ]);
+
+    await expect(readFile(path.join(localRepo, "run-a.txt"), "utf8")).resolves.toBe("from run a\n");
+    await expect(readFile(path.join(localRepo, "run-b.txt"), "utf8")).resolves.toBe("from run b\n");
+  });
+
+  it("preserves nested per-run files across sequential SSH restores with stale baselines", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping sequential nested SSH restore test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const preparedA = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-a",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const preparedB = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-b",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    await runSshCommand(
+      config,
+      `sh -lc 'mkdir -p ${JSON.stringify(path.posix.join(preparedA.workspaceRemoteDir, "manual-qa/environment-matrix/ssh"))} && printf "from run a\\n" > ${JSON.stringify(path.posix.join(preparedA.workspaceRemoteDir, "manual-qa/environment-matrix/ssh/claude_local.md"))}'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await runSshCommand(
+      config,
+      `sh -lc 'mkdir -p ${JSON.stringify(path.posix.join(preparedB.workspaceRemoteDir, "manual-qa/environment-matrix/ssh"))} && printf "from run b\\n" > ${JSON.stringify(path.posix.join(preparedB.workspaceRemoteDir, "manual-qa/environment-matrix/ssh/codex_local.md"))}'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await preparedA.restoreWorkspace();
+    await preparedB.restoreWorkspace();
+
+    await expect(readFile(path.join(localRepo, "manual-qa/environment-matrix/ssh/claude_local.md"), "utf8")).resolves
+      .toBe("from run a\n");
+    await expect(readFile(path.join(localRepo, "manual-qa/environment-matrix/ssh/codex_local.md"), "utf8")).resolves
+      .toBe("from run b\n");
+  });
+
+  it("round-trips remote git commits through the managed runtime restore path", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping managed-runtime SSH git round-trip test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-commit",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    await runSshCommand(
+      config,
+      `sh -lc 'cd ${JSON.stringify(prepared.workspaceRemoteDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && printf "committed\\n" > tracked.txt && git add tracked.txt && git commit -m "remote update" >/dev/null && printf "dirty remote\\n" > tracked.txt'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
+    await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("dirty remote\n");
+  });
+
+  it("merges concurrent remote commits through the managed runtime restore path", async () => {
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      console.warn(
+        `Skipping concurrent managed-runtime SSH git merge test: ${support.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixture({ statePath });
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const preparedA = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-commit-a",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const preparedB = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-commit-b",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    await runSshCommand(
+      config,
+      `sh -lc 'cd ${JSON.stringify(preparedA.workspaceRemoteDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && printf "from run a\\n" > run-a.txt && git add run-a.txt && git commit -m "remote update a" >/dev/null'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await runSshCommand(
+      config,
+      `sh -lc 'cd ${JSON.stringify(preparedB.workspaceRemoteDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && printf "from run b\\n" > run-b.txt && git add run-b.txt && git commit -m "remote update b" >/dev/null'`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await Promise.all([
+      preparedA.restoreWorkspace(),
+      preparedB.restoreWorkspace(),
+    ]);
+
+    await expect(readFile(path.join(localRepo, "run-a.txt"), "utf8")).resolves.toBe("from run a\n");
+    await expect(readFile(path.join(localRepo, "run-b.txt"), "utf8")).resolves.toBe("from run b\n");
+    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toContain("Paperclip SSH sync merge");
+
+    const recentSubjects = await git(localRepo, ["log", "--pretty=%s", "-3"]);
+    expect(recentSubjects).toContain("remote update a");
+    expect(recentSubjects).toContain("remote update b");
   });
 });
