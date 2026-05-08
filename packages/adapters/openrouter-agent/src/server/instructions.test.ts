@@ -10,7 +10,7 @@ import {
 let tmp: string;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-local-instructions-"));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-agent-instructions-"));
 });
 
 afterEach(async () => {

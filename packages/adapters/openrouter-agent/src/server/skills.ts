@@ -59,7 +59,7 @@ async function buildOpenRouterSkillSnapshot(config: Record<string, unknown>): Pr
   entries.sort((left, right) => left.key.localeCompare(right.key));
 
   return {
-    adapterType: "openrouter_local",
+    adapterType: "openrouter_agent",
     supported: true,
     mode: "ephemeral",
     desiredSkills,

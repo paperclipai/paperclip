@@ -186,7 +186,7 @@ let tmp: string;
 let logs: { stream: string; chunk: string }[];
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-local-execute-"));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-agent-execute-"));
   logs = [];
   process.env.OPENROUTER_API_KEY = "sk-test";
   // Default fetch stub: non-2xx so generation cost stays 0 for tests that don't care about it.
@@ -207,7 +207,7 @@ function buildCtx(overrides: Partial<AdapterExecutionContext> = {}): AdapterExec
       id: "agent-1",
       companyId: "co-1",
       name: "agent",
-      adapterType: "openrouter_local",
+      adapterType: "openrouter_agent",
       adapterConfig: {},
     },
     runtime: {
@@ -319,7 +319,7 @@ describe("execute", () => {
     expect(state.defaultHeaders?.["HTTP-Referer"]).toBe(
       "https://github.com/paperclipai/paperclip",
     );
-    expect(state.defaultHeaders?.["X-Title"]).toContain("openrouter-local");
+    expect(state.defaultHeaders?.["X-Title"]).toContain("openrouter-agent");
   });
 
   it("omits OpenRouter headers when baseUrl is not openrouter", async () => {

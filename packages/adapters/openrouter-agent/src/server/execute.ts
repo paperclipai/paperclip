@@ -52,7 +52,7 @@ interface RunState {
 
 const DEFAULT_OPENROUTER_HEADERS: Record<string, string> = {
   "HTTP-Referer": "https://github.com/paperclipai/paperclip",
-  "X-Title": "Paperclip (openrouter-local adapter)",
+  "X-Title": "Paperclip (openrouter-agent adapter)",
 };
 
 function isOpenRouter(baseUrl: string): boolean {
@@ -481,7 +481,7 @@ export async function execute(
       },
       costUsd: state.costUsd,
       errorMessage: message,
-      errorCode: "openrouter_local_call_failed",
+      errorCode: "openrouter_agent_call_failed",
     };
   } finally {
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);

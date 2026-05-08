@@ -1,12 +1,12 @@
-// Shared metadata for the openrouter_local adapter.
+// Shared metadata for the openrouter_agent adapter.
 //
 // This module is imported by both the server runtime and the UI plugin
 // loader; it must remain free of Node-only imports.
 
 import type { AdapterModel, AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 
-export const type = "openrouter_local";
-export const label = "OpenRouter (local)";
+export const type = "openrouter_agent";
+export const label = "Agentic OpenRouter";
 
 export const DEFAULT_OPENROUTER_LOCAL_MODEL = "anthropic/claude-sonnet-4";
 export const DEFAULT_OPENROUTER_LOCAL_BASE_URL = "https://openrouter.ai/api/v1";
@@ -35,9 +35,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   },
 ];
 
-export const agentConfigurationDoc = `# openrouter_local agent configuration
+export const agentConfigurationDoc = `# openrouter_agent agent configuration
 
-Adapter: openrouter_local
+Adapter: openrouter_agent
 
 Routes Paperclip agent runs to any OpenAI Chat Completions-compatible
 endpoint and runs the tool-calling loop locally on the Paperclip host.

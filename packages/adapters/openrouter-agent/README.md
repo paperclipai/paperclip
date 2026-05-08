@@ -1,4 +1,4 @@
-# @paperclipai/adapter-openrouter-local
+# paperclip-openrouter-agent
 
 Tool-aware Paperclip adapter for OpenRouter (and any OpenAI Chat
 Completions-compatible endpoint). Runs an OpenAI function-calling loop
@@ -6,13 +6,25 @@ locally on the Paperclip host: built-in workspace tools (`read_file`,
 `write_file`, `list_directory`, `run_command`, `apply_patch`) are exposed
 to the model and dispatched here on the Paperclip side.
 
-Supersedes the chat-only `@marcpbailey/paperclip-adapter-openai`
-(`openrouter-external`) smoke-test wrapper, which lacked a function-calling
-loop and therefore could not drive a Paperclip turn end-to-end.
+## Installation
+
+Install as an external Paperclip adapter plugin:
+
+```sh
+pnpm --prefix ~/.paperclip/adapter-plugins add paperclip-openrouter-agent
+```
+
+or with npm:
+
+```sh
+npm install --prefix ~/.paperclip/adapter-plugins paperclip-openrouter-agent
+```
+
+Then restart Paperclip. The adapter will be available as adapter type `openrouter_agent`.
 
 ## Configuration
 
-Adapter type: `openrouter_local`.
+Adapter type: `openrouter_agent`.
 
 Required config:
 
@@ -57,8 +69,3 @@ Discovered files are concatenated into the system prompt, separated by
 The adapter writes structured JSONL events to stdout. Each line is a
 `TranscriptEntry` (see `@paperclipai/adapter-utils`). The `ui-parser`
 subpath echoes lines back as transcript entries for the Paperclip UI.
-
-## Spec
-
-See [`doc/experimental/openrouter-local-adapter_spec.md`](../../../doc/experimental/openrouter-local-adapter_spec.md)
-for the full design and gap analysis vs `openrouter-external`.

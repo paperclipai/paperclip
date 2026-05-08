@@ -103,7 +103,7 @@ describe("buildPaperclipTools", () => {
       const ctx = buildCtx({ paperclipApi: api, autoApprove: false });
       const tools = buildPaperclipTools(ctx);
       const tool = tools.find((t) => t.name === "hire_agent")!;
-      await tool.execute({ name: "Coder", role: "developer", adapter_type: "openrouter_local" }, ctx);
+      await tool.execute({ name: "Coder", role: "developer", adapter_type: "openrouter_agent" }, ctx);
       expect(api.createApproval).toHaveBeenCalled();
       expect(api.hireAgent).not.toHaveBeenCalled();
     });
@@ -113,7 +113,7 @@ describe("buildPaperclipTools", () => {
       const ctx = buildCtx({ paperclipApi: api, autoApprove: true });
       const tools = buildPaperclipTools(ctx);
       const tool = tools.find((t) => t.name === "hire_agent")!;
-      await tool.execute({ name: "Coder", role: "developer", adapter_type: "openrouter_local" }, ctx);
+      await tool.execute({ name: "Coder", role: "developer", adapter_type: "openrouter_agent" }, ctx);
       expect(api.hireAgent).toHaveBeenCalled();
       expect(api.createApproval).not.toHaveBeenCalled();
     });

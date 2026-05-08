@@ -123,7 +123,7 @@ export async function listModels(): Promise<AdapterModel[]> {
     cacheExpiresAt = Date.now() + CACHE_TTL_MS;
     return result;
   } catch (err) {
-    console.warn("openrouter-local: failed to fetch models from OpenRouter", err);
+    console.warn("openrouter-agent: failed to fetch models from OpenRouter", err);
     return buildFallbackModels();
   }
 }

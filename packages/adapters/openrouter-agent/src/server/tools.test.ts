@@ -20,7 +20,7 @@ let tmp: string;
 let ctx: ToolContext;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-local-tools-"));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-agent-tools-"));
   ctx = { cwd: tmp, runCommandTimeoutSec: 5 };
 });
 

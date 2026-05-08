@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/adapter-openrouter-local",
+  "name": "paperclip-openrouter-agent",
   "version": "0.1.0",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
@@ -9,7 +9,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/paperclipai/paperclip",
-    "directory": "packages/adapters/openrouter-local"
+    "directory": "packages/adapters/openrouter-agent"
   },
   "type": "module",
   "exports": {
@@ -37,7 +37,8 @@
     "types": "./dist/index.d.ts"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -45,11 +46,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "peerDependencies": {
+    "@paperclipai/adapter-utils": ">=0.3.1"
+  },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*",
     "openai": "^4.0.0"
   },
   "devDependencies": {
+    "@paperclipai/adapter-utils": "workspace:*",
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.0"

@@ -1,4 +1,4 @@
-// UI parser for the openrouter_local adapter.
+// UI parser for the openrouter_agent adapter.
 //
 // CRITICAL CONSTRAINTS (per docs/adapters/adapter-ui-parser.md):
 //   - Zero runtime imports. This file must compile to a self-contained ESM
