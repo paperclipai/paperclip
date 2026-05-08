@@ -2,6 +2,7 @@
 set -euo pipefail
 
 DEPLOY_BASE="$PWD"
+SCRIPT_VERSION="2"
 
 usage() {
   cat <<'USAGE'
@@ -15,7 +16,7 @@ Options:
   --profile <name>              Same as positional profile
   --dir <path>                  Output directory (default: current directory)
   --port <port>                 Host port (default 3100)
-  --bind-host <addr>            127.0.0.1 or 0.0.0.0
+  --bind-host <addr>            127.0.0.1, 0.0.0.0, ::1, or :: (also accepted: loopback, all)
   --public-url <url>            Browser URL
   --allowed-hostnames <csv>     Extra hostnames
   --image <image:tag>           Paperclip image
@@ -28,12 +29,17 @@ Options:
   --no-start                    Generate files but do not start
   --no-open                     Do not open browser
   --force                       Overwrite existing deployment files in the target directory
+  --reuse-secrets               When --force is set, reuse existing secrets (postgres password, etc.)
   -h, --help                    Show this help
 USAGE
 }
 
 info() {
   printf '[paperclip] %s\n' "$*"
+}
+
+warn() {
+  printf '[paperclip] Warning: %s\n' "$*" >&2
 }
 
 die() {
@@ -48,6 +54,13 @@ random_hex() {
   else
     od -An -N "$bytes" -tx1 /dev/urandom | tr -d ' \n'
   fi
+}
+
+# Memorable but strong: 4 hex blocks separated by dashes (~96 bits entropy)
+random_password() {
+  local p
+  p="$(random_hex 12)"
+  printf '%s-%s-%s-%s' "${p:0:6}" "${p:6:6}" "${p:12:6}" "${p:18:6}"
 }
 
 prompt_value() {
@@ -133,17 +146,27 @@ MENU
   case "${choice:-$default_choice}" in
     1|127.0.0.1|loopback) printf '127.0.0.1' ;;
     2|0.0.0.0|all) printf '0.0.0.0' ;;
+    ::1) printf '::1' ;;
+    ::) printf '::' ;;
     *) die "unknown binding choice: $choice" ;;
   esac
 }
 
 confirm_continue() {
+  local prompt="$1"
+  local default_yes="${2:-true}"
   if [ ! -t 0 ]; then
     return
   fi
+  local default_label="Y/n"
+  local fallback="y"
+  if [ "$default_yes" != "true" ]; then
+    default_label="y/N"
+    fallback="n"
+  fi
   local answer
-  read -r -p "$1 [Y/n]: " answer </dev/tty
-  case "${answer:-y}" in
+  read -r -p "$prompt [$default_label]: " answer </dev/tty
+  case "${answer:-$fallback}" in
     y|Y|yes|YES) return 0 ;;
     *) die "Cancelled" ;;
   esac
@@ -159,24 +182,52 @@ normalize_profile() {
   esac
 }
 
+# Validate IPv4 (octets 0-255), accept the four common bind addresses, plus IPv6 short forms.
+validate_bind_host() {
+  local host="$1"
+  case "$host" in
+    127.0.0.1|0.0.0.0|::1|::) return 0 ;;
+  esac
+  # IPv4 strict validation
+  if [[ "$host" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    local i
+    for i in "${BASH_REMATCH[@]:1}"; do
+      [ "$i" -le 255 ] || return 1
+    done
+    return 0
+  fi
+  # IPv6 (loose check; we don't fully validate, but reject obvious garbage)
+  if [[ "$host" =~ ^[0-9a-fA-F:]+$ ]] && [[ "$host" == *:* ]]; then
+    return 0
+  fi
+  return 1
+}
+
 url_hostname() {
   local raw="$1"
   local without_scheme="${raw#*://}"
   local host_port="${without_scheme%%/*}"
-  local host="${host_port%%:*}"
-  printf '%s' "$host"
+  # Handle bracketed IPv6: [::1]:3100 -> ::1
+  if [[ "$host_port" =~ ^\[([^]]+)\] ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+  printf '%s' "${host_port%%:*}"
 }
 
+# Merge two CSVs, deduplicate while preserving order.
 merge_csv() {
   local existing="$1"
   local addition="$2"
+  local combined
   if [ -z "$addition" ]; then
-    printf '%s' "$existing"
+    combined="$existing"
   elif [ -z "$existing" ]; then
-    printf '%s' "$addition"
+    combined="$addition"
   else
-    printf '%s,%s' "$existing" "$addition"
+    combined="$existing,$addition"
   fi
+  printf '%s' "$combined" | awk -v RS=',' 'NF && !seen[$0]++ { if (out) printf ","; printf "%s", $0; out=1 }'
 }
 
 read_env_value() {
@@ -210,6 +261,8 @@ open_url() {
   fi
 }
 
+# ---------- arg parsing ----------
+
 PROFILE=""
 DEPLOY_DIR=""
 HOST_PORT="3100"
@@ -224,90 +277,34 @@ AUTO_ADMIN="true"
 START_CONTAINERS="true"
 NO_OPEN="0"
 FORCE="false"
+REUSE_SECRETS="false"
 USE_BIND_MOUNTS="false"
 DATA_DIR=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --profile)
-      PROFILE="${2:-}"
-      shift 2
-      ;;
-    --dir)
-      DEPLOY_DIR="${2:-}"
-      shift 2
-      ;;
-    --port)
-      HOST_PORT="${2:-}"
-      shift 2
-      ;;
-    --bind-host)
-      BIND_HOST="${2:-}"
-      shift 2
-      ;;
-    --public-url)
-      PUBLIC_URL="${2:-}"
-      shift 2
-      ;;
-    --allowed-hostnames)
-      ALLOWED_HOSTNAMES="${2:-}"
-      shift 2
-      ;;
-    --image)
-      IMAGE="${2:-}"
-      shift 2
-      ;;
-    --admin-email)
-      ADMIN_EMAIL="${2:-}"
-      shift 2
-      ;;
-    --admin-name)
-      ADMIN_NAME="${2:-}"
-      shift 2
-      ;;
-    --admin-password)
-      ADMIN_PASSWORD="${2:-}"
-      shift 2
-      ;;
-    --bind-mounts)
-      USE_BIND_MOUNTS="true"
-      shift
-      ;;
-    --data-dir)
-      DATA_DIR="${2:-}"
-      USE_BIND_MOUNTS="true"
-      shift 2
-      ;;
-    --no-auto-admin)
-      AUTO_ADMIN="false"
-      shift
-      ;;
-    --no-start)
-      START_CONTAINERS="false"
-      shift
-      ;;
-    --no-open)
-      NO_OPEN="1"
-      shift
-      ;;
-    --force)
-      FORCE="true"
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --*)
-      die "unknown option: $1"
-      ;;
+    --profile) PROFILE="${2:-}"; shift 2 ;;
+    --dir) DEPLOY_DIR="${2:-}"; shift 2 ;;
+    --port) HOST_PORT="${2:-}"; shift 2 ;;
+    --bind-host) BIND_HOST="${2:-}"; shift 2 ;;
+    --public-url) PUBLIC_URL="${2:-}"; shift 2 ;;
+    --allowed-hostnames) ALLOWED_HOSTNAMES="${2:-}"; shift 2 ;;
+    --image) IMAGE="${2:-}"; shift 2 ;;
+    --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
+    --admin-name) ADMIN_NAME="${2:-}"; shift 2 ;;
+    --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
+    --bind-mounts) USE_BIND_MOUNTS="true"; shift ;;
+    --data-dir) DATA_DIR="${2:-}"; USE_BIND_MOUNTS="true"; shift 2 ;;
+    --no-auto-admin) AUTO_ADMIN="false"; shift ;;
+    --no-start) START_CONTAINERS="false"; shift ;;
+    --no-open) NO_OPEN="1"; shift ;;
+    --force) FORCE="true"; shift ;;
+    --reuse-secrets) REUSE_SECRETS="true"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --*) die "unknown option: $1" ;;
     *)
-      if [ -n "$PROFILE" ]; then
-        die "unexpected argument: $1"
-      fi
-      PROFILE="$1"
-      shift
-      ;;
+      if [ -n "$PROFILE" ]; then die "unexpected argument: $1"; fi
+      PROFILE="$1"; shift ;;
   esac
 done
 
@@ -356,9 +353,11 @@ fi
 if [ -z "$BIND_HOST" ]; then
   BIND_HOST="$(choose_bind_host "$PROFILE")"
 fi
-if [[ ! "$BIND_HOST" =~ ^[0-9.]+$ ]] && [[ ! "$BIND_HOST" =~ ^\[?[0-9a-fA-F:]+\]?$ ]]; then
-  die "--bind-host must be an IPv4 or IPv6 address"
-fi
+case "$BIND_HOST" in
+  loopback) BIND_HOST="127.0.0.1" ;;
+  all) BIND_HOST="0.0.0.0" ;;
+esac
+validate_bind_host "$BIND_HOST" || die "--bind-host is not a valid IPv4/IPv6 address: $BIND_HOST"
 
 if [ "$DEPLOYMENT_MODE" = "authenticated" ]; then
   ADMIN_EMAIL="${ADMIN_EMAIL:-$(prompt_value "Admin email" "admin@paperclip.local")}"
@@ -371,14 +370,29 @@ if [ "$DEPLOYMENT_MODE" = "local_trusted" ]; then
 fi
 PAPERCLIP_PORT="3100"
 
-DEPLOY_ID="$(random_hex 4)"
-
 if [ -z "$DEPLOY_DIR" ]; then
   DEPLOY_DIR="$DEPLOY_BASE"
 fi
 mkdir -p "$DEPLOY_DIR"
 DEPLOY_DIR="$(cd "$DEPLOY_DIR" && pwd)"
-if [ "$FORCE" != "true" ]; then
+
+# ---------- detect existing deployment ----------
+
+EXISTING_DEPLOYMENT="false"
+EXISTING_PG_PASSWORD=""
+EXISTING_BETTER_AUTH_SECRET=""
+EXISTING_AGENT_JWT_SECRET=""
+EXISTING_DEPLOY_ID=""
+
+if [ -f "$DEPLOY_DIR/.env" ]; then
+  EXISTING_DEPLOYMENT="true"
+  EXISTING_PG_PASSWORD="$(read_env_value "$DEPLOY_DIR/.env" POSTGRES_PASSWORD || true)"
+  EXISTING_BETTER_AUTH_SECRET="$(read_env_value "$DEPLOY_DIR/.env" BETTER_AUTH_SECRET || true)"
+  EXISTING_AGENT_JWT_SECRET="$(read_env_value "$DEPLOY_DIR/.env" PAPERCLIP_AGENT_JWT_SECRET || true)"
+  EXISTING_DEPLOY_ID="$(read_env_value "$DEPLOY_DIR/.env" PAPERCLIP_DEPLOY_ID || true)"
+fi
+
+if [ "$EXISTING_DEPLOYMENT" = "true" ] && [ "$FORCE" != "true" ]; then
   for existing in docker-compose.yml .env manage.sh; do
     if [ -e "$DEPLOY_DIR/$existing" ]; then
       die "$DEPLOY_DIR/$existing already exists. Use --force to overwrite, or --dir for a different directory."
@@ -386,8 +400,38 @@ if [ "$FORCE" != "true" ]; then
   done
 fi
 
-if [ "$USE_BIND_MOUNTS" != "true" ] && [ -z "$DATA_DIR" ] && [ -t 0 ]; then
+if [ "$EXISTING_DEPLOYMENT" = "true" ] && [ "$FORCE" = "true" ]; then
+  if [ -d "$DEPLOY_DIR" ] && [ -n "$EXISTING_PG_PASSWORD" ] && [ "$REUSE_SECRETS" != "true" ]; then
+    warn "Existing deployment detected at $DEPLOY_DIR with secrets in .env."
+    warn "Generating new secrets will break existing postgres data and sessions."
+    if [ -t 0 ]; then
+      cat >&2 <<MENU
+Choose how to handle existing secrets:
+  1) reuse  - keep existing postgres password, auth secrets (recommended)
+  2) rotate - generate new secrets (destroys existing postgres data and sessions)
+MENU
+      local_reuse=""
+      read -r -p "Choice [1]: " local_reuse </dev/tty || true
+      case "${local_reuse:-1}" in
+        1|reuse|keep) REUSE_SECRETS="true" ;;
+        2|rotate|new) REUSE_SECRETS="false" ;;
+        *) die "unknown choice: $local_reuse" ;;
+      esac
+    fi
+  fi
+fi
+
+if [ "$USE_BIND_MOUNTS" != "true" ] && [ -z "$DATA_DIR" ] && [ -t 0 ] && [ "$EXISTING_DEPLOYMENT" != "true" ]; then
   if [ "$(choose_storage)" = "bind" ]; then
+    USE_BIND_MOUNTS="true"
+  fi
+fi
+
+# Reuse existing data-dir choice on --force unless overridden
+if [ "$EXISTING_DEPLOYMENT" = "true" ] && [ -z "$DATA_DIR" ]; then
+  existing_data_dir="$(read_env_value "$DEPLOY_DIR/.env" PAPERCLIP_DATA_DIR || true)"
+  if [ -n "$existing_data_dir" ]; then
+    DATA_DIR="$existing_data_dir"
     USE_BIND_MOUNTS="true"
   fi
 fi
@@ -400,6 +444,8 @@ TOP_LEVEL_VOLUMES_BLOCK="volumes:
 PAPERCLIP_USER_ENV=""
 DATA_DIR_ABS=""
 DATA_DIR_REL=""
+HOST_UID=""
+HOST_GID=""
 
 if [ "$USE_BIND_MOUNTS" = "true" ]; then
   if [ -z "$DATA_DIR" ]; then
@@ -413,12 +459,30 @@ if [ "$USE_BIND_MOUNTS" = "true" ]; then
   PG_VOLUME_MOUNT="$DATA_DIR_REL/postgres:/var/lib/postgresql/data"
   PAPERCLIP_VOLUME_MOUNT="$DATA_DIR_REL/paperclip:/paperclip"
   TOP_LEVEL_VOLUMES_BLOCK=""
-  HOST_UID="$(id -u)"
-  HOST_GID="$(id -g)"
+
+  # Pick the UID/GID we'll force the in-container `node` user to take.
+  # NEVER use 0:0 — that would remap node -> root, defeating privilege
+  # separation and creating two /etc/passwd entries with the same UID.
+  # When running as root (or when the override env vars say 0): silently
+  # fall back to 1000:1000. The bind-mounted data will be owned by uid 1000
+  # on the host, which is fine — root can still read/edit/back it up, and
+  # the container runs as a non-privileged user.
+  HOST_UID="${PAPERCLIP_RUNTIME_UID:-$(id -u)}"
+  HOST_GID="${PAPERCLIP_RUNTIME_GID:-$(id -g)}"
+
+  if [ "$HOST_UID" = "0" ] || [ "$HOST_GID" = "0" ]; then
+    HOST_UID="1000"
+    HOST_GID="1000"
+    info "Running as root with bind mounts — using UID/GID 1000 inside the container"
+    info "(data dir on host will be chowned to 1000:1000; root retains full access)"
+  fi
+
   PAPERCLIP_USER_ENV="
       USER_UID: \"$HOST_UID\"
       USER_GID: \"$HOST_GID\""
 fi
+
+# ---------- review ----------
 
 if [ -t 0 ]; then
   printf >&2 '\nReview deployment plan:\n'
@@ -435,32 +499,75 @@ if [ -t 0 ]; then
   if [ "$DEPLOYMENT_MODE" = "authenticated" ] && [ "$AUTO_ADMIN" = "true" ]; then
     printf >&2 '  Admin email  : %s\n' "$ADMIN_EMAIL"
   fi
+  if [ "$EXISTING_DEPLOYMENT" = "true" ] && [ "$FORCE" = "true" ]; then
+    if [ "$REUSE_SECRETS" = "true" ]; then
+      printf >&2 '  Existing dir : reusing secrets from existing .env\n'
+    else
+      printf >&2 '  Existing dir : ROTATING secrets, postgres data will be wiped\n'
+    fi
+  fi
   printf >&2 '\n'
   confirm_continue "Continue?"
 fi
 
-if [ -x "$DEPLOY_DIR/manage.sh" ]; then
-  info "Tearing down previous deployment at $DEPLOY_DIR"
-  (cd "$DEPLOY_DIR" && ./manage.sh reset --yes >/dev/null 2>&1) || true
+# ---------- teardown old deployment if forced ----------
+
+if [ "$FORCE" = "true" ] && [ -x "$DEPLOY_DIR/manage.sh" ]; then
+  if [ "$REUSE_SECRETS" = "true" ]; then
+    info "Stopping existing containers (keeping volumes)"
+    (cd "$DEPLOY_DIR" && ./manage.sh stop >/dev/null 2>&1) || true
+  else
+    info "Tearing down previous deployment at $DEPLOY_DIR (volumes will be deleted)"
+    if [ -t 0 ]; then
+      confirm_continue "Confirm: delete all data volumes for the existing deployment?" "false"
+    fi
+    (cd "$DEPLOY_DIR" && ./manage.sh reset --yes >/dev/null 2>&1) || true
+  fi
 fi
 
-rm -f "$DEPLOY_DIR/docker-compose.yml" "$DEPLOY_DIR/.env" "$DEPLOY_DIR/manage.sh" "$DEPLOY_DIR/admin-credentials.txt"
+rm -f "$DEPLOY_DIR/docker-compose.yml" "$DEPLOY_DIR/.env" "$DEPLOY_DIR/.env.bootstrap" \
+      "$DEPLOY_DIR/manage.sh" "$DEPLOY_DIR/admin-credentials.txt"
 rm -rf "$DEPLOY_DIR/scripts"
 mkdir -p "$DEPLOY_DIR/scripts"
 
 if [ "$USE_BIND_MOUNTS" = "true" ]; then
   mkdir -p "$DATA_DIR_ABS/postgres" "$DATA_DIR_ABS/paperclip"
+  # Make sure ownership matches the in-container UID we'll be remapping `node` to.
+  # Without this, files left by a previous run as root would be unwritable for
+  # the container process running as $HOST_UID:$HOST_GID.
+  if [ "$(id -u)" = "0" ] && [ -n "$HOST_UID" ] && [ -n "$HOST_GID" ]; then
+    chown -R "$HOST_UID:$HOST_GID" "$DATA_DIR_ABS" 2>/dev/null || \
+      warn "could not chown $DATA_DIR_ABS to $HOST_UID:$HOST_GID — bind mount writes may fail"
+  fi
 fi
 
-POSTGRES_PASSWORD="$(random_hex 24)"
-BETTER_AUTH_SECRET="$(random_hex 32)"
-AGENT_JWT_SECRET="$(random_hex 32)"
-if [ "$DEPLOYMENT_MODE" = "authenticated" ]; then
-  ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(random_hex 18)}"
+# ---------- secrets ----------
+
+if [ "$REUSE_SECRETS" = "true" ] && [ -n "$EXISTING_PG_PASSWORD" ]; then
+  POSTGRES_PASSWORD="$EXISTING_PG_PASSWORD"
+  BETTER_AUTH_SECRET="${EXISTING_BETTER_AUTH_SECRET:-$(random_hex 32)}"
+  AGENT_JWT_SECRET="${EXISTING_AGENT_JWT_SECRET:-$(random_hex 32)}"
+  DEPLOY_ID="${EXISTING_DEPLOY_ID:-$(random_hex 4)}"
+  info "Reusing existing postgres password and auth secrets"
+else
+  POSTGRES_PASSWORD="$(random_hex 24)"
+  BETTER_AUTH_SECRET="$(random_hex 32)"
+  AGENT_JWT_SECRET="$(random_hex 32)"
+  DEPLOY_ID="$(random_hex 4)"
 fi
+
+if [ "$DEPLOYMENT_MODE" = "authenticated" ] && [ -z "$ADMIN_PASSWORD" ]; then
+  ADMIN_PASSWORD="$(random_password)"
+fi
+
 PROJECT_NAME="paperclip-$DEPLOY_ID"
 
+# ---------- .env (no admin credentials!) ----------
+
 cat > "$DEPLOY_DIR/.env" <<ENV
+# Generated by paperclip deploy script v$SCRIPT_VERSION
+# Edit values here, then run ./manage.sh restart
+
 NODE_ENV=production
 HOST=0.0.0.0
 PORT=$PAPERCLIP_PORT
@@ -476,19 +583,45 @@ PAPERCLIP_AUTH_DISABLE_SIGN_UP=false
 PAPERCLIP_MIGRATION_AUTO_APPLY=true
 BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
 PAPERCLIP_AGENT_JWT_SECRET=$AGENT_JWT_SECRET
+
+# Provider keys: fill in and run ./manage.sh restart
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
+
+# Internal — do not edit
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-AUTOMATED_AUTO_ADMIN=$AUTO_ADMIN
-AUTOMATED_ADMIN_EMAIL="$ADMIN_EMAIL"
-AUTOMATED_ADMIN_PASSWORD="$ADMIN_PASSWORD"
-AUTOMATED_ADMIN_NAME="$ADMIN_NAME"
 PAPERCLIP_DATA_DIR=$DATA_DIR_REL
+PAPERCLIP_DEPLOY_ID=$DEPLOY_ID
+PAPERCLIP_PROJECT_NAME=$PROJECT_NAME
+
+# Allow opencode/all-models in agent runner (set to false to restrict)
 OPENCODE_ALLOW_ALL_MODELS=true
 ENV
 chmod 600 "$DEPLOY_DIR/.env"
 
+# Bootstrap-only env (admin credentials live here, deleted after first successful bootstrap)
+if [ "$DEPLOYMENT_MODE" = "authenticated" ] && [ "$AUTO_ADMIN" = "true" ]; then
+  cat > "$DEPLOY_DIR/.env.bootstrap" <<ENVBOOT
+# Generated by paperclip deploy. Used ONLY by the bootstrap container.
+# This file is automatically deleted after the admin account is created.
+AUTOMATED_AUTO_ADMIN=true
+AUTOMATED_ADMIN_EMAIL=$ADMIN_EMAIL
+AUTOMATED_ADMIN_PASSWORD=$ADMIN_PASSWORD
+AUTOMATED_ADMIN_NAME=$ADMIN_NAME
+ENVBOOT
+  chmod 600 "$DEPLOY_DIR/.env.bootstrap"
+else
+  cat > "$DEPLOY_DIR/.env.bootstrap" <<ENVBOOT
+AUTOMATED_AUTO_ADMIN=false
+ENVBOOT
+  chmod 600 "$DEPLOY_DIR/.env.bootstrap"
+fi
+
+# ---------- docker-compose.yml ----------
+
+# Healthcheck uses node (always present in the image) instead of curl/wget
+# so it works regardless of installed userspace tools.
 cat > "$DEPLOY_DIR/docker-compose.yml" <<COMPOSE
 name: $PROJECT_NAME
 
@@ -523,11 +656,15 @@ services:
     volumes:
       - $PAPERCLIP_VOLUME_MOUNT
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$PAPERCLIP_PORT/api/health >/dev/null || exit 1"]
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:$PAPERCLIP_PORT/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 20s
+      start_period: 30s
 
   bootstrap:
     image: $IMAGE
@@ -540,8 +677,11 @@ services:
     entrypoint: ["node", "/paperclip-automated/bootstrap-admin.mjs"]
     env_file:
       - .env
+      - .env.bootstrap
     environment:
       DATABASE_URL: postgres://paperclip:\${POSTGRES_PASSWORD}@db:5432/paperclip
+      AUTOMATED_INTERNAL_URL: http://paperclip:$PAPERCLIP_PORT
+      AUTOMATED_PUBLIC_URL: \${PAPERCLIP_PUBLIC_URL}
     volumes:
       - ./scripts:/paperclip-automated:ro
       - ./:/paperclip-output
@@ -549,41 +689,72 @@ services:
 $TOP_LEVEL_VOLUMES_BLOCK
 COMPOSE
 
+# ---------- shared bash lib ----------
+
+cat > "$DEPLOY_DIR/scripts/lib.sh" <<'LIB'
+# Shared helpers for deploy + manage.sh
+read_env_value() {
+  local file="$1"
+  local key="$2"
+  [ -f "$file" ] || return 0
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
+}
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+  else
+    printf 'Docker Compose was not found. Install Docker Desktop or docker compose.\n' >&2
+    exit 1
+  fi
+}
+
+log() {
+  printf '[paperclip] %s\n' "$*"
+}
+
+warn() {
+  printf '[paperclip] Warning: %s\n' "$*" >&2
+}
+
+# Returns the container ID for the running paperclip service, or empty.
+paperclip_container_id() {
+  compose ps -q paperclip 2>/dev/null | head -n1
+}
+LIB
+
+# ---------- bootstrap-admin.mjs ----------
+
 cat > "$DEPLOY_DIR/scripts/bootstrap-admin.mjs" <<'BOOTSTRAP'
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+
 const CLI_ROOT = "/app/cli";
 const LOG_PREFIX = "[paperclip]";
 
-function log(message) {
-  console.log(`${LOG_PREFIX} ${message}`);
-}
+const log = (m) => console.log(`${LOG_PREFIX} ${m}`);
+const logError = (m) => console.error(`${LOG_PREFIX} ${m}`);
 
-function logError(message) {
-  console.error(`${LOG_PREFIX} ${message}`);
-}
+const baseUrl = () =>
+  (process.env.AUTOMATED_INTERNAL_URL || "http://paperclip:3100").replace(/\/+$/, "");
 
-function baseUrl() {
-  return (process.env.AUTOMATED_INTERNAL_URL || "http://paperclip:3100").replace(/\/+$/, "");
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function waitForPaperclip() {
-  const deadline = Date.now() + Number(process.env.AUTOMATED_BOOTSTRAP_WAIT_MS || "180000");
+  const deadline =
+    Date.now() + Number(process.env.AUTOMATED_BOOTSTRAP_WAIT_MS || "180000");
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`${baseUrl()}/api/health`, {
         headers: { accept: "application/json" },
       });
       if (res.ok) return;
-    } catch {
-    }
+    } catch {}
     await sleep(1000);
   }
   throw new Error("Paperclip did not become healthy before timeout");
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runAppModuleScript(source) {
@@ -591,20 +762,12 @@ async function runAppModuleScript(source) {
     const child = spawn(
       "node",
       ["--import", "./node_modules/tsx/dist/loader.mjs", "--input-type=module"],
-      {
-        cwd: CLI_ROOT,
-        env: process.env,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
+      { cwd: CLI_ROOT, env: process.env, stdio: ["pipe", "pipe", "pipe"] },
     );
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    child.stderr.on("data", (c) => (stderr += c.toString()));
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve(stdout);
@@ -688,10 +851,10 @@ try {
 
 function setCookieHeader(headers) {
   if (typeof headers.getSetCookie === "function") {
-    return headers.getSetCookie().map((cookie) => cookie.split(";")[0]).join("; ");
+    return headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
   }
   const raw = headers.get("set-cookie");
-  return raw ? raw.split(/,(?=[^;,]+=)/).map((cookie) => cookie.split(";")[0]).join("; ") : "";
+  return raw ? raw.split(/,(?=[^;,]+=)/).map((c) => c.split(";")[0]).join("; ") : "";
 }
 
 async function createAdminFromInvite(inviteToken) {
@@ -706,7 +869,9 @@ async function createAdminFromInvite(inviteToken) {
   }
 
   const base = baseUrl();
-  const origin = new URL(process.env.AUTOMATED_PUBLIC_URL || process.env.PAPERCLIP_PUBLIC_URL || base).origin;
+  const origin = new URL(
+    process.env.AUTOMATED_PUBLIC_URL || process.env.PAPERCLIP_PUBLIC_URL || base,
+  ).origin;
   const authHeaders = {
     "content-type": "application/json",
     accept: "application/json",
@@ -760,7 +925,9 @@ async function verifyAdminSignIn() {
   if (!email || !password) return false;
 
   const base = baseUrl();
-  const origin = new URL(process.env.AUTOMATED_PUBLIC_URL || process.env.PAPERCLIP_PUBLIC_URL || base).origin;
+  const origin = new URL(
+    process.env.AUTOMATED_PUBLIC_URL || process.env.PAPERCLIP_PUBLIC_URL || base,
+  ).origin;
   const res = await fetch(`${base}/api/auth/sign-in/email`, {
     method: "POST",
     headers: {
@@ -787,9 +954,10 @@ async function writeAdminCredentials() {
   if (!email || !password) return;
   const content = [
     "Paperclip admin account",
+    "(IMPORTANT: delete this file after the first successful login)",
     "",
-    `URL: ${url}`,
-    `Email: ${email}`,
+    `URL:      ${url}`,
+    `Email:    ${email}`,
     `Password: ${password}`,
     "",
   ].join("\n");
@@ -824,28 +992,15 @@ bootstrap().catch((err) => {
 });
 BOOTSTRAP
 
+# ---------- manage.sh ----------
+
 cat > "$DEPLOY_DIR/manage.sh" <<'MANAGE'
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
 
-read_env_value() {
-  local file="$1"
-  local key="$2"
-  [ -f "$file" ] || return 0
-  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
-}
-
-compose() {
-  if docker compose version >/dev/null 2>&1; then
-    docker compose "$@"
-  elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "$@"
-  else
-    printf 'Docker Compose was not found. Install Docker Desktop or docker compose.\n' >&2
-    exit 1
-  fi
-}
+# shellcheck source=scripts/lib.sh
+. ./scripts/lib.sh
 
 usage() {
   cat <<'USAGE'
@@ -856,15 +1011,12 @@ Commands:
   stop         Stop containers
   restart      Restart paperclip
   bootstrap    Force-run the first-admin bootstrap
-  logs         Follow paperclip logs
+  logs         Follow paperclip logs (or another service: ./manage.sh logs db)
   status       Show container status
   credentials  Print admin credentials
+  shell        Open a shell inside the paperclip container as the node user
   reset        Stop containers and delete data volumes
 USAGE
-}
-
-log() {
-  printf '[paperclip] %s\n' "$*"
 }
 
 remove_data_dir() {
@@ -896,6 +1048,41 @@ disable_sign_up_after_admin() {
   log "Sign-up disabled after admin creation; paperclip recreated"
 }
 
+# After successful bootstrap, remove the admin password from .env.bootstrap so
+# the password is no longer exposed via env vars in the running container or
+# in `docker inspect`. Credentials remain available in admin-credentials.txt
+# (mode 0600) until the user deletes it.
+purge_bootstrap_secrets() {
+  [ -f .env.bootstrap ] || return 0
+  [ -f admin-credentials.txt ] || return 0
+  cat > .env.bootstrap <<'PURGED'
+# Bootstrap completed — admin credentials have been removed from env.
+# See admin-credentials.txt (delete after first login).
+AUTOMATED_AUTO_ADMIN=false
+PURGED
+  chmod 600 .env.bootstrap
+  log "Removed admin credentials from .env.bootstrap"
+}
+
+print_shell_hint() {
+  local cid project public_url
+  project="$(read_env_value .env PAPERCLIP_PROJECT_NAME)"
+  public_url="$(read_env_value .env PAPERCLIP_PUBLIC_URL)"
+  cid="$(paperclip_container_id)"
+  echo
+  log "Open the Paperclip UI:"
+  log "  ${public_url}"
+  echo
+  log "Open a shell inside the container as the 'node' user that runs the server:"
+  log "  ./manage.sh shell"
+  echo
+  log "Equivalent raw docker commands (use 'gosu node bash' — see NOTE below):"
+  if [ -n "$cid" ]; then
+    log "  docker exec -it ${cid} gosu node bash"
+  fi
+  log "  docker compose -p ${project} exec paperclip gosu node bash"
+}
+
 run_bootstrap() {
   local force="${1:-false}"
   local deployment_mode
@@ -904,7 +1091,8 @@ run_bootstrap() {
     return
   fi
   if [ "$force" != "true" ] && [ -f admin-credentials.txt ]; then
-    log "Admin already provisioned; skipping bootstrap (run './manage.sh bootstrap' to re-run)"
+    log "Admin already provisioned; skipping bootstrap"
+    log "(run './manage.sh bootstrap' to force re-run)"
     return
   fi
   rm -f admin-credentials.txt
@@ -912,6 +1100,8 @@ run_bootstrap() {
   if [ -f admin-credentials.txt ]; then
     log "Admin credentials saved to $(pwd)/admin-credentials.txt"
     disable_sign_up_after_admin
+    purge_bootstrap_secrets
+    print_shell_hint
   fi
 }
 
@@ -957,6 +1147,23 @@ case "$cmd" in
       exit 1
     fi
     ;;
+  shell)
+    cid="$(paperclip_container_id)"
+    if [ -z "$cid" ]; then
+      log "paperclip container is not running; starting first"
+      compose up -d db paperclip
+      cid="$(paperclip_container_id)"
+    fi
+    if [ -z "$cid" ]; then
+      printf 'Could not find paperclip container.\n' >&2
+      exit 1
+    fi
+    # Use `gosu node bash` instead of `docker exec -u node`. The image's
+    # entrypoint remaps the `node` user to USER_UID; if that UID happens to
+    # collide with another /etc/passwd entry (e.g. 0/root), `-u node` resolves
+    # to the wrong account. `gosu node` always selects by name.
+    exec docker exec -it "$cid" gosu node bash
+    ;;
   reset)
     if [ "${1:-}" != "--yes" ]; then
       printf 'This deletes the generated Paperclip containers and volumes for this deployment.\n'
@@ -981,6 +1188,8 @@ esac
 MANAGE
 chmod +x "$DEPLOY_DIR/manage.sh"
 
+# ---------- README ----------
+
 if [ "$USE_BIND_MOUNTS" = "true" ]; then
   STORAGE_LINE="- Data: bind-mounted at \`$DATA_DIR_REL\` (postgres + paperclip subfolders)"
 else
@@ -997,18 +1206,48 @@ $STORAGE_LINE
 \`\`\`sh
 ./manage.sh start         # start db + paperclip
 ./manage.sh credentials   # print admin login
+./manage.sh shell         # shell inside container as node user
 ./manage.sh logs          # follow paperclip logs
 ./manage.sh stop          # stop containers
 ./manage.sh reset --yes   # remove containers + volumes
 \`\`\`
 
-To open a shell inside the running container, connect as the \`node\` user — files under \`/paperclip\` are owned by \`node\`, so running as root will create files the app can't read/write:
+The Paperclip server runs as the \`node\` user inside the container (UID/GID
+1000 by default; mapped to your host UID when using bind mounts, but never to
+0/root). Persistent data lives under \`/paperclip\`. The recommended way to
+get a shell is:
 
 \`\`\`sh
-docker exec -it -u node $(docker compose ps -q paperclip) bash
+./manage.sh shell
 \`\`\`
 
-Provider keys (\`OPENAI_API_KEY\`, \`ANTHROPIC_API_KEY\`, \`GEMINI_API_KEY\`) live in \`.env\`; \`./manage.sh restart\` applies changes.
+This runs \`docker exec -it <container> gosu node bash\`. Use \`gosu node\`
+rather than \`docker exec -u node\`: when the container's \`node\` user has
+been remapped to a UID that collides with another \`/etc/passwd\` entry,
+\`-u node\` may resolve to the colliding account (e.g. you'd land at
+\`root@\` even though you asked for \`node\`). \`gosu node\` always selects
+the user by name.
+
+\`\`\`sh
+docker compose -p $PROJECT_NAME exec paperclip gosu node bash
+\`\`\`
+
+If you accidentally exec as root and create root-owned files under
+\`/paperclip\`, fix them with:
+
+\`\`\`sh
+docker compose -p $PROJECT_NAME exec paperclip chown -R node:node /paperclip
+\`\`\`
+
+Provider keys (\`OPENAI_API_KEY\`, \`ANTHROPIC_API_KEY\`, \`GEMINI_API_KEY\`)
+live in \`.env\`; \`./manage.sh restart\` applies changes.
+
+## Files
+
+- \`.env\` — main config (no admin password)
+- \`.env.bootstrap\` — admin credentials, only used during first boot, then purged
+- \`admin-credentials.txt\` — created after first successful bootstrap, mode 0600.
+  **Delete this after your first login.**
 README
 
 info "Generated deployment at $DEPLOY_DIR"
