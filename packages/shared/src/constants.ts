@@ -146,7 +146,28 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
+export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+
+export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
+export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
+export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
+export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
+  "text",
+  "code",
+  "key_value",
+  "issue_link",
+  "agent_link",
+  "run_link",
+] as const;
+export type IssueCommentMetadataRowType = (typeof ISSUE_COMMENT_METADATA_ROW_TYPES)[number];
 
 export function clampIssueRequestDepth(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -190,6 +211,16 @@ export const ISSUE_ORIGIN_KINDS = [
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
+export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
+
+export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOriginKind {
+  return `plugin:${pluginKey}:operation`;
+}
+
+export function isPluginOperationIssueOriginKind(originKind: string | null | undefined): boolean {
+  return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
+}
 
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
@@ -221,8 +252,38 @@ export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[num
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 
+export const ISSUE_MONITOR_SCHEDULED_BY = ["assignee", "board"] as const;
+export type IssueMonitorScheduledBy = (typeof ISSUE_MONITOR_SCHEDULED_BY)[number];
+
+export const ISSUE_EXECUTION_MONITOR_KINDS = ["external_service"] as const;
+export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[number];
+
+export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
+  "wake_owner",
+  "create_recovery_issue",
+  "escalate_to_board",
+] as const;
+export type IssueExecutionMonitorRecoveryPolicy =
+  (typeof ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)[number];
+
 export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed"] as const;
 export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
+
+export const ISSUE_EXECUTION_MONITOR_STATE_STATUSES = ["scheduled", "triggered", "cleared"] as const;
+export type IssueExecutionMonitorStateStatus = (typeof ISSUE_EXECUTION_MONITOR_STATE_STATUSES)[number];
+
+export const ISSUE_EXECUTION_MONITOR_CLEAR_REASONS = [
+  "manual",
+  "triggered",
+  "done",
+  "cancelled",
+  "invalid_status",
+  "invalid_assignee",
+  "dispatch_skipped",
+  "timeout_exceeded",
+  "max_attempts_exhausted",
+] as const;
+export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_CLEAR_REASONS)[number];
 
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
@@ -604,9 +665,12 @@ export const PLUGIN_CAPABILITIES = [
   "issue.comments.create",
   "issue.interactions.create",
   "issue.documents.write",
+  "projects.managed",
+  "routines.managed",
   "agents.pause",
   "agents.resume",
   "agents.invoke",
+  "agents.managed",
   "agent.sessions.create",
   "agent.sessions.list",
   "agent.sessions.send",
@@ -628,6 +692,7 @@ export const PLUGIN_CAPABILITIES = [
   "http.outbound",
   "secrets.read-ref",
   "environment.drivers.register",
+  "local.folders",
   // Agent Tools
   "agent.tools.register",
   // UI
@@ -698,6 +763,7 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "taskDetailView",
   "dashboardWidget",
   "sidebar",
+  "routeSidebar",
   "sidebarPanel",
   "projectSidebarItem",
   "globalToolbarButton",

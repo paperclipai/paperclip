@@ -1,5 +1,7 @@
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
+import type { IssueCommentAuthorType } from "../constants.js";
+import type { IssueCommentMetadata, IssueCommentPresentation } from "./issue.js";
 
 export interface CompanyPortabilityInclude {
   company: boolean;
@@ -94,6 +96,16 @@ export interface CompanyPortabilityIssueRoutineManifestEntry {
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
+export interface CompanyPortabilityIssueCommentManifestEntry {
+  body: string;
+  authorType: IssueCommentAuthorType;
+  authorAgentSlug: string | null;
+  authorUserId: string | null;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
+  createdAt: string | null;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   identifier: string | null;
@@ -112,6 +124,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
   assigneeAdapterOverrides: Record<string, unknown> | null;
+  comments: CompanyPortabilityIssueCommentManifestEntry[];
   metadata: Record<string, unknown> | null;
 }
 

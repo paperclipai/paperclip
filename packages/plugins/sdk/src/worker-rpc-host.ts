@@ -387,6 +387,51 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      localFolders: {
+        declarations() {
+          if (!manifest) throw new Error("Plugin context accessed before initialization");
+          return manifest.localFolders ?? [];
+        },
+
+        async configure(input) {
+          return callHost("localFolders.configure", {
+            companyId: input.companyId,
+            folderKey: input.folderKey,
+            path: input.path,
+            access: input.access,
+            requiredDirectories: input.requiredDirectories,
+            requiredFiles: input.requiredFiles,
+          });
+        },
+
+        async status(companyId: string, folderKey: string) {
+          return callHost("localFolders.status", { companyId, folderKey });
+        },
+
+        async list(companyId: string, folderKey: string, options = {}) {
+          return callHost("localFolders.list", {
+            companyId,
+            folderKey,
+            relativePath: options.relativePath,
+            recursive: options.recursive,
+            maxEntries: options.maxEntries,
+          });
+        },
+
+        async readText(companyId: string, folderKey: string, relativePath: string) {
+          return callHost("localFolders.readText", { companyId, folderKey, relativePath });
+        },
+
+        async writeTextAtomic(companyId: string, folderKey: string, relativePath: string, contents: string) {
+          return callHost("localFolders.writeTextAtomic", {
+            companyId,
+            folderKey,
+            relativePath,
+            contents,
+          });
+        },
+      },
+
       events: {
         on(
           name: string,
@@ -580,6 +625,50 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async getWorkspaceForIssue(issueId: string, companyId: string) {
           return callHost("projects.getWorkspaceForIssue", { issueId, companyId });
         },
+
+        managed: {
+          async get(projectKey: string, companyId: string) {
+            return callHost("projects.managed.get", { projectKey, companyId });
+          },
+          async reconcile(projectKey: string, companyId: string) {
+            return callHost("projects.managed.reconcile", { projectKey, companyId });
+          },
+          async reset(projectKey: string, companyId: string) {
+            return callHost("projects.managed.reset", { projectKey, companyId });
+          },
+        },
+      },
+
+      routines: {
+        managed: {
+          async get(routineKey: string, companyId: string) {
+            return callHost("routines.managed.get", { routineKey, companyId });
+          },
+          async reconcile(
+            routineKey: string,
+            companyId: string,
+            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+          ) {
+            return callHost("routines.managed.reconcile", { routineKey, companyId, ...overrides });
+          },
+          async reset(
+            routineKey: string,
+            companyId: string,
+            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+          ) {
+            return callHost("routines.managed.reset", { routineKey, companyId, ...overrides });
+          },
+          async update(routineKey: string, companyId: string, patch: { status?: string }) {
+            return callHost("routines.managed.update", { routineKey, companyId, ...patch });
+          },
+          async run(
+            routineKey: string,
+            companyId: string,
+            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+          ) {
+            return callHost("routines.managed.run", { routineKey, companyId, ...overrides });
+          },
+        },
       },
 
       companies: {
@@ -602,8 +691,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             assigneeAgentId: input.assigneeAgentId,
             originKind: input.originKind,
+            originKindPrefix: input.originKindPrefix,
             originId: input.originId,
             status: input.status,
+            includePluginOperations: input.includePluginOperations,
             limit: input.limit,
             offset: input.offset,
           });
@@ -623,11 +714,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             title: input.title,
             description: input.description,
             status: input.status,
+            workMode: input.workMode,
             priority: input.priority,
             assigneeAgentId: input.assigneeAgentId,
             assigneeUserId: input.assigneeUserId,
             requestDepth: input.requestDepth,
             billingCode: input.billingCode,
+            surfaceVisibility: input.surfaceVisibility,
             originKind: input.originKind,
             originId: input.originId,
             originRunId: input.originRunId,
@@ -861,6 +954,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }) {
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
+        },
+
+        managed: {
+          async get(agentKey: string, companyId: string) {
+            return callHost("agents.managed.get", { agentKey, companyId });
+          },
+
+          async reconcile(agentKey: string, companyId: string) {
+            return callHost("agents.managed.reconcile", { agentKey, companyId });
+          },
+
+          async reset(agentKey: string, companyId: string) {
+            return callHost("agents.managed.reset", { agentKey, companyId });
+          },
         },
 
         sessions: {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetToRemoteSpec,
+  adapterExecutionTargetUsesPaperclipBridge,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
@@ -18,6 +19,7 @@ describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -39,7 +41,8 @@ describe("sandbox adapter execution targets", () => {
         onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
       }) => {
         counter += 1;
-        return runChildProcess(`sandbox-run-${counter}`, input.command, input.args ?? [], {
+        const command = input.command === "bash" ? "/bin/bash" : input.command;
+        return runChildProcess(`sandbox-run-${counter}`, command, input.args ?? [], {
           cwd: input.cwd ?? process.cwd(),
           env: input.env ?? {},
           stdin: input.stdin,
@@ -103,7 +106,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd: "/workspace",
-      paperclipTransport: "bridge",
     });
   });
 
@@ -134,6 +136,154 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "sh",
+      args: ["-lc", 'printf %s "$HOME"'],
+      cwd: "/workspace",
+      timeoutMs: 7000,
+    }));
+  });
+
+  it("strips inherited host identity env before sandbox execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+    vi.stubEnv("TMPDIR", "/var/folders/local/T");
+
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess("run-1b", target, "agent-cli", ["--json"], {
+      cwd: "/local/workspace",
+      env: {
+        PATH: "/host/bin:/usr/bin",
+        HOME: "/Users/local",
+        TMPDIR: "/var/folders/local/T",
+        SAFE_VALUE: "visible",
+      },
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        SAFE_VALUE: "visible",
+      },
+    }));
+  });
+
+  it("preserves explicit remote identity env overrides for sandbox execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess("run-1c", target, "agent-cli", ["--json"], {
+      cwd: "/local/workspace",
+      env: {
+        PATH: "/custom/remote/bin:/usr/bin",
+        HOME: "/home/sandbox",
+        SAFE_VALUE: "visible",
+      },
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        PATH: "/custom/remote/bin:/usr/bin",
+        HOME: "/home/sandbox",
+        SAFE_VALUE: "visible",
+      },
+    }));
+  });
+
+  it("treats SSH targets as bridge-only", () => {
+    const target = {
+      kind: "remote" as const,
+      transport: "ssh" as const,
+      remoteCwd: "/workspace",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/workspace",
+        remoteCwd: "/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+
+    expect(adapterExecutionTargetUsesPaperclipBridge(target)).toBe(true);
+    expect(adapterExecutionTargetSessionIdentity(target)).toEqual({
+      transport: "ssh",
+      host: "ssh.example.test",
+      port: 22,
+      username: "paperclip",
+      remoteCwd: "/workspace",
+    });
+  });
+
+  it("uses the provider-declared shell for sandbox helper commands", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "/home/sandbox",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "custom-provider",
+      shellCommand: "bash",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetShellCommand("run-2b", target, 'printf %s "$HOME"', {
+      cwd: "/local/workspace",
+      env: {},
+      timeoutSec: 7,
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "bash",
       args: ["-lc", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
@@ -174,7 +324,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd,
-      paperclipTransport: "bridge",
       runner: createLocalSandboxRunner(),
       timeoutMs: 30_000,
     };
@@ -252,7 +401,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd,
-      paperclipTransport: "bridge",
       runner: createLocalSandboxRunner(),
       timeoutMs: 30_000,
     };

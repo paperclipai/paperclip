@@ -22,6 +22,14 @@ function prependPosixPathEntry(pathValue: string, entry: string): string {
   return cleaned.length > 0 ? `${entry}:${cleaned}` : entry;
 }
 
+function preferredSandboxCommandBasenames(command: string): string[] {
+  const basename = commandBasename(command);
+  if (!DEFAULT_CURSOR_COMMAND_BASENAMES.has(basename)) return [];
+  return basename === "cursor-agent"
+    ? ["cursor-agent", "agent"]
+    : ["agent", "cursor-agent"];
+}
+
 type SandboxCursorRuntimeInfo = {
   remoteSystemHomeDir: string | null;
   preferredCommandPath: string | null;
@@ -40,10 +48,15 @@ async function readSandboxCursorRuntimeInfo(input: {
   command: string;
   cwd: string;
   env: Record<string, string>;
+  remoteSystemHomeDirHint?: string | null;
   timeoutSec: number;
   graceSec: number;
 }): Promise<SandboxCursorRuntimeInfo> {
-  const shouldCheckPreferredCommand = isDefaultCursorCommand(input.command) && !hasPathSeparator(input.command);
+  const preferredBasenames =
+    !hasPathSeparator(input.command)
+      ? preferredSandboxCommandBasenames(input.command)
+      : [];
+  const hintedRemoteSystemHomeDir = input.remoteSystemHomeDirHint?.trim() || null;
   const homeMarker = "__PAPERCLIP_CURSOR_HOME__:";
   const preferredMarker = "__PAPERCLIP_CURSOR_AGENT__:";
   try {
@@ -51,9 +64,24 @@ async function readSandboxCursorRuntimeInfo(input: {
       input.runId,
       input.target,
       [
-        `printf ${JSON.stringify(`${homeMarker}%s\\n`)} "$HOME"`,
-        shouldCheckPreferredCommand
-          ? `if [ -x "$HOME/.local/bin/cursor-agent" ]; then printf ${JSON.stringify(`${preferredMarker}%s\\n`)} "$HOME/.local/bin/cursor-agent"; fi`
+        hintedRemoteSystemHomeDir
+          ? `printf ${JSON.stringify(`${homeMarker}%s\\n`)} ${JSON.stringify(hintedRemoteSystemHomeDir)}`
+          : `printf ${JSON.stringify(`${homeMarker}%s\\n`)} "$HOME"`,
+        preferredBasenames.length > 0
+          ? [
+              ...preferredBasenames.map((basename, index) => {
+                const branch = index === 0 ? "if" : "elif";
+                const fixedPath = hintedRemoteSystemHomeDir
+                  ? path.posix.join(hintedRemoteSystemHomeDir, ".local", "bin", basename)
+                  : `$HOME/.local/bin/${basename}`;
+                return `${branch} [ -x ${JSON.stringify(fixedPath)} ]; then printf ${JSON.stringify(`${preferredMarker}%s\\n`)} ${JSON.stringify(fixedPath)}`;
+              }),
+              ...preferredBasenames.map((basename) => {
+                // Always `elif`: this fallback chain runs after the fixed-path
+                // checks above and is itself ordered by preferredBasenames.
+                return `elif resolved="$(command -v ${JSON.stringify(basename)} 2>/dev/null)" && [ -n "$resolved" ]; then printf ${JSON.stringify(`${preferredMarker}%s\\n`)} "$resolved"`;
+              }),
+            ].join("; ") + "; fi"
           : "",
       ].filter(Boolean).join("; "),
       {
@@ -100,6 +128,7 @@ export async function prepareCursorSandboxCommand(input: {
   command: string;
   cwd: string;
   env: Record<string, string>;
+  remoteSystemHomeDirHint?: string | null;
   timeoutSec: number;
   graceSec: number;
 }): Promise<PreparedCursorSandboxCommand> {
@@ -119,10 +148,12 @@ export async function prepareCursorSandboxCommand(input: {
     command: input.command,
     cwd: input.cwd,
     env: input.env,
+    remoteSystemHomeDirHint: input.remoteSystemHomeDirHint,
     timeoutSec: input.timeoutSec,
     graceSec: input.graceSec,
   });
-  const remoteSystemHomeDir = runtimeInfo.remoteSystemHomeDir;
+  const remoteSystemHomeDir =
+    runtimeInfo.remoteSystemHomeDir ?? input.remoteSystemHomeDirHint?.trim() ?? null;
 
   if (!remoteSystemHomeDir) {
     return {

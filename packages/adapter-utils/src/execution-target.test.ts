@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
+import * as serverUtils from "./server-utils.js";
 import {
   adapterExecutionTargetUsesManagedHome,
+  ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
 } from "./execution-target.js";
 
 describe("runAdapterExecutionTargetShellCommand", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("quotes remote shell commands with the shared SSH quoting helper", async () => {
@@ -41,13 +45,65 @@ describe("runAdapterExecutionTargetShellCommand", () => {
       },
     );
 
+    // runSshCommand owns profile sourcing and the outer `sh -lc` wrapper —
+    // the caller passes the raw command string. Wrapping it here would
+    // double-nest the login shell and re-source profiles after the explicit
+    // env override, silently undoing identity-var preservation.
     expect(runSshCommandSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         host: "ssh.example.test",
         username: "ssh-user",
       }),
-      `sh -lc ${ssh.shellQuote(`printf '%s\\n' "$HOME" && echo "it's ok"`)}`,
+      `printf '%s\\n' "$HOME" && echo "it's ok"`,
       expect.any(Object),
+    );
+  });
+
+  it("sanitizes inherited host env before SSH shell execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+
+    const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+      stdout: "",
+      stderr: "",
+    });
+
+    await runAdapterExecutionTargetShellCommand(
+      "run-1b",
+      {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      "env",
+      {
+        cwd: "/tmp/local",
+        env: {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          SAFE_VALUE: "visible",
+        },
+      },
+    );
+
+    expect(runSshCommandSpy).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(String),
+      expect.objectContaining({
+        env: {
+          SAFE_VALUE: "visible",
+        },
+      }),
     );
   });
 
@@ -158,6 +214,145 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         strictHostKeyChecking: true,
       },
     })).toBe(false);
+  });
+});
+
+describe("runAdapterExecutionTargetProcess", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it("sanitizes inherited host env before SSH process execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+
+    const runChildProcessSpy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    await runAdapterExecutionTargetProcess(
+      "run-ssh-process",
+      {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      "agent-cli",
+      ["--json"],
+      {
+        cwd: "/tmp/local",
+        env: {
+          PATH: "/host/bin:/usr/bin",
+          HOME: "/Users/local",
+          SAFE_VALUE: "visible",
+        },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(runChildProcessSpy).toHaveBeenCalledWith(
+      "run-ssh-process",
+      "agent-cli",
+      ["--json"],
+      expect.objectContaining({
+        env: {
+          SAFE_VALUE: "visible",
+        },
+      }),
+    );
+  });
+});
+
+describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("runs install commands for sandbox targets", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+      runId: "run-install",
+      target: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "e2b",
+        remoteCwd: "/remote/workspace",
+        runner,
+      },
+      installCommand: "npm install -g @google/gemini-cli",
+      cwd: "/local/workspace",
+      env: { PATH: "/usr/bin" },
+      timeoutSec: 30,
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "sh",
+      args: ["-lc", "npm install -g @google/gemini-cli"],
+      cwd: "/remote/workspace",
+      env: { PATH: "/usr/bin" },
+      timeoutMs: 30_000,
+    }));
+  });
+
+  it("skips install commands for SSH targets", async () => {
+    const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+      stdout: "",
+      stderr: "",
+    });
+
+    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+      runId: "run-skip",
+      target: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      installCommand: "npm install -g @google/gemini-cli",
+      cwd: "/tmp/local",
+      env: {},
+    });
+
+    expect(runSshCommandSpy).not.toHaveBeenCalled();
   });
 });
 
