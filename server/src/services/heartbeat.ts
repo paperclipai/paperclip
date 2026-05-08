@@ -913,6 +913,22 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+export function resolveProjectWorkspaceQuerySource(input: {
+  workspaceProjectId: string | null;
+  preferredProjectWorkspaceId: string | null;
+  useProjectWorkspace: boolean;
+}):
+  | { type: "by_project_id"; projectId: string }
+  | { type: "by_workspace_id"; workspaceId: string }
+  | { type: "none" } {
+  if (!input.useProjectWorkspace) return { type: "none" };
+  if (input.workspaceProjectId) return { type: "by_project_id", projectId: input.workspaceProjectId };
+  if (input.preferredProjectWorkspaceId) {
+    return { type: "by_workspace_id", workspaceId: input.preferredProjectWorkspaceId };
+  }
+  return { type: "none" };
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -2421,18 +2437,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
 
-    const unorderedProjectWorkspaceRows = workspaceProjectId
-      ? await db
-          .select()
-          .from(projectWorkspaces)
-          .where(
-            and(
-              eq(projectWorkspaces.companyId, agent.companyId),
-              eq(projectWorkspaces.projectId, workspaceProjectId),
-            ),
-          )
-          .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-      : [];
+    const workspaceQuerySource = resolveProjectWorkspaceQuerySource({
+      workspaceProjectId,
+      preferredProjectWorkspaceId,
+      useProjectWorkspace,
+    });
+    const unorderedProjectWorkspaceRows =
+      workspaceQuerySource.type === "by_project_id"
+        ? await db
+            .select()
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, agent.companyId),
+                eq(projectWorkspaces.projectId, workspaceQuerySource.projectId),
+              ),
+            )
+            .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+        : workspaceQuerySource.type === "by_workspace_id"
+          ? await db
+              .select()
+              .from(projectWorkspaces)
+              .where(
+                and(
+                  eq(projectWorkspaces.companyId, agent.companyId),
+                  eq(projectWorkspaces.id, workspaceQuerySource.workspaceId),
+                ),
+              )
+          : [];
     const projectWorkspaceRows = prioritizeProjectWorkspaceCandidatesForRun(
       unorderedProjectWorkspaceRows,
       preferredProjectWorkspaceId,
