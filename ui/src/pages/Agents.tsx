@@ -158,7 +158,7 @@ export function Agents() {
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Filters
+              {t("filter.filters")}
               {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
             </button>
             {filtersOpen && (
@@ -173,7 +173,7 @@ export function Agents() {
                   )}>
                     {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
                   </span>
-                  Show terminated
+                  {t("filter.show_terminated")}
                 </button>
               </div>
             )}
@@ -203,7 +203,7 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {t("actions.new_agent")}
           </Button>
         </div>
       </div>
@@ -217,8 +217,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={t("empty.no_agents")}
+          action={t("actions.new_agent")}
           onAction={openNewAgent}
         />
       )}
