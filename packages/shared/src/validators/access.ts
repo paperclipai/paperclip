@@ -197,3 +197,21 @@ export const updateCurrentUserProfileSchema = z.object({
 });
 
 export type UpdateCurrentUserProfile = z.infer<typeof updateCurrentUserProfileSchema>;
+
+export const telegramLinkCodeSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{6}$/u, "Code must be exactly 6 digits");
+
+export const linkTelegramAccountSchema = z.object({
+  code: telegramLinkCodeSchema,
+});
+
+export type LinkTelegramAccount = z.infer<typeof linkTelegramAccountSchema>;
+
+export const telegramLinkStatusSchema = z.object({
+  linked: z.boolean(),
+  telegramUsername: z.string().nullable().optional(),
+});
+
+export type TelegramLinkStatus = z.infer<typeof telegramLinkStatusSchema>;
