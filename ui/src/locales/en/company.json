@@ -450,7 +450,11 @@
       "admin_protected": "Company admins cannot be removed from company access.",
       "actor_not_member": "Only active company members can remove users.",
       "target_role_too_high": "You can only remove users below your company role."
-    }
+    },
+    "open_assigned_issues_one": "{{count}} open assigned issue",
+    "open_assigned_issues_other": "{{count}} open assigned issues",
+    "more_issues_one": "{{count}} more issue",
+    "more_issues_other": "{{count}} more issues"
   },
   "companies": {
     "breadcrumb": "Companies",

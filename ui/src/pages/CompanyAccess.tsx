@@ -523,7 +523,7 @@ export function CompanyAccess() {
                 <div className="mt-2 text-sm text-muted-foreground">
                   {assignedIssuesQuery.isLoading
                     ? t("access.remove_member_checking")
-                    : `${assignedIssues.length} open assigned issue${assignedIssues.length === 1 ? "" : "s"}`}
+                    : t("access.open_assigned_issues", { count: assignedIssues.length })}
                 </div>
               </div>
 
@@ -564,7 +564,7 @@ export function CompanyAccess() {
                     ))}
                     {assignedIssues.length > 6 ? (
                       <div className="px-3 py-2 text-sm text-muted-foreground">
-                        {assignedIssues.length - 6} more issue{assignedIssues.length - 6 === 1 ? "" : "s"}
+                        {t("access.more_issues", { count: assignedIssues.length - 6 })}
                       </div>
                     ) : null}
                   </div>

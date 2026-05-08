@@ -450,7 +450,11 @@
       "admin_protected": "Unternehmensadministratoren können nicht aus dem Unternehmenszugang entfernt werden.",
       "actor_not_member": "Nur aktive Unternehmensmitglieder können Benutzer entfernen.",
       "target_role_too_high": "Sie können nur Benutzer unterhalb Ihrer Unternehmensrolle entfernen."
-    }
+    },
+    "open_assigned_issues_one": "{{count}} offene zugewiesene Aufgabe",
+    "open_assigned_issues_other": "{{count}} offene zugewiesene Aufgaben",
+    "more_issues_one": "{{count}} weitere Aufgabe",
+    "more_issues_other": "{{count}} weitere Aufgaben"
   },
   "companies": {
     "breadcrumb": "Unternehmen",

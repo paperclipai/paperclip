@@ -424,7 +424,11 @@
       "admin_protected": "公司管理员不能从公司访问中移除。",
       "actor_not_member": "只有活跃的公司成员才能移除用户。",
       "target_role_too_high": "您只能移除公司角色低于您的用户。"
-    }
+    },
+    "open_assigned_issues_one": "{{count}} 个开放的已分配任务",
+    "open_assigned_issues_other": "{{count}} 个开放的已分配任务",
+    "more_issues_one": "还有 {{count}} 个任务",
+    "more_issues_other": "还有 {{count}} 个任务"
   },
   "companies": {
     "breadcrumb": "公司",

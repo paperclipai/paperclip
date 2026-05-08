@@ -428,7 +428,15 @@
       "admin_protected": "Адміністраторів компанії не можна видалити з доступу до компанії.",
       "actor_not_member": "Видаляти користувачів можуть лише активні учасники компанії.",
       "target_role_too_high": "Ви можете видаляти лише користувачів з нижчою роллю в компанії."
-    }
+    },
+    "open_assigned_issues_one": "{{count}} відкрита призначена задача",
+    "open_assigned_issues_few": "{{count}} відкриті призначені задачі",
+    "open_assigned_issues_many": "{{count}} відкритих призначених задач",
+    "open_assigned_issues_other": "{{count}} відкритих призначених задач",
+    "more_issues_one": "ще {{count}} задача",
+    "more_issues_few": "ще {{count}} задачі",
+    "more_issues_many": "ще {{count}} задач",
+    "more_issues_other": "ще {{count}} задач"
   },
   "companies": {
     "breadcrumb": "Компанії",

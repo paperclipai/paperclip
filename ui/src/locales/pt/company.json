@@ -424,7 +424,11 @@
       "admin_protected": "Administradores da empresa não podem ser removidos do acesso à empresa.",
       "actor_not_member": "Apenas membros ativos da empresa podem remover usuários.",
       "target_role_too_high": "Você só pode remover usuários abaixo do seu papel na empresa."
-    }
+    },
+    "open_assigned_issues_one": "{{count}} tarefa atribuída aberta",
+    "open_assigned_issues_other": "{{count}} tarefas atribuídas abertas",
+    "more_issues_one": "{{count}} tarefa a mais",
+    "more_issues_other": "{{count}} tarefas a mais"
   },
   "companies": {
     "breadcrumb": "Empresas",
