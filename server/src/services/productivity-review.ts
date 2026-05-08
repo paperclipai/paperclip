@@ -14,7 +14,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
-import { issueService } from "./issues.js";
+import { issueService, listUnresolvedBlockerIssueIds } from "./issues.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,

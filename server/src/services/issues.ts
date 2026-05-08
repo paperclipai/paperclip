@@ -333,7 +333,7 @@ async function listIssueDependencyReadinessMap(
   return readinessMap;
 }
 
-async function listUnresolvedBlockerIssueIds(
+export async function listUnresolvedBlockerIssueIds(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   blockerIssueIds: string[],
