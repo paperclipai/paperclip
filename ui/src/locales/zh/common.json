@@ -704,5 +704,18 @@
   "layout": {
     "skip_to_main_content": "跳至主要内容",
     "close_sidebar": "关闭侧边栏"
+  },
+  "time": {
+    "justNow": "刚刚",
+    "minutesAgo_one": "{{count}}分钟前",
+    "minutesAgo_other": "{{count}}分钟前",
+    "hoursAgo_one": "{{count}}小时前",
+    "hoursAgo_other": "{{count}}小时前",
+    "daysAgo_one": "{{count}}天前",
+    "daysAgo_other": "{{count}}天前",
+    "weeksAgo_one": "{{count}}周前",
+    "weeksAgo_other": "{{count}}周前",
+    "monthsAgo_one": "{{count}}个月前",
+    "monthsAgo_other": "{{count}}个月前"
   }
 }

@@ -712,5 +712,28 @@
     "create_one": "Створіть",
     "sign_in_link": "Увійти",
     "failed": "Помилка автентифікації"
+  },
+  "time": {
+    "justNow": "щойно",
+    "minutesAgo_one": "{{count}} хвилину тому",
+    "minutesAgo_few": "{{count}} хвилини тому",
+    "minutesAgo_many": "{{count}} хвилин тому",
+    "minutesAgo_other": "{{count}} хвилини тому",
+    "hoursAgo_one": "{{count}} годину тому",
+    "hoursAgo_few": "{{count}} години тому",
+    "hoursAgo_many": "{{count}} годин тому",
+    "hoursAgo_other": "{{count}} години тому",
+    "daysAgo_one": "{{count}} день тому",
+    "daysAgo_few": "{{count}} дні тому",
+    "daysAgo_many": "{{count}} днів тому",
+    "daysAgo_other": "{{count}} дні тому",
+    "weeksAgo_one": "{{count}} тиждень тому",
+    "weeksAgo_few": "{{count}} тижні тому",
+    "weeksAgo_many": "{{count}} тижнів тому",
+    "weeksAgo_other": "{{count}} тижні тому",
+    "monthsAgo_one": "{{count}} місяць тому",
+    "monthsAgo_few": "{{count}} місяці тому",
+    "monthsAgo_many": "{{count}} місяців тому",
+    "monthsAgo_other": "{{count}} місяці тому"
   }
 }

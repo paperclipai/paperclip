@@ -1109,5 +1109,28 @@
     "repo_root": "Корень репозитория",
     "workspace_path": "Путь рабочего пространства",
     "last_checked": "Последняя проверка {{time}}"
+  },
+  "time": {
+    "justNow": "только что",
+    "minutesAgo_one": "{{count}} минуту назад",
+    "minutesAgo_few": "{{count}} минуты назад",
+    "minutesAgo_many": "{{count}} минут назад",
+    "minutesAgo_other": "{{count}} минуты назад",
+    "hoursAgo_one": "{{count}} час назад",
+    "hoursAgo_few": "{{count}} часа назад",
+    "hoursAgo_many": "{{count}} часов назад",
+    "hoursAgo_other": "{{count}} часа назад",
+    "daysAgo_one": "{{count}} день назад",
+    "daysAgo_few": "{{count}} дня назад",
+    "daysAgo_many": "{{count}} дней назад",
+    "daysAgo_other": "{{count}} дня назад",
+    "weeksAgo_one": "{{count}} неделю назад",
+    "weeksAgo_few": "{{count}} недели назад",
+    "weeksAgo_many": "{{count}} недель назад",
+    "weeksAgo_other": "{{count}} недели назад",
+    "monthsAgo_one": "{{count}} месяц назад",
+    "monthsAgo_few": "{{count}} месяца назад",
+    "monthsAgo_many": "{{count}} месяцев назад",
+    "monthsAgo_other": "{{count}} месяца назад"
   }
 }

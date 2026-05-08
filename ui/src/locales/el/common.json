@@ -703,5 +703,18 @@
     "create_one": "Δημιουργήστε",
     "sign_in_link": "Σύνδεση",
     "failed": "Η αυθεντικοποίηση απέτυχε"
+  },
+  "time": {
+    "justNow": "μόλις τώρα",
+    "minutesAgo_one": "πριν {{count}} λεπτό",
+    "minutesAgo_other": "πριν {{count}} λεπτά",
+    "hoursAgo_one": "πριν {{count}} ώρα",
+    "hoursAgo_other": "πριν {{count}} ώρες",
+    "daysAgo_one": "πριν {{count}} μέρα",
+    "daysAgo_other": "πριν {{count}} μέρες",
+    "weeksAgo_one": "πριν {{count}} εβδομάδα",
+    "weeksAgo_other": "πριν {{count}} εβδομάδες",
+    "monthsAgo_one": "πριν {{count}} μήνα",
+    "monthsAgo_other": "πριν {{count}} μήνες"
   }
 }

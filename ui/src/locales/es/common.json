@@ -704,5 +704,18 @@
     "create_one": "Crea una",
     "sign_in_link": "Iniciar sesión",
     "failed": "Error de autenticación"
+  },
+  "time": {
+    "justNow": "ahora mismo",
+    "minutesAgo_one": "hace {{count}} min",
+    "minutesAgo_other": "hace {{count}} min",
+    "hoursAgo_one": "hace {{count}} h",
+    "hoursAgo_other": "hace {{count}} h",
+    "daysAgo_one": "hace {{count}} día",
+    "daysAgo_other": "hace {{count}} días",
+    "weeksAgo_one": "hace {{count}} semana",
+    "weeksAgo_other": "hace {{count}} semanas",
+    "monthsAgo_one": "hace {{count}} mes",
+    "monthsAgo_other": "hace {{count}} meses"
   }
 }
