@@ -89,6 +89,10 @@
       "dont_allow_desc": "Keep voted AI outputs local only.",
       "retest_hint": "To retest the first-use prompt in local dev, remove the <code>feedbackDataSharingPreference</code> key from the <code>instance_settings.general</code> JSON row for this instance, or set it back to <code>\"prompt\"</code>. Unset and <code>\"prompt\"</code> both mean no default has been chosen yet."
     },
+    "language": {
+      "title": "Display language",
+      "description": "Choose the display language for the Paperclip interface. Changes take effect immediately without a restart."
+    },
     "sign_out": {
       "title": "Sign out",
       "description": "Sign out of this Paperclip instance. You will be redirected to the login page.",

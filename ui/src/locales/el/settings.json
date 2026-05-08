@@ -89,6 +89,10 @@
       "dont_allow_desc": "Κρατήστε τοπικά τις ψηφισμένες εξόδους ΤΝ.",
       "retest_hint": "Για επαναδοκιμή του prompt πρώτης χρήσης στην τοπική ανάπτυξη, αφαιρέστε το κλειδί <code>feedbackDataSharingPreference</code> από τη σειρά JSON <code>instance_settings.general</code> για αυτό το instance, ή ορίστε το ξανά σε <code>\"prompt\"</code>."
     },
+    "language": {
+      "title": "Γλώσσα εμφάνισης",
+      "description": "Επιλέξτε τη γλώσσα εμφάνισης για τη διεπαφή Paperclip. Οι αλλαγές εφαρμόζονται αμέσως χωρίς επανεκκίνηση."
+    },
     "sign_out": {
       "title": "Αποσύνδεση",
       "description": "Αποσύνδεση από αυτό το instance Paperclip. Θα ανακατευθυνθείτε στη σελίδα σύνδεσης.",

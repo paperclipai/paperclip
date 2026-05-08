@@ -89,6 +89,10 @@
       "dont_allow_desc": "将已投票的 AI 输出仅保存在本地。",
       "retest_hint": "要在本地开发中重新测试首次使用提示，请从此实例的 <code>instance_settings.general</code> JSON 行中移除 <code>feedbackDataSharingPreference</code> 键，或将其设置回 <code>\"prompt\"</code>。未设置和 <code>\"prompt\"</code> 均表示尚未选择默认设置。"
     },
+    "language": {
+      "title": "显示语言",
+      "description": "选择 Paperclip 界面的显示语言。更改立即生效，无需重启。"
+    },
     "sign_out": {
       "title": "退出登录",
       "description": "退出此 Paperclip 实例，您将被重定向到登录页面。",

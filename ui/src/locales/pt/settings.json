@@ -89,6 +89,10 @@
       "dont_allow_desc": "Manter saídas de IA votadas apenas localmente.",
       "retest_hint": "Para retestar o prompt de primeiro uso no desenvolvimento local, remova a chave <code>feedbackDataSharingPreference</code> da linha JSON <code>instance_settings.general</code> para esta instância, ou defina-a de volta para <code>\"prompt\"</code>. Não definido e <code>\"prompt\"</code> significam que nenhum padrão foi escolhido ainda."
     },
+    "language": {
+      "title": "Idioma de exibição",
+      "description": "Escolha o idioma de exibição da interface do Paperclip. As alterações entram em vigor imediatamente sem necessidade de reiniciar."
+    },
     "sign_out": {
       "title": "Sair",
       "description": "Saia desta instância do Paperclip. Você será redirecionado para a página de login.",
