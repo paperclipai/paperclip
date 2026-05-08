@@ -347,6 +347,14 @@
     "working": "Working",
     "worked": "Worked",
     "for_duration": "for {{duration}}",
+    "duration": {
+      "seconds_one": "{{count}} second",
+      "seconds_other": "{{count}} seconds",
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "hours_one": "{{count}} hour",
+      "hours_other": "{{count}} hours"
+    },
     "queued": "Queued",
     "interrupt": "Interrupt",
     "interrupting": "Interrupting...",

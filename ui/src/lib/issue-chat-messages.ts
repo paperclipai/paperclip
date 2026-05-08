@@ -10,6 +10,7 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import i18n from "../locales/i18n";
 import {
   buildIssueThreadInteractionSummary,
   type IssueThreadInteraction,
@@ -549,19 +550,21 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
 export function formatDurationWords(ms: number | null) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  const t = (key: string, opts: Record<string, unknown>) =>
+    i18n.t(`chat.duration.${key}`, { ns: "issues", ...opts });
   if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+    return t("seconds", { count: totalSeconds });
   }
   const totalMinutes = Math.round(totalSeconds / 60);
   if (totalMinutes < 60) {
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return t("minutes", { count: totalMinutes });
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (minutes === 0) {
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
+    return t("hours", { count: hours });
   }
-  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  return `${t("hours", { count: hours })} ${t("minutes", { count: minutes })}`;
 }
 
 function runDurationLabel(run: {
