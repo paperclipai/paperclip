@@ -1180,7 +1180,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions..."
+    "loading_revisions": "Loading revisions...",
+    "diff_title": "Diff",
+    "rev_label": "rev {{number}}",
+    "actor_board": "board",
+    "actor_agent": "agent",
+    "actor_system": "system",
+    "old_label": "Old",
+    "new_label": "New",
+    "select_revision": "Select revision",
+    "select_two_revisions": "Select two revisions to compare.",
+    "same_revision": "Both sides are the same revision.",
+    "content_header": "Content"
   },
   "language_switcher": {
     "change_language": "Change language"

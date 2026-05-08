@@ -1182,7 +1182,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Загрузка редакций..."
+    "loading_revisions": "Загрузка редакций...",
+    "diff_title": "Сравнение",
+    "rev_label": "ред. {{number}}",
+    "actor_board": "доска",
+    "actor_agent": "агент",
+    "actor_system": "система",
+    "old_label": "Старая",
+    "new_label": "Новая",
+    "select_revision": "Выберите редакцию",
+    "select_two_revisions": "Выберите две редакции для сравнения.",
+    "same_revision": "Обе стороны — одна редакция.",
+    "content_header": "Содержимое"
   },
   "language_switcher": {
     "change_language": "Изменить язык"
