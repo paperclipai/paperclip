@@ -16,7 +16,7 @@ from api_client import post_issue_result, post_issue_comment, resolve_issue_cont
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
-OPTIMIZER_PROMPT = """Eres un experto en Pine Script v5 y trading algorítmico.
+OPTIMIZER_PROMPT = """Eres un experto en Pine Script v6 y trading algorítmico.
 Debes mejorar la siguiente estrategia aplicando las correcciones indicadas en la crítica.
 
 ESTRATEGIA ORIGINAL:
@@ -32,15 +32,16 @@ CRÍTICA Y MEJORAS SOLICITADAS:
 - Resumen: {summary}
 
 INSTRUCCIONES:
-1. Corrige TODOS los errores de sintaxis
-2. Soluciona los problemas lógicos señalados
-3. Elimina cualquier look-ahead bias si existe
-4. Aplica los parámetros sugeridos como nuevos valores por defecto
-5. Añade comentarios claros en cada sección del código
-6. Mantén la estructura y el estilo de la estrategia original
-7. Asegúrate de que el código compila sin errores en TradingView
+1. Usa //@version=6 en la primera línea
+2. El shorttitle debe tener máximo 10 caracteres
+3. Corrige TODOS los errores de sintaxis
+4. Soluciona los problemas lógicos señalados
+5. Elimina cualquier look-ahead bias si existe
+6. Aplica los parámetros sugeridos como nuevos valores por defecto
+7. Añade comentarios claros en cada sección del código
+8. Asegúrate de que el código compila sin errores en TradingView v6
 
-Devuelve SOLO el código Pine Script v5 mejorado, sin texto adicional fuera del código."""
+Devuelve SOLO el código Pine Script v6 mejorado, sin texto adicional fuera del código."""
 
 
 def extract_critique(raw: str) -> dict:

@@ -34,8 +34,8 @@ ESTILO DE ESTRATEGIA SOLICITADO: {style}
 INSTRUCCIONES:
 Genera un Pine Script v5 COMPLETO y funcional para TradingView con:
 
-1. Cabecera: //@version=5 y strategy() con:
-   - title descriptivo
+1. Cabecera: //@version=6 y strategy() con:
+   - title descriptivo (shorttitle máximo 10 caracteres)
    - commission_type=strategy.commission.percent, commission_value=0.1
    - slippage=2
    - initial_capital=10000

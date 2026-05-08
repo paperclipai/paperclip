@@ -268,8 +268,11 @@ def run_pipeline(parent_issue_id: str, headers: dict, ticker: str, style: str) -
 
     # ── PASO 5: Reporter ──────────────────────────────────────────────────────
     post_issue_comment("📋 **Paso 5/5** — Generando reporte final...")
+    # Pasar solo el Pine Script al Reporter (no el markdown completo del Optimizer)
+    pine_final = extract_pine_script(optimizer_result)
+    reporter_input = pine_final if len(pine_final) >= 50 else optimizer_result
     reporter_issue = create_sub_issue(
-        f"Report strategy for {ticker}", optimizer_result,
+        f"Report strategy for {ticker}", reporter_input,
         "reporter", parent_issue_id, headers
     )
     if reporter_issue:
