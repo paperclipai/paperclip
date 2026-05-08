@@ -97,6 +97,7 @@
     "add_blocker": "Добавить блокировщик",
     "click_to_copy": "Нажмите для копирования",
     "copied": "Скопировано!",
+    "issue_chip_label": "Задача {{label}}: {{title}}",
     "remove_blocker_title": "Удалить блокировщик?",
     "remove_blocker_desc": "Удалить {{label}} как блокировщик для этой задачи.",
     "remove_blocker_btn": "Удалить блокировщик",

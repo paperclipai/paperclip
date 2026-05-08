@@ -95,6 +95,7 @@
     "add_blocker": "Add blocker",
     "click_to_copy": "Click to copy",
     "copied": "Copied!",
+    "issue_chip_label": "Issue {{label}}: {{title}}",
     "remove_blocker_title": "Remove blocker?",
     "remove_blocker_desc": "Remove {{label}} as a blocker for this issue.",
     "remove_blocker_btn": "Remove blocker",

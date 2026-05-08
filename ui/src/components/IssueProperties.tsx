@@ -190,7 +190,7 @@ function RemovableIssueReferencePill({
           "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
         )}
         title={issue.title}
-        aria-label={`Issue ${issueLabel}: ${issue.title}`}
+        aria-label={t("properties.issue_chip_label", { label: issueLabel, title: issue.title })}
       >
         <button
           type="button"
@@ -205,7 +205,7 @@ function RemovableIssueReferencePill({
           <Link
             to={`/issues/${issueLabel}`}
             className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
-            aria-label={`Issue ${issueLabel}: ${issue.title}`}
+            aria-label={t("properties.issue_chip_label", { label: issueLabel, title: issue.title })}
           >
             {content}
           </Link>
@@ -327,7 +327,7 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
-  const { t } = useTranslation("issues");
+  const { t, i18n } = useTranslation("issues");
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -622,7 +622,7 @@ export function IssueProperties({
   };
   const currentMonitorLabel = (() => {
     if (issue.executionPolicy?.monitor?.nextCheckAt) {
-      return t("properties.next_check", { offset: formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt)) });
+      return t("properties.next_check", { offset: formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt), i18n.language) });
     }
     if (issue.executionState?.monitor?.status === "cleared") {
       return t("properties.cleared");
@@ -649,7 +649,7 @@ export function IssueProperties({
       </span>
       {monitorNextCheckAt ? (
         <span className="text-xs text-muted-foreground" title={currentMonitorLabel}>
-          {formatDate(new Date(monitorNextCheckAt))}
+          {formatDate(new Date(monitorNextCheckAt), i18n.language)}
         </span>
       ) : null}
     </span>
@@ -1600,16 +1600,16 @@ export function IssueProperties({
         )}
         {issue.startedAt && (
           <PropertyRow label={t("properties.label_started")}>
-            <span className="text-sm">{formatDate(issue.startedAt)}</span>
+            <span className="text-sm">{formatDate(issue.startedAt, i18n.language)}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
           <PropertyRow label={t("properties.label_completed")}>
-            <span className="text-sm">{formatDate(issue.completedAt)}</span>
+            <span className="text-sm">{formatDate(issue.completedAt, i18n.language)}</span>
           </PropertyRow>
         )}
         <PropertyRow label={t("properties.label_created")}>
-          <span className="text-sm">{formatDate(issue.createdAt)}</span>
+          <span className="text-sm">{formatDate(issue.createdAt, i18n.language)}</span>
         </PropertyRow>
         <PropertyRow label={t("properties.label_updated")}>
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
