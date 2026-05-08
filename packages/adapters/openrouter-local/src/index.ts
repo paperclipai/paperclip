@@ -19,13 +19,8 @@ export const requiresMaterializedRuntimeSkills = false;
 export const supportsLocalAgentJwt = true;
 
 export const models: AdapterModel[] = [
-  { id: "anthropic/claude-sonnet-4", label: "Claude Sonnet 4 (via OpenRouter)" },
-  { id: "anthropic/claude-haiku-4", label: "Claude Haiku 4 (via OpenRouter)" },
-  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini (via OpenRouter)" },
-  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini (via OpenRouter)" },
-  { id: "deepseek/deepseek-chat", label: "DeepSeek Chat (via OpenRouter)" },
-  { id: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B (via OpenRouter)" },
-  { id: "qwen/qwen-2.5-72b-instruct", label: "Qwen 2.5 72B (via OpenRouter)" },
+  { id: "openrouter/auto", label: "Auto (OpenRouter picks best model)" },
+  { id: "openrouter/free", label: "Free (best free model available)" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [

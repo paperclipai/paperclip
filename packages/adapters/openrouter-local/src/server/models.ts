@@ -49,6 +49,24 @@ export function buildModelLabel(model: OpenRouterModel): string {
   return `${model.name} [${tags.join(", ")}]`;
 }
 
+function buildFallbackModels(): AdapterModel[] {
+  const result: AdapterModel[] = [...staticModels];
+  const seen = new Set(result.map((m) => m.id));
+
+  for (const [envVar, label] of [
+    ["OPENROUTER_MODEL", "OPENROUTER_MODEL"],
+    ["OPENROUTER_DEFAULT_MODEL", "OPENROUTER_DEFAULT_MODEL"],
+  ] as const) {
+    const slug = process.env[envVar]?.trim();
+    if (slug && !seen.has(slug)) {
+      result.push({ id: slug, label: `${slug} (${label})` });
+      seen.add(slug);
+    }
+  }
+
+  return result;
+}
+
 let cachedModels: AdapterModel[] | null = null;
 let cacheExpiresAt = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -106,7 +124,7 @@ export async function listModels(): Promise<AdapterModel[]> {
     return result;
   } catch (err) {
     console.warn("openrouter-local: failed to fetch models from OpenRouter", err);
-    return staticModels;
+    return buildFallbackModels();
   }
 }
 

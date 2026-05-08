@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildModelLabel, detectModel, listModels, refreshModels } from "./models.js";
 import { models as staticModels } from "../index.js";
 
+const STATIC_MODEL_IDS = staticModels.map((m) => m.id);
+
 function makeModel(overrides: {
   id?: string;
   name?: string;
@@ -91,10 +93,13 @@ describe("buildModelLabel", () => {
 
 describe("listModels", () => {
   const savedEnv: Record<string, string | undefined> = {};
+  const ENV_KEYS = ["OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_DEFAULT_MODEL"] as const;
 
   beforeEach(() => {
-    savedEnv.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+    for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
     process.env.OPENROUTER_API_KEY = "test-key";
+    delete process.env.OPENROUTER_MODEL;
+    delete process.env.OPENROUTER_DEFAULT_MODEL;
     vi.stubGlobal("fetch", vi.fn());
   });
 
@@ -103,11 +108,10 @@ describe("listModels", () => {
     // Override the mock to reject so refreshModels won't populate the cache with stale data.
     vi.mocked(fetch).mockRejectedValue(new Error("cleanup"));
     await refreshModels().catch(() => {}); // clears cache; fetch rejection leaves cache null
-    // Now restore env and unmock
-    if (savedEnv.OPENROUTER_API_KEY === undefined) {
-      delete process.env.OPENROUTER_API_KEY;
-    } else {
-      process.env.OPENROUTER_API_KEY = savedEnv.OPENROUTER_API_KEY;
+    // Restore env and unmock
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
     }
     vi.unstubAllGlobals();
   });
@@ -150,10 +154,31 @@ describe("listModels", () => {
 
   // ── fallback ───────────────────────────────────────────────────────────────
 
-  it("returns static model list when fetch throws", async () => {
+  it("returns static models when fetch throws", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("network failure"));
     const result = await listModels();
-    expect(result).toEqual(staticModels);
+    expect(result.map((m) => m.id)).toEqual(STATIC_MODEL_IDS);
+  });
+
+  it("appends OPENROUTER_MODEL to fallback list when fetch throws", async () => {
+    process.env.OPENROUTER_MODEL = "deepseek/deepseek-r1";
+    vi.mocked(fetch).mockRejectedValue(new Error("network failure"));
+    const result = await listModels();
+    expect(result.map((m) => m.id)).toEqual([...STATIC_MODEL_IDS, "deepseek/deepseek-r1"]);
+  });
+
+  it("appends OPENROUTER_DEFAULT_MODEL to fallback list when fetch throws", async () => {
+    process.env.OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o";
+    vi.mocked(fetch).mockRejectedValue(new Error("network failure"));
+    const result = await listModels();
+    expect(result.map((m) => m.id)).toEqual([...STATIC_MODEL_IDS, "openai/gpt-4o"]);
+  });
+
+  it("deduplicates env vars already present in static models in fallback", async () => {
+    process.env.OPENROUTER_MODEL = "openrouter/auto"; // already in staticModels
+    vi.mocked(fetch).mockRejectedValue(new Error("network failure"));
+    const result = await listModels();
+    expect(result.map((m) => m.id)).toEqual(STATIC_MODEL_IDS);
   });
 
   // ── caching ────────────────────────────────────────────────────────────────
