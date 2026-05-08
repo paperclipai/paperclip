@@ -134,7 +134,7 @@ Before you stop, run `git status --porcelain`. The result must be empty.
 A non-empty tree at exit means you edited files but didn't commit them —
 the next stage's Reviewer will hard-gate on that and the task stalls
 (observed concretely on AA-735, where a dirty `lighting.rs` blocked the
-Reviewer subtask until the board manually committed).
+Reviewer subtask until the operator manually committed).
 
 Two valid end-states only:
 
