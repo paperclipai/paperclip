@@ -1,0 +1,19 @@
+{
+  "executing_command": "Ejecutando comando",
+  "executed_command_one": "Comando ejecutado",
+  "executed_command_other": "{{count}} comandos ejecutados",
+  "stdout": "salida estándar",
+  "ran_command_one": "ejecutó {{count}} comando",
+  "ran_command_other": "ejecutó {{count}} comandos",
+  "called_tool_one": "llamó {{count}} herramienta",
+  "called_tool_other": "llamó {{count}} herramientas",
+  "tool_failed": "Herramienta falló",
+  "waiting_for_result": "Esperando resultado",
+  "running": "En ejecución",
+  "completed": "Completado",
+  "errored": "Error",
+  "command_failed": "Comando falló",
+  "no_input": "Sin entrada {{name}}",
+  "inspect_input": "Inspeccionar entrada {{name}}",
+  "streaming": "Transmitiendo"
+}

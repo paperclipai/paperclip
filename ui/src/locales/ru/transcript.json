@@ -1,0 +1,19 @@
+{
+  "executing_command": "Выполнение команды",
+  "executed_command_one": "Выполнена команда",
+  "executed_command_other": "Выполнено {{count}} команд",
+  "stdout": "стандартный вывод",
+  "ran_command_one": "выполнена {{count}} команда",
+  "ran_command_other": "выполнено {{count}} команд",
+  "called_tool_one": "вызван {{count}} инструмент",
+  "called_tool_other": "вызвано {{count}} инструментов",
+  "tool_failed": "Инструмент не удался",
+  "waiting_for_result": "Ожидание результата",
+  "running": "Выполняется",
+  "completed": "Завершено",
+  "errored": "Ошибка",
+  "command_failed": "Ошибка команды",
+  "no_input": "Нет входных данных {{name}}",
+  "inspect_input": "Проверить входные данные {{name}}",
+  "streaming": "Потоковая передача"
+}

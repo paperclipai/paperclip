@@ -1,0 +1,19 @@
+{
+  "executing_command": "执行命令",
+  "executed_command_one": "已执行命令",
+  "executed_command_other": "已执行 {{count}} 条命令",
+  "stdout": "标准输出",
+  "ran_command_one": "运行了 {{count}} 条命令",
+  "ran_command_other": "运行了 {{count}} 条命令",
+  "called_tool_one": "调用了 {{count}} 个工具",
+  "called_tool_other": "调用了 {{count}} 个工具",
+  "tool_failed": "工具失败",
+  "waiting_for_result": "等待结果",
+  "running": "运行中",
+  "completed": "已完成",
+  "errored": "错误",
+  "command_failed": "命令失败",
+  "no_input": "无 {{name}} 输入",
+  "inspect_input": "检查 {{name}} 输入",
+  "streaming": "流式传输"
+}

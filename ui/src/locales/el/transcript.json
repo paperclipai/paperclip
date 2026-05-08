@@ -1,0 +1,19 @@
+{
+  "executing_command": "Εκτέλεση εντολής",
+  "executed_command_one": "Εκτελέστηκε εντολή",
+  "executed_command_other": "Εκτελέστηκαν {{count}} εντολές",
+  "stdout": "τυπική έξοδος",
+  "ran_command_one": "εκτέλεσε {{count}} εντολή",
+  "ran_command_other": "εκτέλεσε {{count}} εντολές",
+  "called_tool_one": "κάλεσε {{count}} εργαλείο",
+  "called_tool_other": "κάλεσε {{count}} εργαλεία",
+  "tool_failed": "Το εργαλείο απέτυχε",
+  "waiting_for_result": "Αναμονή αποτελέσματος",
+  "running": "Σε εξέλιξη",
+  "completed": "Ολοκληρώθηκε",
+  "errored": "Σφάλμα",
+  "command_failed": "Η εντολή απέτυχε",
+  "no_input": "Χωρίς {{name}} εισαγωγή",
+  "inspect_input": "Επιθεώρηση {{name}} εισαγωγής",
+  "streaming": "Ροή δεδομένων"
+}

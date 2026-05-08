@@ -1,0 +1,19 @@
+{
+  "executing_command": "Befehl wird ausgeführt",
+  "executed_command_one": "Befehl ausgeführt",
+  "executed_command_other": "{{count}} Befehle ausgeführt",
+  "stdout": "Standardausgabe",
+  "ran_command_one": "hat {{count}} Befehl ausgeführt",
+  "ran_command_other": "hat {{count}} Befehle ausgeführt",
+  "called_tool_one": "hat {{count}} Tool aufgerufen",
+  "called_tool_other": "hat {{count}} Tools aufgerufen",
+  "tool_failed": "Tool fehlgeschlagen",
+  "waiting_for_result": "Warte auf Ergebnis",
+  "running": "Wird ausgeführt",
+  "completed": "Abgeschlossen",
+  "errored": "Fehler",
+  "command_failed": "Befehl fehlgeschlagen",
+  "no_input": "Keine {{name}} Eingabe",
+  "inspect_input": "{{name}} Eingabe prüfen",
+  "streaming": "Wird gestreamt"
+}

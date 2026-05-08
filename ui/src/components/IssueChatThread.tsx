@@ -746,7 +746,7 @@ function runStatusClass(status: string) {
   }
 }
 
-function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
+function toolCountSummary(toolParts: ToolCallMessagePart[], t?: (key: string, options?: { count?: number }) => string): string | null {
   if (toolParts.length === 0) return null;
   let commands = 0;
   let other = 0;
@@ -755,8 +755,18 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
     else other++;
   }
   const parts: string[] = [];
-  if (commands > 0) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
-  if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
+  if (commands > 0) {
+    const commandText = commands === 1
+      ? t?.("ran_command_one", { count: 1 }) ?? "ran 1 command"
+      : t?.("ran_command_other", { count: commands }) ?? `ran ${commands} commands`;
+    parts.push(commandText);
+  }
+  if (other > 0) {
+    const toolText = other === 1
+      ? t?.("called_tool_one", { count: 1 }) ?? "called 1 tool"
+      : t?.("called_tool_other", { count: other }) ?? `called ${other} tools`;
+    parts.push(toolText);
+  }
   return parts.join(", ");
 }
 
@@ -779,6 +789,7 @@ function IssueChatChainOfThought({
   cotParts: readonly IssueChatCoTPart[];
 }) {
   const { t } = useTranslation("issues");
+  const { t: tTranscript } = useTranslation("transcript");
   const { agentMap } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
@@ -827,7 +838,7 @@ function IssueChatChainOfThought({
     headerVerb = t("chat.worked");
   }
 
-  const toolSummary = toolCountSummary(toolParts);
+  const toolSummary = toolCountSummary(toolParts, tTranscript);
   const hasContent = allReasoningText.trim().length > 0 || toolParts.length > 0;
 
   return (
