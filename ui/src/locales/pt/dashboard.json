@@ -31,5 +31,15 @@
     "issues_by_status": "Tarefas por Status",
     "success_rate": "Taxa de Sucesso",
     "last_14_days": "Últimos 14 dias"
+  },
+  "live": {
+    "breadcrumb": "Execuções ao vivo",
+    "title": "Execuções de agentes ao vivo",
+    "subtitle": "Execuções ativas primeiro, seguidas das mais recentes concluídas.",
+    "showing_up_to": "Mostrando até {{count}}",
+    "active_recent": "Ativas / recentes",
+    "empty_create_company": "Crie uma empresa para ver execuções ao vivo.",
+    "empty_select_company": "Selecione uma empresa para ver execuções ao vivo.",
+    "panel_empty": "Nenhuma execução de agente ativa ou recente."
   }
 }

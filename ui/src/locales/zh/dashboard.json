@@ -31,5 +31,15 @@
     "issues_by_status": "按状态的任务",
     "success_rate": "成功率",
     "last_14_days": "近 14 天"
+  },
+  "live": {
+    "breadcrumb": "实时运行",
+    "title": "智能体实时运行",
+    "subtitle": "首先显示活跃运行，其次是最近完成的运行。",
+    "showing_up_to": "最多显示 {{count}} 条",
+    "active_recent": "活跃 / 最近",
+    "empty_create_company": "创建公司以查看实时运行。",
+    "empty_select_company": "选择公司以查看实时运行。",
+    "panel_empty": "没有活跃或最近的智能体运行。"
   }
 }

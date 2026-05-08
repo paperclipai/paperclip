@@ -12,12 +12,18 @@
     "retrying": "Reintentando…",
     "mark_as_read": "Marcar como leído",
     "dismiss": "Descartar",
+    "dismiss_from_inbox": "Descartar de la bandeja",
     "mark_all_read": "Marcar todo como leído",
-    "marking": "Marcando…"
+    "marking": "Marcando…",
+    "approve": "Aprobar",
+    "reject": "Rechazar",
+    "cancel": "Cancelar"
   },
   "group": {
     "none": "Ninguno",
     "type": "Tipo",
+    "assignee": "Responsable",
+    "project": "Proyecto",
     "workspace": "Espacio de trabajo",
     "archived": "Archivado",
     "other": "Otros resultados",
@@ -34,6 +40,7 @@
     "category_issues_i_touched": "Mis tareas recientes",
     "category_join_requests": "Solicitudes de unión",
     "category_approvals": "Aprobaciones",
+    "category_failed_runs": "Ejecuciones fallidas",
     "category_alerts": "Alertas",
     "status_all": "Todos los estados de aprobación",
     "status_actionable": "Requiere acción",
@@ -45,10 +52,24 @@
   },
   "misc": {
     "human_join_request": "Solicitud de unión humana",
+    "agent_join_request": "Solicitud de unión de agente",
+    "agent_join_request_named": "Solicitud de unión de agente: {{name}}",
     "run_error": "La ejecución terminó con un error.",
     "enable_nesting": "Habilitar anidamiento padre-hijo",
     "disable_nesting": "Deshabilitar anidamiento padre-hijo",
-    "choose_columns": "Elegir qué columnas de la bandeja permanecen visibles"
+    "choose_columns": "Elegir qué columnas de la bandeja permanecen visibles",
+    "failed_run": "Ejecución fallida",
+    "failed_run_named": "Ejecución fallida — {{agent}}",
+    "subtask_count_one": "({{count}} subtarea)",
+    "subtask_count_other": "({{count}} subtareas)",
+    "requested_by": "solicitado por {{name}}",
+    "updated_time": "actualizado {{time}}",
+    "requested_time_ip": "solicitado {{time}} desde IP {{ip}}",
+    "adapter_label": "adaptador: {{adapter}}",
+    "alerts_heading": "Alertas",
+    "agent_has_errors_one": "{{count}} agente tiene errores",
+    "agent_has_errors_other": "{{count}} agentes tienen errores",
+    "budget_utilization": "Presupuesto al {{percent}}% de utilización este mes"
   },
   "empty": {
     "select_company": "Seleccione una empresa para ver la bandeja de entrada.",
@@ -57,5 +78,53 @@
     "no_new": "No hay nuevos elementos en la bandeja.",
     "no_recent": "No hay elementos recientes en la bandeja.",
     "no_match_filters": "Ningún elemento de la bandeja coincide con estos filtros."
+  },
+  "dialog": {
+    "mark_all_title": "¿Marcar todo como leído?",
+    "mark_all_desc_one": "Esto marcará {{count}} elemento no leído como leído.",
+    "mark_all_desc_other": "Esto marcará {{count}} elementos no leídos como leídos."
+  },
+  "errors": {
+    "failed_to_approve": "Error al aprobar",
+    "failed_to_reject": "Error al rechazar",
+    "failed_to_approve_join": "Error al aprobar solicitud de unión",
+    "failed_to_reject_join": "Error al rechazar solicitud de unión",
+    "failed_to_archive": "Error al archivar la tarea",
+    "failed_to_undo_archive": "Error al deshacer el archivo"
+  },
+  "creators": {
+    "board": "Consejo",
+    "me": "Yo"
+  },
+  "join_queue": {
+    "title": "Cola de solicitudes de unión",
+    "breadcrumb": "Solicitudes de unión",
+    "description": "Revise solicitudes de unión de personas y agentes fuera del feed mixto de la bandeja de entrada. Esta cola utiliza las mismas mutaciones de aprobación que las tarjetas integradas de la bandeja.",
+    "select_company": "Seleccione una empresa para revisar solicitudes de unión.",
+    "loading": "Cargando solicitudes de unión…",
+    "permission_error": "No tiene permiso para revisar solicitudes de unión de esta empresa.",
+    "failed_load": "Error al cargar solicitudes de unión.",
+    "filter_status": "Estado",
+    "filter_type": "Tipo de solicitud",
+    "status_pending": "Pendiente de aprobación",
+    "status_approved": "Aprobado",
+    "status_rejected": "Rechazado",
+    "type_all": "Todos",
+    "type_human": "Humano",
+    "type_agent": "Agente",
+    "empty": "No hay solicitudes de unión que coincidan con los filtros actuales.",
+    "toast_approved": "Solicitud de unión aprobada",
+    "toast_rejected": "Solicitud de unión rechazada",
+    "unknown_human": "Solicitante humano desconocido",
+    "unknown_agent": "Agente solicitante desconocido",
+    "reject": "Rechazar",
+    "approve": "Aprobar",
+    "invite_context": "Contexto de invitación",
+    "invite_join_invite": "Invitación de unión {{type}}",
+    "invite_role": " • rol predeterminado {{role}}",
+    "invite_unavailable": "Metadatos de invitación no disponibles",
+    "request_details": "Detalles de la solicitud",
+    "submitted_at": "Enviado {{date}}",
+    "source_ip": "IP de origen {{ip}}"
   }
 }

@@ -31,5 +31,15 @@
     "issues_by_status": "Tareas por estado",
     "success_rate": "Tasa de éxito",
     "last_14_days": "Últimos 14 días"
+  },
+  "live": {
+    "breadcrumb": "Ejecuciones en vivo",
+    "title": "Ejecuciones de agentes en vivo",
+    "subtitle": "Ejecuciones activas primero, seguidas de las más recientes completadas.",
+    "showing_up_to": "Mostrando hasta {{count}}",
+    "active_recent": "Activas / recientes",
+    "empty_create_company": "Cree una empresa para ver ejecuciones en vivo.",
+    "empty_select_company": "Seleccione una empresa para ver ejecuciones en vivo.",
+    "panel_empty": "No hay ejecuciones de agentes activas o recientes."
   }
 }
