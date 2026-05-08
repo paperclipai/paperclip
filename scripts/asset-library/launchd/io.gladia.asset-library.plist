@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.gladia.asset-library</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>/opt/homebrew/bin/pm2 resurrect || /opt/homebrew/bin/pm2 start /Users/jlqueguiner/paperclip-openrunner/scripts/asset-library/ecosystem.config.js</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@20/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/jlqueguiner</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/jlqueguiner/paperclip-openrunner/scripts/asset-library</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/jlqueguiner/.pm2/logs/asset-library-launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jlqueguiner/.pm2/logs/asset-library-launchd.err.log</string>
+</dict>
+</plist>
