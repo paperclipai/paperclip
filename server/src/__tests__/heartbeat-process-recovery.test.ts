@@ -70,6 +70,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { getRunLogStore } from "../services/run-log-store.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -393,6 +394,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    logChunk?: string;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -465,6 +467,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       });
+    }
+
+    if (input?.logChunk) {
+      const store = getRunLogStore();
+      const handle = await store.begin({ companyId, agentId, runId });
+      const logBytes = await store.append(handle, {
+        stream: "stdout",
+        chunk: input.logChunk,
+        ts: now.toISOString(),
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          logStore: handle.store,
+          logRef: handle.logRef,
+          logBytes,
+        })
+        .where(eq(heartbeatRuns.id, runId));
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
@@ -883,6 +903,100 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("finalises a detached-but-completed run as succeeded when its log shows a successful terminal result", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const successfulResultLine = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: "session-rou-89-success",
+      total_cost_usd: 0.0,
+    });
+
+    const { runId, agentId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "claude_local",
+      processPid: child.pid ?? null,
+      logChunk: `${successfulResultLine}\n`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(run?.finishedAt).toBeTruthy();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("completed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    const followupRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(followupRuns).toHaveLength(1);
+  });
+
+  it("finalises a detached-but-completed run as failed when its log shows an error terminal result", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const errorResultLine = JSON.stringify({
+      type: "result",
+      subtype: "error_max_turns",
+      is_error: true,
+      session_id: "session-rou-89-failed",
+    });
+
+    const { runId, issueId, agentId } = await seedRunFixture({
+      adapterType: "claude_local",
+      processPid: child.pid ?? null,
+      logChunk: `${errorResultLine}\n`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_detached_completed");
+    expect(run?.error).toContain("terminal");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    // No process-loss retry should be queued for a run that already finished;
+    // the only run on the agent is the original now-failed one.
+    const allRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(allRuns).toHaveLength(1);
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {

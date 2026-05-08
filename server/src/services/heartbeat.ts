@@ -42,7 +42,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { detectRunLogTerminalResult, getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -5816,6 +5816,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
+        // The OS child is still alive but the in-memory handle is lost. Before
+        // accepting that the run is genuinely detached, peek the run log for an
+        // adapter-emitted terminal `result` line — this is the common shape of
+        // a Bash-tool-style hang where `claude --print` already produced its
+        // result and is only waiting on a leaked helper child to exit. If we
+        // see one, finalize the run from the log so dependents resume instead
+        // of looping forever in the silent-run watchdog.
+        const terminalResult = await detectRunLogTerminalResult(run);
+        if (terminalResult.found) {
+          const completionStatus: "succeeded" | "failed" =
+            terminalResult.isError === false ? "succeeded" : "failed";
+          const detachedCompletionMessage =
+            `Detected terminal "${completionStatus}" result in run log while child pid ${run.processPid} is still alive; finalizing run despite detached process.`;
+          let finalizedRun = await setRunStatus(run.id, completionStatus, {
+            finishedAt: now,
+            error: completionStatus === "succeeded" ? null : detachedCompletionMessage,
+            errorCode: completionStatus === "succeeded" ? null : "process_detached_completed",
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              completionStatus,
+              {
+                resultJson: parseObject(run.resultJson),
+                ...(completionStatus === "failed"
+                  ? { errorCode: "process_detached_completed", errorMessage: detachedCompletionMessage }
+                  : {}),
+              },
+            ),
+          });
+          await setWakeupStatus(run.wakeupRequestId, completionStatus === "succeeded" ? "completed" : completionStatus, {
+            finishedAt: now,
+            error: completionStatus === "succeeded" ? null : detachedCompletionMessage,
+          });
+          if (!finalizedRun) finalizedRun = await getRun(run.id);
+          if (finalizedRun) {
+            finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+            await releaseEnvironmentLeasesForRun({
+              runId: finalizedRun.id,
+              companyId: finalizedRun.companyId,
+              agentId: finalizedRun.agentId,
+              status: finalizedRun.status,
+              failureReason: finalizedRun.error ?? undefined,
+            });
+            await releaseIssueExecutionAndPromote(finalizedRun);
+            await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: completionStatus === "succeeded" ? "info" : "warn",
+              message: detachedCompletionMessage,
+              payload: {
+                processPid: run.processPid,
+                terminalResultIsError: terminalResult.isError,
+                completionStatus,
+              },
+            });
+            await finalizeAgentStatus(run.agentId, completionStatus);
+            await startNextQueuedRunForAgent(run.agentId);
+            runningProcesses.delete(run.id);
+            reaped.push(run.id);
+          }
+          continue;
+        }
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {

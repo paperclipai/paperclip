@@ -31,7 +31,7 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
-import { getRunLogStore } from "../run-log-store.js";
+import { detectRunLogTerminalResult, getRunLogStore } from "../run-log-store.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
@@ -1085,6 +1085,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      // If the run log already shows an adapter terminal `result` line, the
+      // work completed even though the row is still `running` (the orphan
+      // reaper finalises it on the next pass). Don't spawn another evaluation
+      // issue for the same already-finished run — that's exactly the loop that
+      // ROU-85/88 hit when the Bash-tool helper child kept pid alive.
+      const terminalResult = await detectRunLogTerminalResult(run);
+      if (terminalResult.found) {
+        result.skipped += 1;
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });

@@ -155,3 +155,87 @@ export function getRunLogStore() {
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }
+
+const TERMINAL_RESULT_SCAN_TAIL_BYTES = 256_000;
+
+export interface RunLogTerminalResultDetection {
+  found: boolean;
+  isError: boolean | null;
+}
+
+// Scan the tail of a run's NDJSON log for an adapter-emitted terminal `result`
+// line (Claude/Codex/Gemini stream-json all emit `{"type":"result", ...}`).
+// Returns `found:true` when at least one such line is present in the tail
+// window, and `isError` reflecting whatever the line indicated (`null` when
+// found but indeterminate). Used by the orphan reaper and silent-run watchdog
+// to recognise runs whose adapter completed even though the OS child process
+// is still alive (e.g. waiting on a leaked Bash-tool helper).
+export async function detectRunLogTerminalResult(
+  run: { logStore?: string | null; logRef?: string | null; logBytes?: number | null },
+  options?: { scanBytes?: number },
+): Promise<RunLogTerminalResultDetection> {
+  if (!run.logStore || !run.logRef) return { found: false, isError: null };
+  const totalBytes = typeof run.logBytes === "number" ? run.logBytes : 0;
+  if (totalBytes <= 0) return { found: false, isError: null };
+  const scanBytes = options?.scanBytes ?? TERMINAL_RESULT_SCAN_TAIL_BYTES;
+
+  const handle: RunLogHandle = { store: run.logStore as RunLogStoreType, logRef: run.logRef };
+  const offset = Math.max(0, totalBytes - scanBytes);
+  let content: string;
+  try {
+    const result = await getRunLogStore().read(handle, { offset, limitBytes: scanBytes });
+    content = result.content;
+  } catch {
+    return { found: false, isError: null };
+  }
+
+  let foundResult = false;
+  let isError: boolean | null = null;
+
+  for (const envelopeLine of content.split(/\r?\n/)) {
+    const trimmedEnvelope = envelopeLine.trim();
+    if (!trimmedEnvelope) continue;
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(trimmedEnvelope);
+    } catch {
+      continue;
+    }
+    if (typeof envelope !== "object" || envelope === null) continue;
+    const env = envelope as { stream?: unknown; chunk?: unknown };
+    if (env.stream !== "stdout" && env.stream !== "stderr") continue;
+    const chunk = typeof env.chunk === "string" ? env.chunk : null;
+    if (!chunk || !chunk.includes("\"type\"")) continue;
+
+    for (const rawSubLine of chunk.split(/\r?\n/)) {
+      const subLine = rawSubLine.trim();
+      if (!subLine) continue;
+      if (!/"type"\s*:\s*"result"/.test(subLine)) continue;
+      foundResult = true;
+      try {
+        const parsed = JSON.parse(subLine);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const obj = parsed as Record<string, unknown>;
+          if (typeof obj.is_error === "boolean") {
+            isError = obj.is_error;
+          } else if (typeof obj.subtype === "string") {
+            const subtype = obj.subtype.toLowerCase();
+            if (subtype === "success") isError = false;
+            else if (subtype.startsWith("error")) isError = true;
+          } else if (typeof obj.status === "string") {
+            const status = obj.status.toLowerCase();
+            if (status === "success") isError = false;
+            else if (status === "error" || status === "failed") isError = true;
+          } else if (typeof obj.ok === "boolean") {
+            isError = !obj.ok;
+          }
+        }
+      } catch {
+        // Unparseable JSON line — keep `foundResult` true; leave `isError`
+        // alone so the caller treats it as indeterminate.
+      }
+    }
+  }
+
+  return { found: foundResult, isError };
+}
