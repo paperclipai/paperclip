@@ -77,7 +77,7 @@
     "removing_btn": "Wird entfernt...",
     "path_example": "/mnt/e/Projects/my-adapter  oder  E:\\Projects\\my-adapter",
     "package_name_example": "my-paperclip-adapter",
-    "version_example": "latest"
+    "version_example": "aktuell"
   },
   "claude_local": {
     "instructions_file": "Agenten-Anweisungsdatei",

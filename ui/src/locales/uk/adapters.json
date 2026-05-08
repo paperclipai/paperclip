@@ -77,7 +77,7 @@
     "removing_btn": "Видалення...",
     "path_example": "/mnt/e/Projects/my-adapter  або  E:\\Projects\\my-adapter",
     "package_name_example": "my-paperclip-adapter",
-    "version_example": "latest"
+    "version_example": "останнє"
   },
   "claude_local": {
     "instructions_file": "Файл інструкцій агента",
