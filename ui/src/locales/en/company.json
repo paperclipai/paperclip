@@ -452,7 +452,8 @@
       "admin_protected": "Company admins cannot be removed from company access.",
       "actor_not_member": "Only active company members can remove users.",
       "target_role_too_high": "You can only remove users below your company role.",
-      "member_fallback_name": "this member"
+      "member_fallback_name": "this member",
+      "agent_option_label": "{{name}} ({{role}})"
     },
     "open_assigned_issues_one": "{{count}} open assigned issue",
     "open_assigned_issues_other": "{{count}} open assigned issues",

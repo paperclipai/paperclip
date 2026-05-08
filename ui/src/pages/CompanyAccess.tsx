@@ -549,7 +549,7 @@ export function CompanyAccess() {
                       <optgroup label={t("access.remove_member_group_agents")}>
                         {activeReassignmentAgents.map((agent) => (
                           <option key={agent.id} value={`agent:${agent.id}`}>
-                            {agent.name} ({agent.role})
+                            {t("access.agent_option_label", { name: agent.name, role: t(`access.roles.${agent.role}`, { defaultValue: agent.role }) })}
                           </option>
                         ))}
                       </optgroup>
