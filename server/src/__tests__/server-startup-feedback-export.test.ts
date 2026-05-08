@@ -137,6 +137,13 @@ vi.mock("../realtime/live-events-ws.js", () => ({
   setupLiveEventsWebSocketServer: vi.fn(),
 }));
 
+vi.mock("../services/bookforge-runtime-monitor.js", () => ({
+  createBookforgeRuntimeMonitor: vi.fn(() => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+  })),
+}));
+
 vi.mock("../services/index.js", () => ({
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
