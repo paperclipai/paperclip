@@ -1137,5 +1137,22 @@
   "cancel_subtree": "Cancel subtree...",
   "this_issue_is_paused_by_ancestor_resume_from_the_root_issue_to_deliver_deferred_work": "This issue is paused by ancestor … Resume from the root issue to deliver deferred work.",
   "add_a_description": "Add a description...",
-  "delete_attachment": "Delete attachment"
+  "delete_attachment": "Delete attachment",
+  "model": "Model",
+  "adapter_options_label": " adapter options",
+  "lane_cheap_prefix": "Sends",
+  "lane_cheap_adapter_default": "· adapter default",
+  "lane_cheap_uses_profile": "· uses the agent's configured cheap profile",
+  "lane_cheap_fallback": "· falls back to the primary model if no cheap profile is configured",
+  "adapter_no_overrides": "This assignee's adapter does not expose editable issue overrides.",
+  "select_assignee_for_overrides": "Select a compatible agent assignee to edit these overrides.",
+  "effort": {
+    "default": "Default",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "minimal": "Minimal",
+    "xhigh": "X-High",
+    "max": "Max"
+  }
 }

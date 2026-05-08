@@ -1121,5 +1121,22 @@
   "cancel_subtree": "Cancel subtree...",
   "this_issue_is_paused_by_ancestor_resume_from_the_root_issue_to_deliver_deferred_work": "This issue is paused by ancestor … Resume from the root issue to deliver deferred work.",
   "add_a_description": "Add a description...",
-  "delete_attachment": "Delete attachment"
+  "delete_attachment": "Delete attachment",
+  "model": "Modelo",
+  "adapter_options_label": " opciones del adaptador",
+  "lane_cheap_prefix": "Envía",
+  "lane_cheap_adapter_default": "· predeterminado del adaptador",
+  "lane_cheap_uses_profile": "· usa el perfil económico configurado del agente",
+  "lane_cheap_fallback": "· usa el modelo principal si no hay perfil económico configurado",
+  "adapter_no_overrides": "El adaptador de este asignado no admite anulaciones de tarea editables.",
+  "select_assignee_for_overrides": "Seleccione un agente asignado compatible para editar estas anulaciones.",
+  "effort": {
+    "default": "Predeterminado",
+    "low": "Bajo",
+    "medium": "Medio",
+    "high": "Alto",
+    "minimal": "Mínimo",
+    "xhigh": "Muy alto",
+    "max": "Máximo"
+  }
 }

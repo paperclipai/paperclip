@@ -1674,12 +1674,12 @@ export function NewIssueDialog() {
                   </div>
                   {assigneeModelLane === "cheap" && (
                     <p className="text-[11px] text-muted-foreground">
-                      Sends <code>modelProfile: "cheap"</code>{" "}
+                      {t("dialog.lane_cheap_prefix")} <code>modelProfile: "cheap"</code>{" "}
                       {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-                        ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
+                        ? <>{t("dialog.lane_cheap_adapter_default")} <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
                         : assigneeCheapProfile
-                          ? <>· uses the agent's configured cheap profile</>
-                          : <>· falls back to the primary model if no cheap profile is configured</>}
+                          ? <>{t("dialog.lane_cheap_uses_profile")}</>
+                          : <>{t("dialog.lane_cheap_fallback")}</>}
                     </p>
                   )}
                   {assigneeModelLane === "primary" && (
@@ -1717,7 +1717,7 @@ export function NewIssueDialog() {
                           )}
                           onClick={() => setAssigneeThinkingEffort(option.value)}
                         >
-                          {option.label}
+                          {t(`effort.${option.value || "default"}`)}
                         </button>
                       ))}
                     </div>

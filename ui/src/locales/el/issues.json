@@ -1121,5 +1121,22 @@
   "cancel_subtree": "Cancel subtree...",
   "this_issue_is_paused_by_ancestor_resume_from_the_root_issue_to_deliver_deferred_work": "This issue is paused by ancestor … Resume from the root issue to deliver deferred work.",
   "add_a_description": "Add a description...",
-  "delete_attachment": "Delete attachment"
+  "delete_attachment": "Delete attachment",
+  "model": "Μοντέλο",
+  "adapter_options_label": " επιλογές προσαρμογέα",
+  "lane_cheap_prefix": "Αποστέλλει",
+  "lane_cheap_adapter_default": "· προεπιλογή προσαρμογέα",
+  "lane_cheap_uses_profile": "· χρησιμοποιεί το ρυθμισμένο οικονομικό προφίλ του πράκτορα",
+  "lane_cheap_fallback": "· χρησιμοποιεί το κύριο μοντέλο αν δεν έχει ρυθμιστεί οικονομικό προφίλ",
+  "adapter_no_overrides": "Ο προσαρμογέας αυτού του ανατεθέντος δεν υποστηρίζει επεξεργάσιμες παρακάμψεις εργασίας.",
+  "select_assignee_for_overrides": "Επιλέξτε συμβατό πράκτορα-ανατεθέντα για επεξεργασία αυτών των παρακάμψεων.",
+  "effort": {
+    "default": "Προεπιλογή",
+    "low": "Χαμηλή",
+    "medium": "Μεσαία",
+    "high": "Υψηλή",
+    "minimal": "Ελάχιστη",
+    "xhigh": "Πολύ υψηλή",
+    "max": "Μέγιστη"
+  }
 }

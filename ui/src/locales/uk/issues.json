@@ -1153,5 +1153,22 @@
   "cancel_subtree": "Cancel subtree...",
   "this_issue_is_paused_by_ancestor_resume_from_the_root_issue_to_deliver_deferred_work": "This issue is paused by ancestor … Resume from the root issue to deliver deferred work.",
   "add_a_description": "Add a description...",
-  "delete_attachment": "Delete attachment"
+  "delete_attachment": "Delete attachment",
+  "model": "Модель",
+  "adapter_options_label": " параметри адаптера",
+  "lane_cheap_prefix": "Надсилає",
+  "lane_cheap_adapter_default": "· за замовчуванням адаптера",
+  "lane_cheap_uses_profile": "· використовує налаштований дешевий профіль агента",
+  "lane_cheap_fallback": "· переходить на основну модель, якщо дешевий профіль не налаштовано",
+  "adapter_no_overrides": "Адаптер цього виконавця не підтримує редаговані перевизначення завдання.",
+  "select_assignee_for_overrides": "Виберіть сумісного агента-виконавця для редагування цих перевизначень.",
+  "effort": {
+    "default": "За замовчуванням",
+    "low": "Низький",
+    "medium": "Середній",
+    "high": "Високий",
+    "minimal": "Мінімальний",
+    "xhigh": "Дуже високий",
+    "max": "Максимальний"
+  }
 }
