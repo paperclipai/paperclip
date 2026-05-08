@@ -122,7 +122,10 @@ export async function main(): Promise<void> {
     void internal.close();
   });
 
-  await bot.launch();
+  // Telegraf 4.x bot.launch() resolves only when the bot stops — it blocks the
+  // remainder of main() forever. Start notifier and log readiness BEFORE we
+  // hand off to the polling loop, otherwise notifier.start() is unreachable
+  // and the outbound poller never ticks (THE-345 deploy bug, fixed inline).
   if (notifier) {
     await notifier.start();
     console.log("paperclip telegram-bot notifier started");
@@ -130,6 +133,7 @@ export async function main(): Promise<void> {
     console.log("paperclip telegram-bot notifier disabled (DINAR_USER_ID / DINAR_TG_CHAT_ID unset)");
   }
   console.log("paperclip telegram-bot started");
+  await bot.launch();
 }
 
 const isMainModule = import.meta.url === `file://${process.argv[1]}`;
