@@ -3,6 +3,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -248,6 +249,9 @@ export async function prepareSandboxManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
+    exclude: [...new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? []), ...(input.workspaceExclude ?? [])])],
+  });
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
@@ -326,8 +330,10 @@ export async function prepareSandboxManagedRuntime(input: {
           archivePath: localArchivePath,
           localDir: extractedDir,
         });
-        await mirrorDirectory(extractedDir, input.workspaceLocalDir, {
-          preserveAbsent: [".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])],
+        await mergeDirectoryWithBaseline({
+          baseline: baselineSnapshot,
+          sourceDir: extractedDir,
+          targetDir: input.workspaceLocalDir,
         });
       });
     },

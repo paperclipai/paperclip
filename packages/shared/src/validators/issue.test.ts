@@ -129,6 +129,19 @@ describe("issue validators", () => {
     expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
 
+  it("defaults omitted create status to todo when an assignee is present", () => {
+    expect(createIssueSchema.parse({
+      title: "Assigned work",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    }).status).toBe("todo");
+    expect(createIssueSchema.parse({ title: "Unassigned work" }).status).toBe("backlog");
+    expect(createIssueSchema.parse({
+      title: "Deliberately parked",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      status: "backlog",
+    }).status).toBe("backlog");
+  });
+
   it("defaults issue work mode to standard and accepts planning", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
     expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
