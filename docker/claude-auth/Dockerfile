@@ -76,11 +76,15 @@ const HTML = `<!DOCTYPE html>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
   <style>
     *{box-sizing:border-box}
-    body{background:#1a1a1a;margin:0;padding:20px;font-family:monospace;color:#ddd}
-    h2{color:#a78bfa;margin:0 0 8px}
-    .note{color:#fbbf24;font-size:13px;margin:0 0 12px}
-    #tc{border:1px solid #444;border-radius:4px;overflow:hidden}
-    .creds{background:#0a1f0a;border:2px solid #22c55e;padding:16px;margin-top:16px;border-radius:4px}
+    html,body{height:100%;margin:0;padding:0;background:#1a1a1a;color:#ddd;font-family:monospace}
+    body{display:flex;flex-direction:column;padding:16px;gap:10px}
+    h2{color:#a78bfa;margin:0}
+    .note{color:#fbbf24;font-size:13px;margin:0}
+    #status{font-size:12px;color:#888}
+    #status.ok{color:#22c55e}
+    #status.err{color:#f87171}
+    #tc{flex:1;min-height:500px;border:1px solid #444;border-radius:4px;overflow:hidden}
+    .creds{background:#0a1f0a;border:2px solid #22c55e;padding:16px;border-radius:4px}
     .creds pre{color:#22c55e;white-space:pre-wrap;word-break:break-all;margin:8px 0;font-size:13px;background:#000;padding:12px;border-radius:3px}
     .btn{margin-top:10px;padding:8px 18px;background:#7c3aed;color:#fff;border:none;cursor:pointer;border-radius:4px;font-size:14px}
     .btn:hover{background:#6d28d9}
@@ -89,44 +93,62 @@ const HTML = `<!DOCTYPE html>
 </head>
 <body>
   <h2>Claude Auth</h2>
-  <p class="note">Full interactive terminal &mdash; use arrow keys to pick a theme, Enter to confirm, then follow the login prompts.</p>
+  <p class="note">Interactive terminal &mdash; use arrow keys + Enter to pick a theme, then follow the login prompts.</p>
+  <div id="status">Connecting...</div>
   <div id="tc"></div>
   <div id="creds" style="display:none" class="creds">
     <strong style="color:#22c55e">&#10003; Login complete!</strong><br>
-    Copy the JSON below and set it as <code>CLAUDE_CREDENTIALS_JSON</code> in Railway (Paperclip service env vars), then redeploy Paperclip.
+    Copy the JSON below &rarr; set as <code>CLAUDE_CREDENTIALS_JSON</code> in Railway (Paperclip service), then redeploy Paperclip.
     <pre id="cj"></pre>
-    <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cj').textContent).then(()=>this.textContent='Copied!')">Copy to clipboard</button>
+    <button class="btn" id="copybtn" onclick="navigator.clipboard.writeText(document.getElementById('cj').textContent).then(()=>document.getElementById('copybtn').textContent='Copied!')">Copy to clipboard</button>
     <button class="btn" onclick="location.href='/restart'">Restart login</button>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
   <script>
+    const statusEl = document.getElementById('status');
+    const tc = document.getElementById('tc');
+
     const term = new Terminal({
       theme:{background:'#000000',foreground:'#dddddd'},
-      cursorBlink:true, fontSize:14, fontFamily:'monospace', scrollback:2000
+      cursorBlink:true,
+      fontSize:14,
+      fontFamily:'"Cascadia Code","Fira Mono",monospace',
+      scrollback:2000
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    term.open(document.getElementById('tc'));
-    fit.fit();
+    term.open(tc);
+    // Give the DOM a tick to lay out before fitting
+    requestAnimationFrame(() => { fit.fit(); term.focus(); });
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(proto + '//' + location.host + '/ws');
 
-    ws.onopen = () => ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+    ws.onopen = () => {
+      statusEl.textContent = 'Connected';
+      statusEl.className = 'ok';
+      ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+    };
     ws.onmessage = e => {
       const m = JSON.parse(e.data);
-      if (m.type === 'data' || m.type === 'history') term.write(m.data);
-      else if (m.type === 'creds') {
+      if (m.type === 'data' || m.type === 'history') {
+        term.write(m.data);
+      } else if (m.type === 'creds') {
         document.getElementById('cj').textContent = m.data;
         document.getElementById('creds').style.display = 'block';
       }
     };
-    ws.onclose = () => term.writeln('\r\n\r\n[Disconnected — reload to reconnect]');
+    ws.onerror = () => { statusEl.textContent = 'WebSocket error'; statusEl.className = 'err'; };
+    ws.onclose = () => {
+      statusEl.textContent = 'Disconnected — reload to reconnect';
+      statusEl.className = 'err';
+      term.writeln('\r\n\r\n[Disconnected — reload to reconnect]');
+    };
 
     term.onData(d => { if (ws.readyState === 1) ws.send(JSON.stringify({type:'data',data:d})); });
     term.onResize(({cols,rows}) => { if (ws.readyState === 1) ws.send(JSON.stringify({type:'resize',cols,rows})); });
-    window.addEventListener('resize', () => fit.fit());
+    window.addEventListener('resize', () => { fit.fit(); });
   </script>
 </body>
 </html>`;
