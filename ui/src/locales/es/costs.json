@@ -65,20 +65,6 @@
     "api_runs": "{{count}} api",
     "subscription_runs": "{{count}} suscripción"
   },
-  "cards": {
-    "inference_ledger": "Libro mayor de inferencia",
-    "inference_ledger_desc": "Gasto en inferencia de solicitudes para el período seleccionado.",
-    "finance_ledger": "Libro mayor financiero",
-    "finance_ledger_desc": "Cargos a nivel de cuenta que no corresponden a una sola solicitud de inferencia.",
-    "by_agent": "Por agente",
-    "by_agent_desc": "Lo que cada agente consumió en el período seleccionado.",
-    "by_project": "Por proyecto",
-    "by_project_desc": "Costos de ejecución atribuidos a través de tareas vinculadas al proyecto.",
-    "by_biller": "Por facturador",
-    "by_biller_desc": "Eventos financieros a nivel de cuenta agrupados por quién los cobró o acreditó.",
-    "budget_control": "Plano de control de presupuesto",
-    "budget_control_desc": "Límites de gasto de parada dura para agentes y proyectos. La cuota de suscripción del proveedor permanece separada y aparece en Proveedores."
-  },
   "budgets": {
     "company_policy": "Política mensual de toda la empresa.",
     "agent_policy": "Políticas de gasto mensual recurrente para agentes individuales.",
@@ -89,14 +75,6 @@
     "company_budgets_title": "Presupuestos de la empresa",
     "agent_budgets_title": "Presupuestos de agentes",
     "project_budgets_title": "Presupuestos de proyectos"
-  },
-  "incident_card": {
-    "project_paused": "La ejecución del proyecto está pausada. El nuevo trabajo en este proyecto no comenzará hasta que resuelva el incidente de presupuesto.",
-    "scope_paused": "Este alcance está pausado. Los nuevos heartbeats no comenzarán hasta que resuelva el incidente de presupuesto.",
-    "applying": "Aplicando...",
-    "raise_budget": "Aumentar presupuesto y reanudar",
-    "keep_paused": "Mantener pausado",
-    "budget_must_exceed": "El nuevo presupuesto debe superar el gasto observado actual."
   },
   "policy_card": {
     "lifetime_budget": "Presupuesto de vida útil",
@@ -128,6 +106,18 @@
     "warning": "Advertencia de presupuesto"
   },
   "cards": {
+    "inference_ledger": "Libro mayor de inferencia",
+    "inference_ledger_desc": "Gasto en inferencia de solicitudes para el período seleccionado.",
+    "finance_ledger": "Libro mayor financiero",
+    "finance_ledger_desc": "Cargos a nivel de cuenta que no corresponden a una sola solicitud de inferencia.",
+    "by_agent": "Por agente",
+    "by_agent_desc": "Lo que cada agente consumió en el período seleccionado.",
+    "by_project": "Por proyecto",
+    "by_project_desc": "Costos de ejecución atribuidos a través de tareas vinculadas al proyecto.",
+    "by_biller": "Por facturador",
+    "by_biller_desc": "Eventos financieros a nivel de cuenta agrupados por quién los cobró o acreditó.",
+    "budget_control": "Panel de control de presupuesto",
+    "budget_control_desc": "Límites de gasto de parada forzosa para agentes y proyectos. La cuota de suscripción del proveedor aparece en Proveedores.",
     "accounting_model_title": "Modelo de contabilidad",
     "accounting_model_desc": "Paperclip ahora separa el uso de inferencia a nivel de solicitud y los eventos financieros a nivel de cuenta. Esto permite informes honestos del proveedor cuando el pagador es OpenRouter, Cloudflare, Bedrock u otro intermediario.",
     "live_quotas": "Cuotas en vivo",
@@ -149,6 +139,12 @@
     }
   },
   "incident_card": {
+    "project_paused": "La ejecución del proyecto está pausada. El nuevo trabajo no comenzará hasta que se resuelva el incidente de presupuesto.",
+    "scope_paused": "Este ámbito está pausado. Los nuevos heartbeats no comenzarán hasta que se resuelva el incidente de presupuesto.",
+    "applying": "Aplicando...",
+    "raise_budget": "Aumentar presupuesto y reanudar",
+    "keep_paused": "Mantener pausado",
+    "budget_must_exceed": "El nuevo presupuesto debe superar el gasto observado actual.",
     "dismissed": "Rechazado",
     "escalated": "Escalado",
     "hard_stop": "parada forzosa",
@@ -157,12 +153,6 @@
     "pending_approval": "Pendiente de aprobación",
     "resolved": "Resuelto",
     "spending_reached": "El gasto alcanzó {{observed}} con el límite {{limit}}."
-  },
-  "quota_card": {
-    "of_provider_cost": "{{percent}}% del costo del proveedor",
-    "of_provider_tokens": "{{percent}}% de los tokens del proveedor",
-    "runs_label": "ejecuciones",
-    "total_label": "total"
   },
   "empty": {
     "select_company": "Seleccione una empresa para ver los costos.",
@@ -199,7 +189,11 @@
     "api_runs_only": "~{{apiRuns}} ejecuciones api",
     "sub_runs_only": "~{{subRuns}} ejecuciones suscripción",
     "percent_used": "{{percent}}% usado",
-    "resets": "se restablece {{date}}"
+    "resets": "se restablece {{date}}",
+    "runs_label": "ejecuciones",
+    "total_label": "total",
+    "of_provider_tokens": "{{percent}}% de los tokens del proveedor",
+    "of_provider_cost": "{{percent}}% del costo del proveedor"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} ejecución medida",

@@ -811,6 +811,7 @@
     "scope_paused": "Ejecuciones Heartbeat pausadas para este ámbito hasta que se aumente el presupuesto o se rechace el incidente."
   },
   "documents": {
+    "loading_revisions": "Cargando revisiones...",
     "actor_agent": "agente",
     "actor_board": "tablero",
     "actor_system": "sistema",
@@ -1195,9 +1196,6 @@
     "repo_root": "Repo root",
     "workspace_path": "Workspace path",
     "last_checked": "Last checked {{time}}"
-  },
-  "documents": {
-    "loading_revisions": "Loading revisions..."
   },
   "language_switcher": {
     "change_language": "Cambiar idioma"
