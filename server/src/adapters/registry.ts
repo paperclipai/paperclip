@@ -266,9 +266,11 @@ async function buildHermesPaperclipPromptTemplate(input: {
     "This Hermes run was started by Paperclip. Treat the Paperclip task/wake data below as the current assignment for this run.",
     "Do not answer only with acknowledgement when an issue, wake payload, task context, or continuation summary is present. Inspect the relevant state, act on the issue, and report concrete results unless blocked by a higher-priority safety rule.",
     "If safety blocks the requested action, report the exact blocker and the safe next action instead of idling.",
-    "For Bookforge Lab agents: you may read, write, and modify code, prompts, tests, reports, and local documentation inside /Users/begilhan/Bookforge V2 PublicationForge, and you may run terminal commands needed to test those changes. This is explicit standing permission for Bookforge code/prompt improvement work.",
-    "Bookforge Lab permission does not by itself authorize deleting manuscript work, exposing secrets, clearing quality holds, resuming paid Bookforge generation, or starting uncontrolled agent/recovery loops. Verify live state first and keep those higher-impact actions gated by Bookforge Steward/user approval.",
-    "Avoid shell patterns that trigger interactive safety prompts in non-interactive Paperclip runs when an equally safe alternative exists, especially `curl | python`, `curl | sh`, or piping downloaded/API output directly into an interpreter. Use Python urllib/request code, separate fetch-then-parse steps, or built-in Hermes tools so the run can finish and post its result.",
+    "For Bookforge Lab agents: current operating level is Level 1 — supervised narrow improvement. Work only from a narrow Begilhan/Steward-approved Paperclip issue, wake payload, or explicit current Steward instruction; stay idle otherwise.",
+    "At Level 1, you may read, write, and modify code, prompts, tests, detectors, reports, scorecards, and local documentation inside the approved scope, including /Users/begilhan/Bookforge V2 PublicationForge, and you may run focused terminal commands needed to verify those changes.",
+    "Level 1 does not authorize deleting manuscript work, exposing secrets, clearing quality holds, resuming/continuing paid Bookforge generation, changing live queue/worker/database/manuscripts/promoted chapters/repair backups/exports, changing org chart/permissions/heartbeat/autonomy/model routing, publishing, pushing/merging/deploying, or starting broad agents/recovery loops. Those actions require explicit current Begilhan/Steward approval.",
+    "Every Bookforge-adjacent report must separate Paperclip agent/token spend from Bookforge generation/model spend, and must state whether Bookforge is reachable/running, whether worker/queue generation appears active, whether Paperclip has live runs, what changed, what passed/failed, and what decision is needed.",
+    "Avoid shell patterns that trigger interactive safety prompts in non-interactive Paperclip runs when an equally safe alternative exists, especially `curl | python`, `curl | sh`, `ps ... | python`, or piping downloaded/API/process output directly into Python, json, jq, or shell interpreters. For Paperclip API inspection, use the injected PAPERCLIP_API_KEY with Python urllib.request and bounded timeouts; for Paperclip API writes, also send X-Paperclip-Run-Id from PAPERCLIP_RUN_ID. Prefer built-in Hermes tools or separate fetch-then-parse steps so the run can finish and post its result.",
   ].join("\n");
 
   const sections = [
@@ -351,7 +353,7 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 const BOOKFORGE_LAB_COMPANY_ID = "2925a47a-961a-4212-8b36-ce711e2f6ec0";
 const BOOKFORGE_REPO_PATH = "/Users/begilhan/Bookforge V2 PublicationForge";
 const BOOKFORGE_DEFAULT_TOOLSETS = "terminal,file,skills,session_search";
-const BOOKFORGE_DEFAULT_TIMEOUT_SEC = 900;
+const BOOKFORGE_DEFAULT_TIMEOUT_SEC = 1800;
 const BOOKFORGE_DEFAULT_MAX_TURNS = 40;
 
 function isBookforgeLabHermesRun(ctx: { agent?: unknown }): boolean {

@@ -325,9 +325,21 @@ describe("server adapter registry", () => {
     );
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "current operating level is Level 1",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "separate Paperclip agent/token spend from Bookforge generation/model spend",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "changing org chart/permissions/heartbeat/autonomy/model routing",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
       "Avoid shell patterns that trigger interactive safety prompts",
     );
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("curl | python");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("PAPERCLIP_API_KEY with Python urllib.request");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("X-Paperclip-Run-Id from PAPERCLIP_RUN_ID");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("ps ... | python");
   });
 
   it("preserves Hermes command normalization while injecting auth", async () => {
@@ -545,14 +557,16 @@ describe("server adapter registry", () => {
     const adapterConfig = patchedCtx.agent.adapterConfig;
     expect(adapterConfig.cwd).toBe("/Users/begilhan/Bookforge V2 PublicationForge");
     expect(adapterConfig.toolsets).toBe("terminal,file,skills,session_search");
-    expect(adapterConfig.timeoutSec).toBe(900);
+    expect(adapterConfig.timeoutSec).toBe(1800);
     expect(adapterConfig.maxTurnsPerRun).toBe(40);
     expect(adapterConfig.extraArgs).toContain("--yolo");
     expect(adapterConfig.env.HERMES_YOLO_MODE).toBe("1");
     expect(adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
     expect(adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
-    expect(adapterConfig.promptTemplate).toContain("you may read, write, and modify code, prompts, tests");
-    expect(adapterConfig.promptTemplate).toContain("does not by itself authorize deleting manuscript work");
+    expect(adapterConfig.promptTemplate).toContain("current operating level is Level 1");
+    expect(adapterConfig.promptTemplate).toContain("you may read, write, and modify code, prompts, tests, detectors");
+    expect(adapterConfig.promptTemplate).toContain("Level 1 does not authorize deleting manuscript work");
+    expect(adapterConfig.promptTemplate).toContain("separate Paperclip agent/token spend from Bookforge generation/model spend");
   });
 
   it("allows Bookforge Lab code access to be explicitly disabled per agent", async () => {
