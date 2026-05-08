@@ -151,6 +151,32 @@ describeEmbeddedPostgres("issue-auto-archive service", () => {
       expect(await getIssueHiddenAt(issue.id)).toBeNull();
     });
 
+    it("does not archive review issues that are actively in_progress", async () => {
+      const svc = buildIssueAutoArchiveService(db as any);
+      const issue = await insertIssue({
+        originKind: RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+        status: "in_progress",
+        createdAt: TWO_DAYS_ONE_SECOND_AGO,
+        hiddenAt: null,
+      });
+
+      await svc.archiveReviewIssues(NOW);
+      expect(await getIssueHiddenAt(issue.id)).toBeNull();
+    });
+
+    it("does not archive review issues that are blocked", async () => {
+      const svc = buildIssueAutoArchiveService(db as any);
+      const issue = await insertIssue({
+        originKind: RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+        status: "blocked",
+        createdAt: TWO_DAYS_ONE_SECOND_AGO,
+        hiddenAt: null,
+      });
+
+      await svc.archiveReviewIssues(NOW);
+      expect(await getIssueHiddenAt(issue.id)).toBeNull();
+    });
+
     it("does not archive non-review issues older than 2 days", async () => {
       const svc = buildIssueAutoArchiveService(db as any);
       const issue = await insertIssue({

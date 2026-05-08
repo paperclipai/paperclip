@@ -2238,7 +2238,7 @@ export function issueService(db: Db) {
   return {
     clearExecutionRunIfTerminal,
 
-    list: async (companyId: string, filters?: IssueFilters) => {
+    list: async (companyId: string, filters?: IssueFilters): Promise<IssueWithLabelsAndRun[]> => {
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
@@ -2382,7 +2382,8 @@ export function issueService(db: Db) {
         const summaryPageQuery = offset > 0
           ? (limit === undefined ? summaryQuery.offset(offset) : summaryQuery.limit(limit).offset(offset))
           : (limit === undefined ? summaryQuery : summaryQuery.limit(limit));
-        return await summaryPageQuery;
+        // Route layer handles summary serialisation; cast to satisfy the declared return type.
+        return await summaryPageQuery as unknown as IssueWithLabelsAndRun[];
       }
 
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);

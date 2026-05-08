@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -51,6 +51,8 @@ export function buildIssueAutoArchiveService(db: Db) {
           )!,
           isNull(issues.hiddenAt),
           lt(issues.createdAt, cutoff),
+          // Only archive idle/completed review issues; never archive ones actively being worked on
+          notInArray(issues.status, ["in_progress", "blocked", "in_review"]),
         ),
       );
     if (candidates.length === 0) return 0;
