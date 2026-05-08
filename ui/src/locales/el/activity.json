@@ -146,9 +146,17 @@
     "assignee_label": "Ανατεθειμένο σε",
     "updated_task": "ενημέρωσε αυτή την εργασία",
     "requested_follow_up": "ζήτησε παρακολούθηση",
-    "system": "Σύστημα"
+    "system": "Σύστημα",
+    "none": "Κανένα",
+    "no_entries": "Δεν υπάρχουν εγγραφές στο χρονολόγιο.",
+    "run_label": "εκτέλεση",
+    "environment_label": "Περιβάλλον",
+    "provider_label": "Πάροχος",
+    "lease_label": "Μίσθωση",
+    "failure_label": "Αποτυχία",
+    "workspace_label": "Χώρος εργασίας"
   },
-  "system": "System",
-  "board": "Board",
-  "unknown": "Unknown"
+  "system": "Σύστημα",
+  "board": "Πίνακας",
+  "unknown": "Άγνωστος"
 }

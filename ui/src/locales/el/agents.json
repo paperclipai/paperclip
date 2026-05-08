@@ -481,5 +481,9 @@
     "run_succeeded": "Εκτέλεση επιτυχής",
     "adapter_invocation": "Κλήση προσαρμογέα",
     "used_skill": "Χρησιμοποιημένη δεξιότητα"
+  },
+  "icon_picker": {
+    "search_placeholder": "Αναζήτηση εικονιδίων...",
+    "no_match": "Δεν βρέθηκαν αποτελέσματα"
   }
 }
