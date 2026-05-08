@@ -273,6 +273,12 @@ export function githubIntegrationRoutes(db: Db) {
     const ts = new Date().toISOString();
 
     if (config.dryRun) {
+      await db.insert(pluginLogs).values({
+        pluginId: plugin.id,
+        level: "info",
+        message: `dry-run: would_create_or_update ${title}`,
+        meta: { issueId, action: "would_create_or_update", state },
+      });
       res.json({
         dryRun: true,
         action: "would_create_or_update",
@@ -362,12 +368,19 @@ export function githubIntegrationRoutes(db: Db) {
         action = "updated";
       }
     } catch (err) {
+      const errMsg = String(err);
       await registry.upsertCompanySettings(plugin.id, companyId, {
         enabled: true,
         settingsJson: settings.settingsJson,
-        lastError: String(err),
+        lastError: errMsg,
       });
-      res.status(502).json({ error: `GitHub API call failed: ${String(err)}` });
+      await db.insert(pluginLogs).values({
+        pluginId: plugin.id,
+        level: "error",
+        message: `sync failed for ${title}: ${errMsg}`,
+        meta: { issueId, error: errMsg },
+      });
+      res.status(502).json({ error: `GitHub API call failed: ${errMsg}` });
       return;
     }
 
@@ -375,6 +388,13 @@ export function githubIntegrationRoutes(db: Db) {
       enabled: true,
       settingsJson: settings.settingsJson,
       lastError: null,
+    });
+
+    await db.insert(pluginLogs).values({
+      pluginId: plugin.id,
+      level: "info",
+      message: `${action} #${ghIssueNumber} for ${title}`,
+      meta: { issueId, action, githubIssueNumber: ghIssueNumber },
     });
 
     res.json({ dryRun: false, action, githubIssueNumber: ghIssueNumber, ts });
