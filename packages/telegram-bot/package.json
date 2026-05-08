@@ -1,0 +1,25 @@
+{
+  "name": "@paperclipai/telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Thin Telegram client over the Paperclip API for inbound commands and outbound notifications.",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
