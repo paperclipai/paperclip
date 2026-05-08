@@ -146,7 +146,15 @@
     "assignee_label": "负责人",
     "updated_task": "已更新此任务",
     "requested_follow_up": "已请求跟进",
-    "system": "系统"
+    "system": "系统",
+    "environment_label": "环境",
+    "failure_label": "失败",
+    "lease_label": "租约",
+    "no_entries": "暂无条目",
+    "none": "无",
+    "provider_label": "提供商",
+    "run_label": "运行",
+    "workspace_label": "工作空间"
   },
   "system": "System",
   "board": "Board",
