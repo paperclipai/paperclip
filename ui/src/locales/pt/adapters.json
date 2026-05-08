@@ -2,6 +2,7 @@
   "manager": {
     "title": "Gerenciador de Adaptadores",
     "adapters_label": "Adaptadores",
+    "badge_alpha": "Alfa",
     "settings_breadcrumb": "Configurações",
     "loading": "Carregando adaptadores...",
     "install_adapter": "Instalar Adaptador",

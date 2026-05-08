@@ -2,6 +2,7 @@
   "manager": {
     "title": "Менеджер адаптерів",
     "adapters_label": "Адаптери",
+    "badge_alpha": "Альфа",
     "settings_breadcrumb": "Налаштування",
     "loading": "Завантаження адаптерів...",
     "install_adapter": "Встановити адаптер",

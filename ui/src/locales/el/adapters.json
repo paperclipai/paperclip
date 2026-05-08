@@ -2,6 +2,7 @@
   "manager": {
     "title": "Διαχειριστής Προσαρμογέων",
     "adapters_label": "Προσαρμογείς",
+    "badge_alpha": "Άλφα",
     "settings_breadcrumb": "Ρυθμίσεις",
     "loading": "Φόρτωση προσαρμογέων...",
     "install_adapter": "Εγκατάσταση προσαρμογέα",

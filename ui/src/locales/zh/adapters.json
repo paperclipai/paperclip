@@ -2,6 +2,7 @@
   "manager": {
     "title": "适配器管理器",
     "adapters_label": "适配器",
+    "badge_alpha": "Alpha",
     "settings_breadcrumb": "设置",
     "loading": "加载适配器中...",
     "install_adapter": "安装适配器",
