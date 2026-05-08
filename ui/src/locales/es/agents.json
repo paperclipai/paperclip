@@ -75,6 +75,8 @@
       "created_by_run": "Creado por esta ejecución",
       "reused_existing": "Espacio de trabajo existente reutilizado"
     },
+    "copy_as_markdown": "Copiar como Markdown",
+    "signal": "señal",
     "save_failed": "Error al guardar",
     "save_config": "Guardar",
     "saving_config": "Guardando…",
@@ -470,7 +472,22 @@
     "failed_load_run_log": "Error al cargar el registro de ejecución",
     "instructions_placeholder": "# Instrucciones del agente",
     "skill_view_link": "Ver",
-    "approve_agent": "Aprobar agente"
+    "approve_agent": "Aprobar agente",
+    "clear_session_text": "limpiar sesión para estos problemas",
+    "clearing_session": "limpiando sesión...",
+    "failed_load_workspace_log": "No se pudo cargar el registro de operaciones del espacio de trabajo",
+    "failure_details": "Detalles del error",
+    "jump_to_live": "Ir a tiempo real",
+    "load_more_log": "Cargar más registros",
+    "no_log_events": "No hay eventos de registro.",
+    "no_persisted_log_lines": "No hay líneas de registro guardadas.",
+    "transcript": "Transcripción",
+    "transcript_mode_nice": "bonito",
+    "transcript_mode_raw": "crudo"
+  },
+  "icon_picker": {
+    "no_match": "Sin coincidencias",
+    "search_placeholder": "Buscar iconos..."
   },
   "run_errors": {
     "exited_with_code": "Claude salió con el código {{code}}",

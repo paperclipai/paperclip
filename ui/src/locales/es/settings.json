@@ -110,7 +110,13 @@
     "de": "Deutsch",
     "pt": "Português",
     "zh": "中文",
-    "el": "Griego"
+    "el": "Griego",
+    "ar": "Árabe",
+    "fr": "Francés",
+    "it": "Italiano",
+    "ja": "Japonés",
+    "ko": "Coreano",
+    "tr": "Turco"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Panel de tiempo de ejecución",

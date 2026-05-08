@@ -10,6 +10,35 @@
   "search_limit": "Mostrando hasta {{count}} coincidencias. Refine la búsqueda para reducir más.",
   "no_match": "Ninguna tarea coincide con los filtros o búsqueda actuales.",
   "rendering_count": "Mostrando {{shown}} de {{total}} tareas",
+  "already_promoted_run_starting": "Ya promovido — ejecución iniciando",
+  "attach_image": "Adjuntar imagen",
+  "called_tool_one": "1 herramienta llamada",
+  "called_tool_other": "{{count}} herramientas llamadas",
+  "choose_existing_workspace": "Elegir espacio de trabajo existente",
+  "copy": "Copiar",
+  "copy_comment_as_markdown": "Copiar comentario como markdown",
+  "copy_failed": "Error al copiar",
+  "environment": "Entorno",
+  "executable_assignee_will_be_woken": "Ejecutable — el asignado será despertado",
+  "failure": "Error",
+  "interrupt": "Interrumpir",
+  "interrupting": "Interrumpiendo...",
+  "last_attempt_failed": "Último intento fallido: {{error}}. Paperclip reintentará automáticamente.",
+  "lease": "Arrendamiento",
+  "leave_a_comment": "Dejar un comentario...",
+  "no_issues_match_filters": "No hay tareas que coincidan con los filtros o la búsqueda actuales.",
+  "parked_assignee_will_not_be_woken": "Aparcada — el asignado no será despertado",
+  "posting": "Publicando...",
+  "promoted_run_starting": "Promovido — ejecución iniciando",
+  "provider": "Proveedor",
+  "queued_comments": "Comentarios en cola ({{count}})",
+  "ran_command_one": "1 comando ejecutado",
+  "ran_command_other": "{{count}} comandos ejecutados",
+  "remove_blocker_q": "¿Eliminar bloqueador?",
+  "rendering_n_of_m": "Mostrando {{shown}} de {{total}} tareas",
+  "scroll_to_load_more": "Desplázate para cargar más tareas",
+  "status_label": "Estado",
+  "what_should_the_agent_recheck": "¿Qué debe volver a comprobar el agente?",
   "create_issue": "Crear tarea",
   "new_issue": "Nueva tarea",
   "create_label": "Crear {{label}}",
@@ -115,7 +144,8 @@
     "execution_approval_pending": "Aprobación pendiente",
     "execution_approval_pending_with": "Aprobación pendiente con {{name}}",
     "execution_approval_changes": "Cambios de aprobación solicitados",
-    "execution_approval_changes_by": "Cambios de aprobación solicitados por {{name}}"
+    "execution_approval_changes_by": "Cambios de aprobación solicitados por {{name}}",
+    "issue_chip_label": "Tarea {{label}}: {{title}}"
   },
   "monitor": {
     "scheduled": "Monitor programado",
@@ -422,7 +452,22 @@
     "called_tools_one": "llamó {{count}} herramienta",
     "called_tools_other": "llamó {{count}} herramientas",
     "no_assignee_selected": "No se seleccionó ningún responsable",
-    "no_assignee_body": "Seleccione un responsable o haga clic en Enviar nuevamente para publicar sin uno."
+    "no_assignee_body": "Seleccione un responsable o haga clic en Enviar nuevamente para publicar sin uno.",
+    "attachment_unsupported_file_type": "Este tipo de archivo no se puede adjuntar aquí",
+    "more_composer_options": "Opciones del editor",
+    "planning_label": "Planificación",
+    "planning_mode_active_title": "Modo planificación activo. Haz clic para cambiar al modo estándar.",
+    "run_word": "ejecución",
+    "switch_to_planning": "Cambiar a planificación",
+    "switch_to_standard": "Cambiar a estándar",
+    "duration": {
+      "hours_one": "{{count}} hora",
+      "hours_other": "{{count}} horas",
+      "minutes_one": "{{count}} minuto",
+      "minutes_other": "{{count}} minutos",
+      "seconds_one": "{{count}} segundo",
+      "seconds_other": "{{count}} segundos"
+    }
   },
   "columns": {
     "button": "Columnas",
@@ -570,7 +615,9 @@
     "open_issue": "Abrir {{issueRef}}",
     "work_mode_standard": "Estándar",
     "work_mode_planning": "Planificación",
-    "assignee_backlog_note": "Asignar implica intención ejecutable — deje el estado en Backlog solo para aparcar esto deliberadamente. El asignado no será despertado hasta que el estado cambie a Por hacer o En progreso."
+    "assignee_backlog_note": "Asignar implica intención ejecutable — deje el estado en Backlog solo para aparcar esto deliberadamente. El asignado no será despertado hasta que el estado cambie a Por hacer o En progreso.",
+    "no_assignee": "Sin asignado",
+    "search_assignees": "Buscar asignados..."
   },
   "workspace_close_dialog": {
     "action_retry_close": "Reintentar cierre",
@@ -709,7 +756,9 @@
     "queued": "En cola",
     "queued_ellipsis": "En cola...",
     "working": "Trabajando...",
-    "run_finished": "Ejecución terminada"
+    "run_finished": "Ejecución terminada",
+    "paused_by_board": "Detenido por el tablero",
+    "paused_by_board_after": "Detenido por el tablero después de {{duration}}"
   },
   "ledger": {
     "liveness_completed_label": "Completado",

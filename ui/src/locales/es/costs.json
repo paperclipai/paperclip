@@ -122,7 +122,47 @@
     "budget_usd": "Presupuesto (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Pausado por presupuesto"
+    "paused_by_budget": "Pausado por presupuesto",
+    "critical": "Pausado por presupuesto",
+    "healthy": "Presupuesto correcto",
+    "warning": "Advertencia de presupuesto"
+  },
+  "cards": {
+    "accounting_model_title": "Modelo de contabilidad",
+    "accounting_model_desc": "Paperclip ahora separa el uso de inferencia a nivel de solicitud y los eventos financieros a nivel de cuenta. Esto permite informes honestos del proveedor cuando el pagador es OpenRouter, Cloudflare, Bedrock u otro intermediario.",
+    "live_quotas": "Cuotas en vivo",
+    "live_quotas_desc": "Ventanas de proveedor o pagador que pueden detener el tráfico en tiempo real.",
+    "finance_ledger_points": {
+      "point1": "recargas, reembolsos, comisiones",
+      "point2": "cargos de reserva o entrenamiento de Bedrock",
+      "point3": "vencimiento y ajuste de créditos"
+    },
+    "inference_ledger_points": {
+      "point1": "tokens + dólares pagados",
+      "point2": "proveedor, pagador, modelo",
+      "point3": "contabilidad de suscripción y excesos"
+    },
+    "live_quotas_points": {
+      "point1": "ventanas de cuota del proveedor",
+      "point2": "sistemas de crédito del pagador",
+      "point3": "los errores se muestran directamente"
+    }
+  },
+  "incident_card": {
+    "dismissed": "Rechazado",
+    "escalated": "Escalado",
+    "hard_stop": "parada forzosa",
+    "new_budget_usd": "Nuevo presupuesto (USD)",
+    "open": "Abierto",
+    "pending_approval": "Pendiente de aprobación",
+    "resolved": "Resuelto",
+    "spending_reached": "El gasto alcanzó {{observed}} con el límite {{limit}}."
+  },
+  "quota_card": {
+    "of_provider_cost": "{{percent}}% del costo del proveedor",
+    "of_provider_tokens": "{{percent}}% de los tokens del proveedor",
+    "runs_label": "ejecuciones",
+    "total_label": "total"
   },
   "empty": {
     "select_company": "Seleccione una empresa para ver los costos.",
@@ -168,7 +208,11 @@
     "subscription_runs_other": "{{count}} ejecuciones de suscripción",
     "this_week": "esta semana",
     "billing_types": "Tipos de facturación",
-    "upstream_providers": "Proveedores upstream"
+    "upstream_providers": "Proveedores upstream",
+    "model_count_one": "{{count}} modelo",
+    "model_count_other": "{{count}} modelos",
+    "provider_count_one": "{{count}} proveedor",
+    "provider_count_other": "{{count}} proveedores"
   },
   "finance_kind": {
     "title": "Combinación de eventos financieros",

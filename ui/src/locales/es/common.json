@@ -41,6 +41,7 @@
     "copy": "Copy",
     "copy_code": "Copy code",
     "copied": "Copied",
+    "copy_failed": "Error al copiar",
     "loading": "Loading...",
     "creating": "Creating...",
     "importing": "Importing...",
@@ -113,7 +114,9 @@
     "planned": "Planned",
     "draft": "Draft",
     "skipped": "Skipped",
-    "blocked": "Blocked"
+    "blocked": "Blocked",
+    "off": "Apagado",
+    "on": "Encendido"
   },
   "status_labels": {
     "backlog": "Backlog",
@@ -240,7 +243,9 @@
     "switch_workspace": "Switch workspace",
     "no_workspaces": "No workspaces",
     "open_switcher": "Open {{company}} workspace switcher",
-    "open_switcher_generic": "Open workspace switcher"
+    "open_switcher_generic": "Open workspace switcher",
+    "done_order": "Listo",
+    "edit_order": "Editar"
   },
   "not_found": {
     "breadcrumb": "No encontrado",
@@ -800,7 +805,23 @@
     "paused": "En pausa",
     "enter_valid_amount": "Ingrese un monto en dólares válido y no negativo.",
     "scope_type_agent": "Agente",
-    "scope_type_project": "Proyecto"
+    "scope_type_project": "Proyecto",
+    "of_limit": "{{percent}}% del límite",
+    "project_paused": "Ejecución pausada para este proyecto hasta que se aumente el presupuesto o se rechace el incidente.",
+    "scope_paused": "Ejecuciones Heartbeat pausadas para este ámbito hasta que se aumente el presupuesto o se rechace el incidente."
+  },
+  "documents": {
+    "actor_agent": "agente",
+    "actor_board": "tablero",
+    "actor_system": "sistema",
+    "content_header": "Contenido",
+    "diff_title": "Comparación",
+    "new_label": "Nueva",
+    "old_label": "Antigua",
+    "rev_label": "rev. {{number}}",
+    "same_revision": "Ambos lados son la misma revisión.",
+    "select_revision": "Seleccionar revisión",
+    "select_two_revisions": "Selecciona dos revisiones para comparar."
   },
   "search": {
     "title": "Búsqueda",
