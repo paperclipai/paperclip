@@ -492,5 +492,9 @@
     "run_succeeded": "Запуск успешен",
     "adapter_invocation": "Вызов адаптера",
     "used_skill": "Использованный навык"
+  },
+  "icon_picker": {
+    "search_placeholder": "Поиск иконок...",
+    "no_match": "Нет совпадений"
   }
 }

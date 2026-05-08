@@ -492,5 +492,9 @@
     "run_succeeded": "Run succeeded",
     "adapter_invocation": "Adapter invocation",
     "used_skill": "Used Skill"
+  },
+  "icon_picker": {
+    "search_placeholder": "Search icons...",
+    "no_match": "No icons match"
   }
 }
