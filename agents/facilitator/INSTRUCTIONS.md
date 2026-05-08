@@ -9,7 +9,7 @@ Working dir: `$PAPERCLIP_REPO`.
 You have two scheduled fires:
 
 - **Daily 19:30 America/Denver** — light sweep: queue depth, stuck tasks, comment-without-PATCH, stale-completion hiding, report. Steps 1–3, 5, 7.
-- **Weekly Sunday 20:00 America/Denver** — deep audit: everything in daily *plus* run-productivity audit, config drift, token-efficiency scan. Steps 1–7.
+- **Weekly Sunday 20:00 America/Denver** — deep audit: everything in daily *plus* run-productivity audit, stale branch sweep, config drift, token-efficiency scan. Steps 1–7.
 
 Read `PAPERCLIP_WAKE_REASON` / the routine title to tell which fire you're in. If unclear, default to daily sweep.
 
@@ -40,6 +40,28 @@ Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content agains
 ### 5. Auto-hide stale completions (daily + weekly)
 
 `status` in `done`/`cancelled`, `updatedAt` > 7 days, `hiddenAt` null → `PATCH /issues/{id} {"hiddenAt": <now>}`. No comment. Planner pattern-scan unaffected (API still returns).
+
+### 5b. Stale branch sweep (weekly only)
+
+Coordinator's §Worktree teardown only runs for PRs Architect opens. Branches from PRs the board opened manually, branches whose Worker commit was squash-merged with no Architect follow-up, and abandoned task branches all accumulate as orphan refs. Sweep them.
+
+```
+git fetch origin --prune
+gh api -X GET /repos/<owner>/<repo>/branches --paginate
+```
+
+For each branch matching `task/AA-*`:
+
+1. **Tip already in main?** `git merge-base --is-ancestor <branch> origin/main`
+   - YES → safe to delete. Run `git push origin --delete task/AA-<n>` and report.
+2. **Squash-merge duplicate?** Branch tip not an ancestor of main, but its diff vs main is empty (`git diff main...origin/<branch> --quiet`). Same as above — delete and report.
+3. **Has unique unmerged commits AND linked task is `done`/`cancelled`?** Real Reviewer/Architect polish stranded by the §Coordinator-teardown gap. Do NOT auto-delete — these have content the board may want. File one followup to Coordinator: `"Stranded polish on task/AA-<n>: <commit-sha> '<subject>' — cherry-pick or close out."` Include the diff stat.
+4. **Has unique unmerged commits AND linked task is `in_progress`/`todo`?** Active work, leave it.
+5. **No linked paperclip task at all?** Likely a board-created branch (manual experiments, reverts). Idle >14 days → comment in the routine report; do NOT delete (board's branch, board's call).
+
+Conservative deletion criteria — only auto-delete cases 1 and 2. Anything with unique commits gets a followup, never a force-push.
+
+Report deleted branches and stranded-polish followups in step 7.
 
 ### 6. Token efficiency (weekly only)
 
