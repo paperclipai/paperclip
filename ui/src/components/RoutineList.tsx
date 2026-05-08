@@ -41,9 +41,13 @@ export function formatLastRunTimestamp(value: Date | string | null | undefined) 
   return new Date(value).toLocaleString();
 }
 
-export function formatRoutineRunStatus(value: string | null | undefined) {
+export function formatRoutineRunStatus(
+  value: string | null | undefined,
+  t?: (key: string, options?: { ns?: string }) => string,
+) {
   if (!value) return null;
-  return value.replaceAll("_", " ");
+  if (!t) return value.replaceAll("_", " ");
+  return t(`status.${value}`, { ns: "common" });
 }
 
 export function nextRoutineStatus(currentStatus: string, enabled: boolean) {
@@ -127,7 +131,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           </span>
           <span>
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
-            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
+            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status, t)}` : ""}
           </span>
         </div>
         {secondaryDetails ? (
