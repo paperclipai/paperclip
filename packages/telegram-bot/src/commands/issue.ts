@@ -12,7 +12,7 @@ export const issueCommand: CommandHandler = async (ctx, { client }) => {
     return;
   }
   try {
-    const issue = await client.findIssue(arg, { onBehalfOfChatId: ctx.chatId });
+    const issue = await client.findIssue(arg, { onBehalfOfChatId: ctx.chatId, onBehalfOfUserId: ctx.tgUserId });
     if (!issue) {
       await ctx.reply(`Issue ${arg} не найден.`);
       return;
@@ -24,7 +24,7 @@ export const issueCommand: CommandHandler = async (ctx, { client }) => {
       `assignee: ${issue.assigneeAgentId ?? issue.assigneeUserId ?? "—"}`,
     ];
     const comment = await client
-      .getLatestIssueComment(issue.id, { onBehalfOfChatId: ctx.chatId })
+      .getLatestIssueComment(issue.id, { onBehalfOfChatId: ctx.chatId, onBehalfOfUserId: ctx.tgUserId })
       .catch(() => null);
     if (comment?.body) {
       lines.push(`последний комментарий: ${shorten(comment.body)}`);

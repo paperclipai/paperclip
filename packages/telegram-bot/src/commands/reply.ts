@@ -12,7 +12,7 @@ export const replyHandler: CommandHandler = async (ctx, { client, replyStore }) 
   const body = ctx.text.trim();
   if (!body) return;
   try {
-    await client.postIssueComment(target.issueId, body, { onBehalfOfChatId: ctx.chatId });
+    await client.postIssueComment(target.issueId, body, { onBehalfOfChatId: ctx.chatId, onBehalfOfUserId: ctx.tgUserId });
     await ctx.reply("Комментарий добавлен.");
   } catch (err) {
     const reason = err instanceof Error ? err.message : "неизвестная ошибка";

@@ -7,7 +7,7 @@ export const approveCommand: CommandHandler = async (ctx, { client }) => {
     return;
   }
   try {
-    await client.approveApproval(id, { onBehalfOfChatId: ctx.chatId });
+    await client.approveApproval(id, { onBehalfOfChatId: ctx.chatId, onBehalfOfUserId: ctx.tgUserId });
     await ctx.reply(`Approval ${id} одобрен.`);
   } catch (err) {
     const reason = err instanceof Error ? err.message : "неизвестная ошибка";
@@ -22,7 +22,7 @@ export const denyCommand: CommandHandler = async (ctx, { client }) => {
     return;
   }
   try {
-    await client.rejectApproval(id, { onBehalfOfChatId: ctx.chatId });
+    await client.rejectApproval(id, { onBehalfOfChatId: ctx.chatId, onBehalfOfUserId: ctx.tgUserId });
     await ctx.reply(`Approval ${id} отклонён.`);
   } catch (err) {
     const reason = err instanceof Error ? err.message : "неизвестная ошибка";

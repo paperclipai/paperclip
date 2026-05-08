@@ -51,6 +51,12 @@ type RequestOpts = {
   body?: unknown;
   /** Telegram chat id this request is acting on behalf of. */
   onBehalfOfChatId?: string | number | null;
+  /**
+   * Telegram user id this request is acting on behalf of. Preferred over
+   * chat id in group contexts where chat id is the group, not the user.
+   * In private chats user id == chat id, so either works.
+   */
+  onBehalfOfUserId?: string | number | null;
 };
 
 export class PaperclipClient {
@@ -80,6 +86,9 @@ export class PaperclipClient {
     };
     if (opts.onBehalfOfChatId !== undefined && opts.onBehalfOfChatId !== null) {
       headers["X-Telegram-Chat-Id"] = String(opts.onBehalfOfChatId);
+    }
+    if (opts.onBehalfOfUserId !== undefined && opts.onBehalfOfUserId !== null) {
+      headers["X-Telegram-User-Id"] = String(opts.onBehalfOfUserId);
     }
     let body: string | undefined;
     if (opts.body !== undefined) {
@@ -112,7 +121,7 @@ export class PaperclipClient {
 
   async createIssue(
     input: CreateIssueInput,
-    opts: { onBehalfOfChatId?: string | number | null } = {},
+    opts: { onBehalfOfChatId?: string | number | null; onBehalfOfUserId?: string | number | null } = {},
   ): Promise<IssueSummary> {
     return this.request<IssueSummary>({
       method: "POST",
@@ -124,12 +133,13 @@ export class PaperclipClient {
         ...(input.status ? { status: input.status } : {}),
       },
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
+      onBehalfOfUserId: opts.onBehalfOfUserId ?? null,
     });
   }
 
   async findIssue(
     identifierOrId: string,
-    opts: { onBehalfOfChatId?: string | number | null } = {},
+    opts: { onBehalfOfChatId?: string | number | null; onBehalfOfUserId?: string | number | null } = {},
   ): Promise<IssueSummary | null> {
     const trimmed = identifierOrId.trim();
     if (!trimmed) return null;
@@ -138,6 +148,7 @@ export class PaperclipClient {
       path: `/api/companies/${this.companyId}/issues`,
       query: { q: trimmed, limit: 5 },
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
+      onBehalfOfUserId: opts.onBehalfOfUserId ?? null,
     });
     if (!Array.isArray(list)) return null;
     const exact = list.find(
@@ -149,13 +160,14 @@ export class PaperclipClient {
 
   async getLatestIssueComment(
     issueId: string,
-    opts: { onBehalfOfChatId?: string | number | null } = {},
+    opts: { onBehalfOfChatId?: string | number | null; onBehalfOfUserId?: string | number | null } = {},
   ): Promise<IssueComment | null> {
     const list = await this.request<IssueComment[]>({
       method: "GET",
       path: `/api/issues/${issueId}/comments`,
       query: { limit: 1, order: "desc" },
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
+      onBehalfOfUserId: opts.onBehalfOfUserId ?? null,
     });
     if (!Array.isArray(list) || list.length === 0) return null;
     return list[0];
@@ -164,37 +176,40 @@ export class PaperclipClient {
   async postIssueComment(
     issueId: string,
     body: string,
-    opts: { onBehalfOfChatId?: string | number | null } = {},
+    opts: { onBehalfOfChatId?: string | number | null; onBehalfOfUserId?: string | number | null } = {},
   ): Promise<IssueComment> {
     return this.request<IssueComment>({
       method: "POST",
       path: `/api/issues/${issueId}/comments`,
       body: { body },
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
+      onBehalfOfUserId: opts.onBehalfOfUserId ?? null,
     });
   }
 
   async approveApproval(
     approvalId: string,
-    opts: { onBehalfOfChatId?: string | number | null; comment?: string } = {},
+    opts: { onBehalfOfChatId?: string | number | null; onBehalfOfUserId?: string | number | null; comment?: string } = {},
   ): Promise<unknown> {
     return this.request({
       method: "POST",
       path: `/api/approvals/${approvalId}/approve`,
       body: opts.comment ? { comment: opts.comment } : {},
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
+      onBehalfOfUserId: opts.onBehalfOfUserId ?? null,
     });
   }
 
   async rejectApproval(
     approvalId: string,
-    opts: { onBehalfOfChatId?: string | number | null; comment?: string } = {},
+    opts: { onBehalfOfChatId?: string | number | null; onBehalfOfUserId?: string | number | null; comment?: string } = {},
   ): Promise<unknown> {
     return this.request({
       method: "POST",
       path: `/api/approvals/${approvalId}/reject`,
       body: opts.comment ? { comment: opts.comment } : {},
       onBehalfOfChatId: opts.onBehalfOfChatId ?? null,
+      onBehalfOfUserId: opts.onBehalfOfUserId ?? null,
     });
   }
 }

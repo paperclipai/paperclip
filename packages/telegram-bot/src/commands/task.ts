@@ -26,7 +26,7 @@ export function makeTaskCommand(opts: { ceoAgentId: string }): CommandHandler {
           // CEO agent picks it up on next heartbeat without manual triage.
           status: "todo",
         },
-        { onBehalfOfChatId: ctx.chatId },
+        { onBehalfOfChatId: ctx.chatId, onBehalfOfUserId: ctx.tgUserId },
       );
       const ident = issue.identifier ?? issue.id;
       await ctx.reply(`Создал задачу ${ident}: ${issue.title ?? deriveTitle(text)}`);

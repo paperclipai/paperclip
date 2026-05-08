@@ -1,15 +1,23 @@
 import type { Db } from "@paperclipai/db";
 import { authUsers } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import type { RequestHandler } from "express";
 import { boardAuthService } from "../services/board-auth.js";
 import { logger } from "./logger.js";
 
 /**
- * Resolve `X-Telegram-Chat-Id` header into the linked auth_users user and
+ * Resolve Telegram identity headers into the linked auth_users user and
  * upgrade `req.actor` to that user (board-typed). Runs AFTER actorMiddleware,
  * so it only fires when a recognised agent token already authenticated the
  * request — i.e., the bot acting on-behalf-of a linked board user.
+ *
+ * Two headers supported:
+ *  - `X-Telegram-User-Id` (preferred — works in groups too, where chat id != user id)
+ *  - `X-Telegram-Chat-Id` (legacy — works in private chats where chat id == user id)
+ *
+ * If both present we try user-id first (more specific). DB column lookup is
+ * done with OR across telegram_user_id / telegram_chat_id so previously-linked
+ * accounts continue to work.
  *
  * Without this, on-behalf-of issue/comment/approval actions stay attributed
  * to the bot's agent account (`createdByUserId = null`), which hides them
@@ -21,22 +29,29 @@ import { logger } from "./logger.js";
 export function telegramChatActorMiddleware(db: Db): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
-    const headerVal = req.header("x-telegram-chat-id");
-    if (!headerVal) return next();
+    const userIdHeader = req.header("x-telegram-user-id")?.trim();
+    const chatIdHeader = req.header("x-telegram-chat-id")?.trim();
+    if (!userIdHeader && !chatIdHeader) return next();
     if (req.actor?.type !== "agent") return next();
 
-    const chatId = headerVal.trim();
-    if (!chatId) return next();
-
     try {
+      // Build OR predicate: match if either column equals its corresponding header.
+      const conditions = [];
+      if (userIdHeader) conditions.push(eq(authUsers.telegramUserId, userIdHeader));
+      if (chatIdHeader) conditions.push(eq(authUsers.telegramChatId, chatIdHeader));
+      const predicate = conditions.length === 1 ? conditions[0] : or(...conditions);
+
       const userRow = await db
         .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
         .from(authUsers)
-        .where(eq(authUsers.telegramChatId, chatId))
+        .where(predicate)
         .then((rows) => rows[0] ?? null);
 
       if (!userRow) {
-        logger.debug({ chatId }, "X-Telegram-Chat-Id header present but no linked user");
+        logger.debug(
+          { userIdHeader, chatIdHeader },
+          "Telegram identity headers present but no linked user",
+        );
         return next();
       }
 
@@ -54,7 +69,10 @@ export function telegramChatActorMiddleware(db: Db): RequestHandler {
         source: "telegram_chat_id",
       };
     } catch (err) {
-      logger.warn({ err, chatId }, "Failed to upgrade actor via X-Telegram-Chat-Id");
+      logger.warn(
+        { err, userIdHeader, chatIdHeader },
+        "Failed to upgrade actor via Telegram identity headers",
+      );
     }
     next();
   };
