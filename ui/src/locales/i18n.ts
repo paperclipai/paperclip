@@ -292,7 +292,8 @@ i18n.use(initReactI18next).init({
     },
   },
   lng: getInitialLanguage(),
-  fallbackLng: "en",
+  fallbackLng: ["en"],
+  fallbackNS: "common",
   supportedLngs: SUPPORTED_LANGUAGES as unknown as string[],
   nonExplicitSupportedLngs: true,
   load: "languageOnly",
@@ -300,12 +301,13 @@ i18n.use(initReactI18next).init({
   defaultNS: "common",
   returnEmptyString: false,
   returnNull: false,
-  saveMissing: import.meta.env.DEV,
+  returnObjects: false,
+  saveMissing: false,
   appendNamespaceToMissingKey: true,
   parseMissingKeyHandler: (key, defaultValue) => defaultValue ?? key,
   missingKeyHandler: (lngs, ns, key, _fallbackValue) => {
     if (import.meta.env.DEV) {
-      console.warn(`[i18n] missing key: ${ns}:${key} for ${Array.isArray(lngs) ? lngs.join(",") : lngs} — falling back to en`);
+      console.warn(`[i18n] missing key: ${ns}:${key} for ${Array.isArray(lngs) ? lngs.join(",") : lngs} — falling back to en → key`);
     }
   },
   interpolation: {
