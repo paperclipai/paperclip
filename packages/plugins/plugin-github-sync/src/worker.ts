@@ -1,12 +1,10 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import type { Goal, PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { createGoalSubtreeCache, isGoalInSyncedSubtree } from "./goal-subtree-cache.js";
+import { createSyncEngine, type SyncEngineConfig } from "./sync-engine.js";
 
-type GithubSyncConfig = {
-  repo: string;
-  host: string;
-  secretRef: string;
+type GithubSyncConfig = SyncEngineConfig & {
   syncedGoalIds: string[];
-  dryRun: boolean;
 };
 
 function parseConfig(raw: Record<string, unknown>): GithubSyncConfig {
@@ -21,33 +19,7 @@ function parseConfig(raw: Record<string, unknown>): GithubSyncConfig {
   };
 }
 
-/** Walk goal parentId chain; returns chain from the given goal up to root. */
-async function resolveGoalAncestors(
-  goalId: string,
-  companyId: string,
-  ctx: PluginContext,
-): Promise<Array<Pick<Goal, "id" | "title" | "level">>> {
-  const chain: Array<Pick<Goal, "id" | "title" | "level">> = [];
-  let currentId: string | null = goalId;
-  const visited = new Set<string>();
-
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
-    try {
-      const fetched = await ctx.goals.get(currentId, companyId);
-      if (!fetched) break;
-      chain.push({ id: fetched.id, title: fetched.title, level: fetched.level });
-      currentId = fetched.parentId;
-    } catch {
-      break;
-    }
-  }
-
-  return chain;
-}
-
-/** Strip event payload to safe metadata fields only (no PII, no secrets). */
-function sanitizeEvent(event: PluginEvent): Record<string, unknown> {
+function safeMeta(event: PluginEvent): Record<string, unknown> {
   return {
     eventId: event.eventId,
     eventType: event.eventType,
@@ -59,57 +31,77 @@ function sanitizeEvent(event: PluginEvent): Record<string, unknown> {
   };
 }
 
-async function handleSyncEvent(
+async function routeEvent(
   event: PluginEvent,
   ctx: PluginContext,
   config: GithubSyncConfig,
+  cache: ReturnType<typeof createGoalSubtreeCache>,
+  engine: ReturnType<typeof createSyncEngine>,
 ): Promise<void> {
-  const safePayload = sanitizeEvent(event);
+  const meta = safeMeta(event);
+  const issueId = event.entityId;
+
+  if (!issueId) {
+    ctx.logger.warn("github-sync: event has no entityId, skipping", meta);
+    return;
+  }
 
   const goalId =
     typeof (event.payload as Record<string, unknown>)?.["goalId"] === "string"
       ? ((event.payload as Record<string, unknown>)["goalId"] as string)
       : undefined;
 
-  let goalAncestors: Array<Pick<Goal, "id" | "title" | "level">> = [];
+  if (!goalId && config.syncedGoalIds.length > 0) {
+    ctx.logger.info("github-sync: issue has no goalId — out of synced goal subtree, skipping", meta);
+    return;
+  }
+
   if (goalId) {
+    let inScope: boolean;
     try {
-      goalAncestors = await resolveGoalAncestors(goalId, event.companyId, ctx);
+      inScope = await isGoalInSyncedSubtree(goalId, event.companyId, config.syncedGoalIds, cache, ctx);
     } catch (err) {
-      ctx.logger.warn("github-sync: failed to resolve goal ancestors (best-effort)", {
+      ctx.logger.warn("github-sync: failed to resolve goal subtree, skipping", {
+        ...meta,
         goalId,
         error: String(err),
       });
+      return;
+    }
+
+    if (!inScope) {
+      ctx.logger.info("github-sync: issue out of synced goal subtree, skipping", {
+        ...meta,
+        goalId,
+      });
+      return;
     }
   }
 
-  ctx.logger.info("github-sync: received event (no-op)", {
-    ...safePayload,
-    config: {
-      repo: config.repo,
-      host: config.host,
-      dryRun: config.dryRun,
-      syncedGoalIdCount: config.syncedGoalIds.length,
-    },
-    goalAncestors,
-  });
+  engine.scheduleSync(issueId, event.companyId, ctx, config);
 }
 
 const plugin = definePlugin({
   async setup(ctx) {
+    const cache = createGoalSubtreeCache();
+    const engine = createSyncEngine();
+
     ctx.events.on("issue.created", async (event) => {
       const config = parseConfig(await ctx.config.get());
-      await handleSyncEvent(event, ctx, config);
+      await routeEvent(event, ctx, config, cache, engine);
     });
 
     ctx.events.on("issue.updated", async (event) => {
       const config = parseConfig(await ctx.config.get());
-      await handleSyncEvent(event, ctx, config);
+      await routeEvent(event, ctx, config, cache, engine);
     });
 
     ctx.events.on("goal.updated", async (event) => {
-      const config = parseConfig(await ctx.config.get());
-      await handleSyncEvent(event, ctx, config);
+      cache.invalidate(event.companyId);
+      ctx.logger.info("github-sync: goal.updated — cache invalidated", {
+        companyId: event.companyId,
+        entityId: event.entityId,
+      });
     });
   },
 
