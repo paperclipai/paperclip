@@ -19,6 +19,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PAIRING_WINDOW_TTL_MS, STATE_KEY } from "./constants.js";
 import type {
+  ApprovalConfig,
   PairedChat,
   PairingHandshake,
   PairingState,
@@ -237,6 +238,32 @@ export async function getMessageContext(
 ): Promise<import("./types.js").MessageContext | undefined> {
   const current = await readPairing(ctx);
   return current.messageContexts?.[String(messageId)];
+}
+
+// ---------------------------------------------------------------------------
+// Approval config helpers
+// ---------------------------------------------------------------------------
+
+export function getApprovalConfig(
+  state: PairingState,
+  companyId: string,
+): ApprovalConfig | undefined {
+  return state.approvalByCompany?.[companyId];
+}
+
+export async function setApprovalConfig(
+  ctx: PluginContext,
+  companyId: string,
+  next: ApprovalConfig,
+): Promise<void> {
+  const current = await readPairing(ctx);
+  await writePairing(ctx, {
+    ...current,
+    approvalByCompany: {
+      ...(current.approvalByCompany ?? {}),
+      [companyId]: next,
+    },
+  });
 }
 
 /** Constant-time-ish equality for short verification codes. */

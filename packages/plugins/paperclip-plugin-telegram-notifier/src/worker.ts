@@ -32,8 +32,10 @@ import type {
 } from "@paperclipai/plugin-sdk";
 
 import {
+  AGENTS_MD_SNIPPET,
   CALLBACK_KIND,
   COMMENT_INLINE_LIMIT,
+  DEFAULT_PLAN_TEMPLATE,
   JOB_KEYS,
   POLL_LOOP_DEADLINE_MS,
   TOOL_NAMES,
@@ -44,6 +46,8 @@ import {
   buildAssignPickerMessage,
   buildAssignedConfirmation,
   buildBudgetMessage,
+  buildConfirmationDecidedMessage,
+  buildConfirmationMessage,
   buildCommandsDisabledMessage,
   buildCommentMessage,
   buildHelpMessage,
@@ -67,6 +71,7 @@ import {
   codesMatch,
   findCompanyForChat,
   generateVerificationCode,
+  getApprovalConfig,
   getMessageContext,
   getPaired,
   isHandshakeExpired,
@@ -78,10 +83,12 @@ import {
   readPairing,
   removePairedChat,
   saveMessageContext,
+  setApprovalConfig,
   setPairedChat,
 } from "./pairing.js";
 import { createTelegramClient } from "./telegram-client.js";
 import type {
+  ApprovalConfig,
   InlineKeyboard,
   PluginConfig,
   TelegramMessage,
@@ -216,6 +223,176 @@ async function sendIssueCreatedConfirmation(
 }
 
 // ---------------------------------------------------------------------------
+// Paperclip API helpers — used by callback handlers to resolve interactions
+// without a dashboard hop. The plugin worker is in-process with the server,
+// so unauth POST against `paperclipBaseUrl` (default `http://localhost:3100`)
+// hits the loopback API as `local-board` actor. For non-localhost deployments
+// a future SDK extension would be needed; for now, dev / self-hosted setups
+// work end-to-end.
+// ---------------------------------------------------------------------------
+
+async function callPaperclipApi(
+  config: PluginConfig,
+  path: string,
+  body: unknown = {},
+): Promise<{ ok: boolean; status: number; data: unknown; error?: string }> {
+  const baseUrl = config.paperclipBaseUrl ?? "http://localhost:3100";
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text().catch(() => "");
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    if (!res.ok) {
+      const apiError =
+        data && typeof data === "object"
+          ? (data as { error?: string }).error
+          : undefined;
+      const errMsg = apiError ?? text.slice(0, 200) ?? `HTTP ${res.status}`;
+      return { ok: false, status: res.status, data, error: errMsg };
+    }
+    return { ok: true, status: res.status, data };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function acceptInteraction(
+  config: PluginConfig,
+  issueId: string,
+  interactionId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const result = await callPaperclipApi(
+    config,
+    `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/accept`,
+    {},
+  );
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
+}
+
+async function rejectInteraction(
+  config: PluginConfig,
+  issueId: string,
+  interactionId: string,
+  reason: string | undefined,
+): Promise<{ ok: boolean; error?: string }> {
+  const body = reason && reason.trim().length > 0 ? { reason: reason.trim() } : {};
+  const result = await callPaperclipApi(
+    config,
+    `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/reject`,
+    body,
+  );
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
+}
+
+/**
+ * Fetch the full prompt text of a `request_confirmation` interaction. The
+ * activity-log payload that drives `approval.created` only carries metadata
+ * (id, kind, status), not the prompt body, so we round-trip to the API to
+ * render the body in the Telegram message.
+ */
+async function fetchInteractionPrompt(
+  config: PluginConfig,
+  issueId: string,
+  interactionId: string,
+): Promise<string | undefined> {
+  const baseUrl = config.paperclipBaseUrl ?? "http://localhost:3100";
+  try {
+    const res = await fetch(
+      `${baseUrl}/api/issues/${encodeURIComponent(issueId)}/interactions`,
+      { method: "GET", headers: { Accept: "application/json" } },
+    );
+    if (!res.ok) return undefined;
+    const items = (await res.json()) as Array<{
+      id: string;
+      payload?: { prompt?: string };
+      summary?: string | null;
+      title?: string | null;
+    }>;
+    const ix = items.find((i) => i.id === interactionId);
+    if (!ix) return undefined;
+    return (
+      ix.payload?.prompt ?? ix.summary ?? ix.title ?? undefined
+    ) as string | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Send a `request_confirmation` notification with inline Approve / Decline
+ * buttons, persist a `confirmation_decision` MessageContext keyed off the
+ * sent message_id, and return the message_id for callers that want to
+ * follow up (rare). Returns undefined on send failure.
+ */
+async function sendConfirmationToCompanyChat(
+  ctx: PluginContext,
+  config: PluginConfig,
+  companyId: string,
+  input: {
+    issueId: string;
+    interactionId: string;
+    identifier: string;
+    title: string;
+    promptText?: string;
+    requestedBy?: string;
+  },
+): Promise<{ message_id: number } | undefined> {
+  if (!config.botToken) return undefined;
+  const state = await readPairing(ctx);
+  const chat = getPaired(state, companyId);
+  if (!chat) return undefined;
+  const client = await createTelegramClient(ctx, config.botToken);
+  const message = buildConfirmationMessage({
+    baseUrl: config.paperclipBaseUrl ?? "http://localhost:3100",
+    issueId: input.issueId,
+    identifier: input.identifier,
+    title: input.title,
+    body: input.promptText,
+    requestedBy: input.requestedBy,
+  });
+  try {
+    const result = await client.sendMessage({
+      chatId: chat.chatId,
+      text: message.text,
+      keyboard: message.keyboard.length > 0 ? message.keyboard : undefined,
+      silent: config.silent ?? false,
+    });
+    if (result?.message_id) {
+      await saveMessageContext(ctx, result.message_id, {
+        kind: "confirmation_decision",
+        companyId,
+        issueId: input.issueId,
+        interactionId: input.interactionId,
+        identifier: input.identifier,
+        title: input.title,
+        promptText: input.promptText,
+        requesterLabel: input.requestedBy,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return result;
+  } catch (err) {
+    ctx.logger.warn("telegram-notifier: send confirmation failed", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Event handlers (Paperclip → Telegram)
 // ---------------------------------------------------------------------------
 
@@ -226,6 +403,67 @@ async function onApprovalCreated(
 ): Promise<void> {
   if (!notifyEnabled(config, "approvals")) return;
   const payload = asRecord(event.payload) ?? {};
+  const baseUrl = config.paperclipBaseUrl ?? "http://localhost:3100";
+
+  // Two flavours arrive on this event lane:
+  //   1. Top-level approval entities (existing flow — has approvalId).
+  //   2. Issue-thread interactions (suggest_tasks / ask_user_questions /
+  //      request_confirmation) — entityType="issue", payload carries
+  //      `interactionKind` and `interactionId`.
+  const interactionKind = asString(payload.interactionKind);
+  const interactionId = asString(payload.interactionId);
+  if (interactionKind) {
+    // Skip suggestion-style interactions — the operator doesn't decide on
+    // those from Telegram, the agent author handles them. Confirmations
+    // are the one kind worth pushing.
+    if (interactionKind !== "request_confirmation") return;
+    const issueId = asString(event.entityId);
+    if (!issueId || !interactionId) return;
+    let title = "Confirmation requested";
+    let identifier = asString(payload.identifier) ?? issueId.slice(0, 8);
+    let requestedBy: string | undefined;
+    try {
+      const issue = await ctx.issues.get(issueId, event.companyId);
+      if (issue) {
+        title = issue.title ?? title;
+        identifier = issue.identifier ?? identifier;
+      }
+    } catch {
+      /* best-effort — fall through with payload values */
+    }
+    // Activity-log payload only carries interaction metadata (id, kind,
+    // status), not the prompt body. Round-trip through the interactions
+    // endpoint to render the actual prompt in the Telegram message.
+    const promptText =
+      (await fetchInteractionPrompt(config, issueId, interactionId)) ??
+      asString(payload.bodySnippet) ??
+      asString(payload.body) ??
+      undefined;
+    if (event.actorType === "agent" && event.actorId) {
+      try {
+        const agent = await ctx.agents.get(event.actorId, event.companyId);
+        if (agent?.name) requestedBy = agent.name;
+      } catch {
+        /* best-effort */
+      }
+    } else if (event.actorType === "user" && event.actorId) {
+      // Board-created confirmations come through with `actorId` like
+      // `local-board`. Surface the raw id — it's the most accurate label
+      // we have without an agents-style API for users.
+      requestedBy = event.actorId;
+    }
+    await sendConfirmationToCompanyChat(ctx, config, event.companyId, {
+      issueId,
+      interactionId,
+      identifier,
+      title,
+      promptText,
+      requestedBy,
+    });
+    return;
+  }
+
+  // Legacy / approval-entity path.
   const approvalId = asString(event.entityId) ?? asString(payload.approvalId);
   if (!approvalId) return;
   await sendToCompanyChat(
@@ -233,7 +471,7 @@ async function onApprovalCreated(
     config,
     event.companyId,
     buildApprovalMessage({
-      baseUrl: config.paperclipBaseUrl ?? "http://localhost:3100",
+      baseUrl,
       approvalId,
       title: asString(payload.title) ?? "Approval requested",
       reason: asString(payload.reason),
@@ -280,10 +518,67 @@ async function onCommentCreated(
 ): Promise<void> {
   if (!notifyEnabled(config, "comments")) return;
   const payload = asRecord(event.payload) ?? {};
-  const issueId = asString(payload.issueId);
+  // The activity-log event payload only carries diff-style fields:
+  // `commentId`, `identifier`, `issueTitle`, `bodySnippet` (truncated),
+  // and `currentReferencedIssues`. The full comment body and the author's
+  // agent ID are NOT in the payload — we have to fetch the comment record
+  // to get them. Using `bodySnippet` alone produces a truncated notification
+  // and "Someone wrote:" fallback, which is what was shipping before.
+  // For `issue.comment.created`, `event.entityId` is the issue UUID (the
+  // entityType is "issue"). The activity-log payload only carries
+  // `commentId`, `identifier`, `issueTitle`, `bodySnippet` — no issueId.
+  // Falling through to event.entityId is what makes the comment_thread
+  // MessageContext save below actually run; without it, callback button
+  // taps (Reply / Show full) get a "Reply context expired" alert.
+  const issueId =
+    asString(event.entityId) ??
+    asString(payload.issueId) ??
+    asString(payload.entityId);
+  const commentId = asString(payload.commentId);
   const identifier =
     asString(payload.identifier) ?? asString(payload.issueIdentifier) ?? "?";
-  const fullBody = asString(payload.body) ?? asString(payload.text) ?? "";
+  let fullBody =
+    asString(payload.body) ??
+    asString(payload.text) ??
+    asString(payload.bodySnippet) ??
+    "";
+  let authorName =
+    asString(payload.authorName) ?? asString(payload.actorName);
+
+  // Hydrate full body + author name from the comment record itself when
+  // we have an issueId. The activity-log payload truncates body and omits
+  // author identity.
+  if (issueId && commentId) {
+    try {
+      const comments = await ctx.issues.listComments(issueId, event.companyId);
+      const comment = comments.find(
+        (c) => (c as { id?: string }).id === commentId,
+      );
+      if (comment) {
+        const cBody = (comment as { body?: string }).body;
+        if (typeof cBody === "string" && cBody.length > 0) fullBody = cBody;
+        if (!authorName) {
+          const cAuthorId = (comment as { authorAgentId?: string | null })
+            .authorAgentId;
+          if (cAuthorId) {
+            try {
+              const agent = await ctx.agents.get(cAuthorId, event.companyId);
+              if (agent?.name) authorName = agent.name;
+            } catch {
+              // ignore — fall back to "Someone"
+            }
+          }
+        }
+      }
+    } catch (err) {
+      ctx.logger.warn("telegram-notifier: comment hydrate failed", {
+        commentId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (!authorName) authorName = "Someone";
+
   const inlineLimit = COMMENT_INLINE_LIMIT;
   const hasFullBody = fullBody.length > inlineLimit;
   const inlineBody = hasFullBody
@@ -304,10 +599,7 @@ async function onCommentCreated(
     issueId,
     issueTitle:
       asString(payload.issueTitle) ?? asString(payload.title) ?? "(no title)",
-    authorName:
-      asString(payload.authorName) ??
-      asString(payload.actorName) ??
-      "Someone",
+    authorName,
     body: inlineBody,
     hasFullBody,
   });
@@ -716,6 +1008,22 @@ async function handleSlashCommand(
   }
 }
 
+/**
+ * Best-effort display label for a Telegram user — first_name plus last_name
+ * if present, falling back to @username, then the numeric id. Used as the
+ * "Approved by …" / "Declined by …" line in the confirmation closeout.
+ */
+function telegramUserLabel(
+  from: NonNullable<TelegramUpdate["callback_query"]>["from"],
+): string {
+  const fn = from.first_name ?? "";
+  const ln = from.last_name ?? "";
+  const full = `${fn} ${ln}`.trim();
+  if (full) return full;
+  if (from.username) return `@${from.username}`;
+  return `tg:${from.id}`;
+}
+
 function escapeMdText(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   // Reuse the same MarkdownV2 escape rules used by format.ts.
@@ -730,12 +1038,21 @@ async function handleMessage(
   const consumed = await handleHandshakeMessage(ctx, config, message);
   if (consumed) return;
 
-  // Reply-to: if this message quotes one of our previous bot messages and we
-  // have a comment_thread context saved for that message_id, post the user's
-  // text as a comment back to Paperclip.
+  // Reply-to: if this message quotes one of our previous bot messages, route
+  // by the saved MessageContext kind:
+  //   - comment_thread → post the user's text as a comment on the issue.
+  //   - confirmation_decline_reason → reject the interaction with the text
+  //     as the reason and edit the original confirmation message.
   const replyTarget = (message as { reply_to_message?: { message_id: number } })
     .reply_to_message;
   if (replyTarget?.message_id && message.text) {
+    const handledDecline = await handleConfirmationDeclineReply(
+      ctx,
+      config,
+      message,
+      replyTarget.message_id,
+    );
+    if (handledDecline) return;
     const handled = await handleCommentReply(
       ctx,
       config,
@@ -746,6 +1063,71 @@ async function handleMessage(
   }
 
   await handleSlashCommand(ctx, config, message);
+}
+
+async function handleConfirmationDeclineReply(
+  ctx: PluginContext,
+  config: PluginConfig,
+  message: TelegramMessage,
+  replyToMessageId: number,
+): Promise<boolean> {
+  const context = await getMessageContext(ctx, replyToMessageId);
+  if (!context || context.kind !== "confirmation_decline_reason") return false;
+  const incomingChatId = String(message.chat.id);
+  const pairing = await readPairing(ctx);
+  const found = findCompanyForChat(pairing, incomingChatId);
+  if (!found || found.companyId !== context.companyId) return false;
+  const reason = (message.text ?? "").trim();
+  if (!reason) {
+    await replyTo(ctx, config, incomingChatId, {
+      text: "*Empty reason.* Reply with a non-empty decline reason\\.",
+      keyboard: [],
+    });
+    return true;
+  }
+  const result = await rejectInteraction(
+    config,
+    context.issueId,
+    context.interactionId,
+    reason,
+  );
+  if (!result.ok) {
+    await replyTo(ctx, config, incomingChatId, {
+      text: `*Decline failed*\n${escapeMdText(result.error ?? "unknown error")}`,
+      keyboard: [],
+    });
+    return true;
+  }
+  // Replace the original confirmation message body with the closeout text
+  // and strip the inline keyboard so the chat history shows the resolution.
+  if (config.botToken) {
+    try {
+      const client = await createTelegramClient(ctx, config.botToken);
+      const closeout = buildConfirmationDecidedMessage({
+        outcome: "declined",
+        identifier: context.identifier,
+        title: context.title,
+        decider: context.decliner,
+        reason,
+        promptText: context.promptText,
+      });
+      await client.editMessageText({
+        chatId: incomingChatId,
+        messageId: context.originalMessageId,
+        text: closeout.text,
+        keyboard: closeout.keyboard,
+      });
+    } catch (err) {
+      ctx.logger.warn("telegram-notifier: edit decline closeout failed", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  await replyTo(ctx, config, incomingChatId, {
+    text: `*✅ Declined ${escapeMdText(context.identifier)}* with your reason\\.`,
+    keyboard: [],
+  });
+  return true;
 }
 
 async function handleCommentReply(
@@ -941,6 +1323,90 @@ async function handleCallbackQuery(
       await client.answerCallbackQuery({ callbackQueryId: query.id });
       return;
     }
+    if (data === CALLBACK_KIND.confirmAccept) {
+      const context = await getMessageContext(ctx, query.message.message_id);
+      if (!context || context.kind !== "confirmation_decision") {
+        await client.answerCallbackQuery({
+          callbackQueryId: query.id,
+          text: "Confirmation context expired. Open the issue in Paperclip.",
+          showAlert: true,
+        });
+        return;
+      }
+      const result = await acceptInteraction(
+        config,
+        context.issueId,
+        context.interactionId,
+      );
+      if (!result.ok) {
+        await client.answerCallbackQuery({
+          callbackQueryId: query.id,
+          text: `Approve failed: ${result.error ?? "unknown error"}`.slice(0, 200),
+          showAlert: true,
+        });
+        return;
+      }
+      const decider = telegramUserLabel(query.from);
+      const closeout = buildConfirmationDecidedMessage({
+        outcome: "approved",
+        identifier: context.identifier,
+        title: context.title,
+        decider,
+        promptText: context.promptText,
+      });
+      try {
+        await client.editMessageText({
+          chatId: String(query.message.chat.id),
+          messageId: query.message.message_id,
+          text: closeout.text,
+          keyboard: closeout.keyboard,
+        });
+      } catch (err) {
+        ctx.logger.warn("telegram-notifier: edit approve closeout failed", {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      await client.answerCallbackQuery({
+        callbackQueryId: query.id,
+        text: "Approved",
+      });
+      return;
+    }
+    if (data === CALLBACK_KIND.confirmDecline) {
+      const context = await getMessageContext(ctx, query.message.message_id);
+      if (!context || context.kind !== "confirmation_decision") {
+        await client.answerCallbackQuery({
+          callbackQueryId: query.id,
+          text: "Confirmation context expired. Open the issue in Paperclip.",
+          showAlert: true,
+        });
+        return;
+      }
+      const decliner = telegramUserLabel(query.from);
+      const sent = await client.sendMessage({
+        chatId: String(query.message.chat.id),
+        text: `*Decline ${escapeMdText(context.identifier)}*\nReply with the reason\\. The interaction will be rejected when you send your reason\\.`,
+        forceReply: { placeholder: `Reason for declining ${context.identifier}` },
+        replyToMessageId: query.message.message_id,
+      });
+      await saveMessageContext(ctx, sent.message_id, {
+        kind: "confirmation_decline_reason",
+        companyId: context.companyId,
+        issueId: context.issueId,
+        interactionId: context.interactionId,
+        identifier: context.identifier,
+        title: context.title,
+        originalMessageId: query.message.message_id,
+        promptText: context.promptText,
+        decliner,
+        createdAt: new Date().toISOString(),
+      });
+      await client.answerCallbackQuery({
+        callbackQueryId: query.id,
+        text: "Reply with the decline reason",
+      });
+      return;
+    }
     // Unknown callback — ack silently to clear the loading spinner.
     await client.answerCallbackQuery({ callbackQueryId: query.id });
   } catch (err) {
@@ -1051,6 +1517,95 @@ function isWithinLastNHours(value: Date | string | null | undefined, hours: numb
   return now.getTime() - ts <= hours * 60 * 60 * 1000;
 }
 
+/**
+ * Build + send the morning digest for a single company. Returns a small
+ * summary so callers can surface it (UI button, log line). When `force` is
+ * true, the daily dedup guard is skipped so the operator can preview the
+ * digest from the settings page without waiting for the scheduled hour.
+ */
+async function sendDigestForCompany(
+  ctx: PluginContext,
+  config: PluginConfig,
+  companyId: string,
+  options: { force?: boolean } = {},
+): Promise<{ sent: boolean; reason?: string; counts?: { done: number; inProgress: number; todo: number } }> {
+  const state = await readPairing(ctx);
+  const chat = getPaired(state, companyId);
+  if (!chat) return { sent: false, reason: "Company has no paired chat." };
+
+  const now = new Date();
+  const today = localDateKey(now);
+  if (!options.force) {
+    if (chat.lastDigestSentOn === today) {
+      return { sent: false, reason: "Digest already sent today." };
+    }
+  }
+
+  let mine: Awaited<ReturnType<PluginContext["issues"]["list"]>>;
+  try {
+    // Company-wide digest, not personal. Top-of-chain operators (CEO /
+    // PS Lead / PS Manager) typically don't carry tickets directly — their
+    // reports do. Filtering by `assigneeAgentId == operateAsAgentId`
+    // produced 0/0/0 every morning for those operators because their
+    // personal queue was always empty even when the company shipped.
+    mine = await ctx.issues.list({ companyId, limit: 200 });
+  } catch (err) {
+    ctx.logger.warn("telegram-notifier: digest issue.list failed", {
+      companyId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return { sent: false, reason: "Failed to read issues." };
+  }
+
+  const doneYesterday = mine.filter(
+    (i) => i.status === "done" && isWithinLastNHours(i.completedAt, 36, now),
+  );
+  const inProgress = mine.filter((i) => i.status === "in_progress");
+  const todo = mine.filter((i) => i.status === "todo");
+
+  const toDigest = (i: typeof mine[number]) => ({
+    identifier: i.identifier ?? i.id.slice(0, 8),
+    title: i.title,
+    status: i.status,
+  });
+
+  const message = buildMorningDigest({
+    date: today,
+    doneYesterday: doneYesterday.map(toDigest),
+    inProgress: inProgress.map(toDigest),
+    todo: todo.map(toDigest),
+  });
+
+  try {
+    await sendToCompanyChat(ctx, config, companyId, message);
+    await patchPairedChat(ctx, companyId, { lastDigestSentOn: today });
+    ctx.logger.info("telegram-notifier: digest sent", {
+      companyId,
+      done: doneYesterday.length,
+      inProgress: inProgress.length,
+      todo: todo.length,
+      forced: !!options.force,
+    });
+    return {
+      sent: true,
+      counts: {
+        done: doneYesterday.length,
+        inProgress: inProgress.length,
+        todo: todo.length,
+      },
+    };
+  } catch (err) {
+    ctx.logger.warn("telegram-notifier: digest send failed", {
+      companyId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      sent: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 async function runMorningDigestIfDue(
   ctx: PluginContext,
   config: PluginConfig,
@@ -1066,64 +1621,13 @@ async function runMorningDigestIfDue(
     if (day === 0 || day === 6) return;
   }
 
-  const today = localDateKey(now);
   const state = await readPairing(ctx);
   const paired = listPairedCompanies(state);
   if (paired.length === 0) return;
 
   for (const { companyId, chat } of paired) {
     if (!chat.operateAsAgentId) continue;
-    if (chat.lastDigestSentOn === today) continue;
-
-    const operateAsAgentId = chat.operateAsAgentId;
-    let mine: Awaited<ReturnType<PluginContext["issues"]["list"]>>;
-    try {
-      mine = await ctx.issues.list({
-        companyId,
-        assigneeAgentId: operateAsAgentId,
-        limit: 200,
-      });
-    } catch (err) {
-      ctx.logger.warn("telegram-notifier: digest issue.list failed", {
-        companyId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-      continue;
-    }
-    const doneYesterday = mine.filter(
-      (i) => i.status === "done" && isWithinLastNHours(i.completedAt, 36, now),
-    );
-    const inProgress = mine.filter((i) => i.status === "in_progress");
-    const todo = mine.filter((i) => i.status === "todo");
-
-    const toDigest = (i: typeof mine[number]) => ({
-      identifier: i.identifier ?? i.id.slice(0, 8),
-      title: i.title,
-      status: i.status,
-    });
-
-    const message = buildMorningDigest({
-      date: localDateKey(now),
-      doneYesterday: doneYesterday.map(toDigest),
-      inProgress: inProgress.map(toDigest),
-      todo: todo.map(toDigest),
-    });
-
-    try {
-      await sendToCompanyChat(ctx, config, companyId, message);
-      await patchPairedChat(ctx, companyId, { lastDigestSentOn: today });
-      ctx.logger.info("telegram-notifier: digest sent", {
-        companyId,
-        done: doneYesterday.length,
-        inProgress: inProgress.length,
-        todo: todo.length,
-      });
-    } catch (err) {
-      ctx.logger.warn("telegram-notifier: digest send failed", {
-        companyId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await sendDigestForCompany(ctx, config, companyId);
   }
 }
 
@@ -1429,6 +1933,58 @@ const plugin = definePlugin({
       },
     );
 
+    // ─── getApprovalConfig (agent-callable) ─────────────────────────────
+    //
+    // Agents call this before posting their plan to discover (a) whether
+    // they're configured to gate at all, (b) who to @-mention as approver,
+    // and (c) which template to use. AGENTS.md instructions reference this
+    // tool by name — the plugin is the source of truth for approval policy.
+    ctx.tools.register(
+      TOOL_NAMES.getApprovalConfig,
+      {
+        displayName: "Get plan-approval config",
+        description:
+          "Returns the configured approver and whether the calling agent must gate plans before acting. Pass `agentId` to get caller-specific resolution.",
+        parametersSchema: {
+          type: "object",
+          required: ["companyId"],
+          properties: {
+            companyId: { type: "string" },
+            agentId: { type: "string" },
+          },
+        },
+      },
+      async (params) => {
+        const p = (params ?? {}) as { companyId?: string; agentId?: string };
+        if (!p.companyId) return { error: "companyId is required" };
+        const state = await readPairing(ctx);
+        const config = getApprovalConfig(state, p.companyId);
+        const approver = await resolveApprover(p.companyId, config);
+        const enabled = config?.enabled === true;
+        const requiresApproval = !!(
+          enabled &&
+          p.agentId &&
+          config?.agents?.[p.agentId]?.requiresApproval
+        );
+        const template = p.agentId
+          ? templateForAgent(config, p.agentId)
+          : DEFAULT_PLAN_TEMPLATE;
+        return {
+          content: enabled
+            ? requiresApproval
+              ? `Gate is ON. Post plan, then request_confirmation. Approver: ${approver?.name ?? "(unresolved)"}.`
+              : `Gate is OFF for this agent. Proceed without confirmation.`
+            : `Approval workflow is not enabled for this company.`,
+          data: {
+            enabled,
+            requiresApproval,
+            approver,
+            template,
+          },
+        };
+      },
+    );
+
     // ─── UI bridge: data + actions for the settings page ────────────────
     //
     // The settings page renders the same operations as the agent tools, but
@@ -1493,6 +2049,150 @@ const plugin = definePlugin({
         });
         return { items: [] };
       }
+    });
+
+    /**
+     * Resolve the approver agent for a company. Resolution order:
+     *   1. The company's operate-as agent (if paired and set) — this is the
+     *      primary path. The operate-as agent is the persona the operator
+     *      already trusts to act for the org, so it's the natural approver.
+     *   2. Explicit `approverAgentId` in approval config (legacy escape hatch).
+     *   3. Role-based fallback: exact `ceo` match, then any role containing
+     *      `lead` (covers `team-lead`, `tech-lead`, etc.).
+     */
+    async function resolveApprover(
+      companyId: string,
+      config: ApprovalConfig | undefined,
+    ): Promise<{ id: string; name: string } | null> {
+      try {
+        const state = await readPairing(ctx);
+        const operateAsId = getPaired(state, companyId)?.operateAsAgentId;
+        const agents = await ctx.agents.list({ companyId });
+        if (operateAsId) {
+          const operateAs = agents.find((a) => a.id === operateAsId);
+          if (operateAs) return { id: operateAs.id, name: operateAs.name };
+        }
+        if (config?.approverAgentId) {
+          const explicit = agents.find((a) => a.id === config.approverAgentId);
+          if (explicit) return { id: explicit.id, name: explicit.name };
+        }
+        const exactCeo = agents.find(
+          (a) => (a.role ?? "").toLowerCase() === "ceo",
+        );
+        const anyLead = agents.find((a) =>
+          (a.role ?? "").toLowerCase().includes("lead"),
+        );
+        const fallback = exactCeo ?? anyLead;
+        return fallback ? { id: fallback.id, name: fallback.name } : null;
+      } catch (err) {
+        ctx.logger.warn("telegram-notifier: resolveApprover failed", {
+          companyId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+      }
+    }
+
+    function templateForAgent(
+      config: ApprovalConfig | undefined,
+      agentId: string,
+    ): string {
+      const override = config?.agents?.[agentId]?.template;
+      return override && override.trim().length > 0
+        ? override
+        : DEFAULT_PLAN_TEMPLATE;
+    }
+
+    /**
+     * Per-company approval config for the settings UI. Includes resolved
+     * approver and the canonical AGENTS.md snippet so the UI can render the
+     * Copy-snippet button with substituted template per agent.
+     */
+    ctx.data.register("approvalConfig", async (params) => {
+      const companyId =
+        typeof (params as { companyId?: unknown })?.companyId === "string"
+          ? ((params as { companyId: string }).companyId as string)
+          : undefined;
+      if (!companyId) {
+        return {
+          config: null,
+          agents: [],
+          resolvedApprover: null,
+          defaultTemplate: DEFAULT_PLAN_TEMPLATE,
+          snippetWrapper: AGENTS_MD_SNIPPET,
+          companyPrefix: null,
+          dashboardBaseUrl: "http://localhost:3100",
+        };
+      }
+      const state = await readPairing(ctx);
+      const config = getApprovalConfig(state, companyId);
+      let agents: Array<{ id: string; label: string; role?: string }> = [];
+      try {
+        const list = await ctx.agents.list({ companyId });
+        agents = list.map((a) => ({ id: a.id, label: a.name, role: a.role }));
+      } catch {
+        /* best-effort */
+      }
+      // companyPrefix (issuePrefix) drives the dashboard URL pattern
+      // <base>/<prefix>/agents/<id>/instructions for the Edit-instructions
+      // quick link surfaced next to Copy snippet.
+      let companyPrefix: string | null = null;
+      try {
+        const company = await ctx.companies.get(companyId);
+        companyPrefix =
+          (company as { issuePrefix?: string } | null)?.issuePrefix ?? null;
+      } catch {
+        /* best-effort */
+      }
+      const pluginConfig = await loadConfig(ctx);
+      const dashboardBaseUrl =
+        pluginConfig.paperclipBaseUrl ?? "http://localhost:3100";
+      const resolvedApprover = await resolveApprover(companyId, config);
+      return {
+        config: config ?? null,
+        agents,
+        resolvedApprover,
+        defaultTemplate: DEFAULT_PLAN_TEMPLATE,
+        snippetWrapper: AGENTS_MD_SNIPPET,
+        companyPrefix,
+        dashboardBaseUrl,
+      };
+    });
+
+    /**
+     * Persist per-company approval config. The UI calls this whenever the
+     * operator toggles enabled, picks an approver, or edits per-agent
+     * participation/templates. Replaces the whole config blob — caller
+     * should send the merged value, not a patch.
+     */
+    ctx.actions.register("setApprovalConfig", async (params) => {
+      const p = (params ?? {}) as {
+        companyId?: string;
+        config?: ApprovalConfig;
+      };
+      if (!p.companyId) throw new Error("companyId is required");
+      if (!p.config || typeof p.config !== "object") {
+        throw new Error("config is required");
+      }
+      const safe: ApprovalConfig = {
+        enabled: p.config.enabled === true,
+        approverAgentId:
+          typeof p.config.approverAgentId === "string"
+            ? p.config.approverAgentId
+            : null,
+        agents: {},
+      };
+      const inAgents = (p.config.agents ?? {}) as Record<string, unknown>;
+      for (const [agentId, raw] of Object.entries(inAgents)) {
+        if (!raw || typeof raw !== "object") continue;
+        const r = raw as { requiresApproval?: unknown; template?: unknown };
+        safe.agents[agentId] = {
+          requiresApproval: r.requiresApproval === true,
+          template: typeof r.template === "string" ? r.template : undefined,
+        };
+      }
+      await setApprovalConfig(ctx, p.companyId, safe);
+      return { ok: true, companyId: p.companyId };
     });
 
     /**
@@ -1672,9 +2372,31 @@ const plugin = definePlugin({
     ctx.actions.register("sendTest", async (params) =>
       doSendTestForCompany(requireCompanyParam(params)),
     );
+    /**
+     * Validate the configured bot token by calling Telegram's getMe.
+     * Independent of any company pairing — exercises the credential alone.
+     */
+    ctx.actions.register("testBotConnection", async () => {
+      const config = await loadConfig(ctx);
+      if (!config.botToken) {
+        throw new Error("No bot token configured.");
+      }
+      const client = await createTelegramClient(ctx, config.botToken);
+      try {
+        const me = await client.getMe();
+        return {
+          ok: true,
+          content: `Connected as @${me.username ?? "(no username)"}`,
+          data: { botUsername: me.username, botId: me.id },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Telegram getMe failed: ${msg}`);
+      }
+    });
 
     ctx.logger.info(
-      "telegram-notifier: subscribed to 6 events, registered 1 job, 5 tools, 5 actions, 3 data handlers",
+      "telegram-notifier: subscribed to 6 events, registered 1 job, 6 tools, 7 actions, 4 data handlers",
     );
   },
 

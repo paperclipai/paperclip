@@ -44,6 +44,18 @@ export interface TelegramClient {
     messageId: number;
     keyboard?: InlineKeyboard;
   }): Promise<void>;
+  /**
+   * Replace both the text and (optionally) the inline-keyboard of a previously
+   * sent message. Used to close out a confirmation message after Approve /
+   * Decline so the chat history shows the resolution and the buttons stop
+   * accepting input.
+   */
+  editMessageText(params: {
+    chatId: string;
+    messageId: number;
+    text: string;
+    keyboard?: InlineKeyboard;
+  }): Promise<void>;
 }
 
 export async function createTelegramClient(
@@ -137,6 +149,24 @@ export async function createTelegramClient(
         body.reply_markup = { inline_keyboard: [] };
       }
       await call<unknown>("editMessageReplyMarkup", body);
+    },
+    async editMessageText({ chatId, messageId, text, keyboard }) {
+      // Reuse the same URL-sanitization rules as sendMessage so a confirmation
+      // closeout message can't accidentally contain a localhost URL button.
+      const safe = sanitizeKeyboardForTelegram(text, keyboard);
+      const body: Record<string, unknown> = {
+        chat_id: chatId,
+        message_id: messageId,
+        text: safe.text,
+        parse_mode: "MarkdownV2",
+        disable_web_page_preview: true,
+      };
+      if (safe.keyboard && safe.keyboard.length > 0) {
+        body.reply_markup = { inline_keyboard: safe.keyboard };
+      } else {
+        body.reply_markup = { inline_keyboard: [] };
+      }
+      await call<unknown>("editMessageText", body);
     },
   };
 }

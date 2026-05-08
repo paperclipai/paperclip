@@ -68,6 +68,40 @@ export interface PairingState {
    * the message rather than embedding all the IDs in the data string.
    */
   messageContexts?: Record<string, MessageContext>;
+  /**
+   * Per-company plan-approval workflow config. When enabled, agents listed
+   * in `agents[*].requiresApproval = true` post a plan + `request_confirmation`
+   * before acting; the configured approver decides via [Approve]/[Decline]
+   * inline-keyboard buttons in Telegram.
+   */
+  approvalByCompany?: Record<string, ApprovalConfig>;
+}
+
+export interface ApprovalConfig {
+  /** Master switch — when false, the workflow is dormant for this company. */
+  enabled: boolean;
+  /**
+   * Agent who decides on plans. Null → resolve at runtime by role
+   * (first agent with role=ceo, then any role containing `lead`). UI shows the current
+   * resolved value as a hint.
+   */
+  approverAgentId: string | null;
+  /**
+   * Per-agent participation. Keyed by agent UUID. Absent agents default
+   * to `requiresApproval: false`.
+   */
+  agents: Record<string, ApprovalAgentConfig>;
+}
+
+export interface ApprovalAgentConfig {
+  /** When true, agent must gate plans through approval before acting. */
+  requiresApproval: boolean;
+  /**
+   * Plan-template override for this agent. Empty/undefined → fall back to
+   * the default template shipped with the plugin. Supports placeholders:
+   *   {ticketId}, {approverMention}
+   */
+  template?: string;
 }
 
 export type MessageContext =
@@ -94,6 +128,45 @@ export type MessageContext =
       identifier: string;
       /** Agents the user can reassign to, displayed as inline-keyboard buttons. */
       agents: Array<{ id: string; name: string }>;
+      createdAt: string;
+    }
+  | {
+      /**
+       * Anchored to the message that carries the [Approve] / [Decline]
+       * inline-keyboard buttons for a `request_confirmation` interaction.
+       * Looked up when a callback fires on that message so we know which
+       * interaction to resolve and what to render in the closeout edit.
+       */
+      kind: "confirmation_decision";
+      companyId: string;
+      issueId: string;
+      interactionId: string;
+      identifier: string;
+      title: string;
+      /** Original prompt body, kept so the closeout edit can quote it. */
+      promptText?: string;
+      requesterLabel?: string;
+      createdAt: string;
+    }
+  | {
+      /**
+       * Anchored to the bot-side force-reply prompt asking the operator for
+       * the decline reason. The next inbound `message.reply_to_message.id`
+       * matching this context is treated as the reason and used to call
+       * the reject endpoint + edit the original confirmation message.
+       */
+      kind: "confirmation_decline_reason";
+      companyId: string;
+      issueId: string;
+      interactionId: string;
+      identifier: string;
+      title: string;
+      /** Original confirmation message — the one we'll edit on completion. */
+      originalMessageId: number;
+      /** Original prompt body, kept so the closeout edit can quote it. */
+      promptText?: string;
+      /** Display name of the operator who tapped Decline (for the closeout). */
+      decliner: string;
       createdAt: string;
     };
 

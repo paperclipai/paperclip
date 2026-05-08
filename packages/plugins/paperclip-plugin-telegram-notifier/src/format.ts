@@ -8,6 +8,7 @@
  * @see https://core.telegram.org/bots/api#markdownv2-style
  */
 
+import { CALLBACK_KIND } from "./constants.js";
 import type { InlineKeyboard } from "./types.js";
 
 const MARKDOWN_V2_RESERVED = /[_*\[\]()~`>#+=|{}.!\\-]/g;
@@ -411,6 +412,107 @@ export function buildApprovalMessage(input: ApprovalMessageInput): {
         },
       ],
     ],
+  };
+}
+
+interface ConfirmationMessageInput {
+  baseUrl: string;
+  /** Paperclip issue UUID for the deep link. */
+  issueId: string;
+  /** Issue identifier (e.g. PROJ-20) — shown to the operator. */
+  identifier: string;
+  /** Issue title. */
+  title: string;
+  /** Body of the confirmation request — first paragraph of the proposal. */
+  body?: string;
+  /** Agent or user that requested the confirmation. */
+  requestedBy?: string;
+}
+
+/**
+ * Notification for an issue-thread `request_confirmation` interaction.
+ * Carries inline `[✅ Approve] [❌ Decline]` callback buttons so the operator
+ * can resolve directly in chat — no dashboard hop needed (also works when
+ * `paperclipBaseUrl` is `http://localhost`, where URL buttons can't render).
+ *
+ * The "Open issue ↗" URL button is included as a fallback row for richer
+ * context viewing; in localhost setups Telegram renders it as a code-span
+ * URL in the message text instead of a button (see telegram-client.ts).
+ */
+export function buildConfirmationMessage(input: ConfirmationMessageInput): {
+  text: string;
+  keyboard: InlineKeyboard;
+} {
+  const lines = [
+    "*🛂 Confirmation requested*",
+    `*${escapeMd(input.identifier)}* — ${escapeMd(truncate(input.title, 200))}`,
+  ];
+  if (input.requestedBy) {
+    lines.push(`Requested by: ${escapeMd(input.requestedBy)}`);
+  }
+  if (input.body && input.body.trim().length > 0) {
+    lines.push("");
+    // Render the prompt body as a MarkdownV2 blockquote so multi-line bodies
+    // wrap cleanly in the chat. Each line is escape-prefixed and `>`-tagged.
+    const truncated = truncate(input.body, 1500);
+    for (const bodyLine of truncated.split("\n")) {
+      lines.push(`> ${escapeMd(bodyLine)}`);
+    }
+  }
+  return {
+    text: lines.join("\n"),
+    keyboard: [
+      [
+        { text: "✅ Approve", callback_data: CALLBACK_KIND.confirmAccept },
+        { text: "❌ Decline", callback_data: CALLBACK_KIND.confirmDecline },
+      ],
+      [
+        {
+          text: "Open issue ↗",
+          url: issueUrl(input.baseUrl, input.issueId),
+        },
+      ],
+    ],
+  };
+}
+
+/**
+ * Closeout text shown after the operator taps Approve / Decline. The original
+ * inline keyboard is removed when this is rendered so the chat history shows
+ * the resolution as a sealed record. Body of the original prompt is preserved
+ * for context.
+ */
+export function buildConfirmationDecidedMessage(input: {
+  outcome: "approved" | "declined";
+  identifier: string;
+  title: string;
+  decider: string;
+  /** Decline reason — required for `declined`, ignored for `approved`. */
+  reason?: string;
+  /** Optional original prompt body for inclusion as a blockquote. */
+  promptText?: string;
+}): { text: string; keyboard: InlineKeyboard } {
+  const isApproved = input.outcome === "approved";
+  const headerIcon = isApproved ? "✅" : "❌";
+  const headerLabel = isApproved ? "Approved" : "Declined";
+  const lines = [
+    `*${headerIcon} ${headerLabel}*`,
+    `*${escapeMd(input.identifier)}* — ${escapeMd(truncate(input.title, 200))}`,
+    `${headerLabel} by: ${escapeMd(input.decider)}`,
+  ];
+  if (!isApproved && input.reason && input.reason.trim().length > 0) {
+    lines.push(`Reason: ${escapeMd(truncate(input.reason, 500))}`);
+  }
+  if (input.promptText && input.promptText.trim().length > 0) {
+    lines.push("");
+    const truncated = truncate(input.promptText, 1500);
+    for (const bodyLine of truncated.split("\n")) {
+      lines.push(`> ${escapeMd(bodyLine)}`);
+    }
+  }
+  return {
+    text: lines.join("\n"),
+    keyboard: [],
   };
 }
 

@@ -3,6 +3,8 @@ import {
   approvalUrl,
   buildApprovalMessage,
   buildCommentMessage,
+  buildConfirmationDecidedMessage,
+  buildConfirmationMessage,
   buildIssueAssignedMessage,
   buildMorningDigest,
   buildRunFailedMessage,
@@ -10,6 +12,7 @@ import {
   issueUrl,
   truncate,
 } from "./format.js";
+import { CALLBACK_KIND } from "./constants.js";
 
 describe("escapeMd", () => {
   it("escapes the full MarkdownV2 reserved set", () => {
@@ -97,6 +100,143 @@ describe("buildApprovalMessage", () => {
     });
     expect(result.text).toContain("Approve");
     expect(result.text).not.toContain("Requested by");
+  });
+});
+
+describe("buildConfirmationMessage", () => {
+  it("renders inline Approve / Decline callback buttons + Open issue URL row", () => {
+    const result = buildConfirmationMessage({
+      baseUrl: "http://x",
+      issueId: "issue-uuid",
+      identifier: "PROJ-7",
+      title: "Hire QA Engineer",
+      body: "Need a tester for the new flow",
+      requestedBy: "PS Lead",
+    });
+    expect(result.text).toContain("🛂 Confirmation requested");
+    expect(result.text).toContain("PROJ\\-7");
+    expect(result.text).toContain("Hire QA Engineer");
+    expect(result.text).toContain("Requested by: PS Lead");
+    // Body rendered as MarkdownV2 blockquote.
+    expect(result.text).toContain("> Need a tester for the new flow");
+    // Two-row keyboard: [Approve][Decline] + [Open issue ↗].
+    expect(result.keyboard).toHaveLength(2);
+    expect(result.keyboard[0]).toHaveLength(2);
+    expect(result.keyboard[0][0]).toMatchObject({
+      text: "✅ Approve",
+      callback_data: CALLBACK_KIND.confirmAccept,
+    });
+    expect(result.keyboard[0][1]).toMatchObject({
+      text: "❌ Decline",
+      callback_data: CALLBACK_KIND.confirmDecline,
+    });
+    expect(result.keyboard[1][0]).toMatchObject({
+      text: "Open issue ↗",
+      url: "http://x/issues/issue-uuid",
+    });
+  });
+
+  it("renders multi-line body as a multi-line blockquote", () => {
+    const result = buildConfirmationMessage({
+      baseUrl: "http://x",
+      issueId: "i",
+      identifier: "X-1",
+      title: "t",
+      body: "Line one.\nLine two.\nLine three.",
+    });
+    expect(result.text).toContain("> Line one\\.");
+    expect(result.text).toContain("> Line two\\.");
+    expect(result.text).toContain("> Line three\\.");
+  });
+
+  it("omits the Requested-by line when no requester is set", () => {
+    const result = buildConfirmationMessage({
+      baseUrl: "http://x",
+      issueId: "i",
+      identifier: "X-1",
+      title: "t",
+    });
+    expect(result.text).not.toContain("Requested by:");
+  });
+
+  it("omits the blockquote when body is empty / whitespace", () => {
+    const result = buildConfirmationMessage({
+      baseUrl: "http://x",
+      issueId: "i",
+      identifier: "X-1",
+      title: "t",
+      body: "   ",
+    });
+    // No leading "> " in any line of the message.
+    expect(result.text.split("\n").some((l) => l.startsWith("> "))).toBe(false);
+  });
+
+  it("always emits the inline keyboard buttons even with minimal input", () => {
+    const result = buildConfirmationMessage({
+      baseUrl: "http://x",
+      issueId: "i",
+      identifier: "X-1",
+      title: "t",
+    });
+    expect(result.keyboard[0][0].text).toBe("✅ Approve");
+    expect(result.keyboard[0][1].text).toBe("❌ Decline");
+  });
+});
+
+describe("buildConfirmationDecidedMessage", () => {
+  it("renders an approved closeout with empty keyboard so buttons are stripped", () => {
+    const result = buildConfirmationDecidedMessage({
+      outcome: "approved",
+      identifier: "PROJ-7",
+      title: "Hire QA Engineer",
+      decider: "Reviewer",
+      promptText: "Need a tester for the new flow",
+    });
+    expect(result.text).toContain("✅ Approved");
+    expect(result.text).toContain("Approved by: Reviewer");
+    expect(result.text).toContain("> Need a tester for the new flow");
+    expect(result.text).not.toContain("Reason:");
+    expect(result.keyboard).toHaveLength(0);
+  });
+
+  it("renders a declined closeout with the reason line", () => {
+    const result = buildConfirmationDecidedMessage({
+      outcome: "declined",
+      identifier: "PROJ-7",
+      title: "Hire QA Engineer",
+      decider: "Reviewer",
+      reason: "out of budget this quarter",
+      promptText: "Need a tester",
+    });
+    expect(result.text).toContain("❌ Declined");
+    expect(result.text).toContain("Declined by: Reviewer");
+    expect(result.text).toContain("Reason: out of budget this quarter");
+    expect(result.keyboard).toHaveLength(0);
+  });
+
+  it("declined without a reason omits the Reason line", () => {
+    const result = buildConfirmationDecidedMessage({
+      outcome: "declined",
+      identifier: "PROJ-7",
+      title: "t",
+      decider: "Reviewer",
+    });
+    expect(result.text).toContain("Declined by: Reviewer");
+    expect(result.text).not.toContain("Reason:");
+  });
+
+  it("escapes MarkdownV2 special chars in the decline reason", () => {
+    const result = buildConfirmationDecidedMessage({
+      outcome: "declined",
+      identifier: "PROJ-7",
+      title: "t",
+      decider: "Reviewer",
+      reason: "Why? (1+1=2) [look here]!",
+    });
+    // Note: `?` is not in MarkdownV2's reserved set so it stays unescaped.
+    expect(result.text).toContain(
+      "Why? \\(1\\+1\\=2\\) \\[look here\\]\\!",
+    );
   });
 });
 
