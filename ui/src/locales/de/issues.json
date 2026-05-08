@@ -1,4 +1,4 @@
-﻿{
+{
   "title": "Aufgaben",
   "my_title": "Meine Aufgaben",
   "empty": {
@@ -824,7 +824,11 @@
     "blocked_until_they_are": "Die Arbeit an dieser Aufgabe wird durch {{blockerLabel}} blockiert, bis sie erledigt sind. Kommentare aktivieren den Bearbeiter immer noch für Fragen oder Triage.",
     "blocked_no_status": "Die Arbeit an dieser Aufgabe wird blockiert, bis sie zurück zu Todo verschoben wird. Kommentare aktivieren den Bearbeiter immer noch für Fragen oder Triage.",
     "stalled_in_review": "Bei Überprüfung steckengeblieben",
-    "ultimately_waiting": "Letztendlich wartet auf"
+    "ultimately_waiting": "Letztendlich wartet auf",
+    "blocker_singular": "das verknüpfte Problem",
+    "blocker_plural": "die verknüpften Probleme",
+    "assignee_fallback": "der Bevollmächtigte",
+    "status_in_progress": "in Bearbeitung"
   },
   "interaction": {
     "unknown": "Unbekannt",

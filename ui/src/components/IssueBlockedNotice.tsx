@@ -23,7 +23,7 @@ export function IssueBlockedNotice({
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
 
-  const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+  const blockerLabel = blockers.length === 1 ? t("blocked_notice.blocker_singular") : t("blocked_notice.blocker_plural");
   const terminalBlockers = blockers
     .flatMap((blocker) => blocker.terminalBlockers ?? [])
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
@@ -82,7 +82,7 @@ export function IssueBlockedNotice({
               <p className="leading-5">
                 {t("blocked_notice.run_finished_in")}
                 <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
-                  in_progress
+                  {t("blocked_notice.status_in_progress")}
                 </code>{" "}
                 {t("blocked_notice.no_clear_owner")}
               </p>
@@ -106,7 +106,7 @@ export function IssueBlockedNotice({
                   </span>
                 ) : null}
                 <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  {t("blocked_notice.corrective_wake")}{agentName ?? "the assignee"}
+                  {t("blocked_notice.corrective_wake")}{agentName ?? t("blocked_notice.assignee_fallback")}
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (

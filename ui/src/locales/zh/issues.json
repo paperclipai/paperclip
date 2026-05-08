@@ -816,7 +816,11 @@
     "blocked_until_they_are": "此任务上的工作被 {{blockerLabel}} 阻止，直到其完成。评论仍然会唤醒受让人进行提问或分类。",
     "blocked_no_status": "此任务上的工作被阻止，直到其移回待办事项。评论仍然会唤醒受让人进行提问或分类。",
     "stalled_in_review": "在审查中停滞",
-    "ultimately_waiting": "最终等待"
+    "ultimately_waiting": "最终等待",
+    "blocker_singular": "相关问题",
+    "blocker_plural": "相关问题",
+    "assignee_fallback": "受分配人",
+    "status_in_progress": "进行中"
   },
   "interaction": {
     "unknown": "未知",

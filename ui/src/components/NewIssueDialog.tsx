@@ -1057,12 +1057,12 @@ export function NewIssueDialog() {
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
-      ? "Claude options"
+      ? t("dialog.claude_options")
       : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        ? t("dialog.codex_options")
         : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
+          ? t("dialog.opencode_options")
+        : t("dialog.agent_options");
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
@@ -1343,7 +1343,7 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
+              <span>{t("dialog.in")}</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
@@ -1368,7 +1368,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{t("dialog.project")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1410,7 +1410,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <Eye className="h-3 w-3" />
-                    Reviewer
+                    {t("dialog.reviewer")}
                   </button>
                   <button
                     className={cn(
@@ -1424,7 +1424,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <ShieldCheck className="h-3 w-3" />
-                    Approver
+                    {t("dialog.approver")}
                   </button>
                 </PopoverContent>
               </Popover>
@@ -1556,11 +1556,16 @@ export function NewIssueDialog() {
                   }
                 }}
               >
-                {EXECUTION_WORKSPACE_MODES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
+                {EXECUTION_WORKSPACE_MODES.map((option) => {
+                  const labelKey = option.value === "shared_workspace" ? "dialog.workspace_mode_shared"
+                    : option.value === "isolated_workspace" ? "dialog.workspace_mode_isolated"
+                    : "dialog.workspace_mode_reuse";
+                  return (
+                    <option key={option.value} value={option.value}>
+                      {t(labelKey)}
+                    </option>
+                  );
+                })}
               </select>
               {executionWorkspaceMode === "reuse_existing" && (
                 <select
@@ -1621,10 +1626,10 @@ export function NewIssueDialog() {
                         onClick={() => setAssigneeModelLane(lane)}
                       >
                         {lane === "primary"
-                          ? "Primary"
+                          ? t("dialog.lane_primary")
                           : lane === "cheap"
-                            ? "Cheap"
-                            : "Custom"}
+                            ? t("dialog.lane_cheap")
+                            : t("dialog.lane_custom")}
                       </button>
                     ))}
                   </div>
@@ -1653,9 +1658,9 @@ export function NewIssueDialog() {
                       options={modelOverrideOptions}
                       placeholder={t("dialog.default_model")}
                       disablePortal
-                      noneLabel="Default model"
-                      searchPlaceholder="Search models..."
-                      emptyMessage="No models found."
+                      noneLabel={t("dialog.default_model")}
+                      searchPlaceholder={t("dialog.search_models")}
+                      emptyMessage={t("dialog.no_models_found")}
                       onChange={setAssigneeModelOverride}
                     />
                   </div>

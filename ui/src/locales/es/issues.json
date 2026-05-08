@@ -1,4 +1,4 @@
-﻿{
+{
   "title": "Tareas",
   "my_title": "Mis tareas",
   "empty": {
@@ -816,7 +816,11 @@
     "blocked_until_they_are": "El trabajo en esta tarea está bloqueado por {{blockerLabel}} hasta que se completen. Los comentarios aún despiertan al asignado para preguntas o triaje.",
     "blocked_no_status": "El trabajo en esta tarea está bloqueado hasta que se devuelva a tareas pendientes. Los comentarios aún despiertan al asignado para preguntas o triaje.",
     "stalled_in_review": "Atascado en revisión",
-    "ultimately_waiting": "Esperando últimamente"
+    "ultimately_waiting": "Esperando últimamente",
+    "blocker_singular": "el problema vinculado",
+    "blocker_plural": "los problemas vinculados",
+    "assignee_fallback": "el asignado",
+    "status_in_progress": "en progreso"
   },
   "interaction": {
     "unknown": "Desconocido",
