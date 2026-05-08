@@ -149,7 +149,9 @@
     "budget_usd": "Budget (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Paused by budget"
+    "healthy": "Budget healthy",
+    "warning": "Budget warning",
+    "critical": "Paused by budget"
   },
   "empty": {
     "select_company": "Select a company to view costs.",

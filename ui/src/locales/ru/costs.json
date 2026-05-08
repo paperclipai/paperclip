@@ -151,7 +151,9 @@
     "budget_usd": "Бюджет (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Приостановлено по бюджету"
+    "healthy": "Бюджет в порядке",
+    "warning": "Предупреждение бюджета",
+    "critical": "Приостановлено по бюджету"
   },
   "empty": {
     "select_company": "Выберите компанию для просмотра расходов.",
