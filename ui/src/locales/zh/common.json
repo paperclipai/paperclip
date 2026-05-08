@@ -79,7 +79,8 @@
     "timer": "Timer",
     "on_demand": "On-demand",
     "reset": "Reset",
-    "run_now": "Run now"
+    "run_now": "Run now",
+    "copy_failed": "复制失败"
   },
   "status": {
     "all": "All",
@@ -113,7 +114,9 @@
     "planned": "Planned",
     "draft": "Draft",
     "skipped": "Skipped",
-    "blocked": "Blocked"
+    "blocked": "Blocked",
+    "off": "关闭",
+    "on": "开启"
   },
   "status_labels": {
     "backlog": "Backlog",
@@ -240,7 +243,9 @@
     "switch_workspace": "Switch workspace",
     "no_workspaces": "No workspaces",
     "open_switcher": "Open {{company}} workspace switcher",
-    "open_switcher_generic": "Open workspace switcher"
+    "open_switcher_generic": "Open workspace switcher",
+    "done_order": "完成",
+    "edit_order": "编辑顺序"
   },
   "not_found": {
     "breadcrumb": "未找到",
@@ -800,7 +805,10 @@
     "paused": "已暂停",
     "enter_valid_amount": "输入有效的非负美元金额。",
     "scope_type_agent": "代理",
-    "scope_type_project": "项目"
+    "scope_type_project": "项目",
+    "of_limit": "限额的 {{percent}}%",
+    "project_paused": "此项目执行已因预算硬性停止而暂停。",
+    "scope_paused": "此范围的心跳检测已因预算硬性停止而暂停。"
   },
   "search": {
     "title": "搜索",
@@ -1176,7 +1184,18 @@
     "last_checked": "Last checked {{time}}"
   },
   "documents": {
-    "loading_revisions": "Loading revisions..."
+    "loading_revisions": "Loading revisions...",
+    "actor_agent": "智能体",
+    "actor_board": "系统用户",
+    "actor_system": "系统",
+    "content_header": "内容",
+    "diff_title": "差异",
+    "new_label": "新",
+    "old_label": "旧",
+    "rev_label": "修订版本 {{rev}}",
+    "same_revision": "选择了同一修订版本",
+    "select_revision": "选择修订版本以查看内容。",
+    "select_two_revisions": "选择两个修订版本以比较差异。"
   },
   "language_switcher": {
     "change_language": "更改语言"
