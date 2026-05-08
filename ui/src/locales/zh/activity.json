@@ -28,7 +28,7 @@
   },
   "actor": {
     "system": "系统",
-    "board": "系统用户",
+    "board": "委员会",
     "you": "您",
     "unknown": "未知",
     "agent_fallback": "智能体",

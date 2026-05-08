@@ -18,6 +18,7 @@ function fallbackUserLabel(userId: string): string {
 }
 
 function baseMemberLabel(member: Pick<CompanyUserRecord, "principalId" | "user">): string {
+  if (member.principalId === "local-board") return i18n.t("actor.board", { ns: "activity" });
   const name = member.user?.name?.trim();
   if (name) return name;
   const email = member.user?.email?.trim();
