@@ -1052,7 +1052,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (onSubmit && event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               onSubmit();
             }
@@ -1131,6 +1131,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+
+        // Plain Enter (no Shift) submits — placed after autocomplete so mention-Enter still works
+        if (onSubmit && e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
+          return;
         }
       }}
       onDragEnter={(evt) => {
