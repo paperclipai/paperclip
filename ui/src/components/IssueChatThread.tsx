@@ -12,8 +12,11 @@ import {
   createContext,
   Component,
   forwardRef,
+  memo,
+  useCallback,
   useContext,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -34,6 +37,8 @@ import type {
   IssueAttachment,
   IssueBlockerAttention,
   IssueRelationIssueSummary,
+  SuccessfulRunHandoffState,
+  IssueWorkMode,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -57,7 +62,12 @@ import type {
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import {
+  formatTimelineWorkspaceLabel,
+  type IssueTimelineAssignee,
+  type IssueTimelineEvent,
+  type IssueTimelineWorkspace,
+} from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -88,8 +98,26 @@ import {
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
+import {
+  isSuccessfulRunHandoffComment,
+  isSuccessfulRunHandoffEscalationComment,
+} from "../lib/successful-run-handoff";
+import {
+  SystemNotice,
+  type SystemNoticeMetadataRow,
+  type SystemNoticeMetadataSection,
+} from "./SystemNotice";
+import {
+  buildSystemNoticeProps,
+  mapCommentMetadataToSystemNoticeSections,
+} from "../lib/system-notice-comment";
+import type {
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+} from "@paperclipai/shared";
 import {
   describeToolInput,
   displayToolName,
@@ -103,28 +131,28 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 
 interface IssueChatMessageContext {
-  feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-  activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
-  stoppingRunId?: string | null;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
-  interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
@@ -138,13 +166,18 @@ interface IssueChatMessageContext {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
-  feedbackVoteByTargetId: new Map(),
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
-  activeRunIds: new Set<string>(),
+  issueStatus: undefined,
+  successfulRunHandoff: null,
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -209,6 +242,21 @@ function useLiveElapsed(startMs: number | null | undefined, active: boolean): st
   return formatDurationWords(Date.now() - startMs);
 }
 
+function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
+  const callbackRef = useRef(callback);
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  return useMemo(() => {
+    if (!callback) return undefined;
+    return ((...args: Parameters<T>) => callbackRef.current?.(...args)) as T;
+    // Keep the wrapper stable while the callback identity changes; the ref above
+    // carries the current callback implementation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(callback)]);
+}
+
 interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -232,6 +280,8 @@ interface IssueChatComposerProps {
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
+  issueWorkMode?: IssueWorkMode;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
 }
 
 interface IssueChatThreadProps {
@@ -246,6 +296,10 @@ interface IssueChatThreadProps {
   activeRun?: ActiveRunForIssue | null;
   blockedBy?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  assigneeUserId?: string | null;
+  onResumeFromBacklog?: () => Promise<void> | void;
+  resumeFromBacklogPending?: boolean;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -261,6 +315,9 @@ interface IssueChatThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
   imageUploadHandler?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
@@ -271,6 +328,7 @@ interface IssueChatThreadProps {
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
   composerHint?: string | null;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
@@ -296,7 +354,17 @@ interface IssueChatThreadProps {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  issueWorkMode?: IssueWorkMode;
+  /**
+   * Hook for the parent to refetch comments when the user explicitly asks
+   * to jump to the latest comment. Used to make sure the absolute newest
+   * comment is in the loaded set before we scroll to it.
+   */
+  onRefreshLatestComments?: () => Promise<unknown> | void;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -538,6 +606,10 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
+function isUnassignedReassignValue(value: string): boolean {
+  return !value || value === "__none__";
+}
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function commentDateLabel(date: Date | string | undefined): string {
@@ -547,8 +619,11 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
-function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
+const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
+  if (isSuccessfulRunHandoffComment(text)) {
+    return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
+  }
   return (
     <MarkdownBody
       className="text-sm leading-6"
@@ -558,6 +633,41 @@ function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolea
     >
       {text}
     </MarkdownBody>
+  );
+});
+
+export function SuccessfulRunHandoffCommentCallout({
+  text,
+  recessed,
+  onImageClick,
+}: {
+  text: string;
+  recessed?: boolean;
+  onImageClick?: (src: string) => void;
+}) {
+  const escalated = isSuccessfulRunHandoffEscalationComment(text);
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-3 py-2.5 text-sm shadow-sm",
+        escalated
+          ? "border-red-500/35 bg-red-500/10 text-red-950 dark:text-red-100"
+          : "border-amber-300/70 bg-amber-50/90 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+      )}
+      style={recessed ? { opacity: 0.55 } : undefined}
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle
+          className={cn(
+            "mt-1 h-4 w-4 shrink-0",
+            escalated ? "text-red-600 dark:text-red-300" : "text-amber-600 dark:text-amber-300",
+          )}
+        />
+        <MarkdownBody className="min-w-0 text-sm leading-6" softBreaks onImageClick={onImageClick}>
+          {text}
+        </MarkdownBody>
+      </div>
+    </div>
   );
 }
 
@@ -1047,7 +1157,7 @@ function getThreadMessageCopyText(message: ThreadMessage) {
     .join("\n\n");
 }
 
-function IssueChatTextParts({
+const IssueChatTextParts = memo(function IssueChatTextParts({
   message,
   recessed = false,
 }: {
@@ -1067,7 +1177,7 @@ function IssueChatTextParts({
         ))}
     </>
   );
-}
+});
 
 function groupAssistantParts(
   content: readonly ThreadMessage["content"][number][],
@@ -1105,16 +1215,17 @@ function groupAssistantParts(
   return groups;
 }
 
-function IssueChatAssistantParts({
+const IssueChatAssistantParts = memo(function IssueChatAssistantParts({
   message,
   hasCoT,
 }: {
   message: ThreadMessage;
   hasCoT: boolean;
 }) {
+  const groupedParts = useMemo(() => groupAssistantParts(message.content), [message.content]);
   return (
     <>
-      {groupAssistantParts(message.content).map((group) => {
+      {groupedParts.map((group) => {
         if (group.type === "text") {
           return (
             <IssueChatTextPart
@@ -1134,13 +1245,18 @@ function IssueChatAssistantParts({
       })}
     </>
   );
-}
+});
 
-function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
+function IssueChatUserMessage({
+  message,
+  isInterruptingQueuedRun,
+}: {
+  message: ThreadMessage;
+  isInterruptingQueuedRun: boolean;
+}) {
   const {
     onInterruptQueued,
     onCancelQueued,
-    interruptingQueuedRunId,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1201,10 +1317,10 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
                 size="sm"
                 variant="outline"
                 className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queueTargetRunId}
+                disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -1290,16 +1406,26 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   );
 }
 
-function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
+function IssueChatAssistantMessage({
+  message,
+  activeVote,
+  isRunActive,
+  isStoppingRun,
+}: {
+  message: ThreadMessage;
+  activeVote: FeedbackVoteValue | null;
+  isRunActive: boolean;
+  isStoppingRun: boolean;
+}) {
   const {
-    feedbackVoteByTargetId,
     feedbackDataSharingPreference,
     feedbackTermsUrl,
     onVote,
     agentMap,
-    activeRunIds,
     onStopRun,
-    stoppingRunId,
+    stopRunLabel = "Stop run",
+    stoppingRunLabel = "Stopping...",
+    stopRunVariant = "stop",
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1321,7 +1447,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
-  const canStopRun = canStopIssueChatRun({ runId, runStatus, activeRunIds });
+  const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
@@ -1355,7 +1481,6 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
     await onVote(commentId, vote, options);
   };
 
-  const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
   const followUpRequested = custom.followUpRequested === true;
 
   return (
@@ -1493,14 +1618,22 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                     </DropdownMenuItem>
                     {canStopRun && onStopRun && runId ? (
                       <DropdownMenuItem
-                        disabled={stoppingRunId === runId}
-                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                        disabled={isStoppingRun}
+                        className={cn(
+                          stopRunVariant === "pause"
+                            ? "text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
+                            : "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200",
+                        )}
                         onSelect={() => {
                           void onStopRun(runId);
                         }}
                       >
-                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {stoppingRunId === runId ? "Stopping…" : "Stop run"}
+                        {stopRunVariant === "pause" ? (
+                          <PauseCircle className="mr-2 h-3.5 w-3.5" />
+                        ) : (
+                          <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                        )}
+                        {isStoppingRun ? stoppingRunLabel : stopRunLabel}
                       </DropdownMenuItem>
                     ) : null}
                     {runHref ? (
@@ -1757,6 +1890,7 @@ function ExpiredRequestConfirmationActivity({
     userLabelMap,
     onAcceptInteraction,
     onRejectInteraction,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -1835,9 +1969,370 @@ function ExpiredRequestConfirmationActivity({
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function isIssueCommentPresentation(value: unknown): value is IssueCommentPresentation {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.kind === "system_notice" || v.kind === "message";
+}
+
+function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.version === 1 && Array.isArray(v.sections);
+}
+
+function issueStatusIsTerminalDisposition(issueStatus: string | undefined) {
+  return issueStatus === "done" || issueStatus === "cancelled";
+}
+
+function sourceRunIdFromSuccessfulRunHandoffMetadata(metadata: IssueCommentMetadata | null) {
+  if (metadata?.sourceRunId) return metadata.sourceRunId;
+  const runLinks = [];
+  for (const section of metadata?.sections ?? []) {
+    for (const row of section.rows) {
+      if (row.type === "run_link") runLinks.push(row.runId);
+    }
+  }
+  return runLinks.length === 1 ? runLinks[0] : null;
+}
+
+function isStaleSuccessfulRunHandoffNotice(input: {
+  bodyText: string;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  runId?: string | null;
+  metadata: IssueCommentMetadata | null;
+}) {
+  if (!isSuccessfulRunHandoffComment(input.bodyText)) return false;
+
+  const currentHandoff = input.successfulRunHandoff ?? null;
+  if (currentHandoff?.state === "resolved") return true;
+  if (issueStatusIsTerminalDisposition(input.issueStatus)) return true;
+
+  const noticeSourceRunId = sourceRunIdFromSuccessfulRunHandoffMetadata(input.metadata) ?? input.runId ?? null;
+  if (
+    noticeSourceRunId
+    && currentHandoff?.sourceRunId
+    && noticeSourceRunId !== currentHandoff.sourceRunId
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadataRow }) {
+  const label = (
+    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+      {row.label}
+    </span>
+  );
+  const value = (() => {
+    switch (row.kind) {
+      case "text":
+        return <span>{row.value}</span>;
+      case "code":
+        return (
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+            {row.value}
+          </code>
+        );
+      case "issue": {
+        const content = (
+          <>
+            <span>{row.identifier}</span>
+            {row.title ? <span className="text-muted-foreground"> - {row.title}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a href={row.href} className="font-medium text-foreground underline-offset-2 hover:underline">
+            {content}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{content}</span>
+        );
+      }
+      case "agent":
+        return row.href ? (
+          <a href={row.href} className="font-medium text-foreground underline-offset-2 hover:underline">
+            {row.name}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{row.name}</span>
+        );
+      case "run": {
+        const runShort = row.runId.length > 12 ? `${row.runId.slice(0, 8)}...` : row.runId;
+        const content = (
+          <>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+              {runShort}
+            </code>
+            {row.status ? <span>{row.status}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a href={row.href} className="inline-flex items-center gap-1.5 underline-offset-2 hover:underline">
+            {content}
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1.5">{content}</span>
+        );
+      }
+    }
+  })();
+
+  return (
+    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-2 text-xs leading-5">
+      {label}
+      <div className="min-w-0 break-words text-foreground/80">{value}</div>
+    </div>
+  );
+}
+
+function metadataRowKey(row: SystemNoticeMetadataRow) {
+  switch (row.kind) {
+    case "issue":
+      return `issue:${row.label}:${row.identifier}:${row.href ?? ""}:${row.title ?? ""}`;
+    case "agent":
+      return `agent:${row.label}:${row.name}:${row.href ?? ""}`;
+    case "run":
+      return `run:${row.label}:${row.runId}:${row.href ?? ""}:${row.status ?? ""}`;
+    default:
+      return `${row.kind}:${row.label}:${row.value}`;
+  }
+}
+
+function metadataSectionKey(section: SystemNoticeMetadataSection) {
+  return `${section.title ?? "details"}:${section.rows.map(metadataRowKey).join("|")}`;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isTimelineWorkspace(value: unknown): value is IssueTimelineWorkspace {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const workspace = value as Record<string, unknown>;
+  return isNullableString(workspace.label)
+    && isNullableString(workspace.projectWorkspaceId)
+    && isNullableString(workspace.executionWorkspaceId)
+    && isNullableString(workspace.mode);
+}
+
+function isTimelineWorkspaceChange(value: unknown): value is NonNullable<IssueTimelineEvent["workspaceChange"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const change = value as Record<string, unknown>;
+  return isTimelineWorkspace(change.from) && isTimelineWorkspace(change.to);
+}
+
+function StaleDispositionWarningDetails({
+  sections,
+}: {
+  sections: SystemNoticeMetadataSection[];
+}) {
+  if (sections.length === 0) {
+    return <div className="text-xs leading-5 text-muted-foreground">No additional details.</div>;
+  }
+
+  return (
+    <div className="space-y-3 text-left">
+      {sections.map((section) => (
+        <div key={metadataSectionKey(section)} className="space-y-1.5">
+          {section.title ? (
+            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              {section.title}
+            </div>
+          ) : null}
+          <div className="space-y-1">
+            {section.rows.map((row) => (
+              <StaleDispositionWarningMetadataRow key={metadataRowKey(row)} row={row} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StaleDispositionWarningRow({
+  anchorId,
+  message,
+  metadata,
+  runAgentId,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  metadata: IssueCommentMetadata | null;
+  runAgentId?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const sections = mapCommentMetadataToSystemNoticeSections(metadata, { runAgentId });
+
+  return (
+    <div id={anchorId} data-testid="stale-disposition-warning">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="group flex w-full items-center gap-2 py-0.5 text-left"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span className="text-sm font-medium text-foreground/80">
+              Stale disposition warning
+            </span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {message.createdAt ? (
+                <span data-testid="stale-disposition-warning-time" className="text-[11px] text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="space-y-1 py-1">
+            <StaleDispositionWarningDetails sections={sections} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SystemNoticeCommentRow({
+  message,
+  anchorId,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+}) {
+  const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
+  const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
+  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runId = typeof custom.runId === "string" ? custom.runId : null;
+  const authorType = typeof custom.authorType === "string" ? custom.authorType : null;
+  const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
+  const bodyText = message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("\n\n");
+  const staleSuccessfulRunHandoffNotice = isStaleSuccessfulRunHandoffNotice({
+    bodyText,
+    issueStatus,
+    successfulRunHandoff,
+    runId,
+    metadata: commentMetadata,
+  });
+  const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const source = (() => {
+    const runAgentName = runAgentId ? agentMap?.get(runAgentId)?.name ?? null : null;
+    if (authorType === "system") {
+      const label = runAgentName ?? "Paperclip";
+      if (runAgentId && runId) return { label, href: `/agents/${runAgentId}/runs/${runId}` };
+      return { label };
+    }
+    if (runAgentId && runId) {
+      return { label: authorName ?? runAgentName ?? "Paperclip", href: `/agents/${runAgentId}/runs/${runId}` };
+    }
+    if (authorName) return { label: authorName };
+    return undefined;
+  })();
+
+  const props = buildSystemNoticeProps({
+    presentation,
+    metadata: commentMetadata,
+    body: (
+      <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
+        {bodyText}
+      </MarkdownBody>
+    ),
+    timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,
+    source,
+    runAgentId,
+  });
+
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(bodyText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleCopyLink = () => {
+    if (!anchorId || typeof window === "undefined") return;
+    const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
+    void navigator.clipboard.writeText(url).then(() => {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    });
+  };
+
+  if (staleSuccessfulRunHandoffNotice) {
+    return (
+      <StaleDispositionWarningRow
+        anchorId={anchorId}
+        message={message}
+        metadata={commentMetadata}
+        runAgentId={runAgentId}
+      />
+    );
+  }
+
+  return (
+    <div id={anchorId} className="group">
+      <div className="py-1">
+        <SystemNotice {...props} />
+        <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={anchorId ? `#${anchorId}` : undefined}
+                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+            </TooltipContent>
+          </Tooltip>
+          {anchorId ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy link"
+              aria-label="Copy link to system notice"
+              onClick={handleCopyLink}
+            >
+              {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Paperclip className="h-3.5 w-3.5" />}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+            title="Copy notice text"
+            aria-label="Copy system notice"
+            onClick={handleCopy}
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1850,6 +2345,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1869,9 +2365,19 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         to: IssueTimelineAssignee;
       }
     : null;
+  const workspaceChange = isTimelineWorkspaceChange(custom.workspaceChange) ? custom.workspaceChange : null;
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
+
+  if (custom.kind === "system_notice") {
+    return (
+      <SystemNoticeCommentRow
+        message={message}
+        anchorId={anchorId}
+      />
+    );
+  }
 
   if (custom.kind === "interaction" && interaction) {
     if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
@@ -1895,6 +2401,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       </div>
@@ -1943,6 +2450,21 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+            </span>
+          </div>
+        ) : null}
+
+        {workspaceChange ? (
+          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Workspace
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineWorkspaceLabel(workspaceChange.from)}
+            </span>
+            <ArrowRight className="h-3 w-3 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineWorkspaceLabel(workspaceChange.to)}
             </span>
           </div>
         ) : null}
@@ -2022,6 +2544,546 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   return null;
 }
 
+function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
+  return (message.metadata?.custom ?? {}) as Record<string, unknown>;
+}
+
+function issueChatMessageKind(message: ThreadMessage): string {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.kind === "string" ? custom.kind : message.role;
+}
+
+function issueChatMessageCommentId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.commentId === "string" ? custom.commentId : null;
+}
+
+function issueChatMessageRunId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.runId === "string" ? custom.runId : null;
+}
+
+function issueChatMessageQueueTargetRunId(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+}
+
+function issueChatMessageActiveVote(
+  message: ThreadMessage,
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>,
+): FeedbackVoteValue | null {
+  const commentId = issueChatMessageCommentId(message);
+  return commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+}
+
+function issueChatMessageRunIsActive(
+  message: ThreadMessage,
+  activeRunIds: ReadonlySet<string>,
+): boolean {
+  const runId = issueChatMessageRunId(message);
+  return Boolean(runId && activeRunIds.has(runId));
+}
+
+function issueChatMessageRunIsStopping(
+  message: ThreadMessage,
+  stoppingRunId: string | null | undefined,
+): boolean {
+  const runId = issueChatMessageRunId(message);
+  return Boolean(runId && stoppingRunId === runId);
+}
+
+function issueChatMessageQueuedRunIsInterrupting(
+  message: ThreadMessage,
+  interruptingQueuedRunId: string | null | undefined,
+): boolean {
+  const queueTargetRunId = issueChatMessageQueueTargetRunId(message);
+  return Boolean(queueTargetRunId && interruptingQueuedRunId === queueTargetRunId);
+}
+
+// Above ~150 merged rows the direct render path forces React to mount and
+// re-render hundreds of Markdown bodies, feedback controls, and avatars on
+// unrelated parent updates. Above this threshold we switch to a windowed
+// render path so only visible rows plus overscan stay mounted.
+export const VIRTUALIZED_THREAD_ROW_THRESHOLD = 150;
+const VIRTUALIZED_THREAD_OVERSCAN = 6;
+// Rough "average row" estimate. The virtualizer measures real heights as
+// rows mount, so this only affects offscreen rows it has not seen yet.
+const VIRTUALIZED_THREAD_ROW_ESTIMATE_PX = 220;
+const VIRTUALIZED_THREAD_GAP_FULL_PX = 16;
+const VIRTUALIZED_THREAD_GAP_EMBEDDED_PX = 12;
+
+interface VirtualizedIssueChatThreadListProps {
+  messages: readonly ThreadMessage[];
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>;
+  activeRunIds: ReadonlySet<string>;
+  stoppingRunId?: string | null;
+  interruptingQueuedRunId?: string | null;
+  variant: "full" | "embedded";
+}
+
+interface VirtualizedIssueChatThreadListHandle {
+  scrollToIndex: (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => void;
+  scrollToLatest: (options?: { behavior?: ScrollBehavior }) => void;
+  measure: () => void;
+}
+
+function issueChatMessageAnchorId(message: ThreadMessage): string | null {
+  const custom = message.metadata.custom as { anchorId?: unknown } | undefined;
+  return typeof custom?.anchorId === "string" ? custom.anchorId : null;
+}
+
+function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
+  return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+}
+
+export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const anchorId = issueChatMessageAnchorId(messages[index]);
+    if (anchorId && anchorId.startsWith("comment-")) return index;
+  }
+  return -1;
+}
+
+type VirtualizedVisibleAnchorSnapshot = {
+  anchorId: string;
+  index: number;
+  viewportTop: number;
+};
+
+type VirtualizedScrollMode =
+  | { kind: "window" }
+  | { kind: "element"; element: HTMLElement };
+
+type SimpleVirtualItem = {
+  index: number;
+  key: React.Key;
+  start: number;
+  size: number;
+};
+
+function useIssueThreadVirtualizer({
+  count,
+  estimateSize,
+  overscan,
+  scrollMargin,
+  gap,
+  getItemKey,
+  mode,
+}: {
+  count: number;
+  estimateSize: () => number;
+  overscan: number;
+  scrollMargin: number;
+  gap: number;
+  getItemKey: (index: number) => React.Key;
+  mode: VirtualizedScrollMode;
+}) {
+  const measuredSizeByKeyRef = useRef(new Map<React.Key, number>());
+  const [, rerender] = useState(0);
+  const estimatedSize = estimateSize();
+
+  const itemStarts: number[] = [];
+  const itemSizes: number[] = [];
+  let nextStart = scrollMargin;
+  for (let index = 0; index < count; index += 1) {
+    const key = getItemKey(index);
+    const size = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+    itemStarts.push(nextStart);
+    itemSizes.push(size);
+    nextStart += size + gap;
+  }
+  const totalSize = Math.max(0, nextStart - scrollMargin - gap);
+
+  const viewportHeight = () => (mode.kind === "window" ? window.innerHeight : mode.element.clientHeight);
+  const scrollOffset = () => (mode.kind === "window" ? window.scrollY : mode.element.scrollTop);
+  const maxScrollOffset = () => {
+    const targetScrollHeight = mode.kind === "window"
+      ? document.documentElement.scrollHeight
+      : mode.element.scrollHeight;
+    return Math.max(0, Math.max(targetScrollHeight, totalSize) - viewportHeight());
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target: Window | HTMLElement = mode.kind === "window" ? window : mode.element;
+    const update = () => rerender((value) => value + 1);
+    target.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      target.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const rawStart = Math.max(scrollMargin, scrollOffset());
+  const rawEnd = rawStart + viewportHeight();
+  let visibleStartIndex = 0;
+  while (
+    visibleStartIndex < count - 1
+    && itemStarts[visibleStartIndex] + itemSizes[visibleStartIndex] < rawStart
+  ) {
+    visibleStartIndex += 1;
+  }
+  let visibleEndIndex = visibleStartIndex;
+  while (visibleEndIndex < count - 1 && itemStarts[visibleEndIndex] <= rawEnd) {
+    visibleEndIndex += 1;
+  }
+  const startIndex = Math.max(0, visibleStartIndex - overscan);
+  const endIndex = Math.min(count - 1, visibleEndIndex + overscan);
+  const virtualItems: SimpleVirtualItem[] = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    virtualItems.push({
+      index,
+      key: getItemKey(index),
+      start: itemStarts[index] ?? scrollMargin,
+      size: itemSizes[index] ?? estimatedSize,
+    });
+  }
+
+  const scrollToIndex = (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => {
+    const clampedIndex = Math.max(0, Math.min(index, count - 1));
+    const targetMax = maxScrollOffset();
+    let top = itemStarts[clampedIndex] ?? scrollMargin;
+    if (options?.align === "center") {
+      top = top - viewportHeight() / 2 + (itemSizes[clampedIndex] ?? estimatedSize) / 2;
+    } else if (options?.align === "end") {
+      top = top + (itemSizes[clampedIndex] ?? estimatedSize) - viewportHeight();
+    }
+    top = Math.max(0, Math.min(top, targetMax));
+    if (mode.kind === "window") {
+      window.scrollTo({ top, behavior: options?.behavior });
+    } else {
+      mode.element.scrollTo({ top, behavior: options?.behavior });
+    }
+    rerender((value) => value + 1);
+  };
+
+  return {
+    getVirtualItems: () => virtualItems,
+    getTotalSize: () => totalSize,
+    scrollToIndex,
+    measure: () => undefined,
+    measureElement: (element?: HTMLElement | null) => {
+      if (!element) return;
+      const index = Number(element.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= count) return;
+      const measuredSize = element.getBoundingClientRect().height || element.offsetHeight;
+      if (!Number.isFinite(measuredSize) || measuredSize <= 0) return;
+      const key = getItemKey(index);
+      const previousSize = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+      if (Math.abs(previousSize - measuredSize) < 1) return;
+      measuredSizeByKeyRef.current.set(key, measuredSize);
+      rerender((value) => value + 1);
+    },
+  };
+}
+
+// The chat thread renders inside `<main id="main-content">` on the real issue
+// page (overflow-auto on desktop), but lives at document scope on mobile (main
+// is overflow-visible) and in the auth-free perf fixture. Walk the DOM to find
+// the actual scroll container so the virtualizer binds to the right offset
+// source — otherwise it stays anchored at offset 0 forever and the visible
+// chat area renders blank past the first viewport (PAP-2660).
+function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
+  if (!el || typeof window === "undefined") return null;
+  let current: HTMLElement | null = el.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+const VirtualizedIssueChatThreadList = forwardRef<VirtualizedIssueChatThreadListHandle, VirtualizedIssueChatThreadListProps>(function VirtualizedIssueChatThreadList(props, ref) {
+  const probeRef = useRef<HTMLDivElement | null>(null);
+  // Default to window scroll on first render so the imperative handle is
+  // available immediately for hash-target / submit-scroll effects. After mount
+  // we probe the DOM and remount via key={modeKey} if the actual scroll
+  // container is an element ancestor (e.g. desktop <main id="main-content">).
+  const [mode, setMode] = useState<VirtualizedScrollMode>({ kind: "window" });
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    const detect = () => {
+      const probe = probeRef.current;
+      if (!probe) return;
+      const container = findScrollContainer(probe);
+      setMode((prev) => {
+        if (container === null) {
+          return prev.kind === "window" ? prev : { kind: "window" };
+        }
+        if (prev.kind === "element" && prev.element === container) return prev;
+        return { kind: "element", element: container };
+      });
+    };
+    detect();
+    window.addEventListener("resize", detect);
+    return () => {
+      window.removeEventListener("resize", detect);
+    };
+  }, []);
+
+  return (
+    <VirtualizedIssueChatThreadListInner
+      key={mode.kind === "window" ? "window" : "element"}
+      ref={ref}
+      probeRef={probeRef}
+      mode={mode}
+      {...props}
+    />
+  );
+});
+
+interface VirtualizedIssueChatThreadListInnerProps extends VirtualizedIssueChatThreadListProps {
+  mode: VirtualizedScrollMode;
+  probeRef: React.MutableRefObject<HTMLDivElement | null>;
+}
+
+const VirtualizedIssueChatThreadListInner = forwardRef<
+  VirtualizedIssueChatThreadListHandle,
+  VirtualizedIssueChatThreadListInnerProps
+>(function VirtualizedIssueChatThreadListInner({
+  messages,
+  feedbackVoteByTargetId,
+  activeRunIds,
+  stoppingRunId,
+  interruptingQueuedRunId,
+  variant,
+  mode,
+  probeRef,
+}, ref) {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const pendingPrependAnchorRef = useRef<VirtualizedVisibleAnchorSnapshot | null>(null);
+
+  const setRefs = useCallback((element: HTMLDivElement | null) => {
+    parentRef.current = element;
+    probeRef.current = element;
+  }, [probeRef]);
+
+  useLayoutEffect(() => {
+    const element = parentRef.current;
+    if (!element || typeof window === "undefined") return;
+    const update = () => {
+      if (!parentRef.current) return;
+      const rect = parentRef.current.getBoundingClientRect();
+      const offset = mode.kind === "window"
+        ? rect.top + window.scrollY
+        : rect.top - mode.element.getBoundingClientRect().top + mode.element.scrollTop;
+      setScrollMargin((previous) => (Math.abs(previous - offset) < 0.5 ? previous : offset));
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const gap = variant === "embedded"
+    ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
+    : VIRTUALIZED_THREAD_GAP_FULL_PX;
+
+  const virtualizer = useIssueThreadVirtualizer({
+    count: messages.length,
+    estimateSize: () => VIRTUALIZED_THREAD_ROW_ESTIMATE_PX,
+    overscan: VIRTUALIZED_THREAD_OVERSCAN,
+    scrollMargin,
+    gap,
+    getItemKey: (index) => messages[index]?.id ?? index,
+    mode,
+  });
+
+  useImperativeHandle(ref, () => ({
+    scrollToIndex: (index, options) => {
+      if (index < 0 || index >= messages.length) return;
+      virtualizer.scrollToIndex(index, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    scrollToLatest: (options) => {
+      if (messages.length === 0) return;
+      virtualizer.scrollToIndex(messages.length - 1, {
+        align: "end",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    measure: () => {
+      virtualizer.measure();
+    },
+  }), [messages.length, virtualizer]);
+
+  useLayoutEffect(() => {
+    return () => {
+      const element = parentRef.current;
+      if (!element || typeof window === "undefined") return;
+      const rows = Array.from(
+        element.querySelectorAll<HTMLElement>("[data-anchor-id][data-index]"),
+      );
+      const visibleRow = rows.find((row) => row.getBoundingClientRect().bottom >= 0);
+      if (!visibleRow) return;
+      const anchorId = visibleRow.dataset.anchorId;
+      const index = Number(visibleRow.dataset.index);
+      if (!anchorId || !Number.isFinite(index)) return;
+      pendingPrependAnchorRef.current = {
+        anchorId,
+        index,
+        viewportTop: visibleRow.getBoundingClientRect().top,
+      };
+    };
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const pendingAnchor = pendingPrependAnchorRef.current;
+    pendingPrependAnchorRef.current = null;
+    virtualizer.measure();
+    if (!pendingAnchor || typeof window === "undefined") return;
+    const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
+    if (nextIndex <= pendingAnchor.index) return;
+
+    virtualizer.scrollToIndex(nextIndex, { align: "start", behavior: "auto" });
+    requestAnimationFrame(() => {
+      const element = document.getElementById(pendingAnchor.anchorId);
+      if (!element) return;
+      const delta = element.getBoundingClientRect().top - pendingAnchor.viewportTop;
+      if (Math.abs(delta) > 1) {
+        if (mode.kind === "window") {
+          window.scrollBy({ top: delta, behavior: "auto" });
+        } else {
+          mode.element.scrollBy({ top: delta, behavior: "auto" });
+        }
+      }
+      virtualizer.measure();
+    });
+  }, [messages, virtualizer, mode]);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  return (
+    <div
+      ref={setRefs}
+      data-testid="issue-chat-thread-virtualizer"
+      data-virtual-count={messages.length}
+      style={{ position: "relative", width: "100%", height: totalSize }}
+    >
+      {virtualItems.map((virtualItem) => {
+        const message = messages[virtualItem.index];
+        if (!message) return null;
+        const anchorId = issueChatMessageAnchorId(message);
+        return (
+          <div
+            key={virtualItem.key}
+            data-index={virtualItem.index}
+            data-anchor-id={anchorId ?? undefined}
+            data-testid="issue-chat-thread-virtual-row"
+            ref={(element) => {
+              if (element) virtualizer.measureElement(element);
+            }}
+            onLoadCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            onClickCapture={(event) => {
+              const row = event.currentTarget;
+              requestAnimationFrame(() => {
+                virtualizer.measureElement(row);
+              });
+            }}
+            onTransitionEndCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              transform: `translateY(${virtualItem.start - scrollMargin}px)`,
+            }}
+          >
+            <IssueChatMessageRow
+              message={message}
+              feedbackVoteByTargetId={feedbackVoteByTargetId}
+              activeRunIds={activeRunIds}
+              stoppingRunId={stoppingRunId}
+              interruptingQueuedRunId={interruptingQueuedRunId}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+interface IssueChatMessageRowProps {
+  message: ThreadMessage;
+  feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>;
+  activeRunIds: ReadonlySet<string>;
+  stoppingRunId?: string | null;
+  interruptingQueuedRunId?: string | null;
+}
+
+const IssueChatMessageRow = memo(function IssueChatMessageRow({
+  message,
+  feedbackVoteByTargetId,
+  activeRunIds,
+  stoppingRunId,
+  interruptingQueuedRunId,
+}: IssueChatMessageRowProps) {
+  const kind = issueChatMessageKind(message);
+  const activeVote = issueChatMessageActiveVote(message, feedbackVoteByTargetId);
+  const isRunActive = issueChatMessageRunIsActive(message, activeRunIds);
+  const isStoppingRun = issueChatMessageRunIsStopping(message, stoppingRunId);
+  const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(message, interruptingQueuedRunId);
+  const renderedMessage = message.role === "user"
+    ? (
+      <IssueChatUserMessage
+        message={message}
+        isInterruptingQueuedRun={isInterruptingQueuedRun}
+      />
+    )
+    : message.role === "assistant"
+      ? (
+        <IssueChatAssistantMessage
+          message={message}
+          activeVote={activeVote}
+          isRunActive={isRunActive}
+          isStoppingRun={isStoppingRun}
+        />
+      )
+      : <IssueChatSystemMessage message={message} />;
+
+  return (
+    <div
+      data-testid="issue-chat-message-row"
+      data-message-role={message.role}
+      data-message-kind={kind}
+    >
+      {renderedMessage}
+    </div>
+  );
+}, areIssueChatMessageRowPropsEqual);
+
+function areIssueChatMessageRowPropsEqual(
+  prev: IssueChatMessageRowProps,
+  next: IssueChatMessageRowProps,
+) {
+  if (prev.message !== next.message) return false;
+  if (issueChatMessageActiveVote(prev.message, prev.feedbackVoteByTargetId) !== issueChatMessageActiveVote(next.message, next.feedbackVoteByTargetId)) return false;
+  if (issueChatMessageRunIsActive(prev.message, prev.activeRunIds) !== issueChatMessageRunIsActive(next.message, next.activeRunIds)) return false;
+  if (issueChatMessageRunIsStopping(prev.message, prev.stoppingRunId) !== issueChatMessageRunIsStopping(next.message, next.stoppingRunId)) return false;
+  if (issueChatMessageQueuedRunIsInterrupting(prev.message, prev.interruptingQueuedRunId) !== issueChatMessageQueuedRunIsInterrupting(next.message, next.interruptingQueuedRunId)) return false;
+  return true;
+}
+
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
   onImageUpload,
   onAttachImage,
@@ -2035,8 +3097,11 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   composerDisabledReason = null,
   composerHint = null,
   issueStatus,
+  issueWorkMode,
+  onWorkModeChange,
 }, forwardedRef) {
   const api = useAui();
+  const toastActions = useOptionalToastActions();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -2045,6 +3110,11 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
+  const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
+  const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
+  const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
+  const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
+  const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2091,6 +3161,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
+  useEffect(() => {
+    setUnassignedConfirmed(false);
+  }, [reassignTarget]);
+
+  useEffect(() => {
+    setPendingWorkMode(resolvedIssueWorkMode);
+  }, [resolvedIssueWorkMode]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -2108,6 +3186,22 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const trimmed = body.trim();
     if (!trimmed || submitting) return;
 
+    const composerHasAssigneePicker = enableReassign && reassignOptions.length > 0;
+    if (
+      composerHasAssigneePicker
+      && isUnassignedReassignValue(reassignTarget)
+      && !unassignedConfirmed
+    ) {
+      toastActions?.pushToast({
+        title: "No assignee selected",
+        body: "Pick an assignee or click Send again to post without one.",
+        tone: "warn",
+        dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
+      });
+      setUnassignedConfirmed(true);
+      return;
+    }
+
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
     const reopen = shouldImplicitlyReopenComment(
@@ -2117,9 +3211,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const submittedBody = trimmed;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
+    const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
     setSubmitting(true);
     setBody("");
+    setUnassignedConfirmed(false);
     try {
+      if (workModeChanged && onWorkModeChange) {
+        await onWorkModeChange(pendingWorkMode);
+      }
       const appendPromise = api.thread().append({
         role: "user",
         content: [{ type: "text", text: submittedBody }],
@@ -2277,12 +3376,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
+  const isPlanning = pendingWorkMode === "planning";
+
   return (
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
+      data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
       onDragEnterCapture={handleFileDragEnter}
@@ -2374,25 +3477,77 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
-        {(onImageUpload || onAttachImage) ? (
-          <div className="mr-auto flex items-center gap-3">
-            <input
-              ref={attachInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleAttachFile}
-            />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => attachInputRef.current?.click()}
-              disabled={attaching}
-              title="Attach file"
+        <div className="mr-auto flex items-center gap-2">
+          {(onImageUpload || onAttachImage) ? (
+            <>
+              <input
+                ref={attachInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleAttachFile}
+              />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => attachInputRef.current?.click()}
+                disabled={attaching}
+                title="Attach file"
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+            </>
+          ) : null}
+          {canToggleWorkMode ? (
+            <Popover open={workModeMenuOpen} onOpenChange={setWorkModeMenuOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  data-testid="issue-chat-composer-work-mode-menu"
+                  title="More composer options"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-44 p-1" align="start">
+                <button
+                  type="button"
+                  data-testid="issue-chat-composer-work-mode-menu-toggle"
+                  data-pending-work-mode={pendingWorkMode}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                    isPlanning ? "text-amber-700 dark:text-amber-300" : "text-foreground",
+                  )}
+                  onClick={() => {
+                    setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
+                    setWorkModeMenuOpen(false);
+                  }}
+                >
+                  {isPlanning ? (
+                    <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  ) : (
+                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
+                  )}
+                  <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
+                </button>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {canToggleWorkMode && isPlanning ? (
+            <button
+              type="button"
+              data-testid="issue-chat-composer-work-mode-toggle"
+              data-pending-work-mode={pendingWorkMode}
+              aria-pressed
+              title="Planning mode is on for this submission. Click to switch to Standard."
+              onClick={() => setPendingWorkMode("standard")}
+              className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-xs text-amber-800 transition-colors hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
             >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-          </div>
-        ) : null}
+              <ClipboardList className="h-3.5 w-3.5" aria-hidden />
+              <span>Planning</span>
+            </button>
+          ) : null}
+        </div>
 
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
@@ -2453,6 +3608,7 @@ export function IssueChatThread({
   activeRun = null,
   blockedBy = [],
   blockerAttention = null,
+  successfulRunHandoff = null,
   companyId,
   projectId,
   issueStatus,
@@ -2464,6 +3620,9 @@ export function IssueChatThread({
   onAdd,
   onCancelRun,
   onStopRun,
+  stopRunLabel,
+  stoppingRunLabel,
+  stopRunVariant,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -2490,10 +3649,18 @@ export function IssueChatThread({
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  onCancelInteraction,
   composerRef,
+  issueWorkMode,
+  onWorkModeChange,
+  onRefreshLatestComments,
+  assigneeUserId = null,
+  onResumeFromBacklog,
+  resumeFromBacklogPending = false,
 }: IssueChatThreadProps) {
   const location = useLocation();
-  const hasScrolledRef = useRef(false);
+  const lastScrolledHashRef = useRef<string | null>(null);
+  const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
@@ -2502,6 +3669,8 @@ export function IssueChatThread({
   const lastUserMessageIdRef = useRef<string | null>(null);
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
+  const latestSettleTimeoutsRef = useRef<number[]>([]);
+  const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -2542,6 +3711,17 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const clearLatestSettleTimeouts = useCallback(() => {
+    for (const timeout of latestSettleTimeoutsRef.current) {
+      window.clearTimeout(timeout);
+    }
+    latestSettleTimeoutsRef.current = [];
+    latestSettleCleanupRef.current?.();
+    latestSettleCleanupRef.current = null;
+  }, []);
+
+  useEffect(() => clearLatestSettleTimeouts, [clearLatestSettleTimeouts]);
+
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
@@ -2595,6 +3775,8 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
+  latestMessagesRef.current = messages;
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -2614,6 +3796,47 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
+  const useVirtualizedThread = messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  const messageAnchorIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    messages.forEach((message, index) => {
+      const anchorId = issueChatMessageAnchorId(message);
+      if (anchorId) map.set(anchorId, index);
+    });
+    return map;
+  }, [messages]);
+
+  function scrollToThreadAnchor(
+    anchorId: string,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    messageSnapshot: readonly ThreadMessage[] = messages,
+  ) {
+    const snapshotUsesVirtualizer = messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const virtualIndex =
+      messageSnapshot === messages
+        ? messageAnchorIndex.get(anchorId)
+        : findMessageAnchorIndex(messageSnapshot, anchorId);
+    if (snapshotUsesVirtualizer && virtualIndex !== undefined && virtualIndex >= 0) {
+      if (!virtualizedThreadRef.current) return false;
+      virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+      return true;
+    }
+
+    const element = document.getElementById(anchorId);
+    if (!element) return false;
+    element.scrollIntoView({
+      behavior: options?.behavior ?? "smooth",
+      block: options?.align === "start"
+        ? "start"
+        : options?.align === "end"
+          ? "end"
+          : "center",
+    });
+    return true;
+  }
 
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -2643,14 +3866,13 @@ export function IssueChatThread({
         spacerInitialReserveRef.current = reserve;
         setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
-          const el = document.getElementById(anchorId);
-          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+          scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
         });
       }
     }
 
     lastUserMessageIdRef.current = lastUserId;
-  }, [messages]);
+  }, [messageAnchorIndex, messages, useVirtualizedThread]);
 
   useLayoutEffect(() => {
     const anchorId = spacerBaselineAnchorRef.current;
@@ -2683,7 +3905,7 @@ export function IssueChatThread({
   }, [messages]);
 
   useEffect(() => {
-    const hash = location.hash;
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
     if (
       !(
         hash.startsWith("#comment-")
@@ -2692,58 +3914,250 @@ export function IssueChatThread({
         || hash.startsWith("#interaction-")
       )
     ) return;
-    if (messages.length === 0 || hasScrolledRef.current) return;
+    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
-    const element = document.getElementById(targetId);
-    if (!element) return;
-    hasScrolledRef.current = true;
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [location.hash, messages]);
+    let cancelled = false;
+    const attemptScroll = (finalAttempt = false) => {
+      if (cancelled || lastScrolledHashRef.current === hash) return;
+      const didScroll = scrollToThreadAnchor(targetId, { align: "center", behavior: "smooth" });
+      if (!didScroll) return;
+      if (finalAttempt || !useVirtualizedThread || document.getElementById(targetId)) {
+        lastScrolledHashRef.current = hash;
+      }
+    };
 
-  function handleJumpToLatest() {
+    attemptScroll();
+    const frame = requestAnimationFrame(() => attemptScroll());
+    const timeout = window.setTimeout(() => attemptScroll(true), 250);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+
+  function jumpToLatestFallback() {
+    if (useVirtualizedThread) {
+      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      return;
+    }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
+  // Lands on the latest `comment-*` row and then drives the scroll the rest
+  // of the way home as the virtualizer's per-row measurements arrive.
+  //
+  // The virtualizer estimates 220px for unmeasured rows. On long threads
+  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
+  // underestimated until rows render and get measured. A single scroll
+  // lands above the actual bottom; rendered rows then expand, the layout
+  // grows, and the user has to keep clicking Jump-to-latest to walk closer
+  // to the real bottom. The convergence loop below issues `scrollIntoView`
+  // on the latest comment element on every tick until the DOM bottom of
+  // that element is at the scroll container's bottom (or scroll position
+  // and content height stop changing).
+  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    if (latestCommentIndex < 0) {
+      jumpToLatestFallback();
+      return;
+    }
+    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
+    if (!latestCommentAnchor) {
+      jumpToLatestFallback();
+      return;
+    }
+
+    const initial = scrollToThreadAnchor(
+      latestCommentAnchor,
+      { align: "end", behavior: "smooth" },
+      messageSnapshot,
+    );
+    if (!initial) {
+      jumpToLatestFallback();
+      return;
+    }
+
+    if (typeof window === "undefined") return;
+
+    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const MAX_DURATION_MS = 4000;
+    const TICK_MS = 80;
+    const TOLERANCE_PX = 4;
+
+    clearLatestSettleTimeouts();
+    const resolveScrollContainer = (): HTMLElement | null =>
+      (document.getElementById("main-content") as HTMLElement | null);
+    const cancelTarget = resolveScrollContainer() ?? window;
+
+    let lastScrollTop = -1;
+    let lastScrollHeight = -1;
+    let stableTicks = 0;
+    let cancelled = false;
+
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    const cleanup = () => {
+      cancelTarget.removeEventListener("wheel", cancel);
+      cancelTarget.removeEventListener("touchstart", cancel);
+    };
+
+    cancelTarget.addEventListener("wheel", cancel, { once: true, passive: true });
+    cancelTarget.addEventListener("touchstart", cancel, { once: true, passive: true });
+    latestSettleCleanupRef.current = cleanup;
+
+    const finish = () => {
+      cleanup();
+      latestSettleCleanupRef.current = null;
+      for (const timeout of latestSettleTimeoutsRef.current) {
+        window.clearTimeout(timeout);
+      }
+      latestSettleTimeoutsRef.current = [];
+    };
+
+    const scheduleTick = (delay: number) => {
+      const timeout = window.setTimeout(() => {
+        latestSettleTimeoutsRef.current = latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
+        tick();
+      }, delay);
+      latestSettleTimeoutsRef.current.push(timeout);
+    };
+
+    const tick = () => {
+      const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      if (cancelled || now - startedAt > MAX_DURATION_MS) {
+        finish();
+        return;
+      }
+
+      if (typeof document === "undefined") {
+        finish();
+        return;
+      }
+
+      const el = document.getElementById(latestCommentAnchor);
+      if (!el) {
+        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
+        // the offset (instant) so it gets mounted, then keep settling.
+        virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
+          align: "end",
+          behavior: "auto",
+        });
+        scheduleTick(TICK_MS);
+        return;
+      }
+
+      const container = resolveScrollContainer();
+      const containerBottom = container
+        ? container.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const elBottom = el.getBoundingClientRect().bottom;
+      const offBottom = elBottom - containerBottom;
+
+      if (Math.abs(offBottom) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      const currentScrollTop = container?.scrollTop ?? window.scrollY;
+      const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
+      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
+      const heightStable = currentScrollHeight === lastScrollHeight;
+      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atBottom) {
+        stableTicks += 1;
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+      } else {
+        stableTicks = 0;
+      }
+      lastScrollTop = currentScrollTop;
+      lastScrollHeight = currentScrollHeight;
+      scheduleTick(TICK_MS);
+    };
+
+    // Hold the first iteration off for one frame so the initial smooth
+    // scroll has begun (and the virtualizer has rendered the buffer around
+    // the target) before we start settling.
+    scheduleTick(120);
+  }
+
+  function handleJumpToLatest() {
+    if (onRefreshLatestComments) {
+      // Refetching the comments query (page 0 first) brings any comment that
+      // arrived after the initial load — including ones live updates may
+      // have missed during reconnects — into the loaded set before we
+      // resolve the latest target. Otherwise we'd land on the latest
+      // *loaded* comment but not the absolute newest. (PAP-2672 follow-up.)
+      const refreshed = onRefreshLatestComments();
+      if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
+        (refreshed as Promise<unknown>).then(
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+        );
+        return;
+      }
+    }
+    scrollToLatestCommentWithSettle(latestMessagesRef.current);
+  }
+
+  const stableOnVote = useStableEvent(onVote);
+  const stableOnStopRun = useStableEvent(onStopRun);
+  const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
+  const stableOnCancelQueued = useStableEvent(onCancelQueued);
+  const stableOnImageClick = useStableEvent(onImageClick);
+  const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
+  const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
+  const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
+  const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
-      feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
       currentUserId,
       userLabelMap,
       userProfileMap,
-      activeRunIds,
-      onVote,
-      onStopRun,
-      stoppingRunId,
-      onInterruptQueued,
-      onCancelQueued,
-      interruptingQueuedRunId,
-      onImageClick,
-      onAcceptInteraction,
-      onRejectInteraction,
-      onSubmitInteractionAnswers,
+      onVote: stableOnVote,
+      onStopRun: stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      onInterruptQueued: stableOnInterruptQueued,
+      onCancelQueued: stableOnCancelQueued,
+      onImageClick: stableOnImageClick,
+      onAcceptInteraction: stableOnAcceptInteraction,
+      onRejectInteraction: stableOnRejectInteraction,
+      onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
+      onCancelInteraction: stableOnCancelInteraction,
+      issueStatus,
+      successfulRunHandoff,
     }),
     [
-      feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
       currentUserId,
       userLabelMap,
       userProfileMap,
-      activeRunIds,
-      onVote,
-      onStopRun,
-      stoppingRunId,
-      onInterruptQueued,
-      onCancelQueued,
-      interruptingQueuedRunId,
-      onImageClick,
-      onAcceptInteraction,
-      onRejectInteraction,
-      onSubmitInteractionAnswers,
+      stableOnVote,
+      stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      stableOnInterruptQueued,
+      stableOnCancelQueued,
+      stableOnImageClick,
+      stableOnAcceptInteraction,
+      stableOnRejectInteraction,
+      stableOnSubmitInteractionAnswers,
+      stableOnCancelInteraction,
+      issueStatus,
+      successfulRunHandoff,
     ],
   );
 
@@ -2752,10 +4166,13 @@ export function IssueChatThread({
     ?? (variant === "embedded"
       ? "No run output yet."
       : "This issue conversation is empty. Start with a message below.");
-  const errorBoundaryResetKey = useMemo(
-    () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
-    [messages],
-  );
+  const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
+  const errorBoundaryResetVersionRef = useRef(0);
+  if (previousErrorBoundaryMessagesRef.current !== messages) {
+    previousErrorBoundaryMessagesRef.current = messages;
+    errorBoundaryResetVersionRef.current += 1;
+  }
+  const errorBoundaryResetKey = String(errorBoundaryResetVersionRef.current);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -2793,26 +4210,50 @@ export function IssueChatThread({
                 )}>
                   {resolvedEmptyMessage}
                 </div>
+              ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
+                <VirtualizedIssueChatThreadList
+                  ref={virtualizedThreadRef}
+                  messages={messages}
+                  feedbackVoteByTargetId={feedbackVoteByTargetId}
+                  activeRunIds={activeRunIds}
+                  stoppingRunId={stoppingRunId}
+                  interruptingQueuedRunId={interruptingQueuedRunId}
+                  variant={variant}
+                />
               ) : (
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => {
-                  if (message.role === "user") {
-                    return <IssueChatUserMessage key={message.id} message={message} />;
-                  }
-                  if (message.role === "assistant") {
-                    return <IssueChatAssistantMessage key={message.id} message={message} />;
-                  }
-                  return <IssueChatSystemMessage key={message.id} message={message} />;
-                })
-              )}
+                messages.map((message) => (
+                  <IssueChatMessageRow
+                    key={message.id}
+                    message={message}
+                    feedbackVoteByTargetId={feedbackVoteByTargetId}
+                    activeRunIds={activeRunIds}
+                    stoppingRunId={stoppingRunId}
+                    interruptingQueuedRunId={interruptingQueuedRunId}
+                  />
+              ))
+            )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueAssignedBacklogNotice
+                    issueStatus={issueStatus ?? ""}
+                    assigneeAgent={assignedAgent}
+                    assigneeUserId={assigneeUserId}
+                    onResume={onResumeFromBacklog}
+                    resuming={resumeFromBacklogPending}
+                  />
                   <IssueBlockedNotice
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
                     blockerAttention={blockerAttention}
+                    successfulRunHandoff={successfulRunHandoff}
+                    agentName={
+                      successfulRunHandoff?.assigneeAgentId
+                        ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
+                        : null
+                    }
                   />
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
@@ -2849,6 +4290,8 @@ export function IssueChatThread({
               composerDisabledReason={composerDisabledReason}
               composerHint={composerHint}
               issueStatus={issueStatus}
+              issueWorkMode={issueWorkMode}
+              onWorkModeChange={onWorkModeChange}
             />
           </div>
         ) : null}

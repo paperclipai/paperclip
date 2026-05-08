@@ -64,7 +64,10 @@ function accumulateUsage(
   );
   target.cachedInputTokens += asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, asNumber(source.cached, 0))),
+    asNumber(
+      source.cachedInputTokens,
+      asNumber(source.cachedContentTokenCount, asNumber(source.cached, 0)),
+    ),
   );
   target.outputTokens += asNumber(
     source.output_tokens,
@@ -97,9 +100,9 @@ export function parseGeminiJsonl(stdout: string) {
 
     const type = asString(event.type, "").trim();
 
-    if (type === "assistant" || (type === "message" && asString(event.role, "").trim() === "assistant")) {
-      messages.push(...collectMessageText(event.content ?? event.message));
-      const messageObj = parseObject(event.content ?? event.message);
+    if (type === "assistant") {
+      messages.push(...collectMessageText(event.message));
+      const messageObj = parseObject(event.message);
       const content = Array.isArray(messageObj.content) ? messageObj.content : [];
       for (const partRaw of content) {
         const part = parseObject(partRaw);
@@ -121,6 +124,19 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
+    // Gemini CLI v0.38+ stream-json schema emits assistant turns as:
+    // {"type":"message","role":"assistant","content":"...","delta":true}
+    // These are discrete final messages (one per assistant turn), not
+    // cumulative streaming tokens, so collecting all of them produces the
+    // expected concatenated turn-by-turn summary rather than duplicated text.
+    if (type === "message") {
+      const role = asString(event.role, "").trim().toLowerCase();
+      if (role === "assistant") {
+        messages.push(...collectMessageText(event.content));
+      }
+      continue;
+    }
+
     if (type === "result") {
       resultEvent = event;
       accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
@@ -129,9 +145,13 @@ export function parseGeminiJsonl(stdout: string) {
         asString(event.text, "").trim() ||
         asString(event.response, "").trim();
       if (resultText && messages.length === 0) messages.push(resultText);
-      const costRaw = event.total_cost_usd ?? event.cost_usd ?? event.cost ?? (event.stats && (event.stats as any).cost_usd);
-      costUsd = asNumber(costRaw, costUsd ?? 0) || costUsd;
-      const isError = event.is_error === true || asString(event.status, "").toLowerCase() === "error" || asString(event.subtype, "").toLowerCase() === "error";
+      costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
+      const status = asString(event.status, "").toLowerCase();
+      const isError =
+        event.is_error === true ||
+        asString(event.subtype, "").toLowerCase() === "error" ||
+        status === "error" ||
+        status === "failed";
       if (isError) {
         const text = asErrorText(event.error ?? event.message ?? event.result).trim();
         if (text) errorMessage = text;
@@ -274,9 +294,18 @@ export function isGeminiTurnLimitResult(
   if (exitCode === 53) return true;
   if (!parsed) return false;
 
-  const status = asString(parsed.status, "").trim().toLowerCase();
-  if (status === "turn_limit" || status === "max_turns") return true;
+  const structuredStopReasons = [
+    parsed.status,
+    parsed.stopReason,
+    parsed.stop_reason,
+    parsed.errorCode,
+    parsed.error_code,
+  ].map((value) => asString(value, "").trim().toLowerCase());
 
-  const error = asString(parsed.error, "").trim();
-  return /turn\s*limit|max(?:imum)?\s+turns?/i.test(error);
+  return structuredStopReasons.some((reason) =>
+    reason === "turn_limit" ||
+    reason === "max_turns" ||
+    reason === "max_turns_exhausted" ||
+    reason === "turn_limit_exhausted",
+  );
 }

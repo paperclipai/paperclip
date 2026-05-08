@@ -222,6 +222,41 @@ async function flush() {
   });
 }
 
+async function typeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    valueSetter?.call(textarea, value);
+    textarea.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        data: value,
+        inputType: "insertText",
+      }),
+    );
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await flush();
+}
+
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+
+  throw lastError;
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -244,6 +279,7 @@ describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    vi.useRealTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.newIssueOpen = true;
@@ -268,6 +304,7 @@ describe("NewIssueDialog", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
       companyId: "company-1",
@@ -351,7 +388,9 @@ describe("NewIssueDialog", () => {
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Sub-Issue"));
     expect(submitButton).not.toBeUndefined();
-    expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    await waitForAssertion(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     await act(async () => {
       submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -366,6 +405,221 @@ describe("NewIssueDialog", () => {
         goalId: "goal-1",
         projectId: "project-1",
         executionWorkspaceId: "workspace-1",
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("restores the planning mode from dialog defaults", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Planned from defaults",
+      workMode: "planning",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const planningButton = container.querySelector('[data-issue-work-mode="planning"]');
+    expect(planningButton?.className).toContain("bg-accent");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Planned from defaults",
+        workMode: "planning",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("applies project and execution workspace defaults for normal new issues", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        workspaces: [
+          {
+            id: "project-workspace-1",
+            name: "Primary",
+            isPrimary: true,
+          },
+          {
+            id: "project-workspace-2",
+            name: "Isolated checkout",
+            isPrimary: false,
+          },
+        ],
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "PAP-100",
+        mode: "isolated_workspace",
+        status: "active",
+        branchName: "feature/pap-100",
+        cwd: "/tmp/workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      title: "Follow-up issue",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-2",
+      executionWorkspaceId: "workspace-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).toContain("New issue");
+    expect(container.textContent).not.toContain("New sub-issue");
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Reusing PAP-100");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Follow-up issue",
+        projectId: "project-1",
+        projectWorkspaceId: "project-workspace-2",
+        executionWorkspaceId: "workspace-1",
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: {
+          mode: "isolated_workspace",
+        },
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("submits the latest locally typed title and description", async () => {
+    let resolveProjects: (projects: Array<{
+      id: string;
+      name: string;
+      description: string | null;
+      archivedAt: string | null;
+      color: string;
+    }>) => void = () => undefined;
+    mockProjectsApi.list.mockReturnValue(new Promise((resolve) => {
+      resolveProjects = resolve;
+    }));
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, "Typed issue");
+    await typeTextareaValue(descriptionInput!, "Typed description");
+
+    await act(async () => {
+      resolveProjects([
+        {
+          id: "project-1",
+          name: "Alpha",
+          description: null,
+          archivedAt: null,
+          color: "#445566",
+        },
+      ]);
+      await Promise.resolve();
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Typed issue",
+        description: "Typed description",
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("submits planning work mode when planning is selected", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Plan this first");
+
+    const planningButton = container.querySelector('[data-issue-work-mode="planning"]');
+    expect(planningButton).not.toBeNull();
+    await act(async () => {
+      planningButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Plan this first",
+        workMode: "planning",
       }),
     );
 

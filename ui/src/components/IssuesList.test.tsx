@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuesList } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -48,6 +48,7 @@ vi.mock("../context/CompanyContext", () => ({
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
+  useDialogActions: () => dialogState,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -178,6 +179,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -219,6 +221,20 @@ async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
   }
 
   throw lastError;
+}
+
+function setDocumentScrollMetrics({
+  innerHeight,
+  scrollY,
+  scrollHeight,
+}: {
+  innerHeight: number;
+  scrollY: number;
+  scrollHeight: number;
+}) {
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: innerHeight });
+  Object.defineProperty(window, "scrollY", { configurable: true, value: scrollY });
+  Object.defineProperty(document.documentElement, "scrollHeight", { configurable: true, value: scrollHeight });
 }
 
 function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
@@ -268,6 +284,7 @@ describe("IssuesList", () => {
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 2400 });
     localStorage.clear();
   });
 
@@ -376,6 +393,70 @@ describe("IssuesList", () => {
     expect(dialogState.openNewIssue).toHaveBeenCalledWith({
       parentId: "parent-1",
       projectId: "project-1",
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses workspace group defaults when creating an issue from a grouped section", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "workspace", sortField: "updated", sortDir: "desc" }),
+    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "execution-workspace-1",
+        name: "Feature Branch",
+        mode: "isolated_workspace",
+        projectWorkspaceId: "project-workspace-1",
+      },
+    ]);
+
+    const issue = createIssue({
+      id: "issue-workspace",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+      executionWorkspaceId: "execution-workspace-1",
+    });
+    const project = {
+      id: "project-1",
+      name: "Paperclip App",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Primary workspace" }],
+      primaryWorkspace: { id: "project-workspace-1" },
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+    } as Project;
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[project]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      expect(button).not.toBeNull();
+    });
+
+    await act(async () => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({
+      executionWorkspaceId: "execution-workspace-1",
+      executionWorkspaceMode: "reuse_existing",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
     });
 
     act(() => {
@@ -500,6 +581,153 @@ describe("IssuesList", () => {
       expect(rows.find((row) => row.textContent?.includes("Active blocker"))?.getAttribute("data-current-step")).toBe("true");
       expect(rows.find((row) => row.textContent?.includes("Done first"))?.getAttribute("data-title-class")).toContain("text-muted-foreground");
       expect(container.textContent).toContain("blocked by PAP-3 · step 2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the workflow blocker chip when a sub-issue is blocked only by its previous sibling", async () => {
+    const firstChild = createIssue({
+      id: "issue-first-child",
+      identifier: "PAP-1",
+      parentId: "issue-parent",
+      title: "First child",
+      status: "todo",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const secondChild = createIssue({
+      id: "issue-second-child",
+      identifier: "PAP-2",
+      parentId: "issue-parent",
+      title: "Second child",
+      status: "blocked",
+      blockedBy: [
+        {
+          id: "issue-first-child",
+          identifier: "PAP-1",
+          title: "First child",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[secondChild, firstChild]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.getAttribute("data-step"))).toEqual(["1", "2"]);
+      expect(container.textContent).not.toContain("blocked by PAP-1");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("collapses multiple workflow blocker chips to the first blocker and a count", async () => {
+    const issueDone = createIssue({
+      id: "issue-done",
+      identifier: "PAP-1",
+      title: "Done first",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const firstBlocker = createIssue({
+      id: "issue-first-blocker",
+      identifier: "PAP-2",
+      title: "First blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const secondBlocker = createIssue({
+      id: "issue-second-blocker",
+      identifier: "PAP-3",
+      title: "Second blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const thirdBlocker = createIssue({
+      id: "issue-third-blocker",
+      identifier: "PAP-4",
+      title: "Third blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-04T00:00:00.000Z"),
+    });
+    const issueBlocked = createIssue({
+      id: "issue-blocked",
+      identifier: "PAP-5",
+      title: "Blocked issue",
+      status: "blocked",
+      blockedBy: [
+        {
+          id: "issue-first-blocker",
+          identifier: "PAP-2",
+          title: "First blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-second-blocker",
+          identifier: "PAP-3",
+          title: "Second blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-third-blocker",
+          identifier: "PAP-4",
+          title: "Third blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      createdAt: new Date("2026-04-05T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issueBlocked, thirdBlocker, secondBlocker, firstBlocker, issueDone]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("blocked by PAP-2");
+      expect(container.textContent).toContain("... and 2 more");
+      expect(container.textContent).not.toContain("blocked by PAP-3");
+      expect(container.textContent).not.toContain("blocked by PAP-4");
+      const blockerButtons = Array.from(container.querySelectorAll("button"))
+        .filter((button) => button.textContent?.includes("blocked by"));
+      expect(blockerButtons).toHaveLength(1);
+      expect(blockerButtons[0]?.textContent).toBe("blocked by PAP-2 · step 2 ... and 2 more");
     });
 
     act(() => {
@@ -846,6 +1074,142 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
       expect(container.textContent).toContain("Rendering 100 of 220 issues");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps rendering local issue batches while the user stays near the bottom", async () => {
+    const manyIssues = Array.from({ length: 420 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={manyIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+    });
+
+    act(() => {
+      setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
+      expect(container.textContent).toContain("Rendering 250 of 420 issues");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("waits for the desktop main scroll container before rendering more local rows", async () => {
+    const manyIssues = Array.from({ length: 120 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+    const main = document.createElement("main");
+    main.id = "main-content";
+    main.style.overflowY = "auto";
+    document.body.appendChild(main);
+    main.appendChild(container);
+    Object.defineProperty(main, "clientHeight", { configurable: true, value: 600 });
+    Object.defineProperty(main, "scrollHeight", { configurable: true, value: 2000 });
+    Object.defineProperty(main, "scrollTop", { configurable: true, writable: true, value: 0 });
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 600 });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={manyIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+    });
+
+    await flush();
+    await flush();
+    expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+
+    act(() => {
+      main.scrollTop = 1500;
+      main.dispatchEvent(new Event("scroll"));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(100);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("requests more server issues after scrolling past the rendered rows", async () => {
+    const visibleIssues = Array.from({ length: 100 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+    const onLoadMoreIssues = vi.fn();
+    setDocumentScrollMetrics({ innerHeight: 2000, scrollY: 0, scrollHeight: 1000 });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={visibleIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        hasMoreIssues
+        onLoadMoreIssues={onLoadMoreIssues}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+    });
+    await flush();
+    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    await waitForAssertion(() => {
+      expect(onLoadMoreIssues).toHaveBeenCalledTimes(2);
     });
 
     act(() => {

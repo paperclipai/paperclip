@@ -1,7 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+import { redactCommandText } from "./command-redaction.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -76,17 +79,23 @@ export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const REDACTED_LOG_VALUE = "***REDACTED***";
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
+const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
+const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
-  "- Leave durable progress in comments, documents, or work products with a clear next action.",
+  "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
+  "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
@@ -109,6 +118,11 @@ export interface PaperclipSkillEntry {
 export interface InstalledSkillTarget {
   targetPath: string | null;
   kind: "symlink" | "directory" | "file";
+}
+
+export interface MaterializedPaperclipSkillCopyResult {
+  copiedFiles: number;
+  skippedSymlinks: string[];
 }
 
 interface PersistentSkillSnapshotOptions {
@@ -269,6 +283,7 @@ type PaperclipWakeIssue = {
   identifier: string | null;
   title: string | null;
   status: string | null;
+  workMode: string | null;
   priority: string | null;
 };
 
@@ -354,6 +369,8 @@ type PaperclipWakePayload = {
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  interactionKind: string | null;
+  interactionStatus: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -372,6 +389,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
+  const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
   if (!id && !identifier && !title) return null;
   return {
@@ -379,6 +397,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     identifier,
     title,
     status,
+    workMode,
     priority,
   };
 }
@@ -561,6 +580,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     livenessContinuation,
+    interactionKind: asString(payload.interactionKind, "").trim() || null,
+    interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -578,6 +599,15 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
   return JSON.stringify(normalized);
+}
+
+export function readPaperclipIssueWorkModeFromContext(value: unknown): string | null {
+  const context = parseObject(value);
+  const issue = parseObject(context.paperclipIssue);
+  const direct = asString(issue.workMode, "").trim();
+  if (direct) return direct;
+  const wake = normalizePaperclipWakePayload(context.paperclipWake);
+  return wake?.issue?.workMode ?? null;
 }
 
 export function renderPaperclipWakePrompt(
@@ -603,7 +633,7 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action, use child issues instead of polling for long or parallel work, and mark blocked work with the unblock owner/action.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -620,7 +650,7 @@ export function renderPaperclipWakePrompt(
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action, use child issues instead of polling for long or parallel work, and mark blocked work with the unblock owner/action.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -632,8 +662,30 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
   }
+  if (normalized.issue?.workMode) {
+    lines.push(`- issue work mode: ${normalized.issue.workMode}`);
+  }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.issue?.workMode === "planning") {
+    const hasWakeComments = normalized.comments.length > 0;
+    const acceptedPlanContinuation =
+      !hasWakeComments &&
+      normalized.interactionKind === "request_confirmation" && normalized.interactionStatus === "accepted";
+    let directive = "Make the plan only. Do not write code or perform implementation work.";
+    if (hasWakeComments) {
+      directive = "Update the plan only. Do not write code or perform implementation work.";
+    }
+    if (acceptedPlanContinuation) {
+      directive = "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+    }
+    lines.push(`- planning directive: ${directive}`);
+    if (acceptedPlanContinuation) {
+      lines.push(
+        "- accepted-plan continuation: you may create child implementation issues from the approved plan, but must not start implementation work on the planning issue itself",
+      );
+    }
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
@@ -780,9 +832,13 @@ export function renderPaperclipWakePrompt(
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
+    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? REDACTED_LOG_VALUE : value;
   }
   return redacted;
+}
+
+export function redactCommandTextForLogs(command: string): string {
+  return redactCommandText(command, REDACTED_LOG_VALUE);
 }
 
 export function buildInvocationEnvForLogs(
@@ -806,7 +862,7 @@ export function buildInvocationEnvForLogs(
 
   const resolvedCommand = options.resolvedCommand?.trim();
   if (resolvedCommand) {
-    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = resolvedCommand;
+    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = redactCommandTextForLogs(resolvedCommand);
   }
 
   return redactEnvForLogs(merged);
@@ -868,6 +924,177 @@ export function applyPaperclipWorkspaceEnv(
   }
 
   return env;
+}
+
+export function shapePaperclipWorkspaceEnvForExecution(input: {
+  workspaceCwd?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const workspaceCwd =
+    typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+      ? input.workspaceCwd.trim()
+      : null;
+  const workspaceWorktreePath =
+    typeof input.workspaceWorktreePath === "string" && input.workspaceWorktreePath.trim().length > 0
+      ? input.workspaceWorktreePath.trim()
+      : null;
+  const workspaceHints = Array.isArray(input.workspaceHints) ? input.workspaceHints : [];
+
+  if (!input.executionTargetIsRemote) {
+    return {
+      workspaceCwd,
+      workspaceWorktreePath,
+      workspaceHints,
+    };
+  }
+
+  const executionCwd =
+    typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+      ? input.executionCwd.trim()
+      : null;
+  // On a remote target we must never fall back to the local workspaceCwd —
+  // doing so leaks host paths into the remote env (the exact failure mode
+  // this helper exists to prevent). Callers are expected to resolve
+  // executionCwd via adapterExecutionTargetRemoteCwd before calling this
+  // helper, which always returns a non-empty string. Surface a warning so
+  // future callers don't silently regress to the leak.
+  if (executionCwd === null) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] shapePaperclipWorkspaceEnvForExecution called with executionCwd=null on a remote target; " +
+        "stripping workspaceCwd to avoid leaking local paths into the remote environment.",
+    );
+  }
+  const realizedWorkspaceCwd = executionCwd;
+  const localWorkspaceCwd = workspaceCwd ? path.resolve(workspaceCwd) : null;
+  const shapedWorkspaceHints = workspaceHints.map((hint) => {
+    const nextHint = { ...hint };
+    const hintCwd = typeof nextHint.cwd === "string" ? nextHint.cwd.trim() : "";
+    if (!hintCwd) return nextHint;
+
+    if (localWorkspaceCwd && path.resolve(hintCwd) === localWorkspaceCwd) {
+      if (realizedWorkspaceCwd) {
+        nextHint.cwd = realizedWorkspaceCwd;
+      } else {
+        delete nextHint.cwd;
+      }
+      return nextHint;
+    }
+
+    delete nextHint.cwd;
+    return nextHint;
+  });
+
+  return {
+    workspaceCwd: realizedWorkspaceCwd,
+    workspaceWorktreePath: null,
+    workspaceHints: shapedWorkspaceHints,
+  };
+}
+
+export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
+  env: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  executionCwd?: string | null;
+  executionTargetIsRemote?: boolean;
+}): Record<string, string> {
+  const nextEnv = Object.fromEntries(
+    Object.entries(input.env)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  ) as Record<string, string>;
+  const localWorkspaceCwd = typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+    ? path.resolve(input.workspaceCwd)
+    : null;
+  // executionCwd is a remote path on the target host; we deliberately do not
+  // run `path.resolve` against it because that applies host-Node semantics
+  // (current working directory, host path separator) to a path that lives on
+  // the remote shell. Callers always pass absolute remote paths, so we
+  // forward the trimmed value verbatim.
+  const remoteWorkspaceCwd = typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+    ? input.executionCwd.trim()
+    : null;
+
+  if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
+    return nextEnv;
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!key.endsWith("_WORKSPACE_CWD")) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (path.resolve(trimmed) !== localWorkspaceCwd) continue;
+    nextEnv[key] = remoteWorkspaceCwd;
+  }
+
+  return nextEnv;
+}
+
+export function refreshPaperclipWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  envConfig?: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  workspaceSource?: string | null;
+  workspaceStrategy?: string | null;
+  workspaceId?: string | null;
+  workspaceRepoUrl?: string | null;
+  workspaceRepoRef?: string | null;
+  workspaceBranch?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  agentHome?: string | null;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: input.workspaceCwd,
+    workspaceWorktreePath: input.workspaceWorktreePath,
+    workspaceHints: input.workspaceHints,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+    executionCwd: input.executionCwd,
+  });
+
+  delete input.env.PAPERCLIP_WORKSPACE_CWD;
+  delete input.env.PAPERCLIP_WORKSPACE_WORKTREE_PATH;
+  delete input.env.PAPERCLIP_WORKSPACES_JSON;
+
+  applyPaperclipWorkspaceEnv(input.env, {
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
+    workspaceSource: input.workspaceSource,
+    workspaceStrategy: input.workspaceStrategy,
+    workspaceId: input.workspaceId,
+    workspaceRepoUrl: input.workspaceRepoUrl,
+    workspaceRepoRef: input.workspaceRepoRef,
+    workspaceBranch: input.workspaceBranch,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
+    agentHome: input.agentHome,
+  });
+
+  if (shapedWorkspaceEnv.workspaceHints.length > 0) {
+    input.env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
+  }
+
+  const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
+    env: input.envConfig ?? {},
+    workspaceCwd: input.workspaceCwd,
+    executionCwd: shapedWorkspaceEnv.workspaceCwd,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+  });
+  for (const [key, value] of Object.entries(shapedEnvConfig)) {
+    input.env[key] = value;
+  }
+
+  return shapedWorkspaceEnv;
 }
 
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -949,6 +1176,13 @@ function quoteForCmd(arg: string) {
   if (!arg.length) return '""';
   const escaped = arg.replace(/"/g, '""');
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+export function sanitizeSshRemoteEnv(
+  env: Record<string, string>,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return sanitizeRemoteExecutionEnv(env, inheritedEnv);
 }
 
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
@@ -1393,6 +1627,190 @@ export async function ensurePaperclipSkillSymlink(
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+async function hashSkillDirectory(root: string): Promise<string> {
+  const hash = createHash("sha256");
+
+  async function visit(candidate: string, relativePath: string): Promise<void> {
+    const stat = await fs.lstat(candidate);
+    if (stat.isSymbolicLink()) {
+      hash.update(`symlink:${relativePath}\n`);
+      return;
+    }
+    if (stat.isDirectory()) {
+      hash.update(`dir:${relativePath}\n`);
+      const entries = await fs.readdir(candidate, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await visit(path.join(candidate, entry.name), childRelativePath);
+      }
+      return;
+    }
+    if (stat.isFile()) {
+      hash.update(`file:${relativePath}:${stat.mode}\n`);
+      hash.update(await fs.readFile(candidate));
+      hash.update("\n");
+      return;
+    }
+    hash.update(`other:${relativePath}:${stat.mode}\n`);
+  }
+
+  await visit(root, "");
+  return hash.digest("hex");
+}
+
+async function materializedSkillFingerprintMatches(targetRoot: string, sourceFingerprint: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(targetRoot, MATERIALIZED_SKILL_SENTINEL), "utf8")) as unknown;
+    const parsed = parseObject(raw);
+    return parsed.version === 1 && parsed.sourceFingerprint === sourceFingerprint;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireMaterializeLock(lockDir: string): Promise<() => Promise<void>> {
+  await fs.mkdir(path.dirname(lockDir), { recursive: true });
+  const deadline = Date.now() + MATERIALIZED_SKILL_LOCK_STALE_MS;
+  while (true) {
+    try {
+      await fs.mkdir(lockDir);
+      await fs.writeFile(
+        path.join(lockDir, MATERIALIZED_SKILL_LOCK_OWNER),
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+      return async () => {
+        await fs.rm(lockDir, { recursive: true, force: true });
+      };
+    } catch (err) {
+      const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+      if (code !== "EEXIST") throw err;
+      if (await removeStaleMaterializeLock(lockDir, MATERIALIZED_SKILL_LOCK_STALE_MS)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for Paperclip skill materialization lock at ${lockDir}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+    return code === "EPERM";
+  }
+}
+
+async function removeStaleMaterializeLock(lockDir: string, staleMs: number): Promise<boolean> {
+  const ownerPath = path.join(lockDir, MATERIALIZED_SKILL_LOCK_OWNER);
+  let shouldRemove = false;
+  try {
+    const raw = JSON.parse(await fs.readFile(ownerPath, "utf8")) as unknown;
+    const owner = parseObject(raw);
+    const pid = typeof owner.pid === "number" ? owner.pid : 0;
+    const createdAt = typeof owner.createdAt === "string" ? Date.parse(owner.createdAt) : Number.NaN;
+    const ageMs = Number.isFinite(createdAt) ? Date.now() - createdAt : staleMs + 1;
+    shouldRemove = !isPidAlive(pid) || ageMs > staleMs;
+  } catch {
+    const stat = await fs.stat(lockDir).catch(() => null);
+    shouldRemove = !stat || Date.now() - stat.mtimeMs > staleMs;
+  }
+  if (!shouldRemove) return false;
+  await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  return true;
+}
+
+export async function materializePaperclipSkillCopy(
+  source: string,
+  target: string,
+): Promise<MaterializedPaperclipSkillCopyResult> {
+  const sourceRoot = path.resolve(source);
+  const targetRoot = path.resolve(target);
+  const relativeTarget = path.relative(sourceRoot, targetRoot);
+  const relativeSource = path.relative(targetRoot, sourceRoot);
+  if (
+    !relativeTarget ||
+    (!relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget)) ||
+    !relativeSource ||
+    (!relativeSource.startsWith("..") && !path.isAbsolute(relativeSource))
+  ) {
+    throw new Error("Refusing to materialize a skill into itself, an ancestor, or one of its descendants.");
+  }
+
+  const rootStat = await fs.lstat(sourceRoot);
+  if (rootStat.isSymbolicLink()) {
+    throw new Error("Refusing to materialize a skill root that is itself a symlink.");
+  }
+  if (!rootStat.isDirectory()) {
+    throw new Error("Paperclip skills must be directories.");
+  }
+
+  const result: MaterializedPaperclipSkillCopyResult = {
+    copiedFiles: 0,
+    skippedSymlinks: [],
+  };
+
+  const lockDir = `${targetRoot}.lock`;
+  const releaseLock = await acquireMaterializeLock(lockDir);
+  const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
+
+  async function copyEntry(sourcePath: string, targetPath: string, relativePath: string): Promise<void> {
+    const stat = await fs.lstat(sourcePath);
+    if (stat.isSymbolicLink()) {
+      result.skippedSymlinks.push(relativePath || ".");
+      return;
+    }
+
+    if (stat.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await copyEntry(path.join(sourcePath, entry.name), path.join(targetPath, entry.name), childRelativePath);
+      }
+      return;
+    }
+
+    if (stat.isFile()) {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(sourcePath, targetPath);
+      });
+      await fs.chmod(targetPath, stat.mode).catch(() => {});
+      result.copiedFiles += 1;
+    }
+  }
+
+  try {
+    const sourceFingerprint = await hashSkillDirectory(sourceRoot);
+    if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    await copyEntry(sourceRoot, tempRoot, "");
+    await fs.writeFile(
+      path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
+      `${JSON.stringify({
+        version: 1,
+        sourceFingerprint,
+        copiedFiles: result.copiedFiles,
+        skippedSymlinks: result.skippedSymlinks,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    await fs.rm(targetRoot, { recursive: true, force: true });
+    await fs.rename(tempRoot, targetRoot);
+    return result;
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    await releaseLock();
+  }
 }
 
 export async function removeMaintainerOnlySkillSymlinks(

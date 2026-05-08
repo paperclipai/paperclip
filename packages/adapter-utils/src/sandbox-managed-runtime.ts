@@ -3,6 +3,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -13,7 +14,6 @@ export interface SandboxRemoteExecutionSpec {
   remoteCwd: string;
   timeoutMs: number;
   apiKey: string | null;
-  paperclipApiUrl?: string | null;
 }
 
 export interface SandboxManagedRuntimeAsset {
@@ -27,6 +27,7 @@ export interface SandboxManagedRuntimeClient {
   makeDir(remotePath: string): Promise<void>;
   writeFile(remotePath: string, bytes: ArrayBuffer): Promise<void>;
   readFile(remotePath: string): Promise<Buffer | Uint8Array | ArrayBuffer>;
+  listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
   run(command: string, options: { timeoutMs: number }): Promise<void>;
 }
@@ -84,7 +85,6 @@ export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteEx
     remoteCwd,
     timeoutMs,
     apiKey: asString(parsed.apiKey).trim() || null,
-    paperclipApiUrl: asString(parsed.paperclipApiUrl).trim() || null,
   };
 }
 
@@ -95,7 +95,6 @@ export function buildSandboxExecutionSessionIdentity(spec: SandboxRemoteExecutio
     provider: spec.provider,
     sandboxId: spec.sandboxId,
     remoteCwd: spec.remoteCwd,
-    ...(spec.paperclipApiUrl ? { paperclipApiUrl: spec.paperclipApiUrl } : {}),
   } as const;
 }
 
@@ -107,8 +106,7 @@ export function sandboxExecutionSessionMatches(saved: unknown, current: SandboxR
     asString(parsedSaved.transport) === currentIdentity.transport &&
     asString(parsedSaved.provider) === currentIdentity.provider &&
     asString(parsedSaved.sandboxId) === currentIdentity.sandboxId &&
-    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd &&
-    asString(parsedSaved.paperclipApiUrl) === asString(currentIdentity.paperclipApiUrl)
+    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd
   );
 }
 
@@ -251,6 +249,9 @@ export async function prepareSandboxManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
+    exclude: [...new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? []), ...(input.workspaceExclude ?? [])])],
+  });
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
@@ -329,8 +330,10 @@ export async function prepareSandboxManagedRuntime(input: {
           archivePath: localArchivePath,
           localDir: extractedDir,
         });
-        await mirrorDirectory(extractedDir, input.workspaceLocalDir, {
-          preserveAbsent: [".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])],
+        await mergeDirectoryWithBaseline({
+          baseline: baselineSnapshot,
+          sourceDir: extractedDir,
+          targetDir: input.workspaceLocalDir,
         });
       });
     },

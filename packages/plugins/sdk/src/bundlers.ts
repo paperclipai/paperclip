@@ -89,11 +89,12 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
   const esbuildManifest: EsbuildLikeOptions = {
     entryPoints: [manifestEntry],
     outdir,
-    bundle: false,
+    bundle: true,
     format: "esm",
     platform: "node",
     target: "node20",
     sourcemap,
+    external: ["@paperclipai/plugin-sdk"],
   };
 
   const esbuildUi = uiEntry

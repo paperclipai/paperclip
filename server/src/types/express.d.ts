@@ -25,6 +25,7 @@ declare global {
           | "board_key"
           | "agent_key"
           | "agent_jwt"
+          | "cloud_tenant"
           | "telegram_chat_id"
           | "none";
       };
