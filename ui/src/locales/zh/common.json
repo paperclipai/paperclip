@@ -201,7 +201,7 @@
     "manage_companies": "管理公司"
   },
   "company_rail": {
-    "add_company": "添加公司"
+    "add_company": "添加公司..."
   },
   "company_settings_sidebar": {
     "title": "公司设置",
@@ -810,6 +810,7 @@
   },
   "search": {
     "title": "搜索",
+    "query_label": "搜索查询",
     "placeholder": "搜索任务、评论、文档、智能体、项目…",
     "helper_text": "输入以搜索公司记忆。",
     "description": "任务、评论、计划文档、智能体、项目 —— 统一搜索，按相关性排名。",

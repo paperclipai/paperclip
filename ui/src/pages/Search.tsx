@@ -332,7 +332,7 @@ export function Search() {
               }
             }}
             placeholder={t("search.placeholder")}
-            aria-label={t("search.title")}
+            aria-label={t("search.query_label")}
             className="h-10 pl-9 pr-20 text-sm"
           />
           {draftQuery.length > 0 ? (

@@ -201,7 +201,7 @@
     "manage_companies": "Unternehmen verwalten"
   },
   "company_rail": {
-    "add_company": "Unternehmen hinzufügen"
+    "add_company": "Unternehmen hinzufügen..."
   },
   "company_settings_sidebar": {
     "title": "Unternehmenseinstellungen",
@@ -810,6 +810,7 @@
   },
   "search": {
     "title": "Suche",
+    "query_label": "Suchanfrage",
     "placeholder": "Suche nach Aufgaben, Kommentaren, Dokumenten, Agenten, Projekten…",
     "helper_text": "Tippen Sie, um das Unternehmensgedächtnis zu durchsuchen.",
     "description": "Aufgaben, Kommentare, Plandokumente, Agenten, Projekte — gleiche Oberfläche, sortiert nach Relevanz.",

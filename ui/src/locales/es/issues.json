@@ -7,6 +7,7 @@
     "no_issues": "No hay tareas asignadas a usted."
   },
   "search_placeholder": "Buscar tareas...",
+  "search_input_label": "Buscar tareas",
   "search_limit": "Mostrando hasta {{count}} coincidencias. Refine la búsqueda para reducir más.",
   "no_match": "Ninguna tarea coincide con los filtros o búsqueda actuales.",
   "rendering_count": "Mostrando {{shown}} de {{total}} tareas",
@@ -98,6 +99,7 @@
     "issue_chip_label": "Tarea {{label}}: {{title}}",
     "remove_blocker_title": "¿Eliminar bloqueador?",
     "remove_blocker_desc": "Eliminar {{label}} como bloqueador de esta tarea.",
+    "remove_blocker_label": "Eliminar {{label}} como bloqueador",
     "remove_blocker_btn": "Eliminar bloqueador",
     "user": "Usuario",
     "schedule": "Programar",

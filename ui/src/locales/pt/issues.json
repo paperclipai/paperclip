@@ -7,6 +7,7 @@
     "no_issues": "Nenhuma tarefa atribuída a você."
   },
   "search_placeholder": "Pesquisar tarefas...",
+  "search_input_label": "Pesquisar tarefas",
   "search_limit": "Mostrando até {{count}} correspondências. Refine a pesquisa para reduzir mais.",
   "no_match": "Nenhuma tarefa corresponde aos filtros ou pesquisa atuais.",
   "rendering_count": "Exibindo {{shown}} de {{total}} tarefas",
@@ -98,6 +99,7 @@
     "issue_chip_label": "Tarefa {{label}}: {{title}}",
     "remove_blocker_title": "Remover bloqueador?",
     "remove_blocker_desc": "Remover {{label}} como bloqueador desta tarefa.",
+    "remove_blocker_label": "Remover {{label}} como bloqueador",
     "remove_blocker_btn": "Remover bloqueador",
     "user": "Usuário",
     "schedule": "Agendar",

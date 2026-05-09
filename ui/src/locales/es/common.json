@@ -201,7 +201,7 @@
     "manage_companies": "Administrar empresas"
   },
   "company_rail": {
-    "add_company": "Añadir empresa"
+    "add_company": "Añadir empresa..."
   },
   "company_settings_sidebar": {
     "title": "Configuración de empresa",
@@ -810,6 +810,7 @@
   },
   "search": {
     "title": "Búsqueda",
+    "query_label": "Consulta de búsqueda",
     "placeholder": "Buscar problemas, comentarios, documentos, agentes, proyectos…",
     "helper_text": "Escriba para buscar la memoria de la empresa.",
     "description": "Problemas, comentarios, documentos de planes, agentes, proyectos — la misma superficie, clasificada por relevancia.",

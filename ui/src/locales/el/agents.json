@@ -401,6 +401,7 @@
   },
   "detail_view": {
     "invocation": "Κλήση",
+    "adapter": "Προσαρμογέας",
     "details": "Λεπτομέρειες",
     "command_notes": "Σημειώσεις εντολής",
     "prompt_label": "Προτροπή",

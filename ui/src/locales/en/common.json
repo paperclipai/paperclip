@@ -201,7 +201,7 @@
     "manage_companies": "Manage Companies"
   },
   "company_rail": {
-    "add_company": "Add company"
+    "add_company": "Add company..."
   },
   "company_settings_sidebar": {
     "title": "Company Settings",
@@ -810,6 +810,7 @@
   },
   "search": {
     "title": "Search",
+    "query_label": "Search query",
     "placeholder": "Search issues, comments, documents, agents, projects…",
     "helper_text": "Type to search company memory.",
     "description": "Issues, comments, plan documents, agents, projects — same surface, ranked by relevance.",

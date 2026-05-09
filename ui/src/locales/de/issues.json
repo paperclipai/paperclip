@@ -7,6 +7,7 @@
     "no_issues": "Keine Ihnen zugewiesenen Aufgaben."
   },
   "search_placeholder": "Aufgaben suchen...",
+  "search_input_label": "Aufgaben suchen",
   "search_limit": "Es werden bis zu {{count}} Treffer angezeigt. Verfeinern Sie die Suche für weitere Eingrenzung.",
   "no_match": "Keine Aufgaben entsprechen den aktuellen Filtern oder der Suche.",
   "rendering_count": "{{shown}} von {{total}} Aufgaben werden angezeigt",
@@ -98,6 +99,7 @@
     "issue_chip_label": "Aufgabe {{label}}: {{title}}",
     "remove_blocker_title": "Blocker entfernen?",
     "remove_blocker_desc": "{{label}} als Blocker für diese Aufgabe entfernen.",
+    "remove_blocker_label": "{{label}} als Blocker entfernen",
     "remove_blocker_btn": "Blocker entfernen",
     "user": "Benutzer",
     "schedule": "Planen",

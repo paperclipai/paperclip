@@ -168,8 +168,8 @@
     "failed_reset_session": "Failed to reset session",
     "failed_update_permissions": "Failed to update permissions",
     "live_now": "Live now",
-    "more_active_runs": "{{count}} more run",
-    "more_active_runs_plural": "{{count}} more runs",
+    "more_active_runs": "{{count}} more active/recent run",
+    "more_active_runs_plural": "{{count}} more active/recent runs",
     "run_source": {
       "timer": "Timer",
       "assignment": "Assignment",
@@ -401,6 +401,7 @@
   },
   "detail_view": {
     "invocation": "Invocation",
+    "adapter": "Adapter",
     "details": "Details",
     "command_notes": "Command notes",
     "prompt_label": "Prompt",

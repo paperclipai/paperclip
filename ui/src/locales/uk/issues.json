@@ -7,6 +7,7 @@
     "no_issues": "Завдань, призначених вам, немає."
   },
   "search_placeholder": "Пошук завдань...",
+  "search_input_label": "Пошук задач",
   "search_limit": "Показано до {{count}} збігів. Уточніть пошук, щоб звузити результати.",
   "no_match": "Жодне завдання не відповідає поточним фільтрам або пошуку.",
   "rendering_count": "Відображення {{shown}} з {{total}} завдань",
@@ -98,6 +99,7 @@
     "issue_chip_label": "Завдання {{label}}: {{title}}",
     "remove_blocker_title": "Вилучити блокувальник?",
     "remove_blocker_desc": "Вилучити {{label}} як блокувальник для цього завдання.",
+    "remove_blocker_label": "Видалити {{label}} як блокер",
     "remove_blocker_btn": "Вилучити блокувальник",
     "user": "Користувач",
     "schedule": "Розклад",

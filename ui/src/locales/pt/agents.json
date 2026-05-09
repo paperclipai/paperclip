@@ -401,6 +401,7 @@
   },
   "detail_view": {
     "invocation": "Invocação",
+    "adapter": "Adaptador",
     "details": "Detalhes",
     "command_notes": "Notas do comando",
     "prompt_label": "Prompt",

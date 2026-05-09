@@ -401,6 +401,7 @@
   },
   "detail_view": {
     "invocation": "调用",
+    "adapter": "适配器",
     "details": "详情",
     "command_notes": "命令说明",
     "prompt_label": "提示",

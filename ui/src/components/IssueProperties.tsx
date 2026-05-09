@@ -249,7 +249,7 @@ function RemovableIssueReferencePill({
       <span className="truncate">{issueLabel}</span>
     </>
   );
-  const removeLabel = t("properties.remove_blocker_desc", { label: issueLabel });
+  const removeLabel = t("properties.remove_blocker_label", { label: issueLabel });
   const handleRemove = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();

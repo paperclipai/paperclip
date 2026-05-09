@@ -401,6 +401,7 @@
   },
   "detail_view": {
     "invocation": "Виклик",
+    "adapter": "Адаптер",
     "details": "Деталі",
     "command_notes": "Примітки до команди",
     "prompt_label": "Промпт",

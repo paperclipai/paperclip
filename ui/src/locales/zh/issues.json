@@ -7,6 +7,7 @@
     "no_issues": "没有分配给您的任务。"
   },
   "search_placeholder": "搜索任务...",
+  "search_input_label": "搜索任务",
   "search_limit": "最多显示 {{count}} 个匹配结果。请细化搜索以进一步筛选。",
   "no_match": "没有任务匹配当前筛选条件或搜索。",
   "rendering_count": "显示 {{shown}} / {{total}} 个任务",
@@ -98,6 +99,7 @@
     "issue_chip_label": "任务 {{label}}: {{title}}",
     "remove_blocker_title": "移除阻塞项？",
     "remove_blocker_desc": "将 {{label}} 从此任务的阻塞项中移除。",
+    "remove_blocker_label": "移除 {{label}} 作为阻塞项",
     "remove_blocker_btn": "移除阻塞项",
     "user": "用户",
     "schedule": "计划",

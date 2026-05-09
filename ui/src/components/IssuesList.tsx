@@ -428,7 +428,7 @@ function IssueSearchInput({
         }}
         placeholder={t("search_placeholder")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label={t("search_placeholder")}
+        aria-label={t("search_input_label")}
         data-page-search-target="true"
       />
     </div>

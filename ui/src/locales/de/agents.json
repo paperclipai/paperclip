@@ -401,6 +401,7 @@
   },
   "detail_view": {
     "invocation": "Aufruf",
+    "adapter": "Adapter",
     "details": "Details",
     "command_notes": "Befehlshinweise",
     "prompt_label": "Prompt",

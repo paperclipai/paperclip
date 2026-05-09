@@ -168,8 +168,8 @@
     "failed_reset_session": "Не удалось сбросить сессию",
     "failed_update_permissions": "Не удалось обновить разрешения",
     "live_now": "В эфире",
-    "more_active_runs": "{{count}} запуск ещё",
-    "more_active_runs_plural": "{{count}} запусков ещё",
+    "more_active_runs": "{{count}} активный/недавний запуск ещё",
+    "more_active_runs_plural": "{{count}} активных/недавних запусков ещё",
     "run_source": {
       "timer": "Таймер",
       "assignment": "Задание",
