@@ -135,6 +135,38 @@ export async function loadActiveMemories(cwd: string): Promise<ActiveMemory[]> {
 }
 
 /**
+ * Build the "## Active Memory Self-Check" block injected at the end of the
+ * heartbeat wake prompt (VOG-5839). Feature flag: MEMORY_ENFORCE_ENABLED=true.
+ *
+ * Format: a markdown table so the model can scan it quickly before acting.
+ */
+export function buildMemorySelfCheckBlock(memories: ActiveMemory[]): string {
+  if (memories.length === 0) return "";
+
+  const rows = memories
+    .map((m, i) => {
+      const name = m.name ?? "(unnamed)";
+      const description = (m.description ?? "").replace(/\|/g, "\\|");
+      const howToApply = (m.howToApply ?? "").replace(/\|/g, "\\|");
+      return `| ${i + 1} | ${name} | ${description} | ${howToApply} |`;
+    })
+    .join("\n");
+
+  return [
+    "## Active Memory Self-Check",
+    "",
+    "The following memories are ALWAYS enforced — verify before acting:",
+    "",
+    "| # | Memory | Description | How to Apply |",
+    "|---|--------|-------------|--------------|",
+    rows,
+    "",
+    "**Self-check:** Do any of your planned actions this wake violate the above memories?",
+    "If yes, correct before proceeding.",
+  ].join("\n");
+}
+
+/**
  * Build the "## Active Memories — Self-Check Before Each Action" section
  * to prepend to the agent's system prompt.
  */
