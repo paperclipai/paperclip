@@ -1,7 +1,7 @@
 {
   "title": "डैशबोर्ड",
   "empty": {
-    "welcome": "Paperclip में आपका स्वागत है। शुरू करने के लिए अपनी पहली कंपनी और एजेंट सेट करें।",
+    "welcome": "पेपरक्लिप में आपका स्वागत है। शुरू करने के लिए अपनी पहली कंपनी और एजेंट सेट करें।",
     "get_started": "शुरू करें",
     "select_company": "डैशबोर्ड देखने के लिए एक कंपनी बनाएं या चुनें।",
     "no_tasks": "अभी तक कोई कार्य नहीं।"
@@ -20,8 +20,8 @@
     "month_spend": "महीने का खर्च",
     "budget_utilization": "{{budget}} बजट का {{percent}}%",
     "pending_approvals": "लंबित अनुमोदन",
-    "budget_overrides_pending_one": "{{count}} बजट override बोर्ड समीक्षा की प्रतीक्षा में",
-    "budget_overrides_pending_other": "{{count}} बजट overrides बोर्ड समीक्षा की प्रतीक्षा में",
+    "budget_overrides_pending_one": "{{count}} बजट ओवरराइड बोर्ड समीक्षा की प्रतीक्षा में",
+    "budget_overrides_pending_other": "{{count}} बजट ओवरराइड बोर्ड समीक्षा की प्रतीक्षा में",
     "unlimited_budget": "असीमित बजट",
     "awaiting_board": "बोर्ड समीक्षा की प्रतीक्षा में"
   },
@@ -33,13 +33,13 @@
     "last_14_days": "पिछले 14 दिन"
   },
   "live": {
-    "breadcrumb": "Live रन",
-    "title": "Live एजेंट रन",
+    "breadcrumb": "लाइव रन",
+    "title": "लाइव एजेंट रन",
     "subtitle": "सक्रिय रन पहले, उसके बाद सबसे हालिया पूर्ण रन।",
     "showing_up_to": "{{count}} तक दिखाया जा रहा है",
     "active_recent": "सक्रिय / हालिया",
-    "empty_create_company": "Live रन देखने के लिए एक कंपनी बनाएं।",
-    "empty_select_company": "Live रन देखने के लिए एक कंपनी चुनें।",
+    "empty_create_company": "लाइव रन देखने के लिए एक कंपनी बनाएं।",
+    "empty_select_company": "लाइव रन देखने के लिए एक कंपनी चुनें।",
     "panel_empty": "कोई सक्रिय या हालिया एजेंट रन नहीं।"
   }
 }

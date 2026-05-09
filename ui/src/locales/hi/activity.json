@@ -90,7 +90,7 @@
     "issue_released": "कार्य जारी किया",
     "issue_comment_added": "टिप्पणी जोड़ी",
     "issue_comment_cancelled": "कतारबद्ध टिप्पणी रद्द की",
-    "issue_feedback_vote_saved": "AI आउटपुट पर फीडबैक सहेजा",
+    "issue_feedback_vote_saved": "एआई (AI) आउटपुट पर फीडबैक सहेजा",
     "issue_attachment_added": "संलग्नक जोड़ा",
     "issue_attachment_removed": "संलग्नक हटाया",
     "issue_document_created": "दस्तावेज़ बनाया",
@@ -152,7 +152,7 @@
     "no_entries": "अभी तक कोई टाइमलाइन प्रविष्टि नहीं।",
     "run_label": "रन",
     "environment_label": "परिवेश",
-    "provider_label": "provider",
+    "provider_label": "प्रोवाइडर",
     "lease_label": "पट्टा",
     "failure_label": "विफलता"
   },

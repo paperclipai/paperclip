@@ -3,7 +3,7 @@
     "copied": "कॉपी हुआ",
     "copy_failed": "कॉपी विफल",
     "copy": "कॉपी",
-    "copy_as_markdown": "टिप्पणी markdown के रूप में कॉपी करें"
+    "copy_as_markdown": "टिप्पणी मार्कडाउन के रूप में कॉपी करें"
   },
   "status": {
     "queued": "कतारबद्ध",
@@ -16,7 +16,7 @@
     "assignee_label": "असाइनी",
     "run_label": "रन",
     "environment_label": "परिवेश",
-    "provider_label": "provider",
+    "provider_label": "प्रोवाइडर",
     "lease_label": "पट्टा",
     "failure_prefix": "विफलता: "
   },
@@ -38,7 +38,7 @@
   "copied": "कॉपी हुआ",
   "copy_failed": "कॉपी विफल",
   "copy": "कॉपी",
-  "copy_comment_as_markdown": "टिप्पणी markdown के रूप में कॉपी करें",
+  "copy_comment_as_markdown": "टिप्पणी मार्कडाउन के रूप में कॉपी करें",
   "queued": "कतारबद्ध",
   "follow_up": "फॉलो-अप",
   "queueing": "कतार में जोड़ा जा रहा है...",
@@ -46,7 +46,7 @@
   "assignee": "असाइनी",
   "run": "रन",
   "environment": "परिवेश",
-  "provider": "provider",
+  "provider": "प्रोवाइडर",
   "lease": "पट्टा",
   "failure": "विफलता:",
   "queued_comments": "कतारबद्ध टिप्पणियाँ ({{count}})",
