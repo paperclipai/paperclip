@@ -496,12 +496,17 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
     const sandbox = await createSandbox(params, config);
-    const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
-    const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-    return {
-      providerLeaseId: sandbox.id,
-      metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false }),
-    };
+    try {
+      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      return {
+        providerLeaseId: sandbox.id,
+        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false }),
+      };
+    } catch (error) {
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+      throw error;
+    }
   },
 
   async onEnvironmentResumeLease(

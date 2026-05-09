@@ -192,6 +192,29 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it("deletes the sandbox if lease setup throws after sandbox creation", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.getWorkDir.mockRejectedValue(new Error("workdir lookup failed"));
+    mockCreate.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentAcquireLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        runId: "run-1",
+        config: {
+          image: "node:20",
+          timeoutMs: 300000,
+          reuseLease: true,
+        },
+      }),
+    ).rejects.toThrow("workdir lookup failed");
+
+    expect(sandbox.delete).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to sh metadata when bash is not present in the sandbox image", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
