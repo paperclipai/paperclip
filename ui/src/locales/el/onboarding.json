@@ -36,7 +36,7 @@
     "failed": "Αποτυχία",
     "hint_prefix": "Υπόδειξη:",
     "manual_debug": "Χειροκίνητη αποσφαλμάτωση",
-    "prompt_label": "Prompt:",
+    "prompt_label": "Προτροπή:",
     "prompt_value": "Απαντήστε με hello.",
     "anthropic_key_warning": "Το Claude απέτυχε ενώ το {{key}} είναι ορισμένο. Μπορείτε να το διαγράψετε στη ρύθμιση αυτού του προσαρμογέα CEO και να επαναλάβετε τον έλεγχο.",
     "unset_anthropic": "Κατάργηση ANTHROPIC_API_KEY",
