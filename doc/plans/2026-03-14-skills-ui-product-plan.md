@@ -654,8 +654,8 @@ States:
 
 Suggested V1 policy:
 
-- board users can manage company skills
-- board users can attach skills to agents
+- operator users can manage company skills
+- operator users can attach skills to agents
 - agents themselves do not mutate company skill library by default
 - later, certain agents may get scoped permissions for skill attachment or sync
 

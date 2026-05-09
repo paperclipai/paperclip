@@ -229,12 +229,12 @@ auto_bootstrap_authenticated_smoke() {
   local companies_json
   companies_json="$(get_with_cookies "$PAPERCLIP_PUBLIC_URL/api/companies")"
   if [[ "${companies_json:0:1}" != "[" ]]; then
-    echo "Smoke bootstrap failed: board companies endpoint did not return JSON array" >&2
+    echo "Smoke bootstrap failed: operator companies endpoint did not return JSON array" >&2
     echo "$companies_json" >&2
     return 1
   fi
 
-  echo "    Smoke bootstrap: board session verified"
+  echo "    Smoke bootstrap: operator session verified"
   echo "    Smoke admin credentials: $SMOKE_ADMIN_EMAIL / $SMOKE_ADMIN_PASSWORD"
 }
 

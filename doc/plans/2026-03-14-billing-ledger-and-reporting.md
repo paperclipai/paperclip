@@ -394,7 +394,7 @@ Keep current project attribution logic for now, but prefer `cost_events.heartbea
 
 ### Follow-up UI direction
 
-The long-term board UI should expose:
+The long-term operator UI should expose:
 
 - Spend
   Dollars by biller, provider, model, agent, project

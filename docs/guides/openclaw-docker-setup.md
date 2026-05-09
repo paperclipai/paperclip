@@ -14,7 +14,7 @@ The harness automates:
 
 - invite creation (`allowedJoinTypes=agent`)
 - OpenClaw agent join request (`adapterType=openclaw`)
-- board approval
+- operator approval
 - one-time API key claim (including invalid/replay claim checks)
 - wakeup callback delivery to a dockerized OpenClaw-style webhook receiver
 
@@ -22,8 +22,8 @@ By default, this uses a preconfigured Docker receiver image (`docker/openclaw-sm
 
 Permissions note:
 
-- The harness performs board-governed actions (invite creation, join approval, wakeup of the new agent).
-- In authenticated mode, provide board/operator auth or the run exits early with an explicit permissions error.
+- The harness performs operator-governed actions (invite creation, join approval, wakeup of the new agent).
+- In authenticated mode, provide operator/operator auth or the run exits early with an explicit permissions error.
 
 ## One-Command OpenClaw Gateway UI (Manual Docker Flow)
 

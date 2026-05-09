@@ -8,7 +8,7 @@ Owner: Product + Server + UI + Skills
 
 Enable a CEO agent to create new agents directly, with lightweight but explicit governance:
 
-- Company-level toggle: new hires require board approval (default ON).
+- Company-level toggle: new hires require operator approval (default ON).
 - Agent-level permission: `can_create_agents` (default ON for CEO, OFF for everyone else).
 - Clear hire workflow with draft/limbo state until approval.
 - Config reflection so hiring agents can inspect available adapter configuration and compare existing agent configs (including self).
@@ -16,11 +16,11 @@ Enable a CEO agent to create new agents directly, with lightweight but explicit 
 
 ## 2. Current State (Repo Reality)
 
-- Agent creation is board-only at `POST /api/companies/:companyId/agents` (`server/src/routes/agents.ts`).
+- Agent creation is operator-only at `POST /api/companies/:companyId/agents` (`server/src/routes/agents.ts`).
 - Approvals support `pending/approved/rejected/cancelled` and `hire_agent` + `approve_ceo_strategy` (`packages/shared/src/constants.ts`, `server/src/services/approvals.ts`).
 - `hire_agent` approval currently creates the agent only on approval; there is no pre-created limbo agent.
 - There is no agent permissions system today.
-- There is no company setting for "new hires require board approval".
+- There is no company setting for "new hires require operator approval".
 - Approvals have no comment thread or revision-request state.
 - Inbox and Approvals UIs support approve/reject only; no approval detail route exists in app routes.
 - Agent adapter configuration is free-form JSON; no runtime reflection endpoint exists for machine-readable or text discovery.
@@ -31,7 +31,7 @@ Enable a CEO agent to create new agents directly, with lightweight but explicit 
 
 Add company setting:
 
-- `requireBoardApprovalForNewAgents: boolean`
+- `requireOperatorApprovalForNewAgents: boolean`
 - Default: `true`
 - Editable only in company advanced settings (not onboarding/company creation flow UI)
 
@@ -48,7 +48,7 @@ Defaults:
 
 Authority:
 
-- Board can edit permissions for any agent.
+- Operator can edit permissions for any agent.
 - CEO can edit permissions for agents in same company.
 
 No broader RBAC system in this phase.
@@ -70,7 +70,7 @@ Meaning:
 
 Add column:
 
-- `require_board_approval_for_new_agents` boolean not null default `true`
+- `require_operator_approval_for_new_agents` boolean not null default `true`
 
 Sync required:
 
@@ -128,9 +128,9 @@ Add server-side authz helpers:
 
 Rules:
 
-- Board always passes.
+- Operator always passes.
 - Agent passes `can_create_agents` check if self permission true and same company.
-- Permission management by CEO or board.
+- Permission management by CEO or operator.
 
 ## 5.2 Hire creation flow
 
@@ -140,7 +140,7 @@ Add route:
 
 Behavior:
 
-- Requires `can_create_agents` (or board).
+- Requires `can_create_agents` (or operator).
 - Creates agent row first.
 - If company setting requires approval:
   - create agent with `status=pending_approval`
@@ -150,7 +150,7 @@ Behavior:
   - create agent as `idle`
   - no approval record required
 
-Board may continue using direct create route, but this route becomes canonical for CEO/agent-led hiring.
+Operator may continue using direct create route, but this route becomes canonical for CEO/agent-led hiring.
 
 ## 5.3 Approval workflow endpoints
 
@@ -186,7 +186,7 @@ Add permission-gated config-read endpoints:
 
 Access:
 
-- board
+- operator
 - CEO
 - any agent with `can_create_agents`
 
@@ -218,7 +218,7 @@ Per-adapter file includes:
 
 Auth:
 
-- same gate as config-read endpoints (board/CEO/`can_create_agents`).
+- same gate as config-read endpoints (operator/CEO/`can_create_agents`).
 
 ## 6. Adapter Protocol Extension
 
@@ -240,13 +240,13 @@ This is required so reflection is generated from installed adapters, not hardcod
 
 In Companies UI, add advanced settings panel/modal with:
 
-- toggle: "Require board approval for new agent hires" (default on)
+- toggle: "Require operator approval for new agent hires" (default on)
 
 Not shown in onboarding flow.
 
 ## 7.2 Agent permissions UI
 
-In Agent Detail (board/CEO context):
+In Agent Detail (operator/CEO context):
 
 - permissions section
 - toggle for "Can create new agents"
@@ -263,7 +263,7 @@ Add "Hire Agent" flow (for CEO/authorized agents):
 
 State messaging:
 
-- if approval required: show "Pending board approval"
+- if approval required: show "Pending operator approval"
 - if not required: show active-ready state
 
 ## 7.4 Approvals UX
@@ -278,7 +278,7 @@ Add approval detail page and expand inbox integration:
 
 ## 7.5 Disapproved agent cleanup
 
-Provide board-only destructive action in approval detail:
+Provide operator-only destructive action in approval detail:
 
 - "Delete disapproved agent"
 - explicit confirmation dialog
@@ -299,7 +299,7 @@ Skill responsibilities:
 - Draft high-quality initial prompt for new agent
 - Set manager/reporting line
 - Execute hire API flow
-- Handle revision loop with board comments
+- Handle revision loop with operator comments
 
 Also update `skills/paperclip/SKILL.md` to reference this skill for hiring workflows.
 
@@ -379,8 +379,8 @@ Repo verification before merge:
 
 ## 13. Open Decisions (Default Recommendation)
 
-1. Should board direct-create bypass approval setting?
-Recommendation: yes, board is explicit governance override.
+1. Should operator direct-create bypass approval setting?
+Recommendation: yes, operator is explicit governance override.
 
 2. Should non-authorized agents still see basic agent metadata?
 Recommendation: yes (name/role/status), but configuration fields stay restricted.

@@ -1,6 +1,6 @@
 # Company Skills Workflow
 
-Use this reference when a board user, CEO, or manager asks you to find a skill, install it into the company library, or assign it to an agent.
+Use this reference when a operator user, CEO, or manager asks you to find a skill, install it into the company library, or assign it to an agent.
 
 ## What Exists
 
@@ -17,7 +17,7 @@ The canonical model is:
 ## Permission Model
 
 - Company skill reads: any same-company actor
-- Company skill mutations: board, CEO, or an agent with the effective `agents:create` capability
+- Company skill mutations: operator, CEO, or an agent with the effective `agents:create` capability
 - Agent skill assignment: same permission model as updating that agent
 
 ## Core Endpoints

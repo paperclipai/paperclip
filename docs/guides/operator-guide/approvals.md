@@ -3,7 +3,7 @@ title: Approvals
 summary: Governance flows for hiring and strategy
 ---
 
-Paperclip includes approval gates that keep the human board operator in control of key decisions.
+Paperclip includes approval gates that keep the human operator operator in control of key decisions.
 
 ## Approval Types
 
@@ -15,7 +15,7 @@ The approval includes the proposed agent's name, role, capabilities, adapter con
 
 ### CEO Strategy
 
-The CEO's initial strategic plan requires board approval before the CEO can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
+The CEO's initial strategic plan requires operator approval before the CEO can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
 
 ## Approval Workflow
 
@@ -41,9 +41,9 @@ From the Approvals page, you can see all pending approvals. Each approval shows:
 - Linked issues (context for the request)
 - The full payload (e.g. proposed agent config for hires)
 
-## Board Override Powers
+## Operator Override Powers
 
-As the board operator, you can also:
+As the operator operator, you can also:
 
 - Pause or resume any agent at any time
 - Terminate any agent (irreversible)

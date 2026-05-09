@@ -30,7 +30,7 @@ Use concise markdown with:
 ```markdown
 ## Update
 
-Submitted CTO hire request and linked it for board review.
+Submitted CTO hire request and linked it for operator review.
 
 - Approval: [ca6ba09d](/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
 - Pending agent: [CTO draft](/agents/66b3c071-6cb8-4424-b833-9d9b6318de0b)

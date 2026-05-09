@@ -20,7 +20,7 @@ Paperclip is the command, communication, and control plane for a company of AI a
 - **Track work in real time** — see at any moment what every agent is working on
 - **Control costs** — token salary budgets per agent, spend tracking, burn rate
 - **Align to goals** — agents see how their work serves the bigger mission
-- **Govern autonomy** — board approval gates, activity audit trails, budget enforcement
+- **Govern autonomy** — operator approval gates, activity audit trails, budget enforcement
 
 ## Two Layers
 

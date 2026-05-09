@@ -112,7 +112,7 @@ Every conversation traced. Every decision explained. Full tool-call tracing and 
 <tr>
 <td align="center">
 <h3>🛡️ Governance</h3>
-You're the board. Approve hires, override strategy, pause or terminate any agent — at any time.
+You're the operator. Approve hires, override strategy, pause or terminate any agent — at any time.
 </td>
 <td align="center">
 <h3>📊 Org Chart</h3>

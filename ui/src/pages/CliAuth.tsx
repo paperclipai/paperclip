@@ -122,7 +122,7 @@ export function CliAuthPage() {
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">Approve Paperclip CLI access</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          A local Paperclip CLI process is requesting board access to this instance.
+          A local Paperclip CLI process is requesting operator access to this instance.
         </p>
 
         <div className="mt-5 space-y-3 text-sm">
@@ -137,7 +137,7 @@ export function CliAuthPage() {
           <div>
             <div className="text-muted-foreground">Requested access</div>
             <div className="text-foreground">
-              {challenge.requestedAccess === "instance_admin_required" ? "Instance admin" : "Board"}
+              {challenge.requestedAccess === "instance_admin_required" ? "Instance admin" : "Operator"}
             </div>
           </div>
           {challenge.requestedCompanyName && (

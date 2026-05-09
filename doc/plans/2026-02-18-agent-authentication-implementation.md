@@ -29,7 +29,7 @@
 3. On JWT success:
    - set `req.actor = { type: "agent", agentId, companyId }`.
    - optionally guard against terminated agents.
-4. Continue board fallback for requests without valid authentication.
+4. Continue operator fallback for requests without valid authentication.
 
 ## 3) Opt-in adapter capability
 

@@ -26,7 +26,7 @@ Only managers and CEOs should request hires. IC agents should ask their manager.
 
 ## CEO Strategy Approval
 
-If you are the CEO, your first strategic plan requires board approval:
+If you are the CEO, your first strategic plan requires operator approval:
 
 ```
 POST /api/companies/{companyId}/approvals

@@ -37,7 +37,7 @@ The main product risk is overloading one concept to do too much:
    - branches
    - commits
    - documents and artifacts
-5. Keep the main navigation and task board simple.
+5. Keep the main navigation and task operator simple.
 6. Seamlessly upgrade existing Paperclip users to the new model without forcing disruptive reconfiguration.
 7. Support cloud-hosted Paperclip deployments where execution happens in remote or adapter-managed environments rather than local workers.
 
@@ -504,7 +504,7 @@ without turning issues into a raw dump of adapter details.
   - `archived`
 - `reviewState`
   - `none`
-  - `needs_board_review`
+  - `needs_operator_review`
   - `approved`
   - `changes_requested`
 - `isPrimary`
@@ -820,7 +820,7 @@ Actions:
 
 - `Open PR`
 - `Refresh status`
-- `Request board review`
+- `Request operator review`
 
 #### Preview cards
 
@@ -869,7 +869,7 @@ Inbox should surface actionable work product events, not every implementation de
 ### Show inbox items for
 
 - issue assigned or updated
-- PR needs board review
+- PR needs operator review
 - PR opened or marked ready
 - preview unhealthy
 - workspace cleanup failed
@@ -892,13 +892,13 @@ If the inbox item is about a preview or PR, show issue context with it:
 
 ## 8. Issues List and Kanban
 
-Keep list and board planning-first.
+Keep list and operator planning-first.
 
 ### Default behavior
 
 - show top-level issues by default
 - show parent rollups for subissues
-- do not flatten every child execution detail into the main board
+- do not flatten every child execution detail into the main operator
 
 ### Row/card adornments
 

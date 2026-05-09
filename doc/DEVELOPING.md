@@ -39,7 +39,7 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
-`pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
+`pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the operator UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 Tailscale/private-auth dev mode:
 
@@ -406,13 +406,13 @@ What it validates:
 
 - invite creation for agent-only join
 - agent join request using `adapterType=openclaw`
-- board approval + one-time API key claim semantics
+- operator approval + one-time API key claim semantics
 - callback delivery on wakeup to a dockerized OpenClaw-style webhook receiver
 
 Required permissions:
 
-- This script performs board-governed actions (create invite, approve join, wakeup another agent).
-- In authenticated mode, run with board auth via `PAPERCLIP_AUTH_HEADER` or `PAPERCLIP_COOKIE`.
+- This script performs operator-governed actions (create invite, approve join, wakeup another agent).
+- In authenticated mode, run with operator auth via `PAPERCLIP_AUTH_HEADER` or `PAPERCLIP_COOKIE`.
 
 Optional auth flags (for authenticated mode):
 

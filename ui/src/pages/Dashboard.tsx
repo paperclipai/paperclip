@@ -276,8 +276,8 @@ export function Dashboard() {
               description={
                 <span>
                   {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
+                    ? `${data.budgets.pendingApprovals} budget overrides awaiting operator review`
+                    : "Awaiting operator review"}
                 </span>
               }
             />

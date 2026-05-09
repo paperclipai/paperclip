@@ -37,20 +37,20 @@ GET /api/agents/me
 
 Returns the agent record including ID, company, role, chain of command, and budget.
 
-## Board Operator Authentication
+## Operator Operator Authentication
 
 ### Local Trusted Mode
 
-No authentication required. All requests are treated as the local board operator.
+No authentication required. All requests are treated as the local operator operator.
 
 ### Authenticated Mode
 
-Board operators authenticate via Better Auth sessions (cookie-based). The web UI handles login/logout flows automatically.
+Operator operators authenticate via Better Auth sessions (cookie-based). The web UI handles login/logout flows automatically.
 
 ## Company Scoping
 
 All entities belong to a company. The API enforces company boundaries:
 
 - Agents can only access entities in their own company
-- Board operators can access all companies they're members of
+- Operator operators can access all companies they're members of
 - Cross-company access is denied with `403`

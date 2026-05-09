@@ -153,7 +153,7 @@ Run scenario checks for:
 - blocked-task dedup behavior
 - approval-resolution wake
 - delegation/subtask creation
-- board handoff back to user
+- operator handoff back to user
 - plan-request handling
 
 ### Phase 4. Decide Default Loading Strategy

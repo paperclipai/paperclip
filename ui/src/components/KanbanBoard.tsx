@@ -23,7 +23,7 @@ import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import type { Issue } from "@paperclipai/shared";
 
-const boardStatuses = [
+const operatorStatuses = [
   "backlog",
   "todo",
   "in_progress",
@@ -219,7 +219,7 @@ function KanbanCard({
   );
 }
 
-/* ── Main Board ── */
+/* ── Main Operator ── */
 
 export function KanbanBoard({
   issues,
@@ -263,7 +263,7 @@ export function KanbanBoard({
 
   const columnIssues = useMemo(() => {
     const grouped: Record<string, Issue[]> = {};
-    for (const status of boardStatuses) {
+    for (const status of operatorStatuses) {
       grouped[status] = [];
     }
     for (const issue of issues) {
@@ -296,7 +296,7 @@ export function KanbanBoard({
     // or another card's id. Find which column the "over" belongs to.
     let targetStatus: string | null = null;
 
-    if (boardStatuses.includes(over.id as string)) {
+    if (operatorStatuses.includes(over.id as string)) {
       targetStatus = over.id as string;
     } else {
       // It's a card - find which column it's in
@@ -323,7 +323,7 @@ export function KanbanBoard({
       onDragEnd={handleDragEnd}
     >
       <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-        {boardStatuses.map((status) => (
+        {operatorStatuses.map((status) => (
           <KanbanColumn
             key={status}
             status={status}

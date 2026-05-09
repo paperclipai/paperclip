@@ -12,7 +12,7 @@ Paperclip = control plane for autonomous AI companies. V1 contract: `doc/SPEC-im
 |------|---------|
 | `server/src/routes/` | REST API endpoints |
 | `server/src/services/` | Business logic |
-| `ui/src/pages/` | React board UI (React 19, Tailwind v4, shadcn/ui) |
+| `ui/src/pages/` | React operator UI (React 19, Tailwind v4, shadcn/ui) |
 | `packages/db/src/schema/` | Drizzle ORM table definitions |
 | `packages/shared/` | Shared types, constants, validators |
 | `packages/adapters/` | Agent runtime adapters (claude-local, codex-local, cursor-local, etc.) |
@@ -33,7 +33,7 @@ Reset: `rm -rf ~/.paperclip/instances/default/db && pnpm dev`
 1. **Company-scoped everything.** Every entity belongs to a company. Enforce in routes/services.
 2. **Sync all layers on changes.** `packages/db` schema -> `packages/shared` types -> `server` routes/services -> `ui` pages.
 3. **Never break invariants.** Single-assignee tasks, atomic checkout, approval gates, budget hard-stop, activity logging.
-4. **Auth.** Board = full control. Agents = bearer API keys, company-scoped. HTTP errors: 400/401/403/404/409/422/500.
+4. **Auth.** Operator = full control. Agents = bearer API keys, company-scoped. HTTP errors: 400/401/403/404/409/422/500.
 5. **DB changes.** Edit schema -> export from index -> `pnpm db:generate` -> `pnpm -r typecheck`.
 6. **Don't replace strategic docs wholesale.** Additive updates only. Plans go in `doc/plans/YYYY-MM-DD-slug.md`.
 7. **Don't commit `pnpm-lock.yaml`.** CI owns it.

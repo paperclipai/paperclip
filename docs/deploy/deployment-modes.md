@@ -12,7 +12,7 @@ The default mode. Optimized for single-operator local use.
 - **Host binding**: loopback only (localhost)
 - **Authentication**: no login required
 - **Use case**: local development, solo experimentation
-- **Board identity**: auto-created local board user
+- **Operator identity**: auto-created local operator user
 
 ```sh
 # Set during onboard
@@ -56,18 +56,18 @@ pnpm paperclipai onboard
 # Choose "authenticated" -> "public"
 ```
 
-## Board Claim Flow
+## Operator Claim Flow
 
 When migrating from `local_trusted` to `authenticated`, Paperclip emits a one-time claim URL at startup:
 
 ```
-/board-claim/<token>?code=<code>
+/operator-claim/<token>?code=<code>
 ```
 
-A signed-in user visits this URL to claim board ownership. This:
+A signed-in user visits this URL to claim operator ownership. This:
 
 - Promotes the current user to instance admin
-- Demotes the auto-created local board admin
+- Demotes the auto-created local operator admin
 - Ensures active company membership for the claiming user
 
 ## Changing Modes

@@ -13,7 +13,7 @@ Add first-class human users and permissions while preserving two deployment mode
 
 ## Why this plan
 
-Current V1 assumptions are centered on one board operator. We now need:
+Current V1 assumptions are centered on one operator operator. We now need:
 
 - multi-human collaboration with per-user permissions
 - safe cloud deployment defaults (no accidental loginless production)
@@ -44,7 +44,7 @@ Current V1 assumptions are centered on one board operator. We now need:
 Behavior:
 
 - no login UI
-- browser opens directly into board context
+- browser opens directly into operator context
 - embedded DB and local storage defaults remain
 - a local implicit human actor exists for attribution
 - local implicit actor has effective `instance_admin` authority for that instance
@@ -86,13 +86,13 @@ Unify request actors into a single model:
 
 - `user` (authenticated human)
 - `agent` (API key)
-- `local_board_implicit` (local trusted mode only)
+- `local_operator_implicit` (local trusted mode only)
 
 Rules:
 
 - in `cloud_hosted`, only `user` and `agent` are valid actors
-- in `local_trusted`, unauthenticated browser/API requests resolve to `local_board_implicit`
-- `local_board_implicit` is authorized as an instance admin principal for local operations
+- in `local_trusted`, unauthenticated browser/API requests resolve to `local_operator_implicit`
+- `local_operator_implicit` is authorized as an instance admin principal for local operations
 - all mutating actions continue writing `activity_log` with actor type/id
 
 ## First admin bootstrap
@@ -198,7 +198,7 @@ Core grants:
 Additional behavioral rules:
 
 - instance admins can promote/demote instance admins and manage user access across companies
-- board-level users can manage company grants inside companies they control
+- operator-level users can manage company grants inside companies they control
 - non-admin principals can only act within explicit grants
 - assignment checks apply to both agent and human assignees
 
@@ -304,7 +304,7 @@ API additions (proposed):
 ## Local mode UX policy
 
 - no login prompt or account setup required
-- local implicit board user is auto-provisioned for audit attribution
+- local implicit operator user is auto-provisioned for audit attribution
 - local operator can still use instance settings and company settings as effective instance admin
 - invite, join approval, and permission-management UI is available in local mode
 - agent onboarding is expected in local mode, including creating invite links and approving join requests
@@ -332,8 +332,8 @@ V1 approach:
 
 - add explicit deployment mode config (`local_trusted | cloud_hosted`)
 - enforce startup safety checks and health visibility
-- implement actor resolution for local implicit board
-- map local implicit board actor to instance-admin authorization context
+- implement actor resolution for local implicit operator
+- map local implicit operator actor to instance-admin authorization context
 - add bootstrap status signal in health/config surface (`ready | bootstrap_pending`)
 - add minimal instance settings API/CLI surface and read-only UI indicators
 
@@ -379,7 +379,7 @@ V1 approach:
 
 ## Acceptance criteria
 
-1. `local_trusted` starts with no login and shows board UI immediately.
+1. `local_trusted` starts with no login and shows operator UI immediately.
 2. `local_trusted` does not expose optional human login UX in V1.
 3. `local_trusted` local implicit actor can manage instance settings, invite links, join approvals, and permission grants.
 4. `cloud_hosted` cannot start without auth configured.
@@ -411,7 +411,7 @@ V1 approach:
 
 ## V1 decisions (locked)
 
-1. `local_trusted` will not support login UX in V1; implicit local board actor only.
+1. `local_trusted` will not support login UX in V1; implicit local operator actor only.
 2. Permissions use a normalized shared table: `principal_permission_grants` with scoped grants.
 3. Invite delivery is copy-link only in V1 (no built-in email sending).
 4. Bootstrap invite creation should require local shell access only (CLI path only, no HTTP bootstrap endpoint).

@@ -335,7 +335,7 @@ Supported sources:
 
 1. `timer`: periodic heartbeat per agent.
 2. `assignment`: issue assigned/reassigned to agent.
-3. `on_demand`: explicit wake request path (board/manual click or API ping).
+3. `on_demand`: explicit wake request path (operator/manual click or API ping).
 4. `automation`: non-interactive wake path (external callback or internal system automation).
 
 ## 8.2 Central API
@@ -591,7 +591,7 @@ Rules:
 Primary transport: websocket channel per company.
 
 - Endpoint: `GET /api/companies/:companyId/events/ws`
-- Auth: board session or agent API key (company-bound)
+- Auth: operator session or agent API key (company-bound)
 
 ## 11.2 Event envelope
 
@@ -622,7 +622,7 @@ Primary transport: websocket channel per company.
 ## 11.4 UI behavior
 
 1. Agent detail view updates run timeline live.
-2. Task board reflects assignment/status/comment changes from agent activity without refresh.
+2. Task operator reflects assignment/status/comment changes from agent activity without refresh.
 3. Org/agent list reflects status changes live.
 4. If websocket disconnects, client falls back to short polling until reconnect.
 
@@ -673,9 +673,9 @@ On server startup:
 2. `POST /agents/:agentId/heartbeat/invoke`
    - backward-compatible alias to wakeup API
 3. `GET /agents/:agentId/runtime-state`
-   - board-only debug view
+   - operator-only debug view
 4. `GET /agents/:agentId/task-sessions`
-   - board-only list of task-scoped adapter sessions
+   - operator-only list of task-scoped adapter sessions
 5. `POST /agents/:agentId/runtime-state/reset-session`
    - clears all task sessions for the agent, or one when `taskKey` is provided
 6. `GET /heartbeat-runs/:runId/events?afterSeq=:n`

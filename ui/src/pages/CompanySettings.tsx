@@ -73,7 +73,7 @@ export function CompanySettings() {
   const settingsMutation = useMutation({
     mutationFn: (requireApproval: boolean) =>
       companiesApi.update(selectedCompanyId!, {
-        requireBoardApprovalForNewAgents: requireApproval
+        requireOperatorApprovalForNewAgents: requireApproval
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -383,9 +383,9 @@ export function CompanySettings() {
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
-            checked={!!selectedCompany.requireBoardApprovalForNewAgents}
+            label="Require operator approval for new hires"
+            hint="New agent hires stay pending until approved by operator."
+            checked={!!selectedCompany.requireOperatorApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
           />
         </div>

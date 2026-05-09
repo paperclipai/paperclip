@@ -104,7 +104,7 @@ Pros:
 
 Cons:
 
-- some chats are not really "tasks" in a board sense
+- some chats are not really "tasks" in a operator sense
 - onboarding and review conversations may clutter normal issue lists
 
 Verdict: best V1 foundation.
@@ -134,7 +134,7 @@ For the first implementation, chat should be issue-backed.
 
 More specifically:
 
-- the board opens a chat surface for an issue
+- the operator opens a chat surface for an issue
 - sending a message is a comment mutation on that issue
 - the assigned agent is woken through the existing issue-comment flow
 - streaming output comes from the existing live run stream for that issue
@@ -151,7 +151,7 @@ For onboarding, weekly reviews, and "chat with the CEO", use a conversation issu
 
 Suggested shape:
 
-- create a board-initiated issue assigned to the CEO
+- create a operator-initiated issue assigned to the CEO
 - mark it as conversation-flavored in UI treatment
 - optionally hide it from normal issue boards by default later
 - keep all cost/run/session linkage on that issue
@@ -216,9 +216,9 @@ This is another reason ephemeral freeform chat should not be the default.
 
 ### Interaction flow
 
-1. Board opens issue detail in "Chat" mode.
+1. Operator opens issue detail in "Chat" mode.
 2. Existing comment history is mapped into chat messages.
-3. When the board sends a message:
+3. When the operator sends a message:
    - `POST /api/issues/{id}/comments`
    - optionally interrupt the active run if the UX wants "send and replace current response"
 4. Existing issue comment wakeup logic wakes the assignee.
@@ -272,7 +272,7 @@ This is the highest-leverage step because it tests whether the UX is actually us
 
 - add a lightweight conversation classification
 - support creation of CEO conversation issues from onboarding and workflow entry points
-- optionally hide these from normal backlog/board views by default
+- optionally hide these from normal backlog/operator views by default
 
 The smallest implementation could be a label or issue metadata flag. If it becomes important enough, then promote it to a first-class issue subtype later.
 

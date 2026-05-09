@@ -15,12 +15,12 @@ When there is a conflict, `SPEC-implementation.md` controls V1 behavior.
 
 Paperclip V1 must provide a full control-plane loop for autonomous agents:
 
-1. A human board creates a company and defines goals.
-2. The board creates and manages agents in an org tree.
+1. A human operator creates a company and defines goals.
+2. The operator creates and manages agents in an org tree.
 3. Agents receive and execute tasks via heartbeat invocations.
 4. All work is tracked through tasks/comments with audit visibility.
 5. Token/cost usage is reported and budget limits can stop work.
-6. The board can intervene anywhere (pause agents/tasks, override decisions).
+6. The operator can intervene anywhere (pause agents/tasks, override decisions).
 
 Success means one operator can run a small AI-native company end-to-end with clear visibility and control.
 
@@ -32,14 +32,14 @@ These decisions close open questions from `SPEC.md` for V1.
 |---|---|
 | Tenancy | Single-tenant deployment, multi-company data model |
 | Company model | Company is first-order; all business entities are company-scoped |
-| Board | Single human board operator per deployment |
+| Operator | Single human operator operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
-| Visibility | Full visibility to board and all agents in same company |
+| Visibility | Full visibility to operator and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | No automatic reassignment; work recovery stays manual/explicit |
 | Agent adapters | Built-in `process` and `http` adapters |
-| Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
+| Auth | Mode-dependent human auth (`local_trusted` implicit operator in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
 | Budget enforcement | Soft alerts + hard limit auto-pause |
 | Deployment modes | Canonical model is `local_trusted` + `authenticated` with `private/public` exposure policy (see `doc/DEPLOYMENT-MODES.md`) |
@@ -63,11 +63,11 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Agent lifecycle with org structure and adapter configuration
 - Task lifecycle with parent/child hierarchy and comments
 - Atomic task checkout and explicit task status transitions
-- Board approvals for hires and CEO strategy proposal
+- Operator approvals for hires and CEO strategy proposal
 - Heartbeat invocation, status tracking, and cancellation
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
-- Board web UI for dashboard, org chart, tasks, agents, approvals, costs
+- Operator web UI for dashboard, org chart, tasks, agents, approvals, costs
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -77,7 +77,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Revenue/expense accounting beyond model/token costs
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
-- Multi-board governance or role-based human permission granularity
+- Multi-operator governance or role-based human permission granularity
 - Automatic self-healing orchestration (auto-reassign/retry planners)
 
 ## 6. Architecture
@@ -85,7 +85,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 ## 6.1 Runtime Components
 
 - `server/`: REST API, auth, orchestration services
-- `ui/`: Board operator interface
+- `ui/`: Operator operator interface
 - `packages/db/`: Drizzle schema, migrations, DB clients (Postgres)
 - `packages/shared/`: Shared API types, validators, constants
 
@@ -371,7 +371,7 @@ Allowed transitions:
 - `idle -> paused`
 - `running -> paused` (requires cancel flow)
 - `paused -> idle`
-- `* -> terminated` (board only, irreversible)
+- `* -> terminated` (operator only, irreversible)
 
 ## 8.2 Issue Status
 
@@ -397,11 +397,11 @@ Side effects:
 
 ## 9. Auth and Permissions
 
-## 9.1 Board Auth
+## 9.1 Operator Auth
 
 - Session-based auth for human operator
-- Board has full read/write across all companies in deployment
-- Every board mutation writes to `activity_log`
+- Operator has full read/write across all companies in deployment
+- Every operator mutation writes to `activity_log`
 
 ## 9.2 Agent Auth
 
@@ -419,7 +419,7 @@ Side effects:
 
 ## 9.3 Permission Matrix (V1)
 
-| Action | Board | Agent |
+| Action | Operator | Agent |
 |---|---|---|
 | Create company | yes | no |
 | Hire/create agent | yes (direct) | request via approval |
@@ -450,7 +450,7 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies/:companyId/goals`
 - `GET /goals/:goalId`
 - `PATCH /goals/:goalId`
-- `DELETE /goals/:goalId` (soft delete optional, hard delete board-only)
+- `DELETE /goals/:goalId` (soft delete optional, hard delete operator-only)
 
 ## 10.3 Agents
 
@@ -624,24 +624,24 @@ Scheduler must skip invocation when:
 
 ## 12.1 Hiring
 
-1. Agent or board creates `approval(type=hire_agent, status=pending, payload=agent draft)`.
-2. Board approves or rejects.
+1. Agent or operator creates `approval(type=hire_agent, status=pending, payload=agent draft)`.
+2. Operator approves or rejects.
 3. On approval, server creates agent row and initial API key (optional).
 4. Decision is logged in `activity_log`.
 
-Board can bypass request flow and create agents directly via UI; direct create is still logged as a governance action.
+Operator can bypass request flow and create agents directly via UI; direct create is still logged as a governance action.
 
 ## 12.2 CEO Strategy Approval
 
 1. CEO posts strategy proposal as `approval(type=approve_ceo_strategy)`.
-2. Board reviews payload (plan text, initial structure, high-level tasks).
+2. Operator reviews payload (plan text, initial structure, high-level tasks).
 3. Approval unlocks execution state for CEO-created delegated work.
 
 Before first strategy approval, CEO may only draft tasks, not transition them to active execution states.
 
-## 12.3 Board Override
+## 12.3 Operator Override
 
-Board can at any time:
+Operator can at any time:
 
 - pause/resume/terminate any agent
 - reassign or cancel any task
@@ -664,7 +664,7 @@ Board can at any time:
   - block new checkout/invocation for that agent
   - emit high-priority activity event
 
-Board may override by raising budget or explicitly resuming agent.
+Operator may override by raising budget or explicitly resuming agent.
 
 ## 13.3 Cost Event Ingestion
 
@@ -695,7 +695,7 @@ Validation:
 Read-time aggregate queries are acceptable for V1.
 Materialized rollups can be added later if query latency exceeds targets.
 
-## 14. UI Requirements (Board App)
+## 14. UI Requirements (Operator App)
 
 V1 UI routes:
 
@@ -745,7 +745,7 @@ Required UX behaviors:
 
 - store only hashed agent API keys
 - redact secrets in logs (`adapter_config`, auth headers, env vars)
-- CSRF protection for board session endpoints
+- CSRF protection for operator session endpoints
 - rate limit auth and key-management endpoints
 - strict company boundary checks on every entity fetch/mutation
 
@@ -766,7 +766,7 @@ Required UX behaviors:
 
 ## 17.3 End-to-End Tests
 
-- board creates company -> hires CEO -> approves strategy -> CEO receives work
+- operator creates company -> hires CEO -> approves strategy -> CEO receives work
 - agent reports cost -> budget threshold reached -> auto-pause occurs
 - task delegation across teams with request depth increment
 
@@ -785,7 +785,7 @@ A release candidate is blocked unless these pass:
 ## Milestone 1: Company Core and Auth
 
 - add `companies` and company scoping to existing entities
-- add board session auth and agent API keys
+- add operator session auth and agent API keys
 - migrate existing API routes to company-aware paths
 
 ## Milestone 2: Task and Governance Semantics
@@ -807,7 +807,7 @@ A release candidate is blocked unless these pass:
 - implement monthly rollups and dashboards
 - enforce hard limit auto-pause
 
-## Milestone 5: Board UI Completion
+## Milestone 5: Operator UI Completion
 
 - add company selector and org chart view
 - add approvals and cost pages
@@ -822,11 +822,11 @@ A release candidate is blocked unless these pass:
 
 V1 is complete only when all criteria are true:
 
-1. A board user can create multiple companies and switch between them.
+1. A operator user can create multiple companies and switch between them.
 2. A company can run at least one active heartbeat-enabled agent.
 3. Task checkout is conflict-safe with `409` on concurrent claims.
 4. Agents can update tasks/comments and report costs with API keys only.
-5. Board can approve/reject hire and CEO strategy requests in UI.
+5. Operator can approve/reject hire and CEO strategy requests in UI.
 6. Budget hard limit auto-pauses an agent and prevents new invocations.
 7. Dashboard shows accurate counts/spend from live DB data.
 8. Every mutation is auditable in activity log.

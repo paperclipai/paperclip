@@ -6,14 +6,14 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 
-export function BoardClaimPage() {
+export function OperatorClaimPage() {
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
   const token = (params.token ?? "").trim();
   const code = (searchParams.get("code") ?? "").trim();
   const currentPath = useMemo(
-    () => `/board-claim/${encodeURIComponent(token)}${code ? `?code=${encodeURIComponent(code)}` : ""}`,
+    () => `/operator-claim/${encodeURIComponent(token)}${code ? `?code=${encodeURIComponent(code)}` : ""}`,
     [token, code],
   );
 
@@ -23,14 +23,14 @@ export function BoardClaimPage() {
     retry: false,
   });
   const statusQuery = useQuery({
-    queryKey: ["board-claim", token, code],
-    queryFn: () => accessApi.getBoardClaimStatus(token, code),
+    queryKey: ["operator-claim", token, code],
+    queryFn: () => accessApi.getOperatorClaimStatus(token, code),
     enabled: token.length > 0 && code.length > 0,
     retry: false,
   });
 
   const claimMutation = useMutation({
-    mutationFn: () => accessApi.claimBoard(token, code),
+    mutationFn: () => accessApi.claimOperator(token, code),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
@@ -41,7 +41,7 @@ export function BoardClaimPage() {
   });
 
   if (!token || !code) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid board claim URL.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid operator claim URL.</div>;
   }
 
   if (statusQuery.isLoading || sessionQuery.isLoading) {
@@ -70,12 +70,12 @@ export function BoardClaimPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Board ownership claimed</h1>
+          <h1 className="text-lg font-semibold">Operator ownership claimed</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is now linked to your authenticated user.
           </p>
           <Button asChild className="mt-4">
-            <Link to="/">Open board</Link>
+            <Link to="/">Open operator</Link>
           </Button>
         </div>
       </div>
@@ -88,7 +88,7 @@ export function BoardClaimPage() {
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">Sign in required</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Sign in or create an account, then return to this page to claim Board ownership.
+            Sign in or create an account, then return to this page to claim Operator ownership.
           </p>
           <Button asChild className="mt-4">
             <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
@@ -101,14 +101,14 @@ export function BoardClaimPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Claim Board ownership</h1>
+        <h1 className="text-xl font-semibold">Claim Operator ownership</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This will promote your user to instance admin and migrate company ownership access from local trusted mode.
         </p>
 
         {claimMutation.error && (
           <p className="mt-3 text-sm text-destructive">
-            {claimMutation.error instanceof Error ? claimMutation.error.message : "Failed to claim board ownership"}
+            {claimMutation.error instanceof Error ? claimMutation.error.message : "Failed to claim operator ownership"}
           </p>
         )}
 

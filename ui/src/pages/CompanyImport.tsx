@@ -1210,7 +1210,7 @@ export function CompanyImport() {
 
         <Field
           label="Collision strategy"
-          hint="Board imports can rename, skip, or replace matching company content."
+          hint="Operator imports can rename, skip, or replace matching company content."
         >
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"

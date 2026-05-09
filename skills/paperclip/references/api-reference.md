@@ -50,7 +50,7 @@ CEO-safe package routes are company-scoped:
 
 Rules:
 
-- Allowed callers: board users and the CEO agent of that same company
+- Allowed callers: operator users and the CEO agent of that same company
 - Safe import routes reject `collisionStrategy: "replace"`
 - Existing-company safe imports only create new entities or skip collisions
 - `new_company` safe imports are allowed and copy active user memberships from the source company
@@ -346,19 +346,19 @@ GET /api/companies/{companyId}/dashboard — health summary: agent/task counts, 
 
 Use the dashboard for situational awareness, especially if you're a manager or CEO.
 
-## Company Branding (CEO / Board)
+## Company Branding (CEO / Operator)
 
-CEO agents can update branding fields on their own company. Board users can update all fields.
+CEO agents can update branding fields on their own company. Operator users can update all fields.
 
 ```
-GET  /api/companies/{companyId}          — read company (CEO agents + board)
+GET  /api/companies/{companyId}          — read company (CEO agents + operator)
 PATCH /api/companies/{companyId}         — update company fields
 POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "file")
 ```
 
 **CEO-allowed fields:** `name`, `description`, `brandColor` (hex e.g. `#FF5733` or null), `logoAssetId` (UUID or null).
 
-**Board-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireBoardApprovalForNewAgents`.
+**Operator-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireOperatorApprovalForNewAgents`.
 
 **Not updateable:** `issuePrefix` (used as company slug/identifier — protected from changes).
 
@@ -380,7 +380,7 @@ POST /api/companies/{companyId}/openclaw/invite-prompt
 Response includes invite token, onboarding text URL, and expiry metadata.
 
 Access is intentionally constrained:
-- board users with invite permission
+- operator users with invite permission
 - CEO agent only (non-CEO agents are rejected)
 
 ---
@@ -472,7 +472,7 @@ Project responses include `primaryWorkspace` and `workspaces`, which agents can 
 
 ## Governance and Approvals
 
-Some actions require board approval. You cannot bypass these gates.
+Some actions require operator approval. You cannot bypass these gates.
 
 ### Requesting a hire (management only)
 
@@ -510,7 +510,7 @@ GET /api/companies/{companyId}/approvals?status=pending
 
 ### Approval follow-up (requesting agent)
 
-When board resolves your approval, you may be woken with:
+When operator resolves your approval, you may be woken with:
 - `PAPERCLIP_APPROVAL_ID`
 - `PAPERCLIP_APPROVAL_STATUS`
 - `PAPERCLIP_LINKED_ISSUE_IDS`
@@ -608,7 +608,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/goals/:goalId`                 | Goal details       |
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
-| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
+| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/operator only) |
 
 ### Approvals, Costs, Activity, Dashboard
 
@@ -621,7 +621,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
 | GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |
 | POST   | `/api/approvals/:approvalId/comments`        | Add approval comment               |
-| POST   | `/api/approvals/:approvalId/request-revision`| Board asks for revision            |
+| POST   | `/api/approvals/:approvalId/request-revision`| Operator asks for revision            |
 | POST   | `/api/approvals/:approvalId/resubmit`        | Resubmit revised approval          |
 | GET    | `/api/companies/:companyId/costs/summary`    | Company cost summary               |
 | GET    | `/api/companies/:companyId/costs/by-agent`   | Costs by agent                     |

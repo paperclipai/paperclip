@@ -271,7 +271,7 @@ Create a new durable table for outputs.
 - `status text not null`
   - `active | ready_for_review | approved | changes_requested | merged | closed | failed | archived`
 - `review_state text not null default 'none'`
-  - `none | needs_board_review | approved | changes_requested`
+  - `none | needs_operator_review | approved | changes_requested`
 - `is_primary boolean not null default false`
 - `health_status text not null default 'unknown'`
   - `unknown | healthy | unhealthy`
@@ -558,7 +558,7 @@ Add:
 
 ### V1 mutation permissions
 
-- board can create/update/delete all
+- operator can create/update/delete all
 - agents can create/update for issues they are assigned or currently executing
 - deletion should generally archive rather than hard-delete once linked to historical output
 

@@ -14,7 +14,7 @@ The first required convention is a document with key `plan`.
 This solves the immediate workflow problem in `PAP-448`:
 
 - plans should stop living inside issue descriptions as `<plan>` blocks
-- agents and board users should be able to create/update issue documents directly
+- agents and operator users should be able to create/update issue documents directly
 - `GET /api/issues/:id` should include the full `plan` document and expose the other available documents
 - issue detail should render documents under the description
 
@@ -39,7 +39,7 @@ This keeps `PAP-448` focused while still fitting the larger artifact direction.
 ## Goals
 
 1. Give issues first-class keyed documents, starting with `plan`.
-2. Make documents editable by board users and same-company agents with issue access.
+2. Make documents editable by operator users and same-company agents with issue access.
 3. Preserve change history with append-only revisions.
 4. Make the `plan` document automatically available in the normal issue fetch used by agents/heartbeats.
 5. Replace the current `<plan>`-in-description convention in skills/docs.
@@ -107,7 +107,7 @@ Updates should include `baseRevisionId`:
 - update: `baseRevisionId` must match current latest revision
 - mismatch: return `409 Conflict`
 
-This is important because both board users and agents may edit the same document.
+This is important because both operator users and agents may edit the same document.
 
 ### 5. Issue fetch behavior
 
@@ -288,7 +288,7 @@ Recommended endpoints:
 - `GET /api/issues/:issueId/documents/:key`
 - `PUT /api/issues/:issueId/documents/:key`
 - `GET /api/issues/:issueId/documents/:key/revisions`
-- `DELETE /api/issues/:issueId/documents/:key` optionally board-only in v1
+- `DELETE /api/issues/:issueId/documents/:key` optionally operator-only in v1
 
 Recommended `PUT` body:
 
@@ -312,13 +312,13 @@ Behavior:
 
 - all document records are company-scoped
 - issue relation must belong to same company
-- board access follows existing issue access rules
+- operator access follows existing issue access rules
 - agent access follows existing same-company issue access rules
 - every mutation writes activity log entries
 
 Recommended delete rule for v1:
 
-- board can delete documents
+- operator can delete documents
 - agents can create/update, but not delete
 
 That keeps automated systems from removing canonical docs too easily.
@@ -450,7 +450,7 @@ Behavior:
 
 Acceptance:
 
-- agents and board can fetch/update same-company issue documents
+- agents and operator can fetch/update same-company issue documents
 - stale edits return `409`
 - activity timeline shows document changes
 
@@ -472,7 +472,7 @@ Behavior:
 
 Acceptance:
 
-- board can create a `plan` doc from issue detail
+- operator can create a `plan` doc from issue detail
 - updated plan appears immediately
 - issue detail no longer depends on description-embedded `<plan>`
 
@@ -512,7 +512,7 @@ Follow-up, not required for first merge:
 - revision numbering
 - `baseRevisionId` conflict handling
 - company boundary enforcement
-- agent vs board authorization
+- agent vs operator authorization
 - issue fetch includes `planDocument` and document summaries
 - legacy `<plan>` fallback behavior
 - activity log mutation coverage
@@ -543,7 +543,7 @@ pnpm build
    Recommendation: allow arbitrary keys with normalized validation; reserve `plan` as special behavior only.
 
 3. Should delete exist in v1?
-   Recommendation: yes, but board-only.
+   Recommendation: yes, but operator-only.
 
 4. Should legacy `<plan>` blocks ever be auto-migrated?
    Recommendation: no automatic mutation in the first rollout.

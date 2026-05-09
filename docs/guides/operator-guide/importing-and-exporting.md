@@ -140,7 +140,7 @@ The preview shows:
 - **Env inputs** — Environment variables that may need values after import
 - **Warnings** — Potential issues like missing skills or unresolved references
 
-Imported agents always land with timer heartbeats disabled. Assignment/on-demand wake behavior from the package is preserved, but scheduled runs stay off until a board operator re-enables them.
+Imported agents always land with timer heartbeats disabled. Assignment/on-demand wake behavior from the package is preserved, but scheduled runs stay off until a operator operator re-enables them.
 
 ### Common Workflows
 

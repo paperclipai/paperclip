@@ -58,15 +58,15 @@ If this document conflicts with prior exploratory notes, this document wins for 
 
 Current baseline (repo as of this doc):
 
-- server actor model defaults to `board` in `server/src/middleware/auth.ts`
-- authorization is mostly `assertBoard` + company check in `server/src/routes/authz.ts`
+- server actor model defaults to `operator` in `server/src/middleware/auth.ts`
+- authorization is mostly `assertOperator` + company check in `server/src/routes/authz.ts`
 - no human auth/session tables in local schema
 - no principal membership or grants tables
 - no invite or join-request lifecycle
 
 Required delta:
 
-- move from board-vs-agent authz to principal-based authz
+- move from operator-vs-agent authz to principal-based authz
 - add Better Auth integration in cloud mode
 - add membership/grants/invite/join-request persistence
 - add approval inbox signals and actions
@@ -93,7 +93,7 @@ Startup guardrails:
 
 ## 4.2 Actor model
 
-Replace implicit “board” semantics with explicit actors:
+Replace implicit “operator” semantics with explicit actors:
 
 - `user` (session-authenticated human)
 - `agent` (bearer API key)
@@ -102,7 +102,7 @@ Replace implicit “board” semantics with explicit actors:
 Implementation note:
 
 - keep `req.actor` shape backward-compatible during migration by introducing a normalizer helper
-- remove hard-coded `"board"` checks route-by-route after new authz helpers are in place
+- remove hard-coded `"operator"` checks route-by-route after new authz helpers are in place
 
 ## 4.3 Authorization model
 
@@ -238,7 +238,7 @@ Migration ordering:
 - create local implicit admin membership context in local mode at runtime (not persisted as Better Auth user)
 - for cloud, bootstrap creates first admin user role on acceptance
 3. switch authz reads to new tables
-4. remove legacy board-only checks
+4. remove legacy operator-only checks
 
 ## 6. API contract (new/changed)
 
@@ -361,15 +361,15 @@ Files:
 
 - `server/src/middleware/auth.ts`
 - `server/src/routes/authz.ts`
-- `server/src/middleware/board-mutation-guard.ts`
+- `server/src/middleware/operator-mutation-guard.ts`
 
 Changes:
 
-- stop defaulting every request to board in cloud mode
+- stop defaulting every request to operator in cloud mode
 - map local requests to `local_implicit_admin` actor in local mode
 - map Better Auth session to `user` actor in cloud mode
 - preserve agent bearer path
-- replace `assertBoard` with permission-oriented helpers:
+- replace `assertOperator` with permission-oriented helpers:
   - `requireInstanceAdmin(req)`
   - `requireCompanyAccess(req, companyId)`
   - `requireCompanyPermission(req, companyId, permissionKey, scope?)`
@@ -518,7 +518,7 @@ Required UX:
 
 3. Cloud auth
 
-- no implicit board fallback
+- no implicit operator fallback
 - session auth mandatory for human mutations
 
 4. Join workflow hardening
@@ -536,8 +536,8 @@ Required UX:
 
 ## 11.1 Runtime compatibility
 
-- keep existing board-dependent routes functional while migrating authz helper usage
-- phase out `assertBoard` calls only after permission helpers cover all routes
+- keep existing operator-dependent routes functional while migrating authz helper usage
+- phase out `assertOperator` calls only after permission helpers cover all routes
 
 ## 11.2 Data compatibility
 
@@ -618,7 +618,7 @@ Required UX:
 
 - full integration/e2e coverage
 - docs updates (`SPEC-implementation`, `DEVELOPING`, `CLI`)
-- cleanup of legacy board-only codepaths
+- cleanup of legacy operator-only codepaths
 
 ## 14. Verification gate
 

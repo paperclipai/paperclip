@@ -17,34 +17,34 @@ A Company is a first-order object. One Paperclip instance runs multiple Companie
 | `createdAt` | timestamp     |                                   |
 | `updatedAt` | timestamp     |                                   |
 
-### Board Governance [DRAFT]
+### Operator Governance [DRAFT]
 
-Every Company has a **Board** that governs high-impact decisions. The Board is the human oversight layer.
+Every Company has a **Operator** that governs high-impact decisions. The Operator is the human oversight layer.
 
-**V1: Single human Board.** One human operator.
+**V1: Single human Operator.** One human operator.
 
-#### Board Approval Gates (V1)
+#### Operator Approval Gates (V1)
 
 - New Agent hires (creating new Agents)
-- CEO's initial strategic breakdown (CEO proposes, Board approves before execution begins)
+- CEO's initial strategic breakdown (CEO proposes, Operator approves before execution begins)
 - [TBD: other governance-gated actions — goal changes, firing Agents?]
 
-#### Board Powers (Always Available)
+#### Operator Powers (Always Available)
 
-The Board has **unrestricted access** to the entire system at all times:
+The Operator has **unrestricted access** to the entire system at all times:
 
-- **Set and modify Company budgets** — the Board sets top-level token/LLM cost budgets
+- **Set and modify Company budgets** — the Operator sets top-level token/LLM cost budgets
 - **Pause/resume any Agent** — stop an Agent's heartbeat immediately
 - **Pause/resume any work item** — pause a task, project, subtask tree, milestone. Paused items are not picked up by Agents.
 - **Full project management access** — create, edit, comment on, modify, delete, reassign any task/project/milestone through the UI
 - **Override any Agent decision** — reassign tasks, change priorities, modify descriptions
 - **Manually change any budget** at any level
 
-The Board is not just an approval gate — it's a live control surface. The human can intervene at any level at any time.
+The Operator is not just an approval gate — it's a live control surface. The human can intervene at any level at any time.
 
 #### Budget Delegation
 
-The Board sets Company-level budgets. The CEO can set budgets for Agents below them, and every manager Agent can do the same for their reports. How this cascading budget delegation works in practice is TBD, but the permission structure supports it. The Board can manually override any budget at any level.
+The Operator sets Company-level budgets. The CEO can set budgets for Agents below them, and every manager Agent can do the same for their reports. How this cascading budget delegation works in practice is TBD, but the permission structure supports it. The Operator can manually override any budget at any level.
 
 **Future governance models** (not V1):
 
@@ -212,7 +212,7 @@ status(agentConfig) → AgentStatus        // Is it running? finished? errored?
 cancel(agentConfig) → void               // Graceful stop signal (for pause/resume)
 ```
 
-This is the full adapter contract. `invoke` starts the agent, `status` lets Paperclip check on it, `cancel` enables the board's pause functionality. Everything else (cost reporting, task updates) is optional and flows through the Paperclip REST API.
+This is the full adapter contract. `invoke` starts the agent, `status` lets Paperclip check on it, `cancel` enables the operator's pause functionality. Everything else (cost reporting, task updates) is optional and flows through the Paperclip REST API.
 
 ### What Paperclip Controls
 
@@ -228,7 +228,7 @@ This is the full adapter contract. `invoke` starts the agent, `status` lets Pape
 
 ### Pause Behavior
 
-When the board (or system) pauses an agent:
+When the operator (or system) pauses an agent:
 
 1. **Signal the current execution** — send a graceful termination signal to the running process/session
 2. **Grace period** — give the agent time to wrap up, save state, report final status
@@ -296,7 +296,7 @@ Three tiers:
 
 1. **Visibility** — dashboards showing spend at every level (Agent, task, project, Company)
 2. **Soft alerts** — configurable thresholds (e.g. warn at 80% of budget)
-3. **Hard ceiling** — auto-pause the Agent when budget is hit. Board notified. Board can override/raise the limit.
+3. **Hard ceiling** — auto-pause the Agent when budget is hit. Operator notified. Operator can override/raise the limit.
 
 Budgets can be set to **unlimited** (no ceiling).
 
@@ -318,15 +318,15 @@ How a Company goes from "created" to "running":
 2. Human defines initial top-level tasks
 3. Human creates the CEO Agent (using the default CEO template or custom)
 4. CEO's first heartbeat: reviews the Initiatives and tasks, proposes a strategic breakdown (org structure, sub-tasks, hiring plan)
-5. **Board approves** the CEO's strategic plan
-6. CEO begins execution — creating tasks, proposing hires (Board-approved), delegating
+5. **Operator approves** the CEO's strategic plan
+6. CEO begins execution — creating tasks, proposing hires (Operator-approved), delegating
 
 ### Default Agents
 
 Paperclip ships default Agent templates:
 
 - **Default Agent** — a basic Claude Code or Codex loop. Knows the **Paperclip Skill** (SKILL.md) so it can interact with the task system, read Company context, report status.
-- **Default CEO** — extends the Default Agent with CEO-specific behavior: strategic planning, delegation to reports, progress review, Board communication.
+- **Default CEO** — extends the Default Agent with CEO-specific behavior: strategic planning, delegation to reports, progress review, Operator communication.
 
 These are starting points. Users can customize or replace them entirely.
 
@@ -360,7 +360,7 @@ This skill is adapter-agnostic — it can be loaded into Claude Code, injected i
 
 1. **Local dev** — One command to install and run. Embedded Postgres. Everything on your machine. Agents run locally.
 2. **Hosted** — Deploy to Vercel/Supabase/AWS/anywhere. Remote agents connect to your server with a shared database. The UI is accessible via the web.
-3. **Open company** — Optionally make parts public (e.g. a job board visible to the public for open companies).
+3. **Open company** — Optionally make parts public (e.g. a job operator visible to the public for open companies).
 
 The key constraint: it must be trivial to go from "I'm trying this on my machine" to "my agents are running on remote servers talking to my Paperclip instance."
 
@@ -396,7 +396,7 @@ No optimistic locking or CRDTs needed. The single-assignment model + atomic chec
 
 ### Human in the Loop
 
-Agents can create tasks assigned to humans. The board member (or any human with access) can complete these tasks through the UI.
+Agents can create tasks assigned to humans. The operator member (or any human with access) can complete these tasks through the UI.
 
 When a human completes a task, if the requesting agent's adapter supports **pingbacks** (e.g. OpenClaw hooks), Paperclip sends a notification to wake that agent. This keeps humans rare but possible participants in the workflow.
 
@@ -404,9 +404,9 @@ The agents are discouraged from assigning tasks to humans in the Paperclip SKILL
 
 ### API Design
 
-**Single unified REST API.** The same API serves both the frontend UI and agents. Authentication determines permissions — board auth has full access, agent API keys have scoped access (their own tasks, cost reporting, company context).
+**Single unified REST API.** The same API serves both the frontend UI and agents. Authentication determines permissions — operator auth has full access, agent API keys have scoped access (their own tasks, cost reporting, company context).
 
-No separate "agent API" vs. "board API." Same endpoints, different authorization levels.
+No separate "agent API" vs. "operator API." Same endpoints, different authorization levels.
 
 ### Work Artifacts
 
@@ -447,13 +447,13 @@ The plugin framework has shipped. Plugins can register new adapter types, hook i
 Each is a distinct page/route:
 
 1. **Org Chart** — the org tree with live status indicators (running/idle/paused/error) per agent. Real-time activity feed of what agents are doing.
-2. **Task Board** — Task management. Kanban and list views. Filter by team, agent, project, status.
+2. **Task Operator** — Task management. Kanban and list views. Filter by team, agent, project, status.
 3. **Dashboard** — high-level metrics: agent count, active tasks, costs, goal progress, burn rate. The "glance" view from GOAL.md.
 4. **Agent Detail** — deep dive on a single agent: their tasks, activity, costs, configuration, status history.
 5. **Project/Initiative Views** — progress tracking against milestones and goals.
 6. **Cost Dashboard** — spend visualization at every level (agent, task, project, company).
 
-### Board Controls (Available Everywhere)
+### Operator Controls (Available Everywhere)
 
 - Pause/resume agents (any view)
 - Pause/resume tasks/projects (any view)
@@ -474,14 +474,14 @@ Each is a distinct page/route:
 - [ ] **Process adapter** — invoke(), status(), cancel() for local child processes
 - [ ] **Task management** — full lifecycle with hierarchy (tasks trace to company goal)
 - [ ] **Atomic task checkout** — single assignment, in_progress locking
-- [ ] **Board governance** — human approves hires, pauses Agents, sets budgets, full PM access
+- [ ] **Operator governance** — human approves hires, pauses Agents, sets budgets, full PM access
 - [ ] **Cost tracking** — Agents report token usage, per-Agent/task/Company visibility
 - [ ] **Budget controls** — soft alerts + hard ceiling with auto-pause
 - [ ] **Default agent** — basic Claude Code/Codex loop with Paperclip skill
-- [ ] **Default CEO** — strategic planning, delegation, board communication
+- [ ] **Default CEO** — strategic planning, delegation, operator communication
 - [ ] **Paperclip skill (SKILL.md)** — teaches agents to interact with the API
 - [ ] **REST API** — full API for agent interaction (Express)
-- [ ] **Web UI** — React/Vite: org chart, task board, dashboard, cost views
+- [ ] **Web UI** — React/Vite: org chart, task operator, dashboard, cost views
 - [ ] **Agent auth** — connection string generation with URL + key + instructions
 - [ ] **One-command dev setup** — embedded PGlite, everything local
 - [ ] **Multiple Adapter types** (HTTP, OpenClaw gateway, and local coding adapters)
@@ -491,7 +491,7 @@ Each is a distinct page/route:
 - Knowledge base - a future plugin
 - Advanced governance models (hiring budgets, multi-member boards)
 - Revenue/expense tracking beyond token costs - a future plugin
-- Public job board / open company features
+- Public job operator / open company features
 
 ---
 
@@ -524,7 +524,7 @@ Things Paperclip explicitly does **not** do:
 2. **Company is the unit of organization.** Everything lives under a Company.
 3. **Tasks are the communication channel.** All Agent communication flows through tasks + comments. No side channels.
 4. **All work traces to the goal.** Hierarchical task management — nothing exists in isolation.
-5. **Board governs.** Humans retain control through the Board. Conservative defaults (human approval required).
+5. **Operator governs.** Humans retain control through the Operator. Conservative defaults (human approval required).
 6. **Surface problems, don't hide them.** Good auditing and visibility. No silent auto-recovery.
 7. **Atomic ownership.** Single assignee per task. Atomic checkout prevents conflicts.
 8. **Progressive deployment.** Trivial to start local, straightforward to scale to hosted.

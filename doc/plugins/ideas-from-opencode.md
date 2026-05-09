@@ -371,7 +371,7 @@ The products are solving different problems.
 | Trust assumption | local power user on own machine | operator managing one trusted Paperclip instance |
 | Failure blast radius | local session/runtime | entire company control plane |
 | Extension style | mutate runtime behavior freely | preserve governance and auditability |
-| UI model | local app can load local behavior | board UI must stay coherent and safe |
+| UI model | local app can load local behavior | operator UI must stay coherent and safe |
 | Security model | host-trusted local plugins | needs capability boundaries and auditability |
 
 That means Paperclip should borrow the good ideas from `opencode` but use a stricter architecture.
@@ -794,7 +794,7 @@ Every plugin declares a static capability set such as:
 - `plugin.state.read`
 - `plugin.state.write`
 
-The board/operator sees this before installation.
+The operator/operator sees this before installation.
 
 ## 2. Global installation
 
@@ -1019,7 +1019,7 @@ This is a useful middle ground:
 
 Package idea: `@paperclip/plugin-workspace-files`
 
-This plugin lets the board inspect project workspaces, agent workspaces, generated artifacts, and issue-related files without dropping to the shell. It is useful for:
+This plugin lets the operator inspect project workspaces, agent workspaces, generated artifacts, and issue-related files without dropping to the shell. It is useful for:
 
 - browsing files inside project workspaces
 - debugging what an agent changed
@@ -1052,24 +1052,24 @@ Main screens and interactions:
   - actions: copy path, download file, attach to issue, open diff
 - Project tab:
   - opens directly into the project's primary workspace
-  - lets the board switch among all project workspaces
+  - lets the operator switch among all project workspaces
   - shows workspace metadata like `cwd`, `repoUrl`, and `repoRef`
 - Issue tab:
   - resolves the issue's project and opens that project's workspace context
   - shows files linked to the issue
-  - lets the board pull files from the project workspace into issue attachments
+  - lets the operator pull files from the project workspace into issue attachments
   - shows the path and last modified info for each linked file
 - Agent tab:
   - shows the agent's current resolved workspace
   - if the run is attached to a project, links back to the project workspace view
-  - lets the board inspect files the agent is currently touching
+  - lets the operator inspect files the agent is currently touching
 
 Core workflows:
 
-- Board opens a project and browses its primary workspace files.
-- Board switches from one project workspace to another when a project has multiple checkouts or repo references.
-- Board opens an issue, attaches a generated artifact from the file browser, and leaves a review comment.
-- Board opens an agent detail page to inspect the exact files behind a failing run.
+- Operator opens a project and browses its primary workspace files.
+- Operator switches from one project workspace to another when a project has multiple checkouts or repo references.
+- Operator opens an issue, attaches a generated artifact from the file browser, and leaves a review comment.
+- Operator opens an agent detail page to inspect the exact files behind a failing run.
 
 ### Hooks needed
 
@@ -1096,7 +1096,7 @@ Optional event subscriptions:
 
 Package idea: `@paperclip/plugin-terminal`
 
-This plugin gives the board a controlled terminal UI for project workspaces and agent workspaces. It is useful for:
+This plugin gives the operator a controlled terminal UI for project workspaces and agent workspaces. It is useful for:
 
 - debugging stuck runs
 - verifying environment state
@@ -1128,20 +1128,20 @@ Main screens and interactions:
   - controls: interrupt, kill, clear, save transcript
 - Project terminal tab:
   - opens a session already scoped to the project's primary workspace
-  - lets the board switch among the project's configured workspaces
+  - lets the operator switch among the project's configured workspaces
   - shows recent commands and related process/server state for that project
 - Agent terminal tab:
   - opens a session already scoped to the agent's workspace
   - shows recent related runs and commands
 - Run terminal tab:
-  - lets the board inspect the environment around a specific failed run
+  - lets the operator inspect the environment around a specific failed run
 
 Core workflows:
 
-- Board opens a terminal against an agent workspace to reproduce a failing command.
-- Board opens a project page and launches a terminal directly in that project's primary workspace.
-- Board watches a long-running dev server or test command from the terminal page.
-- Board kills or interrupts a runaway process from the same UI.
+- Operator opens a terminal against an agent workspace to reproduce a failing command.
+- Operator opens a project page and launches a terminal directly in that project's primary workspace.
+- Operator watches a long-running dev server or test command from the terminal page.
+- Operator kills or interrupts a runaway process from the same UI.
 
 ### Hooks needed
 
@@ -1215,10 +1215,10 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board creates a branch from an issue and ties it to the project's primary workspace.
-- Board opens a project page and reviews the diff for that project's workspace without leaving Paperclip.
-- Board reviews the diff after a run without leaving Paperclip.
-- Board opens a worktree list to understand parallel branches across agents.
+- Operator creates a branch from an issue and ties it to the project's primary workspace.
+- Operator opens a project page and reviews the diff for that project's workspace without leaving Paperclip.
+- Operator reviews the diff after a run without leaving Paperclip.
+- Operator opens a worktree list to understand parallel branches across agents.
 
 ### Hooks needed
 
@@ -1257,7 +1257,7 @@ This plugin syncs Paperclip work with Linear. It is useful for:
 - linking Paperclip issues to Linear issues
 - syncing status, comments, and assignees
 - mapping company goals/projects to external product planning
-- giving board operators a single place to see sync health
+- giving operator operators a single place to see sync health
 
 ### UX
 
@@ -1293,9 +1293,9 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board enables the plugin, maps a Linear team, and imports a backlog into Paperclip.
+- Operator enables the plugin, maps a Linear team, and imports a backlog into Paperclip.
 - Paperclip issue status changes push to Linear and Linear comments arrive back through webhooks.
-- Board resolves mapping conflicts from the plugin page instead of silently drifting state.
+- Operator resolves mapping conflicts from the plugin page instead of silently drifting state.
 
 ### Hooks needed
 
@@ -1371,9 +1371,9 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board imports GitHub Issues for a repo into Paperclip.
+- Operator imports GitHub Issues for a repo into Paperclip.
 - GitHub webhooks update status/comment state in Paperclip.
-- A PR is linked back to the Paperclip issue so the board can follow delivery status.
+- A PR is linked back to the Paperclip issue so the operator can follow delivery status.
 
 ### Hooks needed
 
@@ -1443,9 +1443,9 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board sees service degradation or business KPI movement directly on the Paperclip dashboard.
-- Board clicks into the full metrics page to inspect the relevant Grafana panels.
-- Board creates a Paperclip issue from a threshold breach with a metric snapshot attached.
+- Operator sees service degradation or business KPI movement directly on the Paperclip dashboard.
+- Operator clicks into the full metrics page to inspect the relevant Grafana panels.
+- Operator creates a Paperclip issue from a threshold breach with a metric snapshot attached.
 
 ### Hooks needed
 
@@ -1484,7 +1484,7 @@ This plugin tracks long-lived local processes and dev servers started in project
 - tracking ports, health, and uptime
 - restarting failed dev servers
 - exposing process state alongside issue and run state
-- making local development workflows visible to the board
+- making local development workflows visible to the operator
 
 ### UX
 
@@ -1521,9 +1521,9 @@ Main screens and interactions:
 Core workflows:
 
 - An agent starts a dev server; the plugin detects and tracks it.
-- Board opens a project and immediately sees the processes attached to that project's workspace.
-- Board sees a crashed process on the dashboard and restarts it from the plugin page.
-- Board attaches process logs to an issue when debugging a failure.
+- Operator opens a project and immediately sees the processes attached to that project's workspace.
+- Operator sees a crashed process on the dashboard and restarts it from the plugin page.
+- Operator attaches process logs to an issue when debugging a failure.
 
 ### Hooks needed
 
@@ -1555,7 +1555,7 @@ This plugin pulls Stripe revenue and subscription data into Paperclip. It is use
 
 - showing MRR and churn next to company goals
 - tracking trials, conversions, and failed payments
-- letting the board connect revenue movement to ongoing work
+- letting the operator connect revenue movement to ongoing work
 - enabling future financial dashboards beyond token costs
 
 ### UX
@@ -1587,7 +1587,7 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board enables the plugin and connects a Stripe account.
+- Operator enables the plugin and connects a Stripe account.
 - Webhooks and scheduled reconciliation keep plugin state current.
 - Revenue widgets appear on the main dashboard and can be linked to company goals.
 - Failed payment spikes or churn events can generate Paperclip issues for follow-up.

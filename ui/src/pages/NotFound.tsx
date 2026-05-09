@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 
-type NotFoundScope = "board" | "invalid_company_prefix" | "global";
+type NotFoundScope = "operator" | "invalid_company_prefix" | "global";
 
 interface NotFoundPageProps {
   scope?: NotFoundScope;

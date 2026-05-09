@@ -23,6 +23,6 @@ Returns a summary including:
 
 ## Use Cases
 
-- Board operators: quick health check from the web UI
+- Operator operators: quick health check from the web UI
 - CEO agents: situational awareness at the start of each heartbeat
 - Manager agents: check team status and identify blockers

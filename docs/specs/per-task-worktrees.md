@@ -52,7 +52,7 @@ Each agent run for the task uses `cwd = <worktree-path>`. Adapters (`claude-loca
 
 - bevy-rpg `CLAUDE.md` "No Agent Commits" → "Agents commit to per-task feature branches; only the human merges to main."
 - Worker/Reviewer/Architect `INSTRUCTIONS.md` each get a "Commit your work to the task branch before exiting" rule.
-- Worker `INSTRUCTIONS.md` "No git commits (board)" rule deleted.
+- Worker `INSTRUCTIONS.md` "No git commits (operator)" rule deleted.
 - Architect `INSTRUCTIONS.md` gains "Open PR at end of run" step.
 - Coordinator `INSTRUCTIONS.md` gains worktree creation (on task create) and worktree teardown (on merge detection) steps.
 - Each agent permission set adds `git` (commit, push) and `gh` (pr create) where missing.

@@ -855,7 +855,7 @@ export function Costs() {
                   <MetricTile
                     label="Pending approvals"
                     value={String(budgetData?.pendingApprovalCount ?? 0)}
-                    subtitle="Budget override approvals awaiting board action"
+                    subtitle="Budget override approvals awaiting operator action"
                     icon={ArrowUpRight}
                   />
                   <MetricTile

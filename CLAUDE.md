@@ -8,7 +8,7 @@ Paperclip = open-source control plane for autonomous AI companies. Node.js serve
 |------|------|
 | `server/src/routes/` | Express REST API endpoints |
 | `server/src/services/` | Business logic |
-| `ui/src/pages/` | React 19 + Tailwind v4 + shadcn/ui board UI |
+| `ui/src/pages/` | React 19 + Tailwind v4 + shadcn/ui operator UI |
 | `packages/db/src/schema/` | Drizzle ORM tables (PostgreSQL) |
 | `packages/shared/` | Shared TS types, constants, validators |
 | `packages/adapters/` | Agent adapters: claude-local, codex-local, cursor-local, pi-local, gemini-local, opencode-local, openclaw-gateway |
@@ -40,7 +40,7 @@ Node.js 20+, Express, TypeScript (ES2023/NodeNext), Drizzle ORM, React 19, Vite,
 1. **Company-scoped.** Every entity belongs to a company. Enforce boundaries in routes/services.
 2. **Sync layers.** Schema change -> update `packages/db` -> `packages/shared` -> `server` -> `ui`.
 3. **Invariants.** Single-assignee tasks, atomic checkout, approval gates, budget hard-stop, activity logging.
-4. **Auth.** Board = full control. Agents = bearer API keys (hashed, company-scoped). Errors: 400/401/403/404/409/422/500.
+4. **Auth.** Operator = full control. Agents = bearer API keys (hashed, company-scoped). Errors: 400/401/403/404/409/422/500.
 5. **DB changes.** Edit schema -> export from index.ts -> `pnpm db:generate` -> `pnpm -r typecheck`.
 6. **Modes.** `local_trusted` (loopback, no login) | `authenticated/private` (LAN/Tailscale) | `authenticated/public` (internet).
 7. **No lockfile commits.** CI owns `pnpm-lock.yaml`.

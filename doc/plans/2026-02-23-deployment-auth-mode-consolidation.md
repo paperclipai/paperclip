@@ -11,7 +11,7 @@ Keep Paperclip low-friction while making the mode model simpler and safer:
 1. `local_trusted` remains the default and easiest path.
 2. one authenticated runtime mode supports both private-network local use and public cloud use.
 3. onboarding/configure/doctor stay primarily interactive and flagless.
-4. Board identity is represented by a real user row in the database, with explicit role/membership integration points.
+4. Operator identity is represented by a real user row in the database, with explicit role/membership integration points.
 
 ## Product Constraints (From Review)
 
@@ -20,7 +20,7 @@ Keep Paperclip low-friction while making the mode model simpler and safer:
 3. authenticated flow gives guidance for private vs public exposure.
 4. `doctor` should also be flagless by default (read config and evaluate the selected mode/profile).
 5. do not add backward-compatibility alias layers for abandoned mode names.
-6. plan must explicitly cover how users/Board are represented in DB and how that affects task assignment and permissions.
+6. plan must explicitly cover how users/Operator are represented in DB and how that affects task assignment and permissions.
 
 ## Current Implementation Audit (As Of 2026-02-23)
 
@@ -28,7 +28,7 @@ Keep Paperclip low-friction while making the mode model simpler and safer:
 
 - Runtime deployment modes are currently `local_trusted | cloud_hosted` (`packages/shared/src/constants.ts`).
 - `local_trusted` actor is currently synthetic:
-  - `req.actor = { type: "board", userId: "local-board", source: "local_implicit" }` (`server/src/middleware/auth.ts`).
+  - `req.actor = { type: "operator", userId: "local-operator", source: "local_implicit" }` (`server/src/middleware/auth.ts`).
   - this is not a real auth user row by default.
 - `cloud_hosted` uses Better Auth sessions and `authUsers` rows (`server/src/auth/better-auth.ts`, `packages/db/src/schema/auth.ts`).
 
@@ -40,7 +40,7 @@ Keep Paperclip low-friction while making the mode model simpler and safer:
 ## Membership/Assignment Integration
 
 - User task assignment requires active `company_memberships` entry for that user (`server/src/services/issues.ts`).
-- Local implicit board identity is not automatically a real membership principal; this is a gap for “board as assignable user” semantics.
+- Local implicit operator identity is not automatically a real membership principal; this is a gap for “operator as assignable user” semantics.
 
 ## Proposed Runtime Model
 
@@ -113,16 +113,16 @@ pnpm paperclipai doctor
 Doctor reads configured mode/exposure and applies relevant checks.
 Optional flags may exist for override/testing, but are not required for normal operation.
 
-## Board/User Data Model Integration (Required)
+## Operator/User Data Model Integration (Required)
 
 ## Requirement
 
-Board must be a real DB user principal so user-centric features (task assignment, membership, audit identity) work consistently.
+Operator must be a real DB user principal so user-centric features (task assignment, membership, audit identity) work consistently.
 
 ## Target Behavior
 
 1. `local_trusted`
-- seed/ensure a deterministic local board user row in `authUsers` during setup/startup.
+- seed/ensure a deterministic local operator user row in `authUsers` during setup/startup.
 - actor middleware uses that real user id instead of synthetic-only identity.
 - ensure:
   - `instance_user_roles` includes `instance_admin` for this user.
@@ -136,7 +136,7 @@ Board must be a real DB user principal so user-centric features (task assignment
 ## Why This Matters
 
 - `assigneeUserId` validation checks company membership.
-- without a real board user + membership path, assigning tasks to board user is inconsistent.
+- without a real operator user + membership path, assigning tasks to operator user is inconsistent.
 
 ## Configuration Contract (Target)
 
@@ -176,10 +176,10 @@ This change is a clean cut:
 - `server/src/auth/better-auth.ts`: implement `auto` vs `explicit` base URL behavior.
 - host/origin trust helper for `authenticated + private`.
 
-## Phase 4: Board Principal Integration
+## Phase 4: Operator Principal Integration
 
-- add ensure-board-user startup/setup step:
-  - real local board user row
+- add ensure-operator-user startup/setup step:
+  - real local operator user row
   - instance admin role row
 - ensure first-company creation path grants creator membership.
 - remove synthetic-only assumptions where they break user assignment/membership semantics.
@@ -202,9 +202,9 @@ This change is a clean cut:
   - authenticated/private works without explicit URL
   - authenticated/public requires explicit URL
   - private host policy rejects untrusted hosts
-- Board principal tests:
-  - local_trusted board user exists as real DB user
-  - board can be assigned tasks via `assigneeUserId` after membership setup
+- Operator principal tests:
+  - local_trusted operator user exists as real DB user
+  - operator can be assigned tasks via `assigneeUserId` after membership setup
   - creator membership behavior for authenticated flows
 
 ## Acceptance Criteria
@@ -213,7 +213,7 @@ This change is a clean cut:
 2. authenticated mode is one runtime mode with `private/public` exposure guidance.
 3. `pnpm paperclipai doctor` works flagless with mode-aware checks.
 4. no extra compatibility aliases for dropped naming variants.
-5. Board identity is represented by real DB user/role/membership integration points, enabling consistent task assignment and permission behavior.
+5. Operator identity is represented by real DB user/role/membership integration points, enabling consistent task assignment and permission behavior.
 
 ## Verification Gate
 

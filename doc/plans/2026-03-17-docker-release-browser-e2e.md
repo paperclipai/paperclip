@@ -69,7 +69,7 @@ That is a good base, but it does not validate the public npm package, Docker pat
 - waits for health
 - signs up or signs in a smoke admin user
 - generates and accepts the bootstrap CEO invite in authenticated mode
-- verifies a board session and `/api/companies`
+- verifies a operator session and `/api/companies`
 
 That means the hard bootstrap problem is mostly solved already. The main gap is that the script is human-oriented and never hands control to a browser test.
 

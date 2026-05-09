@@ -610,7 +610,7 @@ Docs to update later as implementation lands:
 - `doc/SPEC-implementation.md`
 - `docs/api/companies.md`
 - `docs/cli/control-plane-commands.md`
-- board operator docs for Company Settings import/export
+- operator operator docs for Company Settings import/export
 
 ## 16. Open Questions
 

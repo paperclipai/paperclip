@@ -143,10 +143,10 @@ export function InviteLandingPage() {
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">Bootstrap complete</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            The first instance admin is now configured. You can continue to the board.
+            The first instance admin is now configured. You can continue to the operator.
           </p>
           <Button asChild className="mt-4">
-            <Link to="/">Open board</Link>
+            <Link to="/">Open operator</Link>
           </Button>
         </div>
       </div>

@@ -30,7 +30,7 @@ describe("getRememberedPathOwnerCompanyId", () => {
     ).toBeNull();
   });
 
-  it("falls back to the previous company for unprefixed board routes", () => {
+  it("falls back to the previous company for unprefixed operator routes", () => {
     expect(
       getRememberedPathOwnerCompanyId({
         companies,
@@ -40,7 +40,7 @@ describe("getRememberedPathOwnerCompanyId", () => {
     ).toBe("pap");
   });
 
-  it("treats unprefixed skills routes as board routes instead of company prefixes", () => {
+  it("treats unprefixed skills routes as operator routes instead of company prefixes", () => {
     expect(
       getRememberedPathOwnerCompanyId({
         companies,

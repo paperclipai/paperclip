@@ -1,4 +1,4 @@
-const BOARD_ROUTE_ROOTS = new Set([
+const OPERATOR_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
   "company",
@@ -17,7 +17,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "design-guide",
 ]);
 
-const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
+const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "operator-claim", "cli-auth", "docs", "instance"]);
 
 export function normalizeCompanyPrefix(prefix: string): string {
   return prefix.trim().toUpperCase();
@@ -44,17 +44,17 @@ export function isGlobalPath(pathname: string): boolean {
   return GLOBAL_ROUTE_ROOTS.has(root.toLowerCase());
 }
 
-export function isBoardPathWithoutPrefix(pathname: string): boolean {
+export function isOperatorPathWithoutPrefix(pathname: string): boolean {
   const root = getRootSegment(pathname);
   if (!root) return false;
-  return BOARD_ROUTE_ROOTS.has(root.toLowerCase());
+  return OPERATOR_ROUTE_ROOTS.has(root.toLowerCase());
 }
 
 export function extractCompanyPrefixFromPath(pathname: string): string | null {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return null;
   const first = segments[0]!.toLowerCase();
-  if (GLOBAL_ROUTE_ROOTS.has(first) || BOARD_ROUTE_ROOTS.has(first)) {
+  if (GLOBAL_ROUTE_ROOTS.has(first) || OPERATOR_ROUTE_ROOTS.has(first)) {
     return null;
   }
   return normalizeCompanyPrefix(segments[0]!);
@@ -79,7 +79,7 @@ export function toCompanyRelativePath(path: string): string {
 
   if (segments.length >= 2) {
     const second = segments[1]!.toLowerCase();
-    if (!GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase()) && BOARD_ROUTE_ROOTS.has(second)) {
+    if (!GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase()) && OPERATOR_ROUTE_ROOTS.has(second)) {
       return `/${segments.slice(1).join("/")}${search}${hash}`;
     }
   }

@@ -1,7 +1,7 @@
 {
   "name": "@paperclipai/ui",
   "version": "0.3.1",
-  "description": "Prebuilt Paperclip board UI assets.",
+  "description": "Prebuilt Paperclip operator UI assets.",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {

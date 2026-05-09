@@ -924,7 +924,7 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
-          This agent is pending board approval and cannot be invoked yet.
+          This agent is pending operator approval and cannot be invoked yet.
         </p>
       )}
 

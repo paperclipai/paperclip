@@ -38,7 +38,7 @@ POST /api/companies/{companyId}/routines
 }
 ```
 
-**Agents can only create routines assigned to themselves.** Board operators can assign to any agent.
+**Agents can only create routines assigned to themselves.** Operator operators can assign to any agent.
 
 Fields:
 
@@ -181,7 +181,7 @@ Returns recent run history for the routine. Defaults to 50 most recent runs.
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:
 
-| Operation | Agent | Board |
+| Operation | Agent | Operator |
 |-----------|-------|-------|
 | List / Get | ✅ any routine | ✅ |
 | Create | ✅ own only | ✅ |

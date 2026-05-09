@@ -67,7 +67,7 @@ Paperclip plugin design is based on the following assumptions:
 1. Paperclip is single-tenant and self-hosted.
 2. Plugin installation is global to the instance.
 3. "Companies" remain core Paperclip business objects, but they are not plugin trust boundaries.
-4. Board governance, approval gates, budget hard-stops, and core task invariants remain owned by Paperclip core.
+4. Operator governance, approval gates, budget hard-stops, and core task invariants remain owned by Paperclip core.
 5. Projects already have a real workspace model via `project_workspaces`, and local/runtime plugins should build on that instead of inventing a separate workspace abstraction.
 
 ## 3. Goals
@@ -572,7 +572,7 @@ Input includes:
 
 ### 13.9 `performAction`
 
-Runs an explicit plugin action initiated by the board UI.
+Runs an explicit plugin action initiated by the operator UI.
 
 Examples:
 
@@ -960,7 +960,7 @@ These routes are instance-level.
 
 - `/:companyPrefix/plugins/:pluginId`
 
-These routes exist because the board UI is organized around companies even though plugin installation is global.
+These routes exist because the operator UI is organized around companies even though plugin installation is global.
 
 ## 19.3 Detail Tabs
 
@@ -1305,7 +1305,7 @@ Each plugin may expose a company-context main page:
 
 - `/:companyPrefix/plugins/:pluginId`
 
-This page is where board users do most day-to-day work.
+This page is where operator users do most day-to-day work.
 
 ## 25. Uninstall And Data Lifecycle
 

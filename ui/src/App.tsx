@@ -38,7 +38,7 @@ import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
-import { BoardClaimPage } from "./pages/BoardClaim";
+import { OperatorClaimPage } from "./pages/OperatorClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
@@ -115,7 +115,7 @@ function CloudAccessGate() {
   return <Outlet />;
 }
 
-function boardRoutes() {
+function operatorRoutes() {
   return (
     <>
       <Route index element={<Navigate to="dashboard" replace />} />
@@ -173,7 +173,7 @@ function boardRoutes() {
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
       <Route path=":pluginRoutePath" element={<PluginPage />} />
-      <Route path="*" element={<NotFoundPage scope="board" />} />
+      <Route path="*" element={<NotFoundPage scope="operator" />} />
     </>
   );
 }
@@ -251,7 +251,7 @@ function CompanyRootRedirect() {
   return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
 }
 
-function UnprefixedBoardRedirect() {
+function UnprefixedOperatorRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
 
@@ -303,7 +303,7 @@ export function App() {
     <>
       <Routes>
         <Route path="auth" element={<AuthPage />} />
-        <Route path="board-claim/:token" element={<BoardClaimPage />} />
+        <Route path="operator-claim/:token" element={<OperatorClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
 
@@ -319,28 +319,28 @@ export function App() {
             <Route path="plugins" element={<PluginManager />} />
             <Route path="plugins/:pluginId" element={<PluginSettings />} />
           </Route>
-          <Route path="companies" element={<UnprefixedBoardRedirect />} />
-          <Route path="issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
-          <Route path="routines" element={<UnprefixedBoardRedirect />} />
-          <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
-          <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="companies" element={<UnprefixedOperatorRedirect />} />
+          <Route path="issues" element={<UnprefixedOperatorRedirect />} />
+          <Route path="issues/:issueId" element={<UnprefixedOperatorRedirect />} />
+          <Route path="routines" element={<UnprefixedOperatorRedirect />} />
+          <Route path="routines/:routineId" element={<UnprefixedOperatorRedirect />} />
+          <Route path="skills/*" element={<UnprefixedOperatorRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
-          <Route path="agents" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
-          <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
+          <Route path="agents" element={<UnprefixedOperatorRedirect />} />
+          <Route path="agents/new" element={<UnprefixedOperatorRedirect />} />
+          <Route path="agents/:agentId" element={<UnprefixedOperatorRedirect />} />
+          <Route path="agents/:agentId/:tab" element={<UnprefixedOperatorRedirect />} />
+          <Route path="agents/:agentId/runs/:runId" element={<UnprefixedOperatorRedirect />} />
+          <Route path="projects" element={<UnprefixedOperatorRedirect />} />
+          <Route path="projects/:projectId" element={<UnprefixedOperatorRedirect />} />
+          <Route path="projects/:projectId/overview" element={<UnprefixedOperatorRedirect />} />
+          <Route path="projects/:projectId/issues" element={<UnprefixedOperatorRedirect />} />
+          <Route path="projects/:projectId/issues/:filter" element={<UnprefixedOperatorRedirect />} />
+          <Route path="projects/:projectId/configuration" element={<UnprefixedOperatorRedirect />} />
+          <Route path="tests/ux/runs" element={<UnprefixedOperatorRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
-            {boardRoutes()}
+            {operatorRoutes()}
           </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>

@@ -37,7 +37,7 @@ So even though the CEO has hire permission, the route still enforces old self-on
 
 Target behavior:
 
-- Board: full patch rights.
+- Operator: full patch rights.
 - CEO: can patch agents in same company.
 - Other agents: self-only patch unless explicitly granted future permission.
 
@@ -121,13 +121,13 @@ Indexes:
 
 Update `PATCH /api/agents/:id` authz matrix:
 
-- board: allow
+- operator: allow
 - agent role `ceo` in same company: allow
 - otherwise: self only
 
 ## 4.2 Separate privileged patch fields
 
-Protect these from generic PATCH by non-board/non-ceo:
+Protect these from generic PATCH by non-operator/non-ceo:
 
 - `permissions`
 - `status` transitions outside allowed scope
@@ -182,7 +182,7 @@ Add configuration history panel on `AgentDetail`:
 
 - On approval detail: show linked issues with links
 - On issue detail: show linked approvals with links
-- link/unlink actions in board context
+- link/unlink actions in operator context
 
 ## 5.3 Better comment UX cues
 

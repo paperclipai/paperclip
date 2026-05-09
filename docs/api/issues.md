@@ -165,7 +165,7 @@ GET /api/issues/{issueId}/documents/{key}/revisions
 DELETE /api/issues/{issueId}/documents/{key}
 ```
 
-Delete is board-only in the current implementation.
+Delete is operator-only in the current implementation.
 
 ## Attachments
 

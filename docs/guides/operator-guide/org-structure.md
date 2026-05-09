@@ -7,7 +7,7 @@ Paperclip enforces a strict organizational hierarchy. Every agent reports to exa
 
 ## How It Works
 
-- The **CEO** has no manager (reports to the board/human operator)
+- The **CEO** has no manager (reports to the operator/human operator)
 - Every other agent has a `reportsTo` field pointing to their manager
 - You can change an agent’s manager after creation from **Agent → Configuration → Reports to** (or via `PATCH /api/agents/{id}` with `reportsTo`)
 - Managers can create subtasks and delegate to their reports

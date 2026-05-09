@@ -114,8 +114,8 @@ No section header — these are always at the top, below the company header.
   My Issues
 ```
 
-- **Inbox** — items requiring the board operator's attention. Badge count on the right. Includes: pending approvals, budget alerts, failed heartbeats. The number is the total unread/unresolved count.
-- **My Issues** — issues created by or assigned to the board operator.
+- **Inbox** — items requiring the operator operator's attention. Badge count on the right. Includes: pending approvals, budget alerts, failed heartbeats. The number is the total unread/unresolved count.
+- **My Issues** — issues created by or assigned to the operator operator.
 
 ### 3.3 Work Section
 
@@ -257,7 +257,7 @@ The issue list is the default view when clicking "Issues" in the sidebar.
 - **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
 - **Settings gear:** Configure issue display defaults, custom fields.
 - **Filter button:** Opens a filter bar below the toolbar.
-- **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
+- **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, operator/kanban).
 
 **Grouping:**
 - Issues are grouped by status by default (matching the reference screenshots).
@@ -331,7 +331,7 @@ Clicking an issue opens the detail view. The main content area splits into two z
 │          │ system has a token refresh...  │   Activity           │
 │          │                                │   CTO commented 2h   │
 │          │ Comments                       │   Status → In Prog   │
-│          │ ─────────────────              │   Created by Board   │
+│          │ ─────────────────              │   Created by Operator   │
 │          │ [avatar] CTO · 2 hours ago     │                      │
 │          │ I've identified the root...    │                      │
 │          │                                │                      │
@@ -365,7 +365,7 @@ Clicking an issue opens the detail view. The main content area splits into two z
 - Chronological list of comments.
 - Each comment shows: author avatar/icon, author name, timestamp, body (markdown rendered).
 - Comment input at the bottom — a text area with markdown support and a "Comment" button.
-- Comments from agents show a bot icon; comments from the board show a user icon.
+- Comments from agents show a bot icon; comments from the operator show a user icon.
 
 #### Right Pane (Properties Panel)
 
@@ -447,9 +447,9 @@ Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons 
 - If opened from a specific status group's `+` button, that status is pre-filled.
 - The slug/key is auto-generated from the project prefix + incrementing number (shown in breadcrumb).
 
-### 5.5 Issue Board View (Kanban)
+### 5.5 Issue Operator View (Kanban)
 
-Accessible via Display dropdown → Board layout.
+Accessible via Display dropdown → Operator layout.
 
 Columns represent statuses: Backlog | Todo | In Progress | In Review | Done
 
@@ -660,11 +660,11 @@ Clicking a row navigates to agent detail.
 
 ## 11. Approvals (Contextual, Not Standalone)
 
-Approvals are governance gates — decisions the board must make (hire an agent, approve a CEO strategy). They are NOT work items. Their data model stays separate from issues (different status machine, side-effect triggers, unstructured payload). But they don't need their own top-level nav entry.
+Approvals are governance gates — decisions the operator must make (hire an agent, approve a CEO strategy). They are NOT work items. Their data model stays separate from issues (different status machine, side-effect triggers, unstructured payload). But they don't need their own top-level nav entry.
 
 ### 11.1 Where Approvals Surface
 
-**1. Inbox (primary).** Pending approvals are the highest-priority inbox items. The board operator sees them front and center with inline approve/reject actions (see Section 14).
+**1. Inbox (primary).** Pending approvals are the highest-priority inbox items. The operator operator sees them front and center with inline approve/reject actions (see Section 14).
 
 **2. Dashboard metric card.** The "Pending Approvals" card shows the count and links to the full approvals list.
 
@@ -765,7 +765,7 @@ A chronological, filterable audit trail.
 │ Activity                            [Filter by type ▼]  │
 ├─────────────────────────────────────────────────────────┤
 │ 🤖 CEO created issue CLIP-12 "Fix auth"      2 min ago │
-│ 👤 Board approved hire "Marketing Analyst"    5 min ago │
+│ 👤 Operator approved hire "Marketing Analyst"    5 min ago │
 │ 🤖 CTO changed CLIP-8 status → In Progress  10 min ago │
 │ ⚙  System paused agent DevOps (budget limit) 15 min ago│
 │ 🤖 Dev-1 commented on CLIP-5                30 min ago │
@@ -773,7 +773,7 @@ A chronological, filterable audit trail.
 └─────────────────────────────────────────────────────────┘
 ```
 
-Each entry: actor icon (bot for agent, user for board, gear for system), actor name, action description with entity links, relative timestamp.
+Each entry: actor icon (bot for agent, user for operator, gear for system), actor name, action description with entity links, relative timestamp.
 
 Filterable by: actor type (agent/user/system), entity type (issue/agent/project/etc), action type, time range.
 
@@ -783,7 +783,7 @@ Infinite scroll with "Load more" fallback.
 
 ## 14. Inbox
 
-The inbox is the board operator's primary action center. It aggregates everything that needs human attention, with approvals as the highest-priority category.
+The inbox is the operator operator's primary action center. It aggregates everything that needs human attention, with approvals as the highest-priority category.
 
 ### 14.1 Inbox List View
 
@@ -942,7 +942,7 @@ All routes are company-scoped after company selection (company context stored in
 /                           → redirects to /dashboard
 /dashboard                  → company dashboard
 /inbox                      → inbox / attention items
-/my-issues                  → board operator's issues
+/my-issues                  → operator operator's issues
 /issues                     → issue list
 /issues/:issueId            → issue detail
 /projects                   → project list
@@ -978,7 +978,7 @@ All routes are company-scoped after company selection (company context stored in
 8. New issue modal
 9. Issue comments
 10. Bulk selection and actions
-11. Kanban board view
+11. Kanban operator view
 
 ### Phase 3: Entity Detail Views
 12. Project list + detail view

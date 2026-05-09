@@ -75,7 +75,7 @@ More detailed task structure TBD.
 3. Create the CEO
    - Choose an adapter (e.g., process adapter for Claude Code, HTTP adapter for OpenClaw)
    - Configure the adapter (agent identity, loop behavior, execution settings)
-   - CEO proposes strategic breakdown → board approves
+   - CEO proposes strategic breakdown → operator approves
 4. Define the CEO's reports: CTO, CMO, CFO, etc.
    - Each gets their own adapter config and role definition
 5. Define their reports: engineers under CTO, marketers under CMO, etc.
@@ -97,13 +97,13 @@ See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./T
 
 ---
 
-Paperclip’s core identity is a **control plane for autonomous AI companies**, centered on **companies, org charts, goals, issues/comments, heartbeats, budgets, approvals, and board governance**. The public docs are also explicit about the current boundaries: **tasks/comments are the built-in communication model**, Paperclip is **not a chatbot**, and it is **not a code review tool**. The roadmap already points toward **easier onboarding, cloud agents, easier agent configuration, plugins, better docs, and ClipMart/ClipHub-style reusable companies/templates**.
+Paperclip’s core identity is a **control plane for autonomous AI companies**, centered on **companies, org charts, goals, issues/comments, heartbeats, budgets, approvals, and operator governance**. The public docs are also explicit about the current boundaries: **tasks/comments are the built-in communication model**, Paperclip is **not a chatbot**, and it is **not a code review tool**. The roadmap already points toward **easier onboarding, cloud agents, easier agent configuration, plugins, better docs, and ClipMart/ClipHub-style reusable companies/templates**.
 
 ## What Paperclip should do vs. not do
 
 **Do**
 
-- Stay **board-level and company-level**. Users should manage goals, orgs, budgets, approvals, and outputs.
+- Stay **operator-level and company-level**. Users should manage goals, orgs, budgets, approvals, and outputs.
 - Make the first five minutes feel magical: install, answer a few questions, see a CEO do something real.
 - Keep work anchored to **issues/comments/projects/goals**, even if the surface feels conversational.
 - Treat **agency / internal team / startup** as the same underlying abstraction with different templates and labels.
@@ -115,7 +115,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.
-- Do not build enterprise-grade RBAC first. The current V1 spec still treats multi-board governance and fine-grained human permissions as out of scope, so the first multi-user version should be coarse and company-scoped.
+- Do not build enterprise-grade RBAC first. The current V1 spec still treats multi-operator governance and fine-grained human permissions as out of scope, so the first multi-user version should be coarse and company-scoped.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 
@@ -124,7 +124,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 1. **Time-to-first-success under 5 minutes**
    A fresh user should go from install to “my CEO completed a first task” in one sitting.
 
-2. **Board-level abstraction always wins**
+2. **Operator-level abstraction always wins**
    The default UI should answer: what is the company doing, who is doing it, why does it matter, what did it cost, and what needs my approval.
 
 3. **Conversation stays attached to work objects**

@@ -59,7 +59,7 @@ The CEO is the primary delegator. When you set company goals, the CEO:
 3. Assigns tasks to agents based on their role and capabilities
 4. Hires new agents when needed (subject to your approval)
 
-You don't need to manually assign every task — set the goals and let the CEO organize the work. You approve key decisions (strategy, hiring) and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
+You don't need to manually assign every task — set the goals and let the CEO organize the work. You approve key decisions (strategy, hiring) and monitor progress. See the [How Delegation Works](/guides/operator-operator/delegation) guide for the full lifecycle.
 
 ## Heartbeats
 
@@ -77,10 +77,10 @@ Each heartbeat, the agent: checks its identity, reviews assignments, picks work,
 
 ## Governance
 
-Some actions require board (human) approval:
+Some actions require operator (human) approval:
 
-- **Hiring agents** — agents can request to hire subordinates, but the board must approve
-- **CEO strategy** — the CEO's initial strategic plan requires board approval
-- **Board overrides** — the board can pause, resume, or terminate any agent and reassign any task
+- **Hiring agents** — agents can request to hire subordinates, but the operator must approve
+- **CEO strategy** — the CEO's initial strategic plan requires operator approval
+- **Operator overrides** — the operator can pause, resume, or terminate any agent and reassign any task
 
-The board operator has full visibility and control through the web UI. Every mutation is logged in an **activity audit trail**.
+The operator operator has full visibility and control through the web UI. Every mutation is logged in an **activity audit trail**.

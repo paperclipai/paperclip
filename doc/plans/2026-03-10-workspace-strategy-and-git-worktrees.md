@@ -123,7 +123,7 @@ Reasoning:
 - whether a repo/project wants isolated issue checkouts is primarily a project workflow decision
 - most operators do not want to configure runtime JSON per agent
 - agents should inherit the project's workspace policy unless there is a strong adapter-specific override
-- the board needs a place to express repo workflow defaults such as branching, PRs, cleanup, and preview lifecycle
+- the operator needs a place to express repo workflow defaults such as branching, PRs, cleanup, and preview lifecycle
 
 So the project should own a setting like:
 
@@ -139,7 +139,7 @@ Examples:
 
 - a small fix may be fine in the main project workspace
 - an operator may want to work directly on a long-lived branch
-- a board user may want to create a task without paying the setup/cleanup overhead
+- a operator user may want to create a task without paying the setup/cleanup overhead
 
 So the model should be:
 
@@ -186,7 +186,7 @@ And likely three distinct decision points:
 
 1. should the agent commit automatically?
 2. should the agent open the PR automatically?
-3. does opening or marking-ready require board approval?
+3. does opening or marking-ready require operator approval?
 
 Those should not be buried inside adapter prompts. They are workflow policy.
 
@@ -982,7 +982,7 @@ Paperclip core should:
 - resolve or request an execution workspace
 - resolve or request workspace runtime services when configured
 - inject execution workspace metadata into run context
-- persist enough metadata for board visibility and cleanup
+- persist enough metadata for operator visibility and cleanup
 - manage lifecycle hooks around run start/finish where needed
 
 Paperclip core should not:
@@ -1022,7 +1022,7 @@ Its job is to:
 - start and monitor local processes when the adapter/runtime realization is host-local
 - record normalized service metadata for remote realizations
 - run readiness checks
-- surface service URLs and state to the board
+- surface service URLs and state to the operator
 - apply shutdown policy
 
 This manager should not be hard-coded to "dev servers". It should work for any long-lived workspace companion process.
@@ -1221,7 +1221,7 @@ Acceptance:
 - Paperclip can decide whether to reuse or start a fresh service deterministically
 - local and remote services share a normalized tracking model
 - shutdown is policy-driven instead of implicit
-- board can understand why a service was kept, reused, or stopped
+- operator can understand why a service was kept, reused, or stopped
 
 ## Phase 6: Adapter Integration
 
@@ -1262,8 +1262,8 @@ Acceptance:
 
 Acceptance:
 
-- board can see where the agent is working
-- board can see what runtime services exist for that workspace
+- operator can see where the agent is working
+- operator can see what runtime services exist for that workspace
 - issue thread becomes the handoff surface for branch names and reachable URLs
 
 ## Phase 8: Cleanup Policies
@@ -1311,7 +1311,7 @@ This should likely take the form of a local operator bootstrap flow, not a weake
 5. Remote adapters can consume the same execution workspace intent without requiring host-local filesystem access.
 6. Session continuity remains correct because each adapter resumes relative to its realized execution workspace.
 7. Workspace runtime services are modeled generically, not as Paperclip-specific dev-server toggles.
-8. Board users can see branch/path/URL information for worktree-backed or remotely isolated runs.
+8. Operator users can see branch/path/URL information for worktree-backed or remotely isolated runs.
 9. Service reuse and shutdown are deterministic and policy-driven.
 10. Cleanup is conservative by default.
 

@@ -57,7 +57,7 @@ type InviteOnboardingManifest = {
   };
 };
 
-type BoardClaimStatus = {
+type OperatorClaimStatus = {
   status: "available" | "claimed" | "expired";
   requiresSignIn: boolean;
   expiresAt: string | null;
@@ -69,7 +69,7 @@ type CliAuthChallengeStatus = {
   status: "pending" | "approved" | "cancelled" | "expired";
   command: string;
   clientName: string | null;
-  requestedAccess: "board" | "instance_admin_required";
+  requestedAccess: "operator" | "instance_admin_required";
   requestedCompanyId: string | null;
   requestedCompanyName: string | null;
   approvedAt: string | null;
@@ -139,11 +139,11 @@ export const accessApi = {
       { claimSecret },
     ),
 
-  getBoardClaimStatus: (token: string, code: string) =>
-    api.get<BoardClaimStatus>(`/board-claim/${token}?code=${encodeURIComponent(code)}`),
+  getOperatorClaimStatus: (token: string, code: string) =>
+    api.get<OperatorClaimStatus>(`/operator-claim/${token}?code=${encodeURIComponent(code)}`),
 
-  claimBoard: (token: string, code: string) =>
-    api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+  claimOperator: (token: string, code: string) =>
+    api.post<{ claimed: true; userId: string }>(`/operator-claim/${token}/claim`, { code }),
 
   getCliAuthChallenge: (id: string, token: string) =>
     api.get<CliAuthChallengeStatus>(`/cli-auth/challenges/${id}?token=${encodeURIComponent(token)}`),

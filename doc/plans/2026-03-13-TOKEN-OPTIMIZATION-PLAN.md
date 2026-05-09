@@ -145,7 +145,7 @@ We should optimize tokens under these rules:
 2. **Prefer stable context over repeated context.** Unchanged instructions should not be resent through the most expensive path.
 3. **Prefer deltas over full reloads.** Heartbeats should consume only what changed since the last useful run.
 4. **Measure normalized deltas, not raw adapter claims.** Especially for sessioned CLIs.
-5. **Keep escape hatches.** Board/manual runs may still want a forced fresh session.
+5. **Keep escape hatches.** Operator/manual runs may still want a forced fresh session.
 
 ## Plan
 
@@ -191,7 +191,7 @@ This is the highest-leverage behavior change.
   - assignment changes
   - workspace mismatch
   - model mismatch / invalid resume errors
-- Add an explicit wake flag like `forceFreshSession: true` when the board wants a reset.
+- Add an explicit wake flag like `forceFreshSession: true` when the operator wants a reset.
 - Record why a session was reused or reset in run metadata.
 
 ### Why
@@ -261,7 +261,7 @@ Update the `paperclip` skill so the default pattern becomes:
 
 ### Why
 
-Today we are using full-fidelity board APIs as heartbeat APIs. That is convenient but token-inefficient.
+Today we are using full-fidelity operator APIs as heartbeat APIs. That is convenient but token-inefficient.
 
 ### Success criteria
 

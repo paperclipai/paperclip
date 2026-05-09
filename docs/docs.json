@@ -39,18 +39,18 @@
         "tab": "Guides",
         "groups": [
           {
-            "group": "Board Operator",
+            "group": "Operator Operator",
             "pages": [
-              "guides/board-operator/dashboard",
-              "guides/board-operator/creating-a-company",
-              "guides/board-operator/managing-agents",
-              "guides/board-operator/org-structure",
-              "guides/board-operator/managing-tasks",
-              "guides/board-operator/delegation",
-              "guides/board-operator/approvals",
-              "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log",
-              "guides/board-operator/importing-and-exporting"
+              "guides/operator-operator/dashboard",
+              "guides/operator-operator/creating-a-company",
+              "guides/operator-operator/managing-agents",
+              "guides/operator-operator/org-structure",
+              "guides/operator-operator/managing-tasks",
+              "guides/operator-operator/delegation",
+              "guides/operator-operator/approvals",
+              "guides/operator-operator/costs-and-budgets",
+              "guides/operator-operator/activity-log",
+              "guides/operator-operator/importing-and-exporting"
             ]
           },
           {

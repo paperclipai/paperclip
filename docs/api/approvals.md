@@ -3,7 +3,7 @@ title: Approvals
 summary: Approval workflow endpoints
 ---
 
-Approvals gate certain actions (agent hiring, CEO strategy) behind board review.
+Approvals gate certain actions (agent hiring, CEO strategy) behind operator review.
 
 ## List Approvals
 

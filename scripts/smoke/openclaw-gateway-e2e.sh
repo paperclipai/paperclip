@@ -173,14 +173,14 @@ assert_status() {
   fi
 }
 
-require_board_auth() {
+require_operator_auth() {
   if [[ ${#AUTH_HEADERS[@]} -eq 0 ]]; then
-    fail "board auth required. Set PAPERCLIP_COOKIE or PAPERCLIP_AUTH_HEADER."
+    fail "operator auth required. Set PAPERCLIP_COOKIE or PAPERCLIP_AUTH_HEADER."
   fi
   api_request "GET" "/companies"
   if [[ "$RESPONSE_CODE" != "200" ]]; then
     echo "$RESPONSE_BODY" >&2
-    fail "board auth invalid for /api/companies (HTTP ${RESPONSE_CODE})"
+    fail "operator auth invalid for /api/companies (HTTP ${RESPONSE_CODE})"
   fi
 }
 
@@ -889,7 +889,7 @@ main() {
   assert_status "200"
   log "paperclip health deploymentMode=$(jq -r '.deploymentMode // "unknown"' <<<"$RESPONSE_BODY") exposure=$(jq -r '.deploymentExposure // "unknown"' <<<"$RESPONSE_BODY")"
 
-  require_board_auth
+  require_operator_auth
   resolve_company_id
   cleanup_openclaw_agents
   cleanup_pending_join_requests

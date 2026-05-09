@@ -19,16 +19,16 @@ describe("assignee selection helpers", () => {
   });
 
   it("encodes and parses current-user assignees", () => {
-    const [option] = currentUserAssigneeOption("local-board");
+    const [option] = currentUserAssigneeOption("local-operator");
 
     expect(option).toEqual({
-      id: "user:local-board",
+      id: "user:local-operator",
       label: "Me",
-      searchText: "me board human local-board",
+      searchText: "me operator human local-operator",
     });
     expect(parseAssigneeValue(option.id)).toEqual({
       assigneeAgentId: null,
-      assigneeUserId: "local-board",
+      assigneeUserId: "local-operator",
     });
   });
 
@@ -46,21 +46,21 @@ describe("assignee selection helpers", () => {
     });
   });
 
-  it("formats current and board user labels consistently", () => {
+  it("formats current and operator user labels consistently", () => {
     expect(formatAssigneeUserLabel("user-1", "user-1")).toBe("Me");
-    expect(formatAssigneeUserLabel("local-board", "someone-else")).toBe("Board");
+    expect(formatAssigneeUserLabel("local-operator", "someone-else")).toBe("Operator");
     expect(formatAssigneeUserLabel("user-abcdef", "someone-else")).toBe("user-");
   });
 
   it("suggests the last non-me commenter without changing the actual assignee encoding", () => {
     expect(
       suggestedCommentAssigneeValue(
-        { assigneeUserId: "board-user" },
+        { assigneeUserId: "operator-user" },
         [
-          { authorUserId: "board-user" },
+          { authorUserId: "operator-user" },
           { authorAgentId: "agent-123" },
         ],
-        "board-user",
+        "operator-user",
       ),
     ).toBe("agent:agent-123");
   });
@@ -68,19 +68,19 @@ describe("assignee selection helpers", () => {
   it("falls back to the actual assignee when there is no better commenter hint", () => {
     expect(
       suggestedCommentAssigneeValue(
-        { assigneeUserId: "board-user" },
-        [{ authorUserId: "board-user" }],
-        "board-user",
+        { assigneeUserId: "operator-user" },
+        [{ authorUserId: "operator-user" }],
+        "operator-user",
       ),
-    ).toBe("user:board-user");
+    ).toBe("user:operator-user");
   });
 
   it("skips the current agent when choosing a suggested commenter assignee", () => {
     expect(
       suggestedCommentAssigneeValue(
-        { assigneeUserId: "board-user" },
+        { assigneeUserId: "operator-user" },
         [
-          { authorUserId: "board-user" },
+          { authorUserId: "operator-user" },
           { authorAgentId: "agent-self" },
           { authorAgentId: "agent-123" },
         ],

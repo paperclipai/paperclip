@@ -55,7 +55,7 @@ function resolveActorLabel(
   }
   if (actorType === "system") return "System";
   if (actorType === "user" && actorId) {
-    return "Board";
+    return "Operator";
   }
   return "Someone";
 }

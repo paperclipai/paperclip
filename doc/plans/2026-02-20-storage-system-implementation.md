@@ -128,7 +128,7 @@ Add a single storage subsystem for Paperclip that supports:
 
 ### Acceptance Criteria
 
-- Board and same-company agents can upload and read attachments per issue permissions.
+- Operator and same-company agents can upload and read attachments per issue permissions.
 - Cross-company access is denied even with valid attachment id.
 - Activity log records attachment add/remove actions.
 

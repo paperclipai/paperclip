@@ -45,7 +45,7 @@ export type IssueViewState = {
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
-  viewMode: "list" | "board";
+  viewMode: "list" | "operator";
   collapsedGroups: string[];
 };
 
@@ -389,9 +389,9 @@ export function IssuesList({
               <List className="h-3.5 w-3.5" />
             </button>
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              className={`p-1.5 transition-colors ${viewState.viewMode === "operator" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => updateView({ viewMode: "operator" })}
+              title="Operator view"
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -658,7 +658,7 @@ export function IssuesList({
         />
       )}
 
-      {viewState.viewMode === "board" ? (
+      {viewState.viewMode === "operator" ? (
         <KanbanBoard
           issues={filtered}
           agents={agents}
