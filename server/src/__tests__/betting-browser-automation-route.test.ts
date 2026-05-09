@@ -15,6 +15,10 @@ vi.mock("../services/betting-browser-automation.js", () => ({
   }),
 }));
 
+vi.mock("../services/bba-memory-instrumentation.js", () => ({
+  instrumentBettingService: (svc: unknown) => svc,
+}));
+
 vi.mock("../services/secrets.js", () => ({
   secretService: () => mockSecretService,
 }));
@@ -77,7 +81,6 @@ function buildPayload() {
 
 describe("betting browser automation route", () => {
   beforeEach(() => {
-    vi.resetModules();
     vi.clearAllMocks();
     mockExecute.mockResolvedValue({ status: "awaiting_confirmation" });
   });

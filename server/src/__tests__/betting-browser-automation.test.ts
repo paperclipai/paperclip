@@ -13,6 +13,25 @@ vi.mock("@paperclipai/db", () => ({
   bettingMatches: {},
 }));
 
+// Mock stop-loss so its eq(bettingBankrollSnapshots.companyId, ...) call never
+// runs against the string-stub column above. Stop-loss logic is tested separately
+// in betting-stop-loss.test.ts.
+vi.mock("../services/betting-stop-loss.js", () => ({
+  bettingStopLossService: () => ({
+    preflight: async () => ({
+      allowed: true,
+      triggers: [],
+      currentBalance: null,
+      currency: "RON",
+      evaluatedAt: new Date().toISOString(),
+      timeZone: "Europe/Bucharest",
+      daily: { baselineBalance: null, baselineAt: null, floorBalance: null, lossAmount: null, lossPct: null, limitPct: 0.05 },
+      session: { baselineBalance: null, baselineAt: null, floorBalance: null, lossAmount: null, lossPct: null, limitPct: 0.10 },
+      reason: null,
+    }),
+  }),
+}));
+
 import {
   DEFAULT_BBA_CHROMIUM_PROFILE,
   buildSessionSummary,
@@ -830,12 +849,12 @@ describe("betting browser automation helpers", () => {
     expect(String(launchProfilePath)).toContain("paperclip-bba-profile-clones");
     expect(launchOptions).toEqual(expect.objectContaining({
       headless: false,
-      channel: "chrome",
       viewport: expect.objectContaining({
         width: expect.any(Number),
         height: expect.any(Number),
       }),
     }));
+    expect(launchOptions.channel).toBeUndefined();
     expect(goto).toHaveBeenNthCalledWith(
       1,
       "https://example.test",
@@ -843,18 +862,159 @@ describe("betting browser automation helpers", () => {
     );
     expect(goto).toHaveBeenNthCalledWith(
       2,
-      "https://example.test/login",
-      expect.objectContaining({ waitUntil: "domcontentloaded", timeout: 1_000 }),
-    );
-    expect(goto).toHaveBeenNthCalledWith(
-      3,
       "https://example.test/preauth-home",
       expect.objectContaining({ waitUntil: "domcontentloaded", timeout: 1_000 }),
     );
     expect(goto).toHaveBeenNthCalledWith(
-      4,
+      3,
       "https://example.test/events/psv-ajax",
       expect.objectContaining({ waitUntil: "domcontentloaded", timeout: 1_000 }),
+    );
+    expect(closeContext).toHaveBeenCalled();
+  }, 15_000);
+
+  it("keeps Casa skip-login warm-up and auth verification on the sportsbook SPA instead of the root domain", async () => {
+    const goto = vi.fn(async () => undefined);
+    const closeContext = vi.fn(async () => undefined);
+    const page = {
+      setDefaultTimeout: vi.fn(),
+      goto,
+      url: () => "https://www.casapariurilor.ro/pariuri-online/fotbal",
+      locator(selector: string) {
+        const visibleSelectors = new Set([
+          "li.user-is-logged-in",
+          ".odds-button",
+          "input[name=stake]",
+          "text=Review",
+          "[class*='betslip']",
+        ]);
+        return {
+          first() {
+            return this;
+          },
+          nth() {
+            return this;
+          },
+          async count() {
+            return visibleSelectors.has(selector) ? 1 : 0;
+          },
+          async isVisible() {
+            return visibleSelectors.has(selector);
+          },
+          async isEditable() {
+            return selector === "input[name=stake]";
+          },
+          async boundingBox() {
+            return { x: 10, y: 10, width: 120, height: 32 };
+          },
+          scrollIntoViewIfNeeded: vi.fn(async () => undefined),
+          locator: vi.fn(() => ({
+            first() {
+              return this;
+            },
+            nth() {
+              return this;
+            },
+            isVisible: async () => false,
+            isEditable: async () => false,
+          })),
+          click: vi.fn(async () => undefined),
+          fill: vi.fn(async () => undefined),
+          type: vi.fn(async () => undefined),
+          inputValue: vi.fn(async () => "50"),
+          async innerText() {
+            if (selector === ".odds-button") return "Rennes 1.55";
+            if (selector.includes("betslip")) return "Rennes 1.55";
+            return "";
+          },
+        };
+      },
+      screenshot: vi.fn(async () => undefined),
+      waitForSelector: vi.fn(async () => undefined),
+      evaluate: vi.fn(async () => undefined),
+      mouse: {
+        move: vi.fn(async () => undefined),
+        down: vi.fn(async () => undefined),
+        up: vi.fn(async () => undefined),
+      },
+      keyboard: {
+        press: vi.fn(async () => undefined),
+        type: vi.fn(async () => undefined),
+      },
+      frames: () => [page],
+      mainFrame: () => page,
+      addLocatorHandler: vi.fn(async () => undefined),
+      waitForTimeout: vi.fn(async () => undefined),
+    };
+    const launchPersistentContext = vi.fn(async () => ({
+      pages: () => [page],
+      newPage: vi.fn(async () => page),
+      close: closeContext,
+      addInitScript: vi.fn(async () => undefined),
+    }));
+
+    const svc = bettingBrowserAutomationService(createFakeDb(), {
+      resolveSecret: vi.fn(async () => {
+        throw new Error("resolveSecret should not be called in skipLogin mode");
+      }),
+      playwright: {
+        chromium: { launchPersistentContext },
+        firefox: { launchPersistentContext: vi.fn() },
+      } as any,
+      sleep: async () => undefined,
+      random: () => 0.25,
+    });
+
+    const result = await svc.execute(buildRequest({
+      currentBalance: 1_000,
+      loginUsername: {},
+      loginPassword: {},
+      bookmakerConfig: {
+        bookmaker: "Casa Pariurilor",
+        baseUrl: "https://www.casapariurilor.ro/pariuri-online/fotbal",
+        loginUrl: "https://www.casapariurilor.ro",
+        username: { selectors: [] },
+        password: { selectors: [] },
+        loginSubmit: { selectors: [] },
+        loginSuccess: { selectors: ["li.user-is-logged-in"] },
+        selectionButton: { selectors: [".odds-button"] },
+        stakeInput: { selectors: ["input[name=stake]"] },
+        reviewButton: { selectors: ["text=Review"] },
+        reviewSummary: { selectors: ["[class*='betslip']"], optional: true },
+      },
+      bet: {
+        ...buildRequest().bet,
+        matchLabel: "Paris FC - Rennes",
+        selection: "2",
+        selectionHint: "Rennes",
+        eventUrl: "https://www.casapariurilor.ro/pariuri-online/fotbal/franta-3/franta-cupa/paris-fc-rennes",
+      },
+      execution: {
+        skipLogin: true,
+        browserName: "chromium",
+        actionDelayMinMs: 0,
+        actionDelayMaxMs: 0,
+        minClickIntervalMs: 0,
+        retryDelayMinMs: 0,
+        retryDelayMaxMs: 0,
+        pageTimeoutMs: 1_000,
+        sessionTimeoutMs: 60_000,
+      },
+    }));
+
+    expect(result.status).toBe("awaiting_confirmation");
+    expect(goto).toHaveBeenNthCalledWith(
+      1,
+      "https://www.casapariurilor.ro/pariuri-online/fotbal",
+      expect.objectContaining({ waitUntil: "domcontentloaded", timeout: 1_000 }),
+    );
+    expect(goto.mock.calls).toContainEqual([
+      "https://www.casapariurilor.ro/pariuri-online/fotbal/franta-3/franta-cupa/paris-fc-rennes",
+      expect.objectContaining({ waitUntil: "domcontentloaded", timeout: 1_000 }),
+    ]);
+    expect(goto).not.toHaveBeenCalledWith(
+      "https://www.casapariurilor.ro",
+      expect.anything(),
     );
     expect(closeContext).toHaveBeenCalled();
   }, 15_000);
