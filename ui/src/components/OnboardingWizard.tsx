@@ -626,10 +626,10 @@ export function OnboardingWizard() {
               <div className="flex items-center gap-0 mb-8 border-b border-border">
                 {(
                   [
-                    { step: 1 as Step, label: t("tabs.company"), icon: Building2 },
-                    { step: 2 as Step, label: t("tabs.agent"), icon: Bot },
-                    { step: 3 as Step, label: t("tabs.task"), icon: ListTodo },
-                    { step: 4 as Step, label: t("tabs.launch"), icon: Rocket }
+                    { step: 1 as Step, label: t("tabs.company", "Company"), icon: Building2 },
+                    { step: 2 as Step, label: t("tabs.agent", "Agent"), icon: Bot },
+                    { step: 3 as Step, label: t("tabs.task", "Task"), icon: ListTodo },
+                    { step: 4 as Step, label: t("tabs.launch", "Launch"), icon: Rocket }
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -657,9 +657,9 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">{t("step1.title")}</h3>
+                      <h3 className="font-medium">{t("step1.title", "Name your company")}</h3>
                       <p className="text-xs text-muted-foreground">
-                        {t("step1.subtitle")}
+                        {t("step1.subtitle", "This is the organization your agents will work for.")}
                       </p>
                     </div>
                   </div>
@@ -672,11 +672,11 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      {t("step1.company_name")}
+                      {t("step1.company_name", "Company name")}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder={t("step1.company_name_placeholder")}
+                      placeholder={t("step1.company_name_placeholder", "Acme Corp")}
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       autoFocus
@@ -691,11 +691,11 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      {t("step1.mission")}
+                      {t("step1.mission", "Mission / goal (optional)")}
                     </label>
                     <textarea
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                      placeholder={t("step1.mission_placeholder")}
+                      placeholder={t("step1.mission_placeholder", "What is this company trying to achieve?")}
                       value={companyGoal}
                       onChange={(e) => setCompanyGoal(e.target.value)}
                     />
@@ -710,19 +710,19 @@ export function OnboardingWizard() {
                       <Bot className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">{t("step2.title")}</h3>
+                      <h3 className="font-medium">{t("step2.title", "Create your first agent")}</h3>
                       <p className="text-xs text-muted-foreground">
-                        {t("step2.subtitle")}
+                        {t("step2.subtitle", "Choose how this agent will run tasks.")}
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      {t("step2.agent_name")}
+                      {t("step2.agent_name", "Agent name")}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder={t("step2.agent_name_placeholder")}
+                      placeholder={t("step2.agent_name_placeholder", "CEO")}
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -732,7 +732,7 @@ export function OnboardingWizard() {
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
-                      {t("step2.adapter_type")}
+                      {t("step2.adapter_type", "Adapter type")}
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
@@ -762,7 +762,7 @@ export function OnboardingWizard() {
                         >
                           {opt.recommended && (
                             <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              {t("step2.recommended")}
+                              {t("step2.recommended", "Recommended")}
                             </span>
                           )}
                           <opt.icon className="h-4 w-4" />
@@ -784,7 +784,7 @@ export function OnboardingWizard() {
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      {t("step2.more_adapters")}
+                      {t("step2.more_adapters", "More Agent Adapter Types")}
                     </button>
 
                     {showMoreAdapters && (
@@ -824,7 +824,7 @@ export function OnboardingWizard() {
                             <span className="font-medium">{opt.label}</span>
                             <span className="text-muted-foreground text-[10px]">
                               {opt.comingSoon
-                                ? opt.disabledLabel ?? t("step2.coming_soon")
+                                ? opt.disabledLabel ?? t("step2.coming_soon", "Coming soon")
                                 : opt.description}
                             </span>
                           </button>
@@ -838,7 +838,7 @@ export function OnboardingWizard() {
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          {t("step2.model")}
+                          {t("step2.model", "Model")}
                         </label>
                         <Popover
                           open={modelOpen}
@@ -858,8 +858,8 @@ export function OnboardingWizard() {
                                   ? selectedModel.label
                                   : model ||
                                     (adapterType === "opencode_local"
-                                      ? t("step2.model_required")
-                                      : t("step2.model_default"))}
+                                      ? t("step2.model_required", "Select model (required)")
+                                      : t("step2.model_default", "Default"))}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
                             </button>
@@ -870,7 +870,7 @@ export function OnboardingWizard() {
                           >
                             <input
                               className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder={t("step2.model_search")}
+                              placeholder={t("step2.model_search", "Search models...")}
                               value={modelSearch}
                               onChange={(e) => setModelSearch(e.target.value)}
                               autoFocus
@@ -886,7 +886,7 @@ export function OnboardingWizard() {
                                   setModelOpen(false);
                                 }}
                               >
-                                {t("step2.model_default")}
+                                {t("step2.model_default", "Default")}
                               </button>
                             )}
                             <div className="max-h-[240px] overflow-y-auto">
@@ -927,7 +927,7 @@ export function OnboardingWizard() {
                             </div>
                             {filteredModels.length === 0 && (
                               <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                {t("step2.no_models")}
+                                {t("step2.no_models", "No models discovered.")}
                               </p>
                             )}
                           </PopoverContent>
@@ -941,10 +941,10 @@ export function OnboardingWizard() {
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <p className="text-xs font-medium">
-                            {t("step2.env_check_title")}
+                            {t("step2.env_check_title", "Adapter environment check")}
                           </p>
                           <p className="text-[11px] text-muted-foreground">
-                            {t("step2.env_check_desc")}
+                            {t("step2.env_check_desc", "Runs a live probe that asks the adapter CLI to respond with hello.")}
                           </p>
                         </div>
                         <Button
@@ -954,7 +954,7 @@ export function OnboardingWizard() {
                           disabled={adapterEnvLoading}
                           onClick={() => void runAdapterEnvironmentTest()}
                         >
-                          {adapterEnvLoading ? t("step2.testing") : t("step2.test_now")}
+                          {adapterEnvLoading ? t("step2.testing", "Testing...") : t("step2.test_now", "Test now")}
                         </Button>
                       </div>
 
@@ -968,7 +968,7 @@ export function OnboardingWizard() {
                       adapterEnvResult.status === "pass" ? (
                         <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
                           <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">{t("step2.passed")}</span>
+                          <span className="font-medium">{t("step2.passed", "Passed")}</span>
                         </div>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
@@ -977,7 +977,7 @@ export function OnboardingWizard() {
                       {shouldSuggestUnsetAnthropicApiKey && (
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
                           <p className="text-[11px] text-amber-900/90 leading-relaxed">
-                            {t("step2.anthropic_key_warning", { key: "ANTHROPIC_API_KEY" })}
+                            {t("step2.anthropic_key_warning", "Claude failed while {{key}} is set. You can clear it in this CEO adapter config and retry the probe.", { key: "ANTHROPIC_API_KEY" })}
                           </p>
                           <Button
                             size="sm"
@@ -989,15 +989,15 @@ export function OnboardingWizard() {
                             onClick={() => void handleUnsetAnthropicApiKey()}
                           >
                             {unsetAnthropicLoading
-                              ? t("step2.retrying")
-                              : t("step2.unset_anthropic")}
+                              ? t("step2.retrying", "Retrying...")
+                              : t("step2.unset_anthropic", "Unset ANTHROPIC_API_KEY")}
                           </Button>
                         </div>
                       )}
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
                         <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
-                          <p className="font-medium">{t("step2.manual_debug")}</p>
+                          <p className="font-medium">{t("step2.manual_debug", "Manual debug")}</p>
                           <p className="text-muted-foreground font-mono break-all">
                             {adapterType === "cursor"
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
@@ -1010,8 +1010,8 @@ export function OnboardingWizard() {
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
-                            {t("step2.prompt_label")}{" "}
-                            <span className="font-mono">{t("step2.prompt_value")}</span>
+                            {t("step2.prompt_label", "Prompt:")}{" "}
+                            <span className="font-mono">{t("step2.prompt_value", "Respond with hello.")}</span>
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
@@ -1040,9 +1040,9 @@ export function OnboardingWizard() {
                             </p>
                           ) : (
                             <p className="text-muted-foreground">
-                              {t("step2.login_required_prefix")}{" "}
+                              {t("step2.login_required_prefix", "If login is required, run")}{" "}
                               <span className="font-mono">claude login</span>{" "}
-                              {t("step2.login_required_suffix")}
+                              {t("step2.login_required_suffix", "and retry.")}
                             </p>
                           )}
                         </div>
@@ -1055,8 +1055,8 @@ export function OnboardingWizard() {
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
-                          ? t("step2.gateway_url")
-                          : t("step2.webhook_url")}
+                          ? t("step2.gateway_url", "Gateway URL")
+                          : t("step2.webhook_url", "Webhook URL")}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1080,19 +1080,19 @@ export function OnboardingWizard() {
                       <ListTodo className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">{t("step3.title")}</h3>
+                      <h3 className="font-medium">{t("step3.title", "Give it something to do")}</h3>
                       <p className="text-xs text-muted-foreground">
-                        {t("step3.subtitle")}
+                        {t("step3.subtitle", "Give your agent a small task to start with — a bug fix, a research question, writing a script.")}
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      {t("step3.task_title")}
+                      {t("step3.task_title", "Task title")}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder={t("step3.task_title_placeholder")}
+                      placeholder={t("step3.task_title_placeholder", "e.g. Research competitor pricing")}
                       value={taskTitle}
                       onChange={(e) => setTaskTitle(e.target.value)}
                       autoFocus
@@ -1100,12 +1100,12 @@ export function OnboardingWizard() {
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      {t("step3.description")}
+                      {t("step3.description", "Description (optional)")}
                     </label>
                     <textarea
                       ref={textareaRef}
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
-                      placeholder={t("step3.description_placeholder")}
+                      placeholder={t("step3.description_placeholder", "Add more detail about what the agent should do...")}
                       value={taskDescription}
                       onChange={(e) => setTaskDescription(e.target.value)}
                     />
@@ -1120,9 +1120,9 @@ export function OnboardingWizard() {
                       <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">{t("step4.title")}</h3>
+                      <h3 className="font-medium">{t("step4.title", "Ready to launch")}</h3>
                       <p className="text-xs text-muted-foreground">
-                        {t("step4.subtitle")}
+                        {t("step4.subtitle", "Everything is set up. Launching now will create the starter task, wake the agent, and open the issue.")}
                       </p>
                     </div>
                   </div>
@@ -1133,7 +1133,7 @@ export function OnboardingWizard() {
                         <p className="text-sm font-medium truncate">
                           {companyName}
                         </p>
-                        <p className="text-xs text-muted-foreground">{t("step4.company")}</p>
+                        <p className="text-xs text-muted-foreground">{t("step4.company", "Company")}</p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
@@ -1155,7 +1155,7 @@ export function OnboardingWizard() {
                         <p className="text-sm font-medium truncate">
                           {taskTitle}
                         </p>
-                        <p className="text-xs text-muted-foreground">{t("step4.task")}</p>
+                        <p className="text-xs text-muted-foreground">{t("step4.task", "Task")}</p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
@@ -1181,7 +1181,7 @@ export function OnboardingWizard() {
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      {t("actions.back")}
+                      {t("actions.back", "Back")}
                     </Button>
                   )}
                 </div>
@@ -1197,7 +1197,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? t("actions.creating") : t("actions.next")}
+                      {loading ? t("actions.creating", "Creating...") : t("actions.next", "Next")}
                     </Button>
                   )}
                   {step === 2 && (
@@ -1213,7 +1213,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? t("actions.creating") : t("actions.next")}
+                      {loading ? t("actions.creating", "Creating...") : t("actions.next", "Next")}
                     </Button>
                   )}
                   {step === 3 && (
@@ -1227,7 +1227,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? t("actions.creating") : t("actions.next")}
+                      {loading ? t("actions.creating", "Creating...") : t("actions.next", "Next")}
                     </Button>
                   )}
                   {step === 4 && (
@@ -1237,7 +1237,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? t("actions.creating") : t("actions.create_and_open")}
+                      {loading ? t("actions.creating", "Creating...") : t("actions.create_and_open", "Create & Open Issue")}
                     </Button>
                   )}
                 </div>
