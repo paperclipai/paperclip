@@ -57,3 +57,11 @@ export const updateCompanyBrandingSchema = z
   );
 
 export type UpdateCompanyBranding = z.infer<typeof updateCompanyBrandingSchema>;
+
+export const updateCompanySharedInstructionsSchema = z
+  .object({
+    sharedInstructions: z.string().nullable(),
+  })
+  .strict();
+
+export type UpdateCompanySharedInstructions = z.infer<typeof updateCompanySharedInstructionsSchema>;

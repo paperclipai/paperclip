@@ -1,8 +1,9 @@
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
   companyLogos,
+  companySharedInstructionsHistory,
   assets,
   agents,
   agentApiKeys,
@@ -52,6 +53,7 @@ export function companyService(db: Db) {
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
     feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
     brandColor: companies.brandColor,
+    sharedInstructions: companies.sharedInstructions,
     logoAssetId: companyLogos.assetId,
     createdAt: companies.createdAt,
     updatedAt: companies.updatedAt,
@@ -62,6 +64,15 @@ export function companyService(db: Db) {
       ...company,
       logoUrl: company.logoAssetId ? `/api/assets/${company.logoAssetId}/content` : null,
     };
+  }
+
+  function summarizeSharedInstructionsDiff(previous: string | null, next: string | null) {
+    const prevLen = previous?.length ?? 0;
+    const nextLen = next?.length ?? 0;
+    if (previous === null && next !== null) return `set (${nextLen} chars)`;
+    if (previous !== null && next === null) return "cleared";
+    if (previous === next) return "unchanged";
+    return `${prevLen} chars -> ${nextLen} chars`;
   }
 
   function currentUtcMonthWindow(now = new Date()) {
@@ -285,6 +296,9 @@ export function companyService(db: Db) {
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
+        await tx
+          .delete(companySharedInstructionsHistory)
+          .where(eq(companySharedInstructionsHistory.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
@@ -297,6 +311,87 @@ export function companyService(db: Db) {
           .returning();
         return rows[0] ?? null;
       }),
+
+    updateSharedInstructions: (
+      id: string,
+      input: {
+        newValue: string | null;
+        actor: {
+          actorKind: "user" | "system";
+          actorUserId?: string | null;
+          actorIpOrSource?: string | null;
+          requestId?: string | null;
+        };
+      },
+    ) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ id: companies.id, sharedInstructions: companies.sharedInstructions })
+          .from(companies)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const previousValue = existing.sharedInstructions;
+        const nextValue = input.newValue;
+
+        const updated = await tx
+          .update(companies)
+          .set({ sharedInstructions: nextValue, updatedAt: new Date() })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        await tx.insert(companySharedInstructionsHistory).values({
+          companyId: id,
+          actorKind: input.actor.actorKind,
+          actorUserId: input.actor.actorUserId ?? null,
+          actorIpOrSource: input.actor.actorIpOrSource ?? null,
+          previousValue,
+          newValue: nextValue,
+          diffSummary: summarizeSharedInstructionsDiff(previousValue, nextValue),
+          requestId: input.actor.requestId ?? null,
+        });
+
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return enrichCompany(hydrated);
+      }),
+
+    listSharedInstructionsHistory: async (
+      id: string,
+      options: { limit?: number; cursor?: string | null } = {},
+    ) => {
+      const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
+      const conditions = [eq(companySharedInstructionsHistory.companyId, id)];
+      if (options.cursor) {
+        const cursorRow = await db
+          .select({
+            id: companySharedInstructionsHistory.id,
+            createdAt: companySharedInstructionsHistory.createdAt,
+          })
+          .from(companySharedInstructionsHistory)
+          .where(eq(companySharedInstructionsHistory.id, options.cursor))
+          .then((rows) => rows[0] ?? null);
+        if (cursorRow) {
+          conditions.push(lte(companySharedInstructionsHistory.createdAt, cursorRow.createdAt));
+        }
+      }
+      const rows = await db
+        .select()
+        .from(companySharedInstructionsHistory)
+        .where(and(...conditions))
+        .orderBy(desc(companySharedInstructionsHistory.createdAt), desc(companySharedInstructionsHistory.id))
+        .limit(limit + 1);
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? rows[limit].id : null;
+      return { items, nextCursor };
+    },
 
     stats: () =>
       Promise.all([

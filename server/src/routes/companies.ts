@@ -11,6 +11,7 @@ import {
   feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
+  updateCompanySharedInstructionsSchema,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -395,6 +396,75 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityId: companyId,
     });
     res.json(company);
+  });
+
+  // GLA-873: company-level shared_instructions. Board-only writes (S1 gate);
+  // every successful PATCH appends an audit row to
+  // company_shared_instructions_history (S2). Reads are scoped to actors with
+  // company access — board users + agents in that company.
+  router.patch(
+    "/:companyId/shared_instructions",
+    validate(updateCompanySharedInstructionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      // S1: agent writes forbidden — see GLA-873
+      if (req.actor.type === "agent") {
+        throw forbidden("forbidden_actor_kind");
+      }
+      assertBoard(req);
+
+      const body = req.body as { sharedInstructions: string | null };
+      const company = await svc.updateSharedInstructions(companyId, {
+        newValue: body.sharedInstructions,
+        actor: {
+          actorKind: "user",
+          actorUserId: req.actor.userId ?? null,
+          actorIpOrSource: req.ip ?? null,
+          requestId:
+            typeof req.headers["x-request-id"] === "string"
+              ? (req.headers["x-request-id"] as string)
+              : null,
+        },
+      });
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.shared_instructions_updated",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          length: body.sharedInstructions?.length ?? 0,
+          cleared: body.sharedInstructions === null,
+        },
+      });
+      res.json(company);
+    },
+  );
+
+  router.get("/:companyId/shared_instructions/history", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
+    const cursorRaw = typeof req.query.cursor === "string" && req.query.cursor.trim().length > 0
+      ? req.query.cursor.trim()
+      : null;
+    const limit = Number.isFinite(limitRaw) && limitRaw && limitRaw > 0 ? Math.floor(limitRaw) : undefined;
+    const result = await svc.listSharedInstructionsHistory(companyId, { limit, cursor: cursorRaw });
+    res.json(result);
   });
 
   router.delete("/:companyId", async (req, res) => {

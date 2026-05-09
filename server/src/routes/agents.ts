@@ -2549,6 +2549,14 @@ export function agentRoutes(
       return;
     }
 
+    // S1: agent writes forbidden — see GLA-873
+    if (
+      hasOwn(req.body as object, "sharedInstructionsOptOut")
+      && req.actor.type === "agent"
+    ) {
+      throw forbidden("forbidden_actor_kind");
+    }
+
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;

@@ -27,6 +27,7 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  companies,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -80,6 +81,7 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
+import { resolveSharedInstructions } from "./shared-instructions.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -6708,6 +6710,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
 
+    // GLA-873: temp file path for company shared_instructions injection (cleaned in outer finally).
+    let sharedInstructionsTempFilePath: string | null = null;
+
     try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
@@ -7566,6 +7571,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
+      // GLA-873: prepend company shared_instructions to the agent's resolved
+      // instructionsFilePath via a per-run temp file. Cleanup happens in the
+      // outer finally block via sharedInstructionsTempFilePath.
+      try {
+        const companyRow = await db
+          .select({
+            id: companies.id,
+            sharedInstructions: companies.sharedInstructions,
+          })
+          .from(companies)
+          .where(eq(companies.id, agent.companyId))
+          .then((rows) => rows[0] ?? null);
+        const origPathRaw = (runtimeConfig as Record<string, unknown>).instructionsFilePath;
+        const origPath = typeof origPathRaw === "string" && origPathRaw.trim().length > 0
+          ? origPathRaw
+          : null;
+        const outcome = await resolveSharedInstructions({
+          agentId: agent.id,
+          runId: run.id,
+          sharedInstructions: companyRow?.sharedInstructions ?? null,
+          optedOut: Boolean(agent.sharedInstructionsOptOut),
+          originalInstructionsFilePath: origPath,
+        });
+        if (outcome.kind === "injected") {
+          sharedInstructionsTempFilePath = outcome.tempFilePath;
+          runtimeConfig = Object.assign({}, runtimeConfig, {
+            instructionsFilePath: outcome.tempFilePath,
+          });
+          logger.info(
+            {
+              event: "shared_instructions_injected",
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+            },
+            "shared instructions prepended to instructions file for run",
+          );
+        } else if (outcome.reason === "opt_out") {
+          logger.info(
+            {
+              event: "shared_instructions_skipped",
+              reason: "opt_out",
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+            },
+            "shared instructions skipped — agent opted out",
+          );
+        }
+      } catch (sharedInstructionsErr) {
+        logger.warn(
+          {
+            err: sharedInstructionsErr,
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+          },
+          "failed to inject shared_instructions; continuing with original instructions",
+        );
+      }
+
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
@@ -8008,6 +8074,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             failureReason: latestRun?.error ?? undefined,
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          // GLA-873: clean up the per-run shared_instructions temp file.
+          if (sharedInstructionsTempFilePath) {
+            await fs.unlink(sharedInstructionsTempFilePath).catch(() => undefined);
+            sharedInstructionsTempFilePath = null;
+          }
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
