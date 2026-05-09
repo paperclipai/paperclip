@@ -2,6 +2,7 @@
 name: Daily Standup
 assignee: program-manager
 recurring: true
+project: linkedin-mvp
 ---
 
 Run the daily standup for AJ AI Services Pvt Ltd.

@@ -1,7 +1,8 @@
 ---
 name: Weekly Performance Review
-assignee: analytics-engine
+assignee: social-media-manager
 recurring: true
+project: analytics-dashboard
 ---
 
 Run the weekly content performance review and deliver the analytics digest to the content team.
