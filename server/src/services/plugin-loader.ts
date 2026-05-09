@@ -170,6 +170,19 @@ export interface PluginLoaderOptions {
    * Registry support is not yet implemented; this field is reserved.
    */
   registryUrl?: string;
+
+  /**
+   * Absolute path to an `.npmrc` file used when the loader runs
+   * `npm install` for a plugin. When set, it is exported as
+   * `NPM_CONFIG_USERCONFIG` for the install subprocess so npm honors any
+   * scoped registries / `_authToken` entries the operator has configured
+   * (e.g. private GitHub Packages plugins under `@scope:registry=...`).
+   *
+   * Operators wire this via the `PAPERCLIP_PLUGIN_NPMRC_PATH` env var;
+   * see `app.ts`. The file is not read or parsed by the host — it is
+   * passed through to npm as-is.
+   */
+  npmrcPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -744,7 +757,13 @@ export function pluginLoader(
     migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
+    npmrcPath,
   } = options;
+
+  const npmInstallEnv: NodeJS.ProcessEnv | undefined =
+    npmrcPath && existsSync(npmrcPath)
+      ? { ...process.env, NPM_CONFIG_USERCONFIG: npmrcPath }
+      : undefined;
 
   const registry = pluginRegistryService(db);
   const manifestValidator = pluginManifestValidator();
@@ -842,7 +861,10 @@ export function pluginLoader(
         await execFileAsync(
           "npm",
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
-          { timeout: 120_000 }, // 2 minute timeout for npm install
+          {
+            timeout: 120_000, // 2 minute timeout for npm install
+            ...(npmInstallEnv ? { env: npmInstallEnv } : {}),
+          },
         );
       } catch (err) {
         throw new Error(`npm install failed for ${spec}: ${String(err)}`);

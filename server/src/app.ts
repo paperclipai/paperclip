@@ -242,6 +242,7 @@ export async function createApp(
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
       migrationDb: opts.pluginMigrationDb,
+      npmrcPath: process.env["PAPERCLIP_PLUGIN_NPMRC_PATH"],
     },
     {
       workerManager,
