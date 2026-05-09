@@ -32,7 +32,7 @@ import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineSe
 import { killAllRunningProcesses, sweepOrphanedClaudeProcesses } from "./adapters/utils.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
-import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { getOperatorClaimWarningUrl, initializeOperatorClaimChallenge } from "./operator-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 
 type BetterAuthSessionUser = {
@@ -184,23 +184,23 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
-  const LOCAL_BOARD_USER_ID = "local-board";
-  const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
-  const LOCAL_BOARD_USER_NAME = "Board";
+  const LOCAL_OPERATOR_USER_ID = "local-operator";
+  const LOCAL_OPERATOR_USER_EMAIL = "local@paperclip.local";
+  const LOCAL_OPERATOR_USER_NAME = "Operator";
   
-  async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
+  async function ensureLocalTrustedOperatorPrincipal(db: any): Promise<void> {
     const now = new Date();
     const existingUser = await db
       .select({ id: authUsers.id })
       .from(authUsers)
-      .where(eq(authUsers.id, LOCAL_BOARD_USER_ID))
+      .where(eq(authUsers.id, LOCAL_OPERATOR_USER_ID))
       .then((rows: Array<{ id: string }>) => rows[0] ?? null);
   
     if (!existingUser) {
       await db.insert(authUsers).values({
-        id: LOCAL_BOARD_USER_ID,
-        name: LOCAL_BOARD_USER_NAME,
-        email: LOCAL_BOARD_USER_EMAIL,
+        id: LOCAL_OPERATOR_USER_ID,
+        name: LOCAL_OPERATOR_USER_NAME,
+        email: LOCAL_OPERATOR_USER_EMAIL,
         emailVerified: true,
         image: null,
         createdAt: now,
@@ -211,11 +211,11 @@ export async function startServer(): Promise<StartedServer> {
     const role = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, LOCAL_BOARD_USER_ID), eq(instanceUserRoles.role, "instance_admin")))
+      .where(and(eq(instanceUserRoles.userId, LOCAL_OPERATOR_USER_ID), eq(instanceUserRoles.role, "instance_admin")))
       .then((rows: Array<{ id: string }>) => rows[0] ?? null);
     if (!role) {
       await db.insert(instanceUserRoles).values({
-        userId: LOCAL_BOARD_USER_ID,
+        userId: LOCAL_OPERATOR_USER_ID,
         role: "instance_admin",
       });
     }
@@ -229,7 +229,7 @@ export async function startServer(): Promise<StartedServer> {
           and(
             eq(companyMemberships.companyId, company.id),
             eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, LOCAL_BOARD_USER_ID),
+            eq(companyMemberships.principalId, LOCAL_OPERATOR_USER_ID),
           ),
         )
         .then((rows: Array<{ id: string }>) => rows[0] ?? null);
@@ -237,7 +237,7 @@ export async function startServer(): Promise<StartedServer> {
       await db.insert(companyMemberships).values({
         companyId: company.id,
         principalType: "user",
-        principalId: LOCAL_BOARD_USER_ID,
+        principalId: LOCAL_OPERATOR_USER_ID,
         status: "active",
         membershipRole: "owner",
       });
@@ -458,7 +458,7 @@ export async function startServer(): Promise<StartedServer> {
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
   if (config.deploymentMode === "local_trusted") {
-    await ensureLocalTrustedBoardPrincipal(db as any);
+    await ensureLocalTrustedOperatorPrincipal(db as any);
   }
   if (config.deploymentMode === "authenticated") {
     const {
@@ -490,7 +490,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
-    await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+    await initializeOperatorClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
   
@@ -706,17 +706,17 @@ export async function startServer(): Promise<StartedServer> {
         databaseBackupDir: config.databaseBackupDir,
       });
 
-      const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
-      if (boardClaimUrl) {
+      const operatorClaimUrl = getOperatorClaimWarningUrl(config.host, listenPort);
+      if (operatorClaimUrl) {
         const red = "\x1b[41m\x1b[30m";
         const yellow = "\x1b[33m";
         const reset = "\x1b[0m";
         console.log(
           [
-            `${red}  BOARD CLAIM REQUIRED  ${reset}`,
-            `${yellow}This instance was previously local_trusted and still has local-board as the only admin.${reset}`,
+            `${red}  OPERATOR CLAIM REQUIRED  ${reset}`,
+            `${yellow}This instance was previously local_trusted and still has local-operator as the only admin.${reset}`,
             `${yellow}Sign in with a real user and open this one-time URL to claim ownership:${reset}`,
-            `${yellow}${boardClaimUrl}${reset}`,
+            `${yellow}${operatorClaimUrl}${reset}`,
             `${yellow}If you are connecting over Tailscale, replace the host in this URL with your Tailscale IP/MagicDNS name.${reset}`,
           ].join("\n"),
         );

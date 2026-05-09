@@ -99,7 +99,7 @@ export const AGENT_ICON_NAMES = [
   "target",
   "wand",
   "atom",
-  "circuit-board",
+  "circuit-operator",
   "radar",
   "swords",
   "telescope",

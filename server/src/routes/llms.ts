@@ -15,9 +15,9 @@ export function llmRoutes(db: Db) {
   const agentsSvc = agentService(db);
 
   async function assertCanRead(req: Request) {
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "operator") return;
     if (req.actor.type !== "agent" || !req.actor.agentId) {
-      throw forbidden("Board or permitted agent authentication required");
+      throw forbidden("Operator or permitted agent authentication required");
     }
     const actorAgent = await agentsSvc.getById(req.actor.agentId);
     if (!actorAgent || !hasCreatePermission(actorAgent)) {

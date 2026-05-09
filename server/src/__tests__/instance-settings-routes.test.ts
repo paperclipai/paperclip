@@ -56,10 +56,10 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
   });
 
-  it("allows local board users to read and update experimental settings", async () => {
+  it("allows local operator users to read and update experimental settings", async () => {
     const app = createApp({
-      type: "board",
-      userId: "local-board",
+      type: "operator",
+      userId: "local-operator",
       source: "local_implicit",
       isInstanceAdmin: true,
     });
@@ -82,10 +82,10 @@ describe("instance settings routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("allows local board users to update guarded dev-server auto-restart", async () => {
+  it("allows local operator users to update guarded dev-server auto-restart", async () => {
     const app = createApp({
-      type: "board",
-      userId: "local-board",
+      type: "operator",
+      userId: "local-operator",
       source: "local_implicit",
       isInstanceAdmin: true,
     });
@@ -100,10 +100,10 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("allows local board users to read and update general settings", async () => {
+  it("allows local operator users to read and update general settings", async () => {
     const app = createApp({
-      type: "board",
-      userId: "local-board",
+      type: "operator",
+      userId: "local-operator",
       source: "local_implicit",
       isInstanceAdmin: true,
     });
@@ -123,9 +123,9 @@ describe("instance settings routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects non-admin board users", async () => {
+  it("rejects non-admin operator users", async () => {
     const app = createApp({
-      type: "board",
+      type: "operator",
       userId: "user-1",
       source: "session",
       isInstanceAdmin: false,

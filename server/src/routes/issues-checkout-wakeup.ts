@@ -1,5 +1,5 @@
 type CheckoutWakeInput = {
-  actorType: "board" | "agent" | "none";
+  actorType: "operator" | "agent" | "none";
   actorAgentId: string | null;
   checkoutAgentId: string;
   checkoutRunId: string | null;

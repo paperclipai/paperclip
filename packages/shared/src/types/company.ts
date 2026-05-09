@@ -11,7 +11,7 @@ export interface Company {
   issueCounter: number;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
-  requireBoardApprovalForNewAgents: boolean;
+  requireOperatorApprovalForNewAgents: boolean;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

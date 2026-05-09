@@ -323,6 +323,13 @@
       "when": 1774530504348,
       "tag": "0045_workable_shockwave",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1778702400000,
+      "tag": "0046_board_to_operator_rename",
+      "breakpoints": true
     }
   ]
 }

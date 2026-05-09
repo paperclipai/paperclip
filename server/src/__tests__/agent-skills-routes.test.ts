@@ -78,14 +78,14 @@ vi.mock("../adapters/index.js", () => ({
   listAdapterModels: vi.fn(),
 }));
 
-function createDb(requireBoardApprovalForNewAgents = false) {
+function createDb(requireOperatorApprovalForNewAgents = false) {
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(async () => [
           {
             id: "company-1",
-            requireBoardApprovalForNewAgents,
+            requireOperatorApprovalForNewAgents,
           },
         ]),
       })),
@@ -98,8 +98,8 @@ function createApp(db: Record<string, unknown> = createDb()) {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
-      type: "board",
-      userId: "local-board",
+      type: "operator",
+      userId: "local-operator",
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,

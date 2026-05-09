@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { shouldWakeAssigneeOnCheckout } from "../routes/issues-checkout-wakeup.js";
 
 describe("shouldWakeAssigneeOnCheckout", () => {
-  it("keeps wakeup behavior for board actors", () => {
+  it("keeps wakeup behavior for operator actors", () => {
     expect(
       shouldWakeAssigneeOnCheckout({
-        actorType: "board",
+        actorType: "operator",
         actorAgentId: null,
         checkoutAgentId: "agent-1",
         checkoutRunId: null,

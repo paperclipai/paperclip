@@ -12,14 +12,14 @@ export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: z.string().optional().nullable(),
-  decidedByUserId: z.string().optional().default("board"),
+  decidedByUserId: z.string().optional().default("operator"),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: z.string().optional().nullable(),
-  decidedByUserId: z.string().optional().default("board"),
+  decidedByUserId: z.string().optional().default("operator"),
 });
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;

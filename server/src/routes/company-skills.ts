@@ -25,7 +25,7 @@ export function companySkillRoutes(db: Db) {
   async function assertCanMutateCompanySkills(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
 
-    if (req.actor.type === "board") {
+    if (req.actor.type === "operator") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
       if (!allowed) {

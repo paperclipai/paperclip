@@ -125,7 +125,7 @@ describe("company portability", () => {
       brandColor: "#5c5fff",
       logoAssetId: null,
       logoUrl: null,
-      requireBoardApprovalForNewAgents: true,
+      requireOperatorApprovalForNewAgents: true,
     });
     agentSvc.list.mockResolvedValue([
       {
@@ -434,7 +434,7 @@ describe("company portability", () => {
     expect(extension).toContain('default: ""');
     expect(extension).not.toContain("paperclipSkillSync");
     expect(extension).not.toContain("PATH:");
-    expect(extension).not.toContain("requireBoardApprovalForNewAgents: true");
+    expect(extension).not.toContain("requireOperatorApprovalForNewAgents: true");
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
@@ -566,7 +566,7 @@ describe("company portability", () => {
       brandColor: "#5c5fff",
       logoAssetId: "logo-1",
       logoUrl: "/api/assets/logo-1/content",
-      requireBoardApprovalForNewAgents: true,
+      requireOperatorApprovalForNewAgents: true,
     });
     assetSvc.getById.mockResolvedValue({
       id: "logo-1",
@@ -1964,7 +1964,7 @@ describe("company portability", () => {
       name: "Paperclip",
       description: "Existing company",
       brandColor: "#123456",
-      requireBoardApprovalForNewAgents: false,
+      requireOperatorApprovalForNewAgents: false,
     });
     agentSvc.create.mockResolvedValue({
       id: "agent-cmo",

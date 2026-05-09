@@ -7,7 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
-import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { operatorMutationGuard } from "./middleware/operator-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -107,7 +107,7 @@ export async function createApp(
     }),
   );
   app.get("/api/auth/get-session", (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
+    if (req.actor.type !== "operator" || !req.actor.userId) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
@@ -119,7 +119,7 @@ export async function createApp(
       user: {
         id: req.actor.userId,
         email: null,
-        name: req.actor.source === "local_implicit" ? "Local Board" : null,
+        name: req.actor.source === "local_implicit" ? "Local Operator" : null,
       },
     });
   });
@@ -130,7 +130,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
+  api.use(operatorMutationGuard());
   api.use(
     "/health",
     healthRoutes(db, {

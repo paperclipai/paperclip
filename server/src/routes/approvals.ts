@@ -16,7 +16,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertOperator, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -128,7 +128,7 @@ export function approvalRoutes(db: Db) {
   });
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
@@ -136,7 +136,7 @@ export function approvalRoutes(db: Db) {
     }
     const { approval, applied } = await svc.approve(
       id,
-      req.body.decidedByUserId ?? "board",
+      req.body.decidedByUserId ?? "operator",
       req.body.decisionNote,
     );
 
@@ -148,7 +148,7 @@ export function approvalRoutes(db: Db) {
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "approval.approved",
         entityType: "approval",
         entityId: approval.id,
@@ -172,7 +172,7 @@ export function approvalRoutes(db: Db) {
               issueIds: linkedIssueIds,
             },
             requestedByActorType: "user",
-            requestedByActorId: req.actor.userId ?? "board",
+            requestedByActorId: req.actor.userId ?? "operator",
             contextSnapshot: {
               source: "approval.approved",
               approvalId: approval.id,
@@ -187,7 +187,7 @@ export function approvalRoutes(db: Db) {
           await logActivity(db, {
             companyId: approval.companyId,
             actorType: "user",
-            actorId: req.actor.userId ?? "board",
+            actorId: req.actor.userId ?? "operator",
             action: "approval.requester_wakeup_queued",
             entityType: "approval",
             entityId: approval.id,
@@ -209,7 +209,7 @@ export function approvalRoutes(db: Db) {
           await logActivity(db, {
             companyId: approval.companyId,
             actorType: "user",
-            actorId: req.actor.userId ?? "board",
+            actorId: req.actor.userId ?? "operator",
             action: "approval.requester_wakeup_failed",
             entityType: "approval",
             entityId: approval.id,
@@ -227,7 +227,7 @@ export function approvalRoutes(db: Db) {
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
@@ -235,7 +235,7 @@ export function approvalRoutes(db: Db) {
     }
     const { approval, applied } = await svc.reject(
       id,
-      req.body.decidedByUserId ?? "board",
+      req.body.decidedByUserId ?? "operator",
       req.body.decisionNote,
     );
 
@@ -243,7 +243,7 @@ export function approvalRoutes(db: Db) {
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
@@ -258,7 +258,7 @@ export function approvalRoutes(db: Db) {
     "/approvals/:id/request-revision",
     validate(requestApprovalRevisionSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertOperator(req);
       const id = req.params.id as string;
       if (!(await requireApprovalAccess(req, id))) {
         res.status(404).json({ error: "Approval not found" });
@@ -266,14 +266,14 @@ export function approvalRoutes(db: Db) {
       }
       const approval = await svc.requestRevision(
         id,
-        req.body.decidedByUserId ?? "board",
+        req.body.decidedByUserId ?? "operator",
         req.body.decisionNote,
       );
 
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "approval.revision_requested",
         entityType: "approval",
         entityId: approval.id,
@@ -362,9 +362,9 @@ export function approvalRoutes(db: Db) {
     res.status(201).json(comment);
   });
 
-  // Board-only: hard delete an approval (for clearing stale inbox items)
+  // Operator-only: hard delete an approval (for clearing stale inbox items)
   router.delete("/approvals/:id", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const approval = await svc.getById(id);
     if (!approval) {

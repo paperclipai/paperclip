@@ -55,7 +55,7 @@ function createCompany() {
     issueCounter: 568,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
-    requireBoardApprovalForNewAgents: false,
+    requireOperatorApprovalForNewAgents: false,
     brandColor: "#123456",
     logoAssetId: "11111111-1111-4111-8111-111111111111",
     logoUrl: "/api/assets/11111111-1111-4111-8111-111111111111/content",
@@ -152,7 +152,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     );
   });
 
-  it("allows board callers to update branding fields", async () => {
+  it("allows operator callers to update branding fields", async () => {
     const company = createCompany();
     mockCompanyService.update.mockResolvedValue({
       ...company,
@@ -161,7 +161,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       logoUrl: null,
     });
     const app = createApp({
-      type: "board",
+      type: "operator",
       userId: "user-1",
       source: "local_implicit",
     });
@@ -177,7 +177,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
 
   it("rejects non-branding fields in the request body", async () => {
     const app = createApp({
-      type: "board",
+      type: "operator",
       userId: "user-1",
       source: "local_implicit",
     });

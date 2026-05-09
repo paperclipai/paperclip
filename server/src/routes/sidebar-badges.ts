@@ -17,7 +17,7 @@ export function sidebarBadgeRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     let canApproveJoins = false;
-    if (req.actor.type === "board") {
+    if (req.actor.type === "operator") {
       canApproveJoins =
         req.actor.source === "local_implicit" ||
         Boolean(req.actor.isInstanceAdmin) ||

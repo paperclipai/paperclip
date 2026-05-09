@@ -246,7 +246,7 @@ describe("budgetService", () => {
         "company-1",
         "incident-1",
         { action: "raise_budget_and_resume", amount: 140 },
-        "board-user",
+        "operator-user",
       ),
     ).rejects.toThrow("New budget must exceed current observed spend");
   });
@@ -298,7 +298,7 @@ describe("budgetService", () => {
       "company-1",
       "incident-1",
       { action: "raise_budget_and_resume", amount: 175 },
-      "board-user",
+      "operator-user",
     );
 
     expect(dbStub.updateSet).toHaveBeenCalledWith(

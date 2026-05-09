@@ -8,7 +8,7 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertOperator, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 
 export function secretRoutes(db: Db) {
@@ -22,14 +22,14 @@ export function secretRoutes(db: Db) {
   ) as SecretProvider;
 
   router.get("/companies/:companyId/secret-providers", (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json(svc.listProviders());
   });
 
   router.get("/companies/:companyId/secrets", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const secrets = await svc.list(companyId);
@@ -37,7 +37,7 @@ export function secretRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
@@ -50,13 +50,13 @@ export function secretRoutes(db: Db) {
         description: req.body.description,
         externalRef: req.body.externalRef,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      { userId: req.actor.userId ?? "operator", agentId: null },
     );
 
     await logActivity(db, {
       companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "secret.created",
       entityType: "secret",
       entityId: created.id,
@@ -67,7 +67,7 @@ export function secretRoutes(db: Db) {
   });
 
   router.post("/secrets/:id/rotate", validate(rotateSecretSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -82,13 +82,13 @@ export function secretRoutes(db: Db) {
         value: req.body.value,
         externalRef: req.body.externalRef,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      { userId: req.actor.userId ?? "operator", agentId: null },
     );
 
     await logActivity(db, {
       companyId: rotated.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "secret.rotated",
       entityType: "secret",
       entityId: rotated.id,
@@ -99,7 +99,7 @@ export function secretRoutes(db: Db) {
   });
 
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -122,7 +122,7 @@ export function secretRoutes(db: Db) {
     await logActivity(db, {
       companyId: updated.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "secret.updated",
       entityType: "secret",
       entityId: updated.id,
@@ -133,7 +133,7 @@ export function secretRoutes(db: Db) {
   });
 
   router.delete("/secrets/:id", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -151,7 +151,7 @@ export function secretRoutes(db: Db) {
     await logActivity(db, {
       companyId: removed.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "secret.deleted",
       entityType: "secret",
       entityId: removed.id,

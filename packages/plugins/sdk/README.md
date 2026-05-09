@@ -42,7 +42,7 @@ pnpm add @paperclipai/plugin-sdk
 The SDK is stable enough for local development and first-party examples, but the runtime deployment model is still early.
 
 - Plugin workers and plugin UI should both be treated as trusted code today.
-- Plugin UI bundles run as same-origin JavaScript inside the main Paperclip app. They can call ordinary Paperclip HTTP APIs with the board session, so manifest capabilities are not a frontend sandbox.
+- Plugin UI bundles run as same-origin JavaScript inside the main Paperclip app. They can call ordinary Paperclip HTTP APIs with the operator session, so manifest capabilities are not a frontend sandbox.
 - Local-path installs and the repo example plugins are development workflows. They assume the plugin source checkout exists on disk.
 - For deployed plugins, publish an npm package and install that package into the Paperclip instance at runtime.
 - The current host runtime expects a writable filesystem, `npm` available at runtime, and network access to the package registry used for plugin installation.

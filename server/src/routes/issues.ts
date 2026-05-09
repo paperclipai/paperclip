@@ -75,7 +75,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") return true;
+    if (req.actor.type === "operator") return true;
     if (!req.actor.agentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
@@ -98,7 +98,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   async function assertCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
+    if (req.actor.type === "operator") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
       if (!allowed) throw forbidden("Missing permission: tasks:assign");
@@ -233,36 +233,36 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
     const assigneeUserId =
-      assigneeUserFilterRaw === "me" && req.actor.type === "board"
+      assigneeUserFilterRaw === "me" && req.actor.type === "operator"
         ? req.actor.userId
         : assigneeUserFilterRaw;
     const touchedByUserId =
-      touchedByUserFilterRaw === "me" && req.actor.type === "board"
+      touchedByUserFilterRaw === "me" && req.actor.type === "operator"
         ? req.actor.userId
         : touchedByUserFilterRaw;
     const inboxArchivedByUserId =
-      inboxArchivedByUserFilterRaw === "me" && req.actor.type === "board"
+      inboxArchivedByUserFilterRaw === "me" && req.actor.type === "operator"
         ? req.actor.userId
         : inboxArchivedByUserFilterRaw;
     const unreadForUserId =
-      unreadForUserFilterRaw === "me" && req.actor.type === "board"
+      unreadForUserFilterRaw === "me" && req.actor.type === "operator"
         ? req.actor.userId
         : unreadForUserFilterRaw;
 
-    if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
-      res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
+    if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "operator")) {
+      res.status(403).json({ error: "assigneeUserId=me requires operator authentication" });
       return;
     }
-    if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "board")) {
-      res.status(403).json({ error: "touchedByUserId=me requires board authentication" });
+    if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "operator")) {
+      res.status(403).json({ error: "touchedByUserId=me requires operator authentication" });
       return;
     }
-    if (inboxArchivedByUserFilterRaw === "me" && (!inboxArchivedByUserId || req.actor.type !== "board")) {
-      res.status(403).json({ error: "inboxArchivedByUserId=me requires board authentication" });
+    if (inboxArchivedByUserFilterRaw === "me" && (!inboxArchivedByUserId || req.actor.type !== "operator")) {
+      res.status(403).json({ error: "inboxArchivedByUserId=me requires operator authentication" });
       return;
     }
-    if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
-      res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
+    if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "operator")) {
+      res.status(403).json({ error: "unreadForUserId=me requires operator authentication" });
       return;
     }
 
@@ -561,8 +561,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
+    if (req.actor.type !== "operator") {
+      res.status(403).json({ error: "Operator authentication required" });
       return;
     }
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -689,12 +689,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
+    if (req.actor.type !== "operator") {
+      res.status(403).json({ error: "Operator authentication required" });
       return;
     }
     if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
+      res.status(403).json({ error: "Operator user context required" });
       return;
     }
     const readState = await svc.markRead(issue.companyId, issue.id, req.actor.userId, new Date());
@@ -721,12 +721,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
+    if (req.actor.type !== "operator") {
+      res.status(403).json({ error: "Operator authentication required" });
       return;
     }
     if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
+      res.status(403).json({ error: "Operator user context required" });
       return;
     }
     const archiveState = await svc.archiveInbox(issue.companyId, issue.id, req.actor.userId, new Date());
@@ -753,12 +753,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
+    if (req.actor.type !== "operator") {
+      res.status(403).json({ error: "Operator authentication required" });
       return;
     }
     if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
+      res.status(403).json({ error: "Operator user context required" });
       return;
     }
     const removed = await svc.unarchiveInbox(issue.companyId, issue.id, req.actor.userId);
@@ -1364,8 +1364,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (interruptRequested) {
-      if (req.actor.type !== "board") {
-        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+      if (req.actor.type !== "operator") {
+        res.status(403).json({ error: "Only operator users can interrupt active runs from issue comments" });
         return;
       }
 

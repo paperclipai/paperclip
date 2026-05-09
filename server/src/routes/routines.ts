@@ -18,9 +18,9 @@ export function routineRoutes(db: Db) {
   const svc = routineService(db);
   const access = accessService(db);
 
-  async function assertBoardCanAssignTasks(req: Request, companyId: string) {
+  async function assertOperatorCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type !== "board") return;
+    if (req.actor.type !== "operator") return;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
     if (!allowed) {
@@ -30,7 +30,7 @@ export function routineRoutes(db: Db) {
 
   function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "operator") return;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (assigneeAgentId && assigneeAgentId !== req.actor.agentId) {
       throw forbidden("Agents can only manage routines assigned to themselves");
@@ -41,7 +41,7 @@ export function routineRoutes(db: Db) {
     const routine = await svc.get(routineId);
     if (!routine) return null;
     assertCompanyAccess(req, routine.companyId);
-    if (req.actor.type === "board") return routine;
+    if (req.actor.type === "operator") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (routine.assigneeAgentId !== req.actor.agentId) {
       throw forbidden("Agents can only manage routines assigned to themselves");
@@ -58,11 +58,11 @@ export function routineRoutes(db: Db) {
 
   router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertBoardCanAssignTasks(req, companyId);
+    await assertOperatorCanAssignTasks(req, companyId);
     assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
-      userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      userId: req.actor.type === "operator" ? req.actor.userId ?? "operator" : null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -99,21 +99,21 @@ export function routineRoutes(db: Db) {
       req.body.assigneeAgentId !== undefined &&
       req.body.assigneeAgentId !== routine.assigneeAgentId;
     if (assigneeWillChange) {
-      await assertBoardCanAssignTasks(req, routine.companyId);
+      await assertOperatorCanAssignTasks(req, routine.companyId);
     }
     const statusWillActivate =
       req.body.status !== undefined &&
       req.body.status === "active" &&
       routine.status !== "active";
     if (statusWillActivate) {
-      await assertBoardCanAssignTasks(req, routine.companyId);
+      await assertOperatorCanAssignTasks(req, routine.companyId);
     }
     if (req.actor.type === "agent" && req.body.assigneeAgentId && req.body.assigneeAgentId !== req.actor.agentId) {
       throw forbidden("Agents can only assign routines to themselves");
     }
     const updated = await svc.update(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
-      userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      userId: req.actor.type === "operator" ? req.actor.userId ?? "operator" : null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -148,10 +148,10 @@ export function routineRoutes(db: Db) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertOperatorCanAssignTasks(req, routine.companyId);
     const created = await svc.createTrigger(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
-      userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      userId: req.actor.type === "operator" ? req.actor.userId ?? "operator" : null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -179,10 +179,10 @@ export function routineRoutes(db: Db) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertOperatorCanAssignTasks(req, routine.companyId);
     const updated = await svc.updateTrigger(trigger.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
-      userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      userId: req.actor.type === "operator" ? req.actor.userId ?? "operator" : null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -242,7 +242,7 @@ export function routineRoutes(db: Db) {
       }
       const rotated = await svc.rotateTriggerSecret(trigger.id, {
         agentId: req.actor.type === "agent" ? req.actor.agentId : null,
-        userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+        userId: req.actor.type === "operator" ? req.actor.userId ?? "operator" : null,
       });
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -266,7 +266,7 @@ export function routineRoutes(db: Db) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertOperatorCanAssignTasks(req, routine.companyId);
     const run = await svc.runRoutine(routine.id, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {

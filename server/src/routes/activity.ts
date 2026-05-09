@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertOperator, assertCompanyAccess } from "./authz.js";
 import { heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -45,7 +45,7 @@ export function activityRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const event = await svc.create({

@@ -1,8 +1,8 @@
 import { pgTable, uuid, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { authUsers } from "./auth.js";
 
-export const boardApiKeys = pgTable(
-  "board_api_keys",
+export const operatorApiKeys = pgTable(
+  "operator_api_keys",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
@@ -14,7 +14,7 @@ export const boardApiKeys = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    keyHashIdx: uniqueIndex("board_api_keys_key_hash_idx").on(table.keyHash),
-    userIdx: index("board_api_keys_user_idx").on(table.userId),
+    keyHashIdx: uniqueIndex("operator_api_keys_key_hash_idx").on(table.keyHash),
+    userIdx: index("operator_api_keys_user_idx").on(table.userId),
   }),
 );

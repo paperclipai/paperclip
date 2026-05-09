@@ -139,7 +139,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
-      requireBoardApprovalForNewAgents: false,
+      requireOperatorApprovalForNewAgents: false,
     });
 
     await db.insert(agents).values({
@@ -176,7 +176,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   it("supports creating, scheduling, and manually running a routine through the API", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
     const app = await createApp({
-      type: "board",
+      type: "operator",
       userId,
       source: "session",
       isInstanceAdmin: false,

@@ -57,7 +57,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
+      requireOperatorApprovalForNewAgents: false,
     });
 
     await db.insert(agents).values([
@@ -174,7 +174,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
+      requireOperatorApprovalForNewAgents: false,
     });
 
     await db.insert(agents).values({
@@ -228,7 +228,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
+      requireOperatorApprovalForNewAgents: false,
     });
 
     const visibleIssueId = randomUUID();

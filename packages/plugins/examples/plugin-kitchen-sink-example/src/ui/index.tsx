@@ -859,7 +859,7 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
   return (
     <Section title="Issue CRUD">
       <div style={mutedTextStyle}>
-        This is a regular embedded React page inside Paperclip calling the board API directly. It creates, updates, and deletes issues for the current company.
+        This is a regular embedded React page inside Paperclip calling the operator API directly. It creates, updates, and deletes issues for the current company.
       </div>
       {!context.companyId ? (
         <div style={mutedTextStyle}>Select a company to use issue demos.</div>
@@ -1008,7 +1008,7 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
   return (
     <Section title="Company CRUD">
       <div style={mutedTextStyle}>
-        The worker SDK currently exposes company reads. This page shows a pragmatic embedded-app pattern for broader board actions by calling the host REST API directly.
+        The worker SDK currently exposes company reads. This page shows a pragmatic embedded-app pattern for broader operator actions by calling the host REST API directly.
       </div>
       <div style={subtleCardStyle}>
         <div style={rowStyle}>

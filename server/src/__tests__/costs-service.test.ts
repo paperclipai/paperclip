@@ -91,7 +91,7 @@ function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+    req.actor = { type: "operator", userId: "operator-user", source: "local_implicit" };
     next();
   });
   app.use("/api", costRoutes(makeDb() as any));
@@ -183,10 +183,10 @@ describe("cost routes", () => {
     expect(mockFinanceService.list).toHaveBeenCalledWith("company-1", undefined, 25);
   });
 
-  it("rejects company budget updates for board users outside the company", async () => {
+  it("rejects company budget updates for operator users outside the company", async () => {
     const app = createAppWithActor({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: ["company-2"],
@@ -200,7 +200,7 @@ describe("cost routes", () => {
     expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 
-  it("rejects agent budget updates for board users outside the agent company", async () => {
+  it("rejects agent budget updates for operator users outside the agent company", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -209,8 +209,8 @@ describe("cost routes", () => {
       spentMonthlyCents: 0,
     });
     const app = createAppWithActor({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: ["company-2"],

@@ -7,8 +7,8 @@ import { instanceSettingsService, logActivity } from "../services/index.js";
 import { getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
-  if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
+  if (req.actor.type !== "operator") {
+    throw forbidden("Operator access required");
   }
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;

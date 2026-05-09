@@ -610,7 +610,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       await logActivity(db, {
         companyId,
         actorType: "user",
-        actorId: actorUserId ?? "board",
+        actorId: actorUserId ?? "operator",
         action: "budget.policy_upserted",
         entityType: "budget_policy",
         entityId: row.id,

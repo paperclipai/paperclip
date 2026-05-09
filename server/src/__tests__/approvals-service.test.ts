@@ -71,7 +71,7 @@ describe("approvalService resolution idempotency", () => {
     );
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.approve("approval-1", "board", "ship it");
+    const result = await svc.approve("approval-1", "operator", "ship it");
 
     expect(result.applied).toBe(false);
     expect(result.approval.status).toBe("approved");
@@ -86,7 +86,7 @@ describe("approvalService resolution idempotency", () => {
     );
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.reject("approval-1", "board", "not now");
+    const result = await svc.reject("approval-1", "operator", "not now");
 
     expect(result.applied).toBe(false);
     expect(result.approval.status).toBe("rejected");
@@ -98,7 +98,7 @@ describe("approvalService resolution idempotency", () => {
     const dbStub = createDbStub([[createApproval("pending")]], [approved]);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.approve("approval-1", "board", "ship it");
+    const result = await svc.approve("approval-1", "operator", "ship it");
 
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");

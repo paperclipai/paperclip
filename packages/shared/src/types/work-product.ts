@@ -27,7 +27,7 @@ export type IssueWorkProductStatus =
 
 export type IssueWorkProductReviewState =
   | "none"
-  | "needs_board_review"
+  | "needs_operator_review"
   | "approved"
   | "changes_requested";
 

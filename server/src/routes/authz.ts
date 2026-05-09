@@ -1,14 +1,14 @@
 import type { Request } from "express";
 import { forbidden, unauthorized } from "../errors.js";
 
-export function assertBoard(req: Request) {
-  if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
+export function assertOperator(req: Request) {
+  if (req.actor.type !== "operator") {
+    throw forbidden("Operator access required");
   }
 }
 
 export function assertInstanceAdmin(req: Request) {
-  assertBoard(req);
+  assertOperator(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;
   }
@@ -22,7 +22,7 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }
-  if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+  if (req.actor.type === "operator" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
       throw forbidden("User does not have access to this company");
@@ -45,7 +45,7 @@ export function getActorInfo(req: Request) {
 
   return {
     actorType: "user" as const,
-    actorId: req.actor.userId ?? "board",
+    actorId: req.actor.userId ?? "operator",
     agentId: null,
     runId: req.actor.runId ?? null,
   };

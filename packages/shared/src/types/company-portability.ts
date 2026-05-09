@@ -30,7 +30,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   brandColor: string | null;
   logoPath: string | null;
-  requireBoardApprovalForNewAgents: boolean;
+  requireOperatorApprovalForNewAgents: boolean;
 }
 
 export interface CompanyPortabilitySidebarOrder {

@@ -117,11 +117,11 @@ const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
 function resolveImportMode(options?: ImportBehaviorOptions): ImportMode {
-  return options?.mode ?? "board_full";
+  return options?.mode ?? "operator_full";
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
-  if (mode === "board_full") return "replace" as const;
+  if (mode === "operator_full") return "replace" as const;
   return collisionStrategy === "skip" ? "skip" as const : "rename" as const;
 }
 
@@ -461,7 +461,7 @@ type ImportPlanInternal = {
   selectedAgents: CompanyPortabilityAgentManifestEntry[];
 };
 
-type ImportMode = "board_full" | "agent_safe";
+type ImportMode = "operator_full" | "agent_safe";
 
 type ImportBehaviorOptions = {
   mode?: ImportMode;
@@ -2304,9 +2304,9 @@ function buildManifestFromPackageFiles(
       description: asString(companyFrontmatter.description),
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
-      requireBoardApprovalForNewAgents:
-        typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
-          ? paperclipCompany.requireBoardApprovalForNewAgents
+      requireOperatorApprovalForNewAgents:
+        typeof paperclipCompany.requireOperatorApprovalForNewAgents === "boolean"
+          ? paperclipCompany.requireOperatorApprovalForNewAgents
           : readCompanyApprovalDefault(companyFrontmatter),
     },
     sidebar: paperclipSidebar,
@@ -3224,7 +3224,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         company: stripEmptyValues({
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
-          requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
+          requireOperatorApprovalForNewAgents: company.requireOperatorApprovalForNewAgents ? undefined : false,
         }),
         sidebar: stripEmptyValues(sidebarOrder),
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
@@ -3519,7 +3519,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         continue;
       }
 
-      if (mode === "board_full" && collisionStrategy === "replace") {
+      if (mode === "operator_full" && collisionStrategy === "replace") {
         agentPlans.push({
           slug: manifestAgent.slug,
           action: "update",
@@ -3565,7 +3565,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
           continue;
         }
-        if (mode === "board_full" && collisionStrategy === "replace") {
+        if (mode === "operator_full" && collisionStrategy === "replace") {
           projectPlans.push({
             slug: manifestProject.slug,
             action: "update",
@@ -3653,7 +3653,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       plan: {
         companyAction: input.target.mode === "new_company"
           ? "create"
-          : include.company && mode === "board_full"
+          : include.company && mode === "operator_full"
             ? "update"
             : "none",
         agentPlans,
@@ -3731,26 +3731,26 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
-        requireBoardApprovalForNewAgents: include.company
-          ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
+        requireOperatorApprovalForNewAgents: include.company
+          ? (sourceManifest.company?.requireOperatorApprovalForNewAgents ?? true)
           : true,
       });
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
-        await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
+        await access.ensureMembership(created.id, "user", actorUserId ?? "operator", "owner", "active");
       }
       targetCompany = created;
       companyAction = "created";
     } else {
       targetCompany = await companies.getById(input.target.companyId);
       if (!targetCompany) throw notFound("Target company not found");
-      if (include.company && sourceManifest.company && mode === "board_full") {
+      if (include.company && sourceManifest.company && mode === "operator_full") {
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
           brandColor: sourceManifest.company.brandColor,
-          requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
+          requireOperatorApprovalForNewAgents: sourceManifest.company.requireOperatorApprovalForNewAgents,
         });
         targetCompany = updated ?? targetCompany;
         companyAction = "updated";

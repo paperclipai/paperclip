@@ -43,7 +43,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertOperator, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels, detectAdapterModel } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -182,7 +182,7 @@ export function agentRoutes(db: Db) {
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
+    if (req.actor.type === "operator") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return null;
       const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
       if (!allowed) {
@@ -208,7 +208,7 @@ export function agentRoutes(db: Db) {
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
+    if (req.actor.type === "operator") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
       return access.canUser(companyId, req.actor.userId, "agents:create");
     }
@@ -221,7 +221,7 @@ export function agentRoutes(db: Db) {
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "operator") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
     const actorAgent = await svc.getById(req.actor.agentId);
@@ -243,7 +243,7 @@ export function agentRoutes(db: Db) {
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "operator") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
     const actorAgent = await svc.getById(req.actor.agentId);
@@ -485,7 +485,7 @@ export function agentRoutes(db: Db) {
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "operator") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
     const actorAgent = await svc.getById(req.actor.agentId);
@@ -856,7 +856,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs || req.actor.type === "board") {
+    if (canReadConfigs || req.actor.type === "operator") {
       res.json(result);
       return;
     }
@@ -1100,7 +1100,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -1114,7 +1114,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/agents/:id/task-sessions", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -1133,7 +1133,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -1151,7 +1151,7 @@ export function agentRoutes(db: Db) {
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "agent.runtime_session_reset",
       entityType: "agent",
       entityId: id,
@@ -1206,7 +1206,7 @@ export function agentRoutes(db: Db) {
       return;
     }
 
-    const requiresApproval = company.requireBoardApprovalForNewAgents;
+    const requiresApproval = company.requireOperatorApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
     const createdAgent = await svc.create(companyId, {
       ...normalizedHireInput,
@@ -1324,7 +1324,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
 
     if (req.actor.type === "agent") {
-      assertBoard(req);
+      assertOperator(req);
     }
 
     const {
@@ -1381,7 +1381,7 @@ export function agentRoutes(db: Db) {
     await applyDefaultAgentTaskAssignGrant(
       companyId,
       agent.id,
-      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      req.actor.type === "operator" ? (req.actor.userId ?? null) : null,
     );
 
     if (agent.budgetMonthlyCents > 0) {
@@ -1436,7 +1436,7 @@ export function agentRoutes(db: Db) {
       agent.id,
       "tasks:assign",
       effectiveCanAssignTasks,
-      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      req.actor.type === "operator" ? (req.actor.userId ?? null) : null,
     );
 
     const actor = getActorInfo(req);
@@ -1808,7 +1808,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.pause(id);
     if (!agent) {
@@ -1821,7 +1821,7 @@ export function agentRoutes(db: Db) {
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,
@@ -1831,7 +1831,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.resume(id);
     if (!agent) {
@@ -1842,7 +1842,7 @@ export function agentRoutes(db: Db) {
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
@@ -1852,7 +1852,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.terminate(id);
     if (!agent) {
@@ -1865,7 +1865,7 @@ export function agentRoutes(db: Db) {
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,
@@ -1875,7 +1875,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.delete("/agents/:id", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.remove(id);
     if (!agent) {
@@ -1886,7 +1886,7 @@ export function agentRoutes(db: Db) {
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "agent.deleted",
       entityType: "agent",
       entityId: agent.id,
@@ -1896,14 +1896,14 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/agents/:id/keys", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const keys = await svc.listKeys(id);
     res.json(keys);
   });
 
   router.post("/agents/:id/keys", validate(createAgentKeySchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const key = await svc.createApiKey(id, req.body.name);
 
@@ -1912,7 +1912,7 @@ export function agentRoutes(db: Db) {
       await logActivity(db, {
         companyId: agent.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "agent.key_created",
         entityType: "agent",
         entityId: agent.id,
@@ -1924,7 +1924,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.delete("/agents/:id/keys/:keyId", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const keyId = req.params.keyId as string;
     const revoked = await svc.revokeKey(keyId);
     if (!revoked) {
@@ -2034,7 +2034,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/claude-login", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -2142,7 +2142,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
     if (existing) {
@@ -2154,7 +2154,7 @@ export function agentRoutes(db: Db) {
       await logActivity(db, {
         companyId: run.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,

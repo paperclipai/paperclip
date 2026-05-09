@@ -141,7 +141,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
-    "enforces a unique board_api_keys.key_hash after migration 0044",
+    "enforces a unique operator_api_keys.key_hash after migration 0044",
     async () => {
       const connectionString = await createTempDatabase();
 
@@ -154,12 +154,12 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           VALUES ('user-1', 'User One', 'user@example.com', true, now(), now())
         `);
         await sql.unsafe(`
-          INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
+          INSERT INTO "operator_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
           VALUES ('00000000-0000-0000-0000-000000000001', 'user-1', 'Key One', 'dup-hash', now())
         `);
         await expect(
           sql.unsafe(`
-            INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
+            INSERT INTO "operator_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
             VALUES ('00000000-0000-0000-0000-000000000002', 'user-1', 'Key Two', 'dup-hash', now())
           `),
         ).rejects.toThrow();

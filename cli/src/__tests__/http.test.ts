@@ -85,11 +85,11 @@ describe("PaperclipApiClient", () => {
   it("retries once after interactive auth recovery", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Board access required" }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Operator access required" }), { status: 403 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const recoverAuth = vi.fn().mockResolvedValue("board-token-123");
+    const recoverAuth = vi.fn().mockResolvedValue("operator-token-123");
     const client = new PaperclipApiClient({
       apiBase: "http://localhost:3100",
       recoverAuth,
@@ -101,6 +101,6 @@ describe("PaperclipApiClient", () => {
     expect(recoverAuth).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const retryHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
-    expect(retryHeaders.authorization).toBe("Bearer board-token-123");
+    expect(retryHeaders.authorization).toBe("Bearer operator-token-123");
   });
 });

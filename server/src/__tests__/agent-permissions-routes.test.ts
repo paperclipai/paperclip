@@ -110,7 +110,7 @@ function createDbStub() {
           then: vi.fn().mockResolvedValue([{
             id: companyId,
             name: "Paperclip",
-            requireBoardApprovalForNewAgents: false,
+            requireOperatorApprovalForNewAgents: false,
           }]),
         }),
       }),
@@ -176,10 +176,10 @@ describe("agent permission routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("grants tasks:assign by default when board creates a new agent", async () => {
+  it("grants tasks:assign by default when operator creates a new agent", async () => {
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "local_implicit",
       isInstanceAdmin: true,
       companyIds: [companyId],
@@ -208,7 +208,7 @@ describe("agent permission routes", () => {
       agentId,
       "tasks:assign",
       true,
-      "board-user",
+      "operator-user",
     );
   });
 
@@ -221,15 +221,15 @@ describe("agent permission routes", () => {
         principalId: agentId,
         permissionKey: "tasks:assign",
         scope: null,
-        grantedByUserId: "board-user",
+        grantedByUserId: "operator-user",
         createdAt: new Date("2026-03-19T00:00:00.000Z"),
         updatedAt: new Date("2026-03-19T00:00:00.000Z"),
       },
     ]);
 
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "local_implicit",
       isInstanceAdmin: true,
       companyIds: [companyId],
@@ -249,8 +249,8 @@ describe("agent permission routes", () => {
     });
 
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "local_implicit",
       isInstanceAdmin: true,
       companyIds: [companyId],
@@ -267,7 +267,7 @@ describe("agent permission routes", () => {
       agentId,
       "tasks:assign",
       true,
-      "board-user",
+      "operator-user",
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");

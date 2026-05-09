@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 
-const LOCAL_BOARD_USER_ID = "local-board";
+const LOCAL_OPERATOR_USER_ID = "local-operator";
 const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
 
 type ChallengeStatus = "available" | "claimed" | "expired" | "invalid";
@@ -40,7 +40,7 @@ function getChallengeStatus(token: string, code: string | undefined): ChallengeS
   return "available";
 }
 
-export async function initializeBoardClaimChallenge(
+export async function initializeOperatorClaimChallenge(
   db: Db,
   opts: { deploymentMode: DeploymentMode },
 ): Promise<void> {
@@ -54,8 +54,8 @@ export async function initializeBoardClaimChallenge(
     .from(instanceUserRoles)
     .where(eq(instanceUserRoles.role, "instance_admin"));
 
-  const onlyLocalBoardAdmin = admins.length === 1 && admins[0]?.userId === LOCAL_BOARD_USER_ID;
-  if (!onlyLocalBoardAdmin) {
+  const onlyLocalOperatorAdmin = admins.length === 1 && admins[0]?.userId === LOCAL_OPERATOR_USER_ID;
+  if (!onlyLocalOperatorAdmin) {
     activeChallenge = null;
     return;
   }
@@ -65,14 +65,14 @@ export async function initializeBoardClaimChallenge(
   }
 }
 
-export function getBoardClaimWarningUrl(host: string, port: number): string | null {
+export function getOperatorClaimWarningUrl(host: string, port: number): string | null {
   if (!activeChallenge) return null;
   if (activeChallenge.claimedAt || activeChallenge.expiresAt.getTime() <= Date.now()) return null;
   const visibleHost = host === "0.0.0.0" ? "localhost" : host;
-  return `http://${visibleHost}:${port}/board-claim/${activeChallenge.token}?code=${activeChallenge.code}`;
+  return `http://${visibleHost}:${port}/operator-claim/${activeChallenge.token}?code=${activeChallenge.code}`;
 }
 
-export function inspectBoardClaimChallenge(token: string, code: string | undefined) {
+export function inspectOperatorClaimChallenge(token: string, code: string | undefined) {
   const status = getChallengeStatus(token, code);
   return {
     status,
@@ -82,7 +82,7 @@ export function inspectBoardClaimChallenge(token: string, code: string | undefin
   };
 }
 
-export async function claimBoardOwnership(
+export async function claimOperatorOwnership(
   db: Db,
   opts: { token: string; code: string | undefined; userId: string },
 ): Promise<{ status: ChallengeStatus; claimedByUserId?: string }> {
@@ -104,7 +104,7 @@ export async function claimBoardOwnership(
 
     await tx
       .delete(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, LOCAL_BOARD_USER_ID), eq(instanceUserRoles.role, "instance_admin")));
+      .where(and(eq(instanceUserRoles.userId, LOCAL_OPERATOR_USER_ID), eq(instanceUserRoles.role, "instance_admin")));
 
     const allCompanies = await tx.select({ id: companies.id }).from(companies);
     for (const company of allCompanies) {

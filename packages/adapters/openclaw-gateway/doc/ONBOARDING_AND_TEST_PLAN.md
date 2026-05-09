@@ -11,19 +11,19 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 2. Onboarding must work from one primary prompt pasted into OpenClaw (optional one follow-up ping allowed).
 3. Device auth stays enabled by default; pairing is persisted via `adapterConfig.devicePrivateKeyPem`.
 4. Invite/access flow must be secure:
-- invite prompt endpoint is board-permission protected
+- invite prompt endpoint is operator-permission protected
 - CEO agent is allowed to invoke the invite prompt endpoint for their own company
 5. E2E pass criteria must include the 3 functional task cases.
 
 ## Current Product Flow
-1. Board/CEO opens company settings.
+1. Operator/CEO opens company settings.
 2. Click `Generate OpenClaw Invite Prompt`.
 3. Paste generated prompt into OpenClaw chat.
 4. OpenClaw submits invite acceptance with:
 - `adapterType: "openclaw_gateway"`
 - `agentDefaultsPayload.url: ws://... | wss://...`
 - `agentDefaultsPayload.headers["x-openclaw-token"]`
-5. Board approves join request.
+5. Operator approves join request.
 6. OpenClaw claims API key and installs/uses Paperclip skill.
 7. First task run may trigger pairing approval once; after approval, pairing persists via stored device key.
 

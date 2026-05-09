@@ -3,21 +3,21 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  getStoredBoardCredential,
-  readBoardAuthStore,
-  removeStoredBoardCredential,
-  setStoredBoardCredential,
-} from "../client/board-auth.js";
+  getStoredOperatorCredential,
+  readOperatorAuthStore,
+  removeStoredOperatorCredential,
+  setStoredOperatorCredential,
+} from "../client/operator-auth.js";
 
 function createTempAuthPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-auth-"));
   return path.join(dir, "auth.json");
 }
 
-describe("board auth store", () => {
+describe("operator auth store", () => {
   it("returns an empty store when the file does not exist", () => {
     const authPath = createTempAuthPath();
-    expect(readBoardAuthStore(authPath)).toEqual({
+    expect(readOperatorAuthStore(authPath)).toEqual({
       version: 1,
       credentials: {},
     });
@@ -25,14 +25,14 @@ describe("board auth store", () => {
 
   it("stores and retrieves credentials by normalized api base", () => {
     const authPath = createTempAuthPath();
-    setStoredBoardCredential({
+    setStoredOperatorCredential({
       apiBase: "http://localhost:3100/",
       token: "token-123",
       userId: "user-1",
       storePath: authPath,
     });
 
-    expect(getStoredBoardCredential("http://localhost:3100", authPath)).toMatchObject({
+    expect(getStoredOperatorCredential("http://localhost:3100", authPath)).toMatchObject({
       apiBase: "http://localhost:3100",
       token: "token-123",
       userId: "user-1",
@@ -41,13 +41,13 @@ describe("board auth store", () => {
 
   it("removes stored credentials", () => {
     const authPath = createTempAuthPath();
-    setStoredBoardCredential({
+    setStoredOperatorCredential({
       apiBase: "http://localhost:3100",
       token: "token-123",
       storePath: authPath,
     });
 
-    expect(removeStoredBoardCredential("http://localhost:3100", authPath)).toBe(true);
-    expect(getStoredBoardCredential("http://localhost:3100", authPath)).toBeNull();
+    expect(removeStoredOperatorCredential("http://localhost:3100", authPath)).toBe(true);
+    expect(getStoredOperatorCredential("http://localhost:3100", authPath)).toBeNull();
   });
 });

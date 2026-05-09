@@ -65,7 +65,7 @@ const [project] = await db
     companyId: company!.id,
     goalId: goal!.id,
     name: "Control Plane MVP",
-    description: "Implement core board + agent loop",
+    description: "Implement core operator + agent loop",
     status: "in_progress",
     leadAgentId: ceo!.id,
   })

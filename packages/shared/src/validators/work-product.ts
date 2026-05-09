@@ -24,7 +24,7 @@ export const issueWorkProductStatusSchema = z.enum([
 
 export const issueWorkProductReviewStateSchema = z.enum([
   "none",
-  "needs_board_review",
+  "needs_operator_review",
   "approved",
   "changes_requested",
 ]);

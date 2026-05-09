@@ -35,7 +35,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
-  requireBoardApprovalForNewAgents: z.boolean(),
+  requireOperatorApprovalForNewAgents: z.boolean(),
 });
 
 export const portabilitySidebarOrderSchema = z.object({

@@ -17,7 +17,7 @@ import {
   heartbeatService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertOperator, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 
@@ -65,7 +65,7 @@ export function costRoutes(db: Db) {
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertOperator(req);
 
     const event = await finance.createEvent(companyId, {
       ...req.body,
@@ -195,7 +195,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertOperator(req);
     // validate companyId resolves to a real company so the "__none__" sentinel
     // and any forged ids are rejected before we touch provider credentials
     const company = await companies.getById(companyId);
@@ -218,10 +218,10 @@ export function costRoutes(db: Db) {
     "/companies/:companyId/budgets/policies",
     validate(upsertBudgetPolicySchema),
     async (req, res) => {
-      assertBoard(req);
+      assertOperator(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
+      const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "operator");
       res.json(summary);
     },
   );
@@ -230,11 +230,11 @@ export function costRoutes(db: Db) {
     "/companies/:companyId/budget-incidents/:incidentId/resolve",
     validate(resolveBudgetIncidentSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertOperator(req);
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
-      const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board");
+      const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "operator");
       res.json(incident);
     },
   );
@@ -248,7 +248,7 @@ export function costRoutes(db: Db) {
   });
 
   router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req, res) => {
-    assertBoard(req);
+    assertOperator(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const company = await companies.update(companyId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
@@ -260,7 +260,7 @@ export function costRoutes(db: Db) {
     await logActivity(db, {
       companyId,
       actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorId: req.actor.userId ?? "operator",
       action: "company.budget_updated",
       entityType: "company",
       entityId: companyId,
@@ -275,7 +275,7 @@ export function costRoutes(db: Db) {
         amount: req.body.budgetMonthlyCents,
         windowKind: "calendar_month_utc",
       },
-      req.actor.userId ?? "board",
+      req.actor.userId ?? "operator",
     );
 
     res.json(company);
@@ -324,7 +324,7 @@ export function costRoutes(db: Db) {
         amount: updated.budgetMonthlyCents,
         windowKind: "calendar_month_utc",
       },
-      req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      req.actor.type === "operator" ? req.actor.userId ?? "operator" : null,
     );
 
     res.json(updated);

@@ -50,10 +50,10 @@ describe("company skill mutation permissions", () => {
     mockAccessService.hasPermission.mockResolvedValue(false);
   });
 
-  it("allows local board operators to mutate company skills", async () => {
+  it("allows local operator operators to mutate company skills", async () => {
     const res = await request(createApp({
-      type: "board",
-      userId: "local-board",
+      type: "operator",
+      userId: "local-operator",
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,

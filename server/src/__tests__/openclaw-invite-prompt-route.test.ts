@@ -23,14 +23,14 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
-const mockBoardAuthService = vi.hoisted(() => ({
+const mockOperatorAuthService = vi.hoisted(() => ({
   createCliAuthChallenge: vi.fn(),
   describeCliAuthChallenge: vi.fn(),
   approveCliAuthChallenge: vi.fn(),
   cancelCliAuthChallenge: vi.fn(),
-  resolveBoardAccess: vi.fn(),
-  assertCurrentBoardKey: vi.fn(),
-  revokeBoardApiKey: vi.fn(),
+  resolveOperatorAccess: vi.fn(),
+  assertCurrentOperatorKey: vi.fn(),
+  revokeOperatorApiKey: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -38,7 +38,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
-  boardAuthService: () => mockBoardAuthService,
+  operatorAuthService: () => mockOperatorAuthService,
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
@@ -146,12 +146,12 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
   });
 
-  it("allows board callers with invite permission", async () => {
+  it("allows operator callers with invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(true);
     const app = createApp(
       {
-        type: "board",
+        type: "operator",
         userId: "user-1",
         companyIds: ["company-1"],
         source: "session",
@@ -168,12 +168,12 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.body.allowedJoinTypes).toBe("agent");
   });
 
-  it("rejects board callers without invite permission", async () => {
+  it("rejects operator callers without invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(false);
     const app = createApp(
       {
-        type: "board",
+        type: "operator",
         userId: "user-1",
         companyIds: ["company-1"],
         source: "session",

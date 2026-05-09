@@ -49,8 +49,8 @@ function createApp() {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
-      type: "board",
-      userId: "local-board",
+      type: "operator",
+      userId: "local-operator",
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
@@ -69,7 +69,7 @@ function makeIssue(status: "todo" | "done") {
     status,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
-    createdByUserId: "local-board",
+    createdByUserId: "local-operator",
     identifier: "PAP-580",
     title: "Comment reopen default",
   };
@@ -86,7 +86,7 @@ describe("issue comment reopen routes", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
       authorAgentId: null,
-      authorUserId: "local-board",
+      authorUserId: "local-operator",
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });

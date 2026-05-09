@@ -42,7 +42,7 @@ const { WebSocket, WebSocketServer } = require("ws") as {
 
 interface UpgradeContext {
   companyId: string;
-  actorType: "board" | "agent";
+  actorType: "operator" | "agent";
   actorId: string;
 }
 
@@ -106,13 +106,13 @@ async function authorizeUpgrade(
   const authToken = parseBearerToken(req.headers.authorization);
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
 
-  // Browser board context has no bearer token in local_trusted and authenticated modes.
+  // Browser operator context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
       return {
         companyId,
-        actorType: "board",
-        actorId: "board",
+        actorType: "operator",
+        actorId: "operator",
       };
     }
 
@@ -147,7 +147,7 @@ async function authorizeUpgrade(
 
     return {
       companyId,
-      actorType: "board",
+      actorType: "operator",
       actorId: userId,
     };
   }

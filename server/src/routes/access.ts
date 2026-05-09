@@ -42,16 +42,16 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
-  boardAuthService,
+  operatorAuthService,
   deduplicateAgentName,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
-  claimBoardOwnership,
-  inspectBoardClaimChallenge
-} from "../board-claim.js";
+  claimOperatorOwnership,
+  inspectOperatorClaimChallenge
+} from "../operator-claim.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1027,7 +1027,7 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for operator approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
@@ -1215,8 +1215,8 @@ export function buildInviteOnboardingTextDocument(
     - one-time claimSecret
     - claimApiKeyPath
 
-    ## Step 2: Wait for board approval
-    The board approves the join request in Paperclip before key claim is allowed.
+    ## Step 2: Wait for operator approval
+    The operator approves the join request in Paperclip before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -1250,7 +1250,7 @@ export function buildInviteOnboardingTextDocument(
     Important:
     - claim secrets expire
     - claim secrets are single-use
-    - claim fails before board approval
+    - claim fails before operator approval
 
     ## Step 4: Install Paperclip skill in OpenClaw
     GET ${onboarding.skill.url}
@@ -1361,7 +1361,7 @@ function inviteExpired(invite: typeof invites.$inferSelect) {
 }
 
 function isLocalImplicit(req: Request) {
-  return req.actor.type === "board" && req.actor.source === "local_implicit";
+  return req.actor.type === "operator" && req.actor.source === "local_implicit";
 }
 
 async function resolveActorEmail(db: Db, req: Request): Promise<string | null> {
@@ -1563,52 +1563,52 @@ export function accessRoutes(
 ) {
   const router = Router();
   const access = accessService(db);
-  const boardAuth = boardAuthService(db);
+  const operatorAuth = operatorAuthService(db);
   const agents = agentService(db);
 
   async function assertInstanceAdmin(req: Request) {
-    if (req.actor.type !== "board") throw unauthorized();
+    if (req.actor.type !== "operator") throw unauthorized();
     if (isLocalImplicit(req)) return;
     const allowed = await access.isInstanceAdmin(req.actor.userId);
     if (!allowed) throw forbidden("Instance admin required");
   }
 
-  router.get("/board-claim/:token", async (req, res) => {
+  router.get("/operator-claim/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     const code =
       typeof req.query.code === "string" ? req.query.code.trim() : undefined;
-    if (!token) throw notFound("Board claim challenge not found");
-    const challenge = inspectBoardClaimChallenge(token, code);
+    if (!token) throw notFound("Operator claim challenge not found");
+    const challenge = inspectOperatorClaimChallenge(token, code);
     if (challenge.status === "invalid")
-      throw notFound("Board claim challenge not found");
+      throw notFound("Operator claim challenge not found");
     res.json(challenge);
   });
 
-  router.post("/board-claim/:token/claim", async (req, res) => {
+  router.post("/operator-claim/:token/claim", async (req, res) => {
     const token = (req.params.token as string).trim();
     const code =
       typeof req.body?.code === "string" ? req.body.code.trim() : undefined;
-    if (!token) throw notFound("Board claim challenge not found");
+    if (!token) throw notFound("Operator claim challenge not found");
     if (!code) throw badRequest("Claim code is required");
     if (
-      req.actor.type !== "board" ||
+      req.actor.type !== "operator" ||
       req.actor.source !== "session" ||
       !req.actor.userId
     ) {
-      throw unauthorized("Sign in before claiming board ownership");
+      throw unauthorized("Sign in before claiming operator ownership");
     }
 
-    const claimed = await claimBoardOwnership(db, {
+    const claimed = await claimOperatorOwnership(db, {
       token,
       code,
       userId: req.actor.userId
     });
 
     if (claimed.status === "invalid")
-      throw notFound("Board claim challenge not found");
+      throw notFound("Operator claim challenge not found");
     if (claimed.status === "expired")
       throw conflict(
-        "Board claim challenge expired. Restart server to generate a new one."
+        "Operator claim challenge expired. Restart server to generate a new one."
       );
     if (claimed.status === "claimed") {
       res.json({
@@ -1618,14 +1618,14 @@ export function accessRoutes(
       return;
     }
 
-    throw conflict("Board claim challenge is no longer available");
+    throw conflict("Operator claim challenge is no longer available");
   });
 
   router.post(
     "/cli-auth/challenges",
     validate(createCliAuthChallengeSchema),
     async (req, res) => {
-      const created = await boardAuth.createCliAuthChallenge(req.body);
+      const created = await operatorAuth.createCliAuthChallenge(req.body);
       const approvalPath = buildCliAuthApprovalPath(
         created.challenge.id,
         created.challengeSecret,
@@ -1634,7 +1634,7 @@ export function accessRoutes(
       res.status(201).json({
         id: created.challenge.id,
         token: created.challengeSecret,
-        boardApiToken: created.pendingBoardToken,
+        operatorApiToken: created.pendingOperatorToken,
         approvalPath,
         approvalUrl: baseUrl ? `${baseUrl}${approvalPath}` : null,
         pollPath: `/cli-auth/challenges/${created.challenge.id}`,
@@ -1649,24 +1649,24 @@ export function accessRoutes(
     const token =
       typeof req.query.token === "string" ? req.query.token.trim() : "";
     if (!id || !token) throw notFound("CLI auth challenge not found");
-    const challenge = await boardAuth.describeCliAuthChallenge(id, token);
+    const challenge = await operatorAuth.describeCliAuthChallenge(id, token);
     if (!challenge) throw notFound("CLI auth challenge not found");
 
-    const isSignedInBoardUser =
-      req.actor.type === "board" &&
+    const isSignedInOperatorUser =
+      req.actor.type === "operator" &&
       (req.actor.source === "session" || isLocalImplicit(req)) &&
       Boolean(req.actor.userId);
     const canApprove =
-      isSignedInBoardUser &&
+      isSignedInOperatorUser &&
       (challenge.requestedAccess !== "instance_admin_required" ||
         isLocalImplicit(req) ||
         Boolean(req.actor.isInstanceAdmin));
 
     res.json({
       ...challenge,
-      requiresSignIn: !isSignedInBoardUser,
+      requiresSignIn: !isSignedInOperatorUser,
       canApprove,
-      currentUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      currentUserId: req.actor.type === "operator" ? req.actor.userId ?? null : null,
     });
   });
 
@@ -1676,35 +1676,35 @@ export function accessRoutes(
     async (req, res) => {
       const id = (req.params.id as string).trim();
       if (
-        req.actor.type !== "board" ||
+        req.actor.type !== "operator" ||
         (!req.actor.userId && !isLocalImplicit(req))
       ) {
         throw unauthorized("Sign in before approving CLI access");
       }
 
-      const userId = req.actor.userId ?? "local-board";
-      const approved = await boardAuth.approveCliAuthChallenge(
+      const userId = req.actor.userId ?? "local-operator";
+      const approved = await operatorAuth.approveCliAuthChallenge(
         id,
         req.body.token,
         userId,
       );
 
       if (approved.status === "approved") {
-        const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+        const companyIds = await operatorAuth.resolveOperatorActivityCompanyIds({
           userId,
           requestedCompanyId: approved.challenge.requestedCompanyId,
-          boardApiKeyId: approved.challenge.boardApiKeyId,
+          operatorApiKeyId: approved.challenge.operatorApiKeyId,
         });
         for (const companyId of companyIds) {
           await logActivity(db, {
             companyId,
             actorType: "user",
             actorId: userId,
-            action: "board_api_key.created",
+            action: "operator_api_key.created",
             entityType: "user",
             entityId: userId,
             details: {
-              boardApiKeyId: approved.challenge.boardApiKeyId,
+              operatorApiKeyId: approved.challenge.operatorApiKeyId,
               requestedAccess: approved.challenge.requestedAccess,
               requestedCompanyId: approved.challenge.requestedCompanyId,
               challengeId: approved.challenge.id,
@@ -1717,7 +1717,7 @@ export function accessRoutes(
         approved: approved.status === "approved",
         status: approved.status,
         userId,
-        keyId: approved.challenge.boardApiKeyId ?? null,
+        keyId: approved.challenge.operatorApiKeyId ?? null,
         expiresAt: approved.challenge.expiresAt.toISOString(),
       });
     },
@@ -1728,7 +1728,7 @@ export function accessRoutes(
     validate(resolveCliAuthChallengeSchema),
     async (req, res) => {
       const id = (req.params.id as string).trim();
-      const cancelled = await boardAuth.cancelCliAuthChallenge(id, req.body.token);
+      const cancelled = await operatorAuth.cancelCliAuthChallenge(id, req.body.token);
       res.json({
         status: cancelled.status,
         cancelled: cancelled.status === "cancelled",
@@ -1737,43 +1737,43 @@ export function accessRoutes(
   );
 
   router.get("/cli-auth/me", async (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
-      throw unauthorized("Board authentication required");
+    if (req.actor.type !== "operator" || !req.actor.userId) {
+      throw unauthorized("Operator authentication required");
     }
-    const accessSnapshot = await boardAuth.resolveBoardAccess(req.actor.userId);
+    const accessSnapshot = await operatorAuth.resolveOperatorAccess(req.actor.userId);
     res.json({
       user: accessSnapshot.user,
       userId: req.actor.userId,
       isInstanceAdmin: accessSnapshot.isInstanceAdmin,
       companyIds: accessSnapshot.companyIds,
       source: req.actor.source ?? "none",
-      keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
+      keyId: req.actor.source === "operator_key" ? req.actor.keyId ?? null : null,
     });
   });
 
   router.post("/cli-auth/revoke-current", async (req, res) => {
-    if (req.actor.type !== "board" || req.actor.source !== "board_key") {
-      throw badRequest("Current board API key context is required");
+    if (req.actor.type !== "operator" || req.actor.source !== "operator_key") {
+      throw badRequest("Current operator API key context is required");
     }
-    const key = await boardAuth.assertCurrentBoardKey(
+    const key = await operatorAuth.assertCurrentOperatorKey(
       req.actor.keyId,
       req.actor.userId,
     );
-    await boardAuth.revokeBoardApiKey(key.id);
-    const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+    await operatorAuth.revokeOperatorApiKey(key.id);
+    const companyIds = await operatorAuth.resolveOperatorActivityCompanyIds({
       userId: key.userId,
-      boardApiKeyId: key.id,
+      operatorApiKeyId: key.id,
     });
     for (const companyId of companyIds) {
       await logActivity(db, {
         companyId,
         actorType: "user",
         actorId: key.userId,
-        action: "board_api_key.revoked",
+        action: "operator_api_key.revoked",
         entityType: "user",
         entityId: key.userId,
         details: {
-          boardApiKeyId: key.id,
+          operatorApiKeyId: key.id,
           revokedVia: "cli_auth_logout",
         },
       });
@@ -1798,7 +1798,7 @@ export function accessRoutes(
       if (!allowed) throw forbidden("Permission denied");
       return;
     }
-    if (req.actor.type !== "board") throw unauthorized();
+    if (req.actor.type !== "operator") throw unauthorized();
     if (isLocalImplicit(req)) return;
     const allowed = await access.canUser(
       companyId,
@@ -1824,7 +1824,7 @@ export function accessRoutes(
       }
       return;
     }
-    if (req.actor.type !== "board") throw unauthorized();
+    if (req.actor.type !== "operator") throw unauthorized();
     if (isLocalImplicit(req)) return;
     const allowed = await access.canUser(companyId, req.actor.userId, "users:invite");
     if (!allowed) throw forbidden("Permission denied");
@@ -1930,7 +1930,7 @@ export function accessRoutes(
         actorId:
           req.actor.type === "agent"
             ? req.actor.agentId ?? "unknown-agent"
-            : req.actor.userId ?? "board",
+            : req.actor.userId ?? "operator",
         action: "invite.created",
         entityType: "invite",
         entityId: created.id,
@@ -1975,7 +1975,7 @@ export function accessRoutes(
         actorId:
           req.actor.type === "agent"
             ? req.actor.agentId ?? "unknown-agent"
-            : req.actor.userId ?? "board",
+            : req.actor.userId ?? "operator",
         action: "invite.openclaw_prompt_created",
         entityType: "invite",
         entityId: created.id,
@@ -2123,14 +2123,14 @@ export function accessRoutes(
           throw badRequest("Bootstrap invite requires human request type");
         }
         if (
-          req.actor.type !== "board" ||
+          req.actor.type !== "operator" ||
           (!req.actor.userId && !isLocalImplicit(req))
         ) {
           throw unauthorized(
             "Authenticated user required for bootstrap acceptance"
           );
         }
-        const userId = req.actor.userId ?? "local-board";
+        const userId = req.actor.userId ?? "local-operator";
         const existingAdmin = await access.isInstanceAdmin(userId);
         if (!existingAdmin) {
           await access.promoteInstanceAdmin(userId);
@@ -2160,7 +2160,7 @@ export function accessRoutes(
         throw badRequest(`Invite does not allow ${requestType} joins`);
       }
 
-      if (requestType === "human" && req.actor.type !== "board") {
+      if (requestType === "human" && req.actor.type !== "operator") {
         throw unauthorized(
           "Human invite acceptance requires authenticated user"
         );
@@ -2287,7 +2287,7 @@ export function accessRoutes(
                 requestIp: requestIp(req),
                 requestingUserId:
                   requestType === "human"
-                    ? req.actor.userId ?? "local-board"
+                    ? req.actor.userId ?? "local-operator"
                     : null,
                 requestEmailSnapshot:
                   requestType === "human" ? actorEmail : null,
@@ -2366,7 +2366,7 @@ export function accessRoutes(
           actorId:
             req.actor.type === "agent"
               ? req.actor.agentId ?? "invite-agent"
-              : req.actor.userId ?? "board",
+              : req.actor.userId ?? "operator",
           action: "agent.updated_from_join_replay",
           entityType: "agent",
           entityId: updatedAgent.id,
@@ -2443,7 +2443,7 @@ export function accessRoutes(
           req.actor.type === "agent"
             ? req.actor.agentId ?? "invite-agent"
             : req.actor.userId ??
-              (requestType === "agent" ? "invite-anon" : "board"),
+              (requestType === "agent" ? "invite-anon" : "operator"),
         action: inviteAlreadyAccepted
           ? "join.request_replayed"
           : "join.requested",
@@ -2513,7 +2513,7 @@ export function accessRoutes(
         actorId:
           req.actor.type === "agent"
             ? req.actor.agentId ?? "unknown-agent"
-            : req.actor.userId ?? "board",
+            : req.actor.userId ?? "operator",
         action: "invite.revoked",
         entityType: "invite",
         entityId: id
@@ -2654,7 +2654,7 @@ export function accessRoutes(
         .set({
           status: "approved",
           approvedByUserId:
-            req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            req.actor.userId ?? (isLocalImplicit(req) ? "local-operator" : null),
           approvedAt: new Date(),
           createdAgentId,
           updatedAt: new Date()
@@ -2666,7 +2666,7 @@ export function accessRoutes(
       await logActivity(db, {
         companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "join.approved",
         entityType: "join_request",
         entityId: requestId,
@@ -2713,7 +2713,7 @@ export function accessRoutes(
         .set({
           status: "rejected",
           rejectedByUserId:
-            req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            req.actor.userId ?? (isLocalImplicit(req) ? "local-operator" : null),
           rejectedAt: new Date(),
           updatedAt: new Date()
         })
@@ -2724,7 +2724,7 @@ export function accessRoutes(
       await logActivity(db, {
         companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: req.actor.userId ?? "operator",
         action: "join.rejected",
         entityType: "join_request",
         entityId: requestId,

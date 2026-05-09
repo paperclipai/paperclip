@@ -44,7 +44,7 @@ function createApp() {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
-      type: "board",
+      type: "operator",
       userId: "user-1",
       companyIds: ["company-1"],
       source: "session",

@@ -14,7 +14,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     issueCounter: 1,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
-    requireBoardApprovalForNewAgents: false,
+    requireOperatorApprovalForNewAgents: false,
     brandColor: null,
     logoAssetId: null,
     logoUrl: null,

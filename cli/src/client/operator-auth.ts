@@ -5,9 +5,9 @@ import pc from "picocolors";
 import { buildCliCommandLabel } from "./command-label.js";
 import { resolveDefaultCliAuthPath } from "../config/home.js";
 
-type RequestedAccess = "board" | "instance_admin_required";
+type RequestedAccess = "operator" | "instance_admin_required";
 
-interface BoardAuthCredential {
+interface OperatorAuthCredential {
   apiBase: string;
   token: string;
   createdAt: string;
@@ -15,15 +15,15 @@ interface BoardAuthCredential {
   userId?: string | null;
 }
 
-interface BoardAuthStore {
+interface OperatorAuthStore {
   version: 1;
-  credentials: Record<string, BoardAuthCredential>;
+  credentials: Record<string, OperatorAuthCredential>;
 }
 
 interface CreateChallengeResponse {
   id: string;
   token: string;
-  boardApiToken: string;
+  operatorApiToken: string;
   approvalPath: string;
   approvalUrl: string | null;
   pollPath: string;
@@ -45,7 +45,7 @@ interface ChallengeStatusResponse {
   approvedByUser: { id: string; name: string; email: string } | null;
 }
 
-function defaultBoardAuthStore(): BoardAuthStore {
+function defaultOperatorAuthStore(): OperatorAuthStore {
   return {
     version: 1,
     credentials: {},
@@ -60,19 +60,19 @@ function normalizeApiBase(apiBase: string): string {
   return apiBase.trim().replace(/\/+$/, "");
 }
 
-export function resolveBoardAuthStorePath(overridePath?: string): string {
+export function resolveOperatorAuthStorePath(overridePath?: string): string {
   if (overridePath?.trim()) return path.resolve(overridePath.trim());
   if (process.env.PAPERCLIP_AUTH_STORE?.trim()) return path.resolve(process.env.PAPERCLIP_AUTH_STORE.trim());
   return resolveDefaultCliAuthPath();
 }
 
-export function readBoardAuthStore(storePath?: string): BoardAuthStore {
-  const filePath = resolveBoardAuthStorePath(storePath);
-  if (!fs.existsSync(filePath)) return defaultBoardAuthStore();
+export function readOperatorAuthStore(storePath?: string): OperatorAuthStore {
+  const filePath = resolveOperatorAuthStorePath(storePath);
+  if (!fs.existsSync(filePath)) return defaultOperatorAuthStore();
 
-  const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<BoardAuthStore> | null;
+  const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<OperatorAuthStore> | null;
   const credentials = raw?.credentials && typeof raw.credentials === "object" ? raw.credentials : {};
-  const normalized: Record<string, BoardAuthCredential> = {};
+  const normalized: Record<string, OperatorAuthCredential> = {};
 
   for (const [key, value] of Object.entries(credentials)) {
     if (typeof value !== "object" || value === null) continue;
@@ -97,28 +97,28 @@ export function readBoardAuthStore(storePath?: string): BoardAuthStore {
   };
 }
 
-export function writeBoardAuthStore(store: BoardAuthStore, storePath?: string): void {
-  const filePath = resolveBoardAuthStorePath(storePath);
+export function writeOperatorAuthStore(store: OperatorAuthStore, storePath?: string): void {
+  const filePath = resolveOperatorAuthStorePath(storePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
 }
 
-export function getStoredBoardCredential(apiBase: string, storePath?: string): BoardAuthCredential | null {
-  const store = readBoardAuthStore(storePath);
+export function getStoredOperatorCredential(apiBase: string, storePath?: string): OperatorAuthCredential | null {
+  const store = readOperatorAuthStore(storePath);
   return store.credentials[normalizeApiBase(apiBase)] ?? null;
 }
 
-export function setStoredBoardCredential(input: {
+export function setStoredOperatorCredential(input: {
   apiBase: string;
   token: string;
   userId?: string | null;
   storePath?: string;
-}): BoardAuthCredential {
+}): OperatorAuthCredential {
   const normalizedApiBase = normalizeApiBase(input.apiBase);
-  const store = readBoardAuthStore(input.storePath);
+  const store = readOperatorAuthStore(input.storePath);
   const now = new Date().toISOString();
   const existing = store.credentials[normalizedApiBase];
-  const credential: BoardAuthCredential = {
+  const credential: OperatorAuthCredential = {
     apiBase: normalizedApiBase,
     token: input.token.trim(),
     createdAt: existing?.createdAt ?? now,
@@ -126,16 +126,16 @@ export function setStoredBoardCredential(input: {
     userId: input.userId ?? existing?.userId ?? null,
   };
   store.credentials[normalizedApiBase] = credential;
-  writeBoardAuthStore(store, input.storePath);
+  writeOperatorAuthStore(store, input.storePath);
   return credential;
 }
 
-export function removeStoredBoardCredential(apiBase: string, storePath?: string): boolean {
+export function removeStoredOperatorCredential(apiBase: string, storePath?: string): boolean {
   const normalizedApiBase = normalizeApiBase(apiBase);
-  const store = readBoardAuthStore(storePath);
+  const store = readOperatorAuthStore(storePath);
   if (!store.credentials[normalizedApiBase]) return false;
   delete store.credentials[normalizedApiBase];
-  writeBoardAuthStore(store, storePath);
+  writeOperatorAuthStore(store, storePath);
   return true;
 }
 
@@ -190,7 +190,7 @@ export function openUrl(url: string): boolean {
   }
 }
 
-export async function loginBoardCli(params: {
+export async function loginOperatorCli(params: {
   apiBase: string;
   requestedAccess: RequestedAccess;
   requestedCompanyId?: string | null;
@@ -215,7 +215,7 @@ export async function loginBoardCli(params: {
 
   const approvalUrl = challenge.approvalUrl ?? `${apiBase}${challenge.approvalPath}`;
   if (params.print !== false) {
-    console.error(pc.bold("Board authentication required"));
+    console.error(pc.bold("Operator authentication required"));
     console.error(`Open this URL in your browser to approve CLI access:\n${approvalUrl}`);
   }
 
@@ -237,18 +237,18 @@ export async function loginBoardCli(params: {
         `${apiBase}/api/cli-auth/me`,
         {
           headers: {
-            authorization: `Bearer ${challenge.boardApiToken}`,
+            authorization: `Bearer ${challenge.operatorApiToken}`,
           },
         },
       );
-      setStoredBoardCredential({
+      setStoredOperatorCredential({
         apiBase,
-        token: challenge.boardApiToken,
+        token: challenge.operatorApiToken,
         userId: me.userId ?? me.user?.id ?? null,
         storePath: params.storePath,
       });
       return {
-        token: challenge.boardApiToken,
+        token: challenge.operatorApiToken,
         approvalUrl,
         userId: me.userId ?? me.user?.id ?? null,
       };
@@ -267,7 +267,7 @@ export async function loginBoardCli(params: {
   throw new Error("CLI auth challenge expired before approval.");
 }
 
-export async function revokeStoredBoardCredential(params: {
+export async function revokeStoredOperatorCredential(params: {
   apiBase: string;
   token: string;
 }): Promise<void> {

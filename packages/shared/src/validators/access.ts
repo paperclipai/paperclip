@@ -52,17 +52,17 @@ export const claimJoinRequestApiKeySchema = z.object({
 
 export type ClaimJoinRequestApiKey = z.infer<typeof claimJoinRequestApiKeySchema>;
 
-export const boardCliAuthAccessLevelSchema = z.enum([
-  "board",
+export const operatorCliAuthAccessLevelSchema = z.enum([
+  "operator",
   "instance_admin_required",
 ]);
 
-export type BoardCliAuthAccessLevel = z.infer<typeof boardCliAuthAccessLevelSchema>;
+export type OperatorCliAuthAccessLevel = z.infer<typeof operatorCliAuthAccessLevelSchema>;
 
 export const createCliAuthChallengeSchema = z.object({
   command: z.string().min(1).max(240),
   clientName: z.string().max(120).optional().nullable(),
-  requestedAccess: boardCliAuthAccessLevelSchema.default("board"),
+  requestedAccess: operatorCliAuthAccessLevelSchema.default("operator"),
   requestedCompanyId: z.string().uuid().optional().nullable(),
 });
 

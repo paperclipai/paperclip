@@ -117,10 +117,10 @@ describe("routine routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("requires tasks:assign permission for non-admin board routine creation", async () => {
+  it("requires tasks:assign permission for non-admin operator routine creation", async () => {
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -141,8 +141,8 @@ describe("routine routes", () => {
 
   it("requires tasks:assign permission to retarget a routine assignee", async () => {
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -162,8 +162,8 @@ describe("routine routes", () => {
   it("requires tasks:assign permission to reactivate a routine", async () => {
     mockRoutineService.get.mockResolvedValue(pausedRoutine);
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -182,8 +182,8 @@ describe("routine routes", () => {
 
   it("requires tasks:assign permission to create a trigger", async () => {
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -204,8 +204,8 @@ describe("routine routes", () => {
 
   it("requires tasks:assign permission to update a trigger", async () => {
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -224,8 +224,8 @@ describe("routine routes", () => {
 
   it("requires tasks:assign permission to manually run a routine", async () => {
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -240,11 +240,11 @@ describe("routine routes", () => {
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
   });
 
-  it("allows routine creation when the board user has tasks:assign", async () => {
+  it("allows routine creation when the operator user has tasks:assign", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
     const app = createApp({
-      type: "board",
-      userId: "board-user",
+      type: "operator",
+      userId: "operator-user",
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
@@ -265,7 +265,7 @@ describe("routine routes", () => {
       assigneeAgentId: agentId,
     }), {
       agentId: null,
-      userId: "board-user",
+      userId: "operator-user",
     });
   });
 });

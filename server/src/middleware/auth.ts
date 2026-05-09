@@ -7,7 +7,7 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { boardAuthService } from "../services/board-auth.js";
+import { operatorAuthService } from "../services/operator-auth.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -19,11 +19,11 @@ interface ActorMiddlewareOptions {
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
-  const boardAuth = boardAuthService(db);
+  const operatorAuth = operatorAuthService(db);
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
-        ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
+        ? { type: "operator", userId: "local-operator", isInstanceAdmin: true, source: "local_implicit" }
         : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
@@ -60,7 +60,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               ),
           ]);
           req.actor = {
-            type: "board",
+            type: "operator",
             userId,
             companyIds: memberships.map((row) => row.companyId),
             isInstanceAdmin: Boolean(roleRow),
@@ -82,19 +82,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+    const operatorKey = await operatorAuth.findOperatorApiKeyByToken(token);
+    if (operatorKey) {
+      const access = await operatorAuth.resolveOperatorAccess(operatorKey.userId);
       if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
+        await operatorAuth.touchOperatorApiKey(operatorKey.id);
         req.actor = {
-          type: "board",
-          userId: boardKey.userId,
+          type: "operator",
+          userId: operatorKey.userId,
           companyIds: access.companyIds,
           isInstanceAdmin: access.isInstanceAdmin,
-          keyId: boardKey.id,
+          keyId: operatorKey.id,
           runId: runIdHeader || undefined,
-          source: "board_key",
+          source: "operator_key",
         };
         next();
         return;
@@ -172,6 +172,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
-export function requireBoard(req: Express.Request) {
-  return req.actor.type === "board";
+export function requireOperator(req: Express.Request) {
+  return req.actor.type === "operator";
 }
