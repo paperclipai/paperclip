@@ -68,6 +68,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
     role: "engineer",
     title: null,
     icon: null,
+    image: null,
     status: "active",
     reportsTo: null,
     capabilities: null,

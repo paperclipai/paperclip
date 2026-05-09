@@ -16,10 +16,22 @@ const DEFAULT_ICON: AgentIconName = "bot";
 
 interface AgentIconProps {
   icon: string | null | undefined;
+  image?: string | null | undefined;
+  alt?: string;
   className?: string;
 }
 
-export function AgentIcon({ icon, className }: AgentIconProps) {
+export function AgentIcon({ icon, image, alt, className }: AgentIconProps) {
+  if (image) {
+    return (
+      <img
+        src={image}
+        alt={alt ?? ""}
+        className={cn("rounded-full object-cover", className)}
+        draggable={false}
+      />
+    );
+  }
   const Icon = getAgentIcon(icon);
   return <Icon className={className} />;
 }
