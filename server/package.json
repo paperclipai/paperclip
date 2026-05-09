@@ -70,7 +70,6 @@
     "jsdom": "^28.1.0",
     "multer": "^2.1.1",
     "open": "^11.0.0",
-    "playwright": "^1.58.2",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
     "pino-pretty": "^13.1.3",
