@@ -18,6 +18,8 @@ export function isPrivateOrLoopbackHost(host: string): boolean {
   const normalized = normalizeHost(host).toLowerCase();
   if (isLoopbackHost(normalized)) return true;
   if (isLinkLocalHost(normalized)) return true;
+  // IPv6 unique local addresses (RFC 4193, fc00::/7 → fcXX:... and fdXX:...)
+  if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true;
   const parts = normalized.split(".");
   if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p))) {
     const [a, b] = parts.map(Number);

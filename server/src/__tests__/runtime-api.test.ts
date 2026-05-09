@@ -211,10 +211,19 @@ describe("isPrivateOrLoopbackHost", () => {
     expect(isPrivateOrLoopbackHost("fe80::1")).toBe(true);
   });
 
+  it("returns true for IPv6 unique local addresses (ULA, fc00::/7)", () => {
+    expect(isPrivateOrLoopbackHost("fc00::1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("fd00::1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("fd7a:115c::1")).toBe(true);
+    // Tailscale CGNAT IPv6 from TIK-1329 audit finding
+    expect(isPrivateOrLoopbackHost("fd7a:115c:a1e0::8a3a:a11d")).toBe(true);
+  });
+
   it("returns false for public internet addresses and external hostnames", () => {
     expect(isPrivateOrLoopbackHost("webhook.tiknas.com")).toBe(false);
     expect(isPrivateOrLoopbackHost("198.51.100.10")).toBe(false);
     expect(isPrivateOrLoopbackHost("8.8.8.8")).toBe(false);
     expect(isPrivateOrLoopbackHost("203.0.113.42")).toBe(false);
+    expect(isPrivateOrLoopbackHost("2001:db8::1")).toBe(false);
   });
 });
