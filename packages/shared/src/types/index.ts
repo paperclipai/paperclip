@@ -1,5 +1,21 @@
 export type { Company } from "./company.js";
 export type {
+  BettingOpsDashboardData,
+  BettingOpsDashboardDistributionPoint,
+  BettingOpsDashboardEntry,
+  BettingOpsDashboardSlip,
+  BettingOpsDashboardSlipLeg,
+  BettingOpsDashboardMatch,
+  BettingOpsDashboardAgentMetric,
+  BettingOpsDashboardSeriesCollection,
+  BettingOpsDashboardSeriesPoint,
+  BettingOpsDashboardShortcutInfo,
+  BettingOpsDashboardShortcutInstallResult,
+  BettingOpsDashboardDailyPerf,
+  BettingOpsDashboardSimBet,
+  BettingOpsDashboardSimulation,
+} from "./betting-ops-dashboard.js";
+export type {
   Environment,
   EnvironmentLease,
   EnvironmentProbeResult,

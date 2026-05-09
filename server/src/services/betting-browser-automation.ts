@@ -71,10 +71,20 @@ const GENERIC_BETSLIP_ACTIVE_SELECTORS = [
   "[class*='betslip__selection']",
   "[class*='betslip__event']",
 ];
-export const DEFAULT_BBA_FIREFOX_PROFILE =
-  "C:\\Users\\thepr\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\a8jg7amv.paperclip-bba";
-export const DEFAULT_BBA_CHROMIUM_PROFILE =
-  "C:\\Users\\thepr\\.paperclip\\bba-playwright-profile";
+export const DEFAULT_BBA_FIREFOX_PROFILE = path.join(
+  os.homedir(),
+  "AppData",
+  "Roaming",
+  "Mozilla",
+  "Firefox",
+  "Profiles",
+  "a8jg7amv.paperclip-bba",
+);
+export const DEFAULT_BBA_CHROMIUM_PROFILE = path.join(
+  os.homedir(),
+  ".paperclip",
+  "bba-playwright-profile",
+);
 
 export interface BettingAutomationSecretRef {
   secretId?: string | null;
@@ -227,7 +237,7 @@ type BettingAutomationExecutionLedger = {
   confirmedBy: string | null;
 };
 
-type PlaywrightModule = typeof import("playwright");
+type PlaywrightModule = typeof import("@playwright/test");
 
 type ServiceDeps = {
   resolveSecret: (
@@ -475,10 +485,17 @@ async function cloneUserDataDir(userDataDir: string, random: () => number) {
       force: true,
     });
   } catch (error) {
-    if (!isSkippableProfileCopyError(error)) {
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : null;
+    if (code === "ENOENT") {
+      // Profile directory doesn't exist yet — launch with a blank profile
+      await fs.mkdir(cloneRoot, { recursive: true });
+    } else if (!isSkippableProfileCopyError(error)) {
       throw error;
+    } else {
+      await copyDirBestEffort(userDataDir, cloneRoot);
     }
-    await copyDirBestEffort(userDataDir, cloneRoot);
   }
   // Reset exit_type so Chrome doesn't show "Restore pages?" crash recovery dialog
   const prefsPath = path.join(cloneRoot, "Default", "Preferences");
@@ -1907,7 +1924,7 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
         };
       }
 
-      const playwright = deps.playwright ?? await import("playwright");
+      const playwright = deps.playwright ?? await import("@playwright/test");
       const browserName = resolveBrowserName(request.execution);
       const browserType = browserName === "firefox" ? playwright.firefox : playwright.chromium;
       const screenshots: string[] = [];

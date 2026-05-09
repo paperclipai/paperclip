@@ -75,3 +75,7 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { bettingMatches } from "./betting_matches.js";
+export { bettingPredictions } from "./betting_predictions.js";
+export { bettingPlacedBets } from "./betting_placed_bets.js";
+export { bettingBankrollSnapshots } from "./betting_bankroll_snapshots.js";

@@ -1,4 +1,20 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export type {
+  BettingOpsDashboardData,
+  BettingOpsDashboardDistributionPoint,
+  BettingOpsDashboardEntry,
+  BettingOpsDashboardSlip,
+  BettingOpsDashboardSlipLeg,
+  BettingOpsDashboardMatch,
+  BettingOpsDashboardAgentMetric,
+  BettingOpsDashboardSeriesCollection,
+  BettingOpsDashboardSeriesPoint,
+  BettingOpsDashboardShortcutInfo,
+  BettingOpsDashboardShortcutInstallResult,
+  BettingOpsDashboardDailyPerf,
+  BettingOpsDashboardSimBet,
+  BettingOpsDashboardSimulation,
+} from "./types/index.js";
 export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
