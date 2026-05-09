@@ -21,11 +21,23 @@ export const AGENT_STATUSES = [
   "paused",
   "idle",
   "running",
+  "degraded",
   "error",
   "pending_approval",
   "terminated",
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
+
+// Degraded-state thresholds
+export const DEGRADED_FAILURE_THRESHOLD = 3;
+export const DEGRADED_BEAT_LIMIT = 5;
+export const DEGRADED_DURATION_LIMIT_MS = 30 * 60 * 1000;
+export const DEGRADED_COOLDOWN_SCHEDULE_MS = [2, 5, 10, 15].map((m) => m * 60 * 1000) as [
+  number,
+  number,
+  number,
+  number,
+];
 
 export const AGENT_ADAPTER_TYPES = [
   "process",

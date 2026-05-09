@@ -54,6 +54,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { checkVestigialIssue } from "./vestigial.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -232,6 +233,7 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
 }
 
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
+  // degraded agents remain invokable — the tickTimers cooldown throttles their wakeup cadence.
   return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
 
@@ -1742,6 +1744,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEscalated: 0,
       escalated: 0,
       skipped: 0,
+      vestigialSuppressed: 0,
       issueIds: [] as string[],
     };
 
@@ -1765,6 +1768,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
+        continue;
+      }
+
+      const vestigialResult = await checkVestigialIssue(db, issue);
+      if (vestigialResult) {
+        result.vestigialSuppressed = (result.vestigialSuppressed ?? 0) + 1;
+        result.issueIds.push(issue.id);
         continue;
       }
 

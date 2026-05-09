@@ -106,7 +106,7 @@ export interface IssueGraphLivenessInput {
   now?: Date | string;
 }
 
-const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
+const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "degraded", "error"]);
 const BLOCKING_AGENT_STATUSES = new Set(["paused", "terminated", "pending_approval"]);
 
 function issueLabel(issue: IssueLivenessIssueInput) {

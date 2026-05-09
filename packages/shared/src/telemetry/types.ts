@@ -41,4 +41,7 @@ export type TelemetryEventName =
   | "agent.first_heartbeat"
   | "agent.task_completed"
   | "error.handler_crash"
+  | "agent.entered_degraded"
+  | "agent.recovered_from_degraded"
+  | "agent.terminated_from_degraded"
   | `plugin.${string}`;
