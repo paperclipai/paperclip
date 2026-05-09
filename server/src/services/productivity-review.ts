@@ -92,6 +92,14 @@ type CancelRun = (runId: string, reason?: string) => Promise<unknown | null>;
 
 const PRODUCTIVITY_REVIEW_RESOLVED_CANCEL_REASON =
   "Cancelled because productivity review source issue is no longer actionable";
+const PRODUCTIVITY_REVIEW_OWNER_NOTES_HEADING = "## Owner Notes";
+const PRODUCTIVITY_REVIEW_OWNER_NOTES_EMPTY = "- none recorded";
+const PRODUCTIVITY_REVIEW_OWNER_ACTION_HEADING = "## Owner Action";
+const PRODUCTIVITY_REVIEW_OWNER_ACTIONS = [
+  "- Close as productive if this pattern is expected.",
+  "- Continue with a snooze window if the current work should keep running without repeat review spam.",
+  "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+] as const;
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
@@ -145,6 +153,54 @@ function maxDate(...values: Array<Date | string | null | undefined>) {
     .filter((value): value is Date => Boolean(value));
   if (dates.length === 0) return null;
   return dates.reduce((latest, value) => value.getTime() > latest.getTime() ? value : latest, dates[0]!);
+}
+
+function readReviewGeneratedAt(description: string | null | undefined) {
+  const match = String(description ?? "").match(/(?:^|\n)- Generated at: ([^\r\n]+)/);
+  const generatedAt = coerceDate(match?.[1]?.trim());
+  return generatedAt && Number.isFinite(generatedAt.getTime()) ? generatedAt : null;
+}
+
+function readMarkdownSection(description: string | null | undefined, heading: string) {
+  const lines = String(description ?? "").split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => line.trim() === heading);
+  if (startIndex === -1) return null;
+  let endIndex = lines.length;
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    if (lines[index]?.startsWith("## ")) {
+      endIndex = index;
+      break;
+    }
+  }
+  const section = lines.slice(startIndex + 1, endIndex).join("\n").trim();
+  return section.length > 0 ? section : null;
+}
+
+function normalizeOwnerNotes(value: string | null | undefined) {
+  const normalized = String(value ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== PRODUCTIVITY_REVIEW_OWNER_NOTES_EMPTY)
+    .join("\n")
+    .trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function readPreservedOwnerNotes(description: string | null | undefined) {
+  const ownerNotes = normalizeOwnerNotes(readMarkdownSection(description, PRODUCTIVITY_REVIEW_OWNER_NOTES_HEADING));
+  if (ownerNotes) return ownerNotes;
+
+  const ownerActionSection = readMarkdownSection(description, PRODUCTIVITY_REVIEW_OWNER_ACTION_HEADING);
+  if (!ownerActionSection) return null;
+  const lines = ownerActionSection.split(/\r?\n/);
+  let index = 0;
+  for (const action of PRODUCTIVITY_REVIEW_OWNER_ACTIONS) {
+    while (index < lines.length && lines[index]?.trim() === "") index += 1;
+    if (lines[index]?.trim() !== action) {
+      return normalizeOwnerNotes(ownerActionSection);
+    }
+    index += 1;
+  }
+  return normalizeOwnerNotes(lines.slice(index).join("\n"));
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
@@ -574,7 +630,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return null;
   }
 
-  function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+  function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string, ownerNotes?: string | null) {
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
         `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
@@ -632,11 +688,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       usage,
       "",
-      "## Owner Action",
+      PRODUCTIVITY_REVIEW_OWNER_NOTES_HEADING,
       "",
-      "- Close as productive if this pattern is expected.",
-      "- Continue with a snooze window if the current work should keep running without repeat review spam.",
-      "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+      ownerNotes?.trim() || PRODUCTIVITY_REVIEW_OWNER_NOTES_EMPTY,
+      "",
+      PRODUCTIVITY_REVIEW_OWNER_ACTION_HEADING,
+      "",
+      ...PRODUCTIVITY_REVIEW_OWNER_ACTIONS,
     ].join("\n");
   }
 
@@ -684,7 +742,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
-      const lastRefreshOrCreationAt = maxDate(refreshState.latestCreatedAt, existing.updatedAt, existing.createdAt) ?? existing.createdAt;
+      const lastRefreshOrCreationAt =
+        maxDate(refreshState.latestCreatedAt, readReviewGeneratedAt(existing.description), existing.createdAt) ??
+        existing.createdAt;
       if (
         evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
       ) {
@@ -692,7 +752,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
       await db
         .update(issues)
-        .set({ description: buildReviewMarkdown(evidence, opts.prefix), updatedAt: evidence.generatedAt })
+        .set({
+          description: buildReviewMarkdown(evidence, opts.prefix, readPreservedOwnerNotes(existing.description)),
+          updatedAt: evidence.generatedAt,
+        })
         .where(eq(issues.id, existing.id));
       const refreshCommentAdded = refreshState.count < opts.thresholds.maxRefreshComments;
       if (refreshCommentAdded) {
