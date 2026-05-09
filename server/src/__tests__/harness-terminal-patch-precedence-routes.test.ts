@@ -227,8 +227,8 @@ describe("MONAA-558 harness terminal-PATCH precedence", { timeout: 30_000 }, () 
     }
   });
 
-  it("flag=false: PATCH status=done + comment still enqueues a comment wake on the assignee (cascade trigger)", async () => {
-    delete process.env.HARNESS_TERMINAL_PATCH_PRECEDENCE;
+  it("flag=\"false\" (explicit opt-out, MONAA-674): PATCH status=done + comment still enqueues a comment wake on the assignee (cascade trigger restored)", async () => {
+    process.env.HARNESS_TERMINAL_PATCH_PRECEDENCE = "false";
 
     const existing = makeIssue({ status: "in_progress" });
     const updated = makeIssue({ status: "done" });
@@ -249,6 +249,28 @@ describe("MONAA-558 harness terminal-PATCH precedence", { timeout: 30_000 }, () 
     expect(commentWakeCalls()).toHaveLength(1);
     expect(commentWakeCalls()[0][0]).toBe(ASSIGNEE_AGENT_ID);
     expect(commentWakeCalls()[0][1].reason).toBe("issue_commented");
+  });
+
+  it("flag unset (default-on, MONAA-674): PATCH status=done + comment leaves the issue done with no comment-driven wake", async () => {
+    delete process.env.HARNESS_TERMINAL_PATCH_PRECEDENCE;
+
+    const existing = makeIssue({ status: "in_progress" });
+    const updated = makeIssue({ status: "done" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-674-default",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Closing this out.",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "done", comment: "Closing this out." });
+
+    expect(res.status).toBe(200);
+    expect(commentWakeCalls()).toHaveLength(0);
   });
 
   it("flag=true: PATCH status=done + comment leaves the issue done with no comment-driven wake", async () => {
