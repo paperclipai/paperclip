@@ -47,6 +47,20 @@ function safeShortString(value: unknown, maxChars: number) {
   return `${trimmed.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
+function normalizeLangfuseEnvironment(value: unknown) {
+  const raw = safeShortString(value, 40);
+  if (!raw) return "local";
+
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!normalized) return "local";
+  if (normalized.startsWith("langfuse")) return "local";
+  return normalized;
+}
+
 function deriveUuidV4(seed: string) {
   const hash = createHash("sha256").update(seed).digest();
   const bytes = Buffer.from(hash.subarray(0, 16));
@@ -160,7 +174,7 @@ export async function maybeExportHeartbeatRunToLangfuse(input: LangfuseHeartbeat
       name: DEFAULT_TRACE_NAME,
       userId: typeof agentId === "string" ? agentId : null,
       sessionId: issueId,
-      environment: safeShortString(process.env.PAPERCLIP_LANGFUSE_ENVIRONMENT, 40) ?? "local",
+      environment: normalizeLangfuseEnvironment(process.env.PAPERCLIP_LANGFUSE_ENVIRONMENT),
       version: safeShortString(input?.promptVersion, 120) ?? null,
       tags: ["paperclip", "heartbeat", ...(adapterType ? [adapterType] : []), ...(issueIdentifier ? [issueIdentifier] : [])],
       metadata: {

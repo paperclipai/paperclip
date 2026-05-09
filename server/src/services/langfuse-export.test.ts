@@ -66,6 +66,7 @@ describe("langfuse export", () => {
     process.env.LANGFUSE_HOST = "http://127.0.0.1:3001/";
     process.env.LANGFUSE_PUBLIC_KEY = "pk-test";
     process.env.LANGFUSE_SECRET_KEY = "sk-test";
+    process.env.PAPERCLIP_LANGFUSE_ENVIRONMENT = "Production";
 
     await maybeExportHeartbeatRunToLangfuse({
       companyId: "company-1",
@@ -102,6 +103,7 @@ describe("langfuse export", () => {
     expect(trace.id).toBe("run-1");
     expect(trace.sessionId).toBe("issue-1");
     expect(trace.name).toBe("paperclip.heartbeat_run");
+    expect(trace.environment).toBe("production");
 
     const generation = body.batch.find((event: { type: string }) => event.type === "generation-create")?.body;
     expect(generation.traceId).toBe("run-1");

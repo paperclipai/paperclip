@@ -65,4 +65,4 @@ Exports are metadata-only (no prompts, run logs, file paths, issue bodies, or en
 | `LANGFUSE_PUBLIC_KEY` | (unset) | Langfuse public key (Basic Auth username) |
 | `LANGFUSE_SECRET_KEY` | (unset) | Langfuse secret key (Basic Auth password) |
 | `PAPERCLIP_LANGFUSE_TIMEOUT_MS` | `3000` | Ingestion request timeout in milliseconds |
-| `PAPERCLIP_LANGFUSE_ENVIRONMENT` | `local` | Langfuse `environment` field for traces |
+| `PAPERCLIP_LANGFUSE_ENVIRONMENT` | `local` | Langfuse `environment` field for traces (normalized to lowercase `a-z0-9-_`, max 40 chars; values starting with `langfuse` fall back to `local`) |
