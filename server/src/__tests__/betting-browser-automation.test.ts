@@ -1,5 +1,18 @@
 import type { Page } from "playwright";
 import { describe, expect, it, vi } from "vitest";
+
+// bettingPlacedBets / bettingPredictions are imported by the service at module
+// load time, but the source schema files (betting_placed_bets.ts etc.) only
+// exist in dist during development — the test environment resolves
+// @paperclipai/db to the TypeScript source, which doesn't export them yet.
+// Stub them so the service's idempotency eq() call doesn't throw.
+vi.mock("@paperclipai/db", () => ({
+  bettingPlacedBets: { idempotencyKey: "idempotency_key" },
+  bettingPredictions: {},
+  bettingBankrollSnapshots: { balance: "balance", currency: "currency", snapshotAt: "snapshot_at", companyId: "company_id" },
+  bettingMatches: {},
+}));
+
 import {
   DEFAULT_BBA_CHROMIUM_PROFILE,
   buildSessionSummary,
