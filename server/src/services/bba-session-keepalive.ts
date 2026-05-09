@@ -165,7 +165,7 @@ async function runKeepalive(): Promise<void> {
 // Attempts to log in via Chrome password manager autofill.
 // Returns true if session is active after the attempt.
 async function attemptAutofillRelogin(
-  page: import("playwright").Page,
+  page: import("@playwright/test").Page,
 ): Promise<boolean> {
   try {
     await dismissOverlays(page);
