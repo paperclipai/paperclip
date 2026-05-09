@@ -2,6 +2,7 @@ export const RECOVERY_ORIGIN_KINDS = {
   issueGraphLivenessEscalation: "harness_liveness_escalation",
   issueProductivityReview: "issue_productivity_review",
   strandedIssueRecovery: "stranded_issue_recovery",
+  strandedRecoveryCapExceeded: "stranded_recovery_cap_exceeded",
   staleActiveRunEvaluation: "stale_active_run_evaluation",
 } as const;
 

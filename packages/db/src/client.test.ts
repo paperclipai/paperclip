@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  migrationDisablesTransaction,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -41,6 +42,52 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres migration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("migrationDisablesTransaction", () => {
+  const cases: Array<{ name: string; content: string; expected: boolean }> = [
+    {
+      name: "directive on first line",
+      content: "-- @no-transaction\nCREATE INDEX CONCURRENTLY ...",
+      expected: true,
+    },
+    {
+      name: "directive without space after dashes",
+      content: "--@no-transaction\nCREATE INDEX CONCURRENTLY ...",
+      expected: true,
+    },
+    {
+      name: "directive with leading whitespace",
+      content: "  -- @no-transaction\nCREATE INDEX CONCURRENTLY ...",
+      expected: true,
+    },
+    {
+      name: "directive after preceding comment line",
+      content: "-- some comment\n-- @no-transaction\nCREATE INDEX CONCURRENTLY ...",
+      expected: true,
+    },
+    {
+      name: "no directive",
+      content: "CREATE INDEX foo ON bar (baz);",
+      expected: false,
+    },
+    {
+      name: "directive token with extra trailing word does not match",
+      content: "-- @no-transaction-policy\nCREATE INDEX foo ON bar (baz);",
+      expected: false,
+    },
+    {
+      name: "empty content",
+      content: "",
+      expected: false,
+    },
+  ];
+
+  for (const { name, content, expected } of cases) {
+    it(name, () => {
+      expect(migrationDisablesTransaction(content)).toBe(expected);
+    });
+  }
+});
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
@@ -540,5 +587,45 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       }
     },
     20_000,
+  );
+
+  it(
+    "applies migration 0082 with CREATE INDEX CONCURRENTLY via the @no-transaction directive",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const indexes = await verifySql.unsafe<{ indexdef: string }[]>(
+          `
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = 'heartbeat_runs_company_created_at_idx'
+          `,
+        );
+        expect(indexes).toHaveLength(1);
+        expect(indexes[0]?.indexdef ?? "").toMatch(/company_id/);
+        expect(indexes[0]?.indexdef ?? "").toMatch(/created_at\s+DESC/i);
+
+        const journalEntries = await verifySql.unsafe<{ hash: string }[]>(
+          `
+            SELECT hash
+            FROM "drizzle"."__drizzle_migrations"
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+        );
+        const expectedHash = await migrationHash(
+          "0082_heartbeat_runs_company_created_at_idx.sql",
+        );
+        expect(journalEntries[0]?.hash).toBe(expectedHash);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    30_000,
   );
 });
