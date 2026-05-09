@@ -231,6 +231,22 @@ payload = {
 
 ```
 Alejandro  → Director técnico + content pipeline + infraestructura
-Amigo 1    → DiscontrolsBags (trading)
-Amigo 2    → DiscontrolGrowth (ventas)
+Amigo 1    → DiscontrolsBags (Pine Script / TradingView strategies)
+Amigo 2    → DiscontrolGrowth (ventas / captación de clientes)
+Amir       → DiscontrolDrops (Shopify integration + dashboards frontend)
 ```
+
+### DiscontrolsBags — CAMBIO IMPORTANTE
+
+Ya NO es trading Polymarket. Ahora genera estrategias algorítmicas:
+- Pipeline: Stock Analyzer → Strategy Designer → Strategy Critic → Strategy Optimizer → Reporter
+- Output: Pine Script v5 listo para TradingView
+- Input: ticker + estilo (momentum, breakout, mean_reversion, trend_following...)
+- Reporter genera guía completa de uso en TradingView con backtesting
+
+### DiscontrolDrops — Rol de Amir
+
+- Integrar Shopify Admin API (publicar productos desde Web Designer)
+- Implementar los 4 dashboards diseñados (ZIPs de Stitch en Downloads/)
+- Gestionar tienda y primeros productos dropshipping
+- Variables pendientes en Railway: SHOPIFY_STORE_URL + SHOPIFY_ACCESS_TOKEN
