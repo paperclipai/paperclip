@@ -2,7 +2,7 @@
   "title": "Εισερχόμενα",
   "tabs": {
     "mine": "Δικά μου",
-    "board": "Board",
+    "board": "Συμβούλιο",
     "recent": "Πρόσφατα",
     "unread": "Αδιάβαστα",
     "all": "Όλα"
@@ -93,7 +93,7 @@
     "failed_to_undo_archive": "Αποτυχία αναίρεσης αρχειοθέτησης"
   },
   "creators": {
-    "board": "Board",
+    "board": "Συμβούλιο",
     "me": "Εγώ"
   },
   "join_queue": {
