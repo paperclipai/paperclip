@@ -29,7 +29,7 @@
   },
   "actor": {
     "system": "System",
-    "board": "Gremium",
+    "board": "Board",
     "you": "Sie",
     "unknown": "Unbekannt",
     "agent_fallback": "Agent",
@@ -50,7 +50,6 @@
     "issue_document_deleted": "hat ein Dokument gelöscht von",
     "issue_commented": "kommentiert",
     "issue_deleted": "gelöscht",
-    "issue_read_marked": "als gelesen markiert",
     "agent_created": "erstellt",
     "agent_updated": "aktualisiert",
     "agent_paused": "pausiert",
@@ -80,6 +79,7 @@
     "invite_accepted": "hat eine Einladung angenommen",
     "invite_cancelled": "hat eine Einladung storniert",
     "invite_expired": "Einladung abgelaufen",
+    "issue_read_marked": "als gelesen markiert",
     "environment_lease_acquired": "Umgebung übernommen",
     "environment_lease_released": "Umgebung freigegeben"
   },
@@ -97,7 +97,6 @@
     "issue_document_updated": "hat ein Dokument aktualisiert",
     "issue_document_deleted": "hat ein Dokument gelöscht",
     "issue_deleted": "hat die Aufgabe gelöscht",
-    "issue_read_marked": "als gelesen markiert",
     "agent_created": "hat einen Agenten erstellt",
     "agent_updated": "hat den Agenten aktualisiert",
     "agent_paused": "hat den Agenten pausiert",
@@ -108,6 +107,7 @@
     "approval_created": "hat Genehmigung angefordert",
     "approval_approved": "genehmigt",
     "approval_rejected": "abgelehnt",
+    "issue_read_marked": "hat die Aufgabe als gelesen markiert",
     "environment_lease_acquired": "hat eine Umgebung übernommen",
     "environment_lease_released": "hat eine Umgebung freigegeben"
   },
@@ -144,19 +144,19 @@
     "unassigned": "Nicht zugewiesen",
     "status_label": "Status",
     "assignee_label": "Zugewiesen",
+    "workspace_label": "Arbeitsbereich",
     "updated_task": "hat diese Aufgabe aktualisiert",
     "requested_follow_up": "bat um Rückverfolgung",
     "system": "System",
-    "environment_label": "Umgebung",
-    "failure_label": "Fehler",
-    "lease_label": "Lease",
-    "no_entries": "Keine Einträge in der Chronik.",
     "none": "Keine",
-    "provider_label": "Anbieter",
+    "no_entries": "Keine Einträge in der Chronik.",
     "run_label": "Ausführung",
-    "workspace_label": "Arbeitsbereich"
+    "environment_label": "Umgebung",
+    "provider_label": "Anbieter",
+    "lease_label": "Leasingvertrag",
+    "failure_label": "Fehler"
   },
   "system": "System",
-  "board": "Tafel",
+  "board": "Board",
   "unknown": "Unbekannt"
 }

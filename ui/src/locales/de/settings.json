@@ -87,7 +87,7 @@
       "always_allow_desc": "Abgestimmte KI-Ausgaben automatisch teilen.",
       "dont_allow_label": "Nicht erlauben",
       "dont_allow_desc": "Abgestimmte KI-Ausgaben nur lokal aufbewahren.",
-      "retest_hint": "Um die Erstverwendungsaufforderung in der lokalen Entwicklung erneut zu testen, entfernen Sie den <code>feedbackDataSharingPreference</code>-Schlüssel aus der <code>instance_settings.general</code>-JSON-Zeile für diese Instanz oder setzen Sie ihn auf <code>\"prompt\"</code> zurück."
+      "retest_hint": "Um die Erstverwendungsaufforderung in der lokalen Entwicklung erneut zu testen, entfernen Sie den <code>feedbackDataSharingPreference</code>-Schlüssel aus der <code>instance_settings.general</code>-JSON-Zeile für diese Instanz oder setzen Sie ihn auf <code>\"prompt\"</code> zurück. Unset und <code>\"prompt\"</code> bedeuten beide, dass noch kein Standard gewählt wurde."
     },
     "language": {
       "title": "Anzeigesprache",
@@ -110,13 +110,7 @@
     "de": "Deutsch",
     "pt": "Português",
     "zh": "中文",
-    "el": "Griechisch",
-    "ar": "Arabisch",
-    "fr": "Französisch",
-    "it": "Italienisch",
-    "ja": "Japanisch",
-    "ko": "Koreanisch",
-    "tr": "Türkisch"
+    "el": "Griechisch"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Laufzeit-Dashboard",

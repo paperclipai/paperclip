@@ -35,7 +35,7 @@
     "tabs": {
       "dashboard": "Dashboard",
       "instructions": "Anweisungen",
-      "skills": "Skills",
+      "skills": "Fähigkeiten",
       "configuration": "Konfiguration",
       "runs": "Ausführungen",
       "budget": "Budget"
@@ -75,8 +75,6 @@
       "created_by_run": "Durch diese Ausführung erstellt",
       "reused_existing": "Bestehenden Arbeitsbereich wiederverwendet"
     },
-    "copy_as_markdown": "Als Markdown kopieren",
-    "signal": "Signal",
     "save_failed": "Speichern fehlgeschlagen",
     "save_config": "Speichern",
     "saving_config": "Wird gespeichert…",
@@ -155,6 +153,7 @@
     "file_contents_placeholder": "Dateiinhalt",
     "cancel": "Abbrechen",
     "delete": "Löschen",
+    "copy_as_markdown": "Als Markdown kopieren",
     "can_assign_tasks_desc": "Kann anderen Agenten Aufgaben zuweisen",
     "save_failed_msg": "Agent konnte nicht gespeichert werden",
     "failed_resume": "Ausführung konnte nicht fortgesetzt werden",
@@ -164,6 +163,7 @@
     "clear_session_confirm": "Sitzung wird geleert...",
     "clear_session_btn": "Sitzung für diese Aufgaben löschen",
     "exit_code": "Exitcode",
+    "signal": "Signal",
     "action_failed": "Aktion fehlgeschlagen",
     "failed_reset_session": "Sitzung konnte nicht zurückgesetzt werden",
     "failed_update_permissions": "Berechtigungen konnten nicht aktualisiert werden",
@@ -220,6 +220,7 @@
     "secret_name_prompt": "Geheimnisname",
     "failed_create_secret": "Geheimnis konnte nicht erstellt werden",
     "key_placeholder": "SCHLÜSSEL",
+    "value_placeholder": "value",
     "plain": "Klartext",
     "secret": "Geheimnis",
     "select_secret": "Geheimnis auswählen...",
@@ -227,8 +228,7 @@
     "seal_title": "Wert als Geheimnis speichern und durch Referenz ersetzen",
     "new_secret": "Neu",
     "seal": "Versiegeln",
-    "paperclip_vars_note": "PAPERCLIP_*-Variablen werden zur Laufzeit automatisch eingefügt.",
-    "value_placeholder": "value"
+    "paperclip_vars_note": "PAPERCLIP_*-Variablen werden zur Laufzeit automatisch eingefügt."
   },
   "config_form": {
     "unsaved_changes": "Nicht gespeicherte Änderungen",
@@ -387,17 +387,17 @@
     "stdout_label": "stdout",
     "collapse_stdout": "stdout einklappen",
     "expand_stdout": "stdout ausklappen",
-    "inspect_input": "Inspect {{name}} input",
-    "no_input": "No {{name}} input",
-    "key_payload": "{{key}} payload",
-    "paths_summary": "{{count}} path, starting with {{path}}",
-    "paths_summary_plural": "{{count}} paths, starting with {{path}}",
-    "fields_summary": "{{count}} field: {{keys}}",
-    "fields_summary_plural": "{{count}} fields: {{keys}}",
-    "log_lines": "{{count}} log line",
-    "log_lines_plural": "{{count}} log lines",
-    "system_messages": "{{count}} system message",
-    "system_messages_plural": "{{count}} system messages"
+    "inspect_input": "{{name}}-Eingabe prüfen",
+    "no_input": "Keine {{name}}-Eingabe",
+    "key_payload": "{{key}}-Payload",
+    "paths_summary": "{{count}} Pfad, beginnend mit {{path}}",
+    "paths_summary_plural": "{{count}} Pfade, beginnend mit {{path}}",
+    "fields_summary": "{{count}} Feld: {{keys}}",
+    "fields_summary_plural": "{{count}} Felder: {{keys}}",
+    "log_lines": "{{count}} Logzeile",
+    "log_lines_plural": "{{count}} Logzeilen",
+    "system_messages": "{{count}} Systemnachricht",
+    "system_messages_plural": "{{count}} Systemnachrichten"
   },
   "detail_view": {
     "invocation": "Aufruf",
@@ -420,6 +420,16 @@
     "stderr_label": "stderr",
     "error_prefix": "Fehler",
     "adapter_result_json": "Adapter-Ergebnis-JSON",
+    "transcript": "Transkript",
+    "transcript_mode_nice": "Übersichtlich",
+    "transcript_mode_raw": "Roh",
+    "jump_to_live": "Zur Live-Ansicht springen",
+    "load_more_log": "Mehr Protokolle laden",
+    "no_log_events": "Keine Protokollereignisse.",
+    "no_persisted_log_lines": "Keine gespeicherten Protokollzeilen.",
+    "clearing_session": "Sitzung wird zurückgesetzt...",
+    "clear_session_text": "Sitzung für diese Probleme zurücksetzen",
+    "failure_details": "Fehlerdetails",
     "skill_location": "Ort",
     "instructions_mode_tooltip": "Verwaltet: Paperclip speichert und stellt das Anweisungs-Bundle bereit. Extern: Sie geben einen Pfad auf der Festplatte an, wo die Anweisungen liegen.",
     "instructions_root_path_tooltip": "Das absolute Verzeichnis auf der Festplatte, wo das Anweisungs-Bundle liegt. Im verwalteten Modus wird dies automatisch von Paperclip gesetzt.",
@@ -470,24 +480,10 @@
     "show_full_log": "Vollständiges Protokoll anzeigen",
     "failed_clear_sessions": "Sitzungen konnten nicht geleert werden",
     "failed_load_run_log": "Ausführungsprotokoll konnte nicht geladen werden",
+    "failed_load_workspace_log": "Arbeitsbereich-Betriebsprotokoll konnte nicht geladen werden",
     "instructions_placeholder": "# Agenten-Anweisungen",
     "skill_view_link": "Anzeigen",
-    "approve_agent": "Agenten genehmigen",
-    "clear_session_text": "Sitzung für diese Probleme zurücksetzen",
-    "clearing_session": "Sitzung wird zurückgesetzt...",
-    "failed_load_workspace_log": "Arbeitsbereich-Betriebsprotokoll konnte nicht geladen werden",
-    "failure_details": "Fehlerdetails",
-    "jump_to_live": "Zur Live-Ansicht springen",
-    "no_log_events": "Keine Protokollereignisse.",
-    "no_persisted_log_lines": "Keine gespeicherten Protokollzeilen.",
-    "load_more_log": "Mehr Protokolle laden",
-    "transcript": "Transkript",
-    "transcript_mode_nice": "Übersichtlich",
-    "transcript_mode_raw": "Roh"
-  },
-  "icon_picker": {
-    "no_match": "Keine Treffer",
-    "search_placeholder": "Icons suchen..."
+    "approve_agent": "Agenten genehmigen"
   },
   "run_errors": {
     "exited_with_code": "Claude wurde mit Code {{code}} beendet",
@@ -498,5 +494,9 @@
     "run_succeeded": "Ausführung erfolgreich",
     "adapter_invocation": "Adapter-Aufruf",
     "used_skill": "Verwendete Fähigkeit"
+  },
+  "icon_picker": {
+    "search_placeholder": "Icons suchen...",
+    "no_match": "Keine Treffer"
   }
 }

@@ -81,7 +81,7 @@
       "archive_button": "Unternehmen archivieren",
       "already_archived": "Bereits archiviert",
       "archiving": "Wird archiviert...",
-      "confirm_archive": "Unternehmen archivieren",
+      "confirm_archive": "„{{name}}“ archivieren? Es wird aus der Seitenleiste ausgeblendet.",
       "archive_failed": "Unternehmen konnte nicht archiviert werden"
     }
   },
@@ -244,7 +244,7 @@
     }
   },
   "skills": {
-    "title": "Skills",
+    "title": "Fähigkeiten",
     "available": "verfügbar",
     "filter_placeholder": "Skills filtern",
     "source_placeholder": "Pfad, GitHub-URL oder skills.sh-Befehl einfügen",
@@ -258,7 +258,7 @@
       "creating": "Wird erstellt..."
     },
     "scan_title": "Projekt-Arbeitsbereiche nach Skills scannen",
-    "detail_breadcrumb": "Skill",
+    "detail_breadcrumb": "Fähigkeit",
     "detail": {
       "remove": "Entfernen",
       "removing": "Wird entfernt...",
@@ -266,6 +266,8 @@
       "edit": "Bearbeiten",
       "stop_editing": "Bearbeitung stoppen",
       "source": "Quelle",
+      "copy_source_path": "Quellpfad kopieren",
+      "copied_path": "Pfad kopiert",
       "pin": "Anheften",
       "untracked": "nicht verfolgt",
       "tracking": "Wird verfolgt",
@@ -283,9 +285,7 @@
       "save": "Speichern",
       "saving": "Wird gespeichert...",
       "select_file": "Wählen Sie eine Datei zur Prüfung.",
-      "bundled_read_only": "Gebündelte Paperclip-Skills sind schreibgeschützt.",
-      "copied_path": "Pfad kopiert",
-      "copy_source_path": "Quellpfad kopieren"
+      "bundled_read_only": "Gebündelte Paperclip-Skills sind schreibgeschützt."
     },
     "sources": {
       "managed": "{{source}} verwaltet",
@@ -457,8 +457,8 @@
     "open_assigned_issues_other": "{{count}} offene zugewiesene Aufgaben",
     "more_issues_one": "{{count}} weitere Aufgabe",
     "more_issues_other": "{{count}} weitere Aufgaben",
-    "agent_option_label": "{{name}} ({{role}})",
-    "member_fallback_name": "dieses Mitglied"
+    "member_fallback_name": "dieses Mitglied",
+    "agent_option_label": "{{name}} ({{role}})"
   },
   "companies": {
     "breadcrumb": "Unternehmen",
@@ -701,8 +701,8 @@
     "unarchive_project_desc": "Dieses Projekt wiederherstellen, um es in der Seitenleiste und Projektauswahlmenüs wiederherzustellen.",
     "archiving": "Wird archiviert...",
     "unarchiving": "Wird wiederhergestellt...",
-    "confirm_archive": "\"{{name}}\" archivieren?",
-    "confirm_unarchive": "\"{{name}}\" wiederherstellen?",
+    "confirm_archive": "„{{name}}“ archivieren?",
+    "confirm_unarchive": "„{{name}}“ wiederherstellen?",
     "confirm_action": "Bestätigen",
     "cancel_action": "Abbrechen",
     "archive_project": "Projekt archivieren",
@@ -860,26 +860,26 @@
       "all": "Gesamte Zeit"
     }
   },
-  "no_skills_match_this_filter": "No skills match this filter.",
-  "select_a_skill_to_inspect_its_files": "Select a skill to inspect its files.",
-  "removing": "Removing...",
+  "no_skills_match_this_filter": "Keine Skills entsprechen diesem Filter.",
+  "select_a_skill_to_inspect_its_files": "Wählen Sie einen Skill, um seine Dateien zu prüfen.",
+  "removing": "Wird entfernt...",
   "remove": "Entfernen",
-  "stop_editing": "Stop editing",
+  "stop_editing": "Bearbeitung stoppen",
   "edit": "Bearbeiten",
-  "check_for_updates": "Check for updates",
-  "install_update": "Install update",
-  "up_to_date": "Up to date",
-  "editable": "Editable",
-  "read_only": "Read only",
-  "no_agents_attached": "No agents attached",
-  "view": "Aussicht",
+  "check_for_updates": "Nach Updates suchen",
+  "install_update": "Update installieren",
+  "up_to_date": "Aktuell",
+  "editable": "Bearbeitbar",
+  "read_only": "Schreibgeschützt",
+  "no_agents_attached": "Keine Agenten angehängt",
+  "view": "Anzeigen",
   "code": "Code",
   "cancel": "Abbrechen",
-  "saving": "Saving...",
+  "saving": "Wird gespeichert...",
   "save": "Speichern",
-  "select_a_file_to_inspect": "Select a file to inspect.",
-  "remove_skill": "Remove skill",
-  "filter_skills": "Filter skills",
-  "paste_path_github_url_or_skills_sh_command": "Paste path, GitHub URL, or skills.sh command",
+  "select_a_file_to_inspect": "Wählen Sie eine Datei zur Prüfung.",
+  "remove_skill": "Skill entfernen",
+  "filter_skills": "Skills filtern",
+  "paste_path_github_url_or_skills_sh_command": "Pfad, GitHub-URL oder skills.sh-Befehl einfügen",
   "add": "Hinzufügen"
 }

@@ -21,10 +21,10 @@
   },
   "status": {
     "approved": "Genehmigt",
+    "cancelled": "Abgebrochen",
     "pending": "Ausstehend",
     "rejected": "Abgelehnt",
-    "revision_requested": "Überarbeitung angefordert",
-    "cancelled": "Abgebrochen"
+    "revision_requested": "Überarbeitung angefordert"
   },
   "payload": {
     "type_hire_agent": "Agent einstellen",
@@ -40,7 +40,7 @@
     "field_icon": "Symbol",
     "field_capabilities": "Fähigkeiten",
     "field_adapter": "Adapter",
-    "field_skills": "Skills",
+    "field_skills": "Fähigkeiten",
     "field_scope": "Bereich",
     "field_window": "Zeitfenster",
     "field_metric": "Kennzahl",
