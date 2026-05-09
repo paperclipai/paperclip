@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexRetryNotBefore,
+  isCodexAuthRefreshFailure,
+  isCodexAuthRequiredError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -119,6 +121,31 @@ describe("isCodexTransientUpstreamError", () => {
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-04-23T04:31:00.000Z",
     );
+  });
+
+  it("does not classify login refresh failures as transient", () => {
+    const stderr = "Login refresh failed: refresh token expired. Please run `codex login`.";
+
+    expect(isCodexTransientUpstreamError({ stderr })).toBe(false);
+    expect(isCodexAuthRefreshFailure({ stderr })).toBe(true);
+    expect(isCodexAuthRequiredError({ stderr })).toBe(true);
+  });
+
+  it("does not classify auth-like task content from stdout as an auth failure", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Document the 401 Unauthorized response and set OPENAI_API_KEY in the example env file." },
+      }),
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4 },
+      }),
+    ].join("\n");
+
+    expect(isCodexAuthRefreshFailure({ stdout })).toBe(false);
+    expect(isCodexAuthRequiredError({ stdout })).toBe(false);
   });
 
   it("does not classify deterministic compaction errors as transient", () => {
