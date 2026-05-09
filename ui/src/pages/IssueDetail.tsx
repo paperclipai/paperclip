@@ -17,7 +17,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
@@ -2511,13 +2511,17 @@ export function IssueDetail() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([
-      sourceBreadcrumb,
-      { label: hasLiveRuns ? `🔵 ${breadcrumbTitle}` : breadcrumbTitle },
-    ]);
+    const crumbs: Breadcrumb[] = [sourceBreadcrumb];
+    if (resolvedProject) {
+      crumbs.push({ label: resolvedProject.name, href: `/projects/${resolvedProject.id}` });
+    }
+    crumbs.push({ label: hasLiveRuns ? `🔵 ${breadcrumbTitle}` : breadcrumbTitle });
+    setBreadcrumbs(crumbs);
   }, [
     breadcrumbTitle,
     hasLiveRuns,
+    resolvedProject?.id,
+    resolvedProject?.name,
     setBreadcrumbs,
     sourceBreadcrumb.href,
     sourceBreadcrumb.label,
