@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
   getRelationSummaries: vi.fn(),
   listAttachments: vi.fn(),
   listBlockerAttention: vi.fn(),
@@ -79,6 +80,16 @@ const mockIssueReferenceService = vi.hoisted(() => ({
 
 const mockWorkProductService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
+}));
+
+const mockDb = vi.hoisted(() => ({
+  select: vi.fn(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        orderBy: vi.fn(async () => []),
+      })),
+    })),
+  })),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -196,7 +207,7 @@ function createApp(actor: Record<string, unknown> = {}) {
     next();
   });
   return vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js").then(({ issueRoutes }) => {
-    app.use("/api", issueRoutes({} as any, {} as any));
+    app.use("/api", issueRoutes(mockDb as any, {} as any));
     app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       if (err?.name === "ZodError") {
         res.status(400).json({ error: "Validation error", details: err.issues });
@@ -250,6 +261,7 @@ describe("issue Expected output contract routes", () => {
       latestCommentId: null,
       latestCommentAt: null,
     });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
@@ -407,7 +419,7 @@ describe("issue Expected output contract routes", () => {
     const issueRes = await withApi({}, (api) => api.get(`/api/issues/${issueId}`));
     const contextRes = await withApi({}, (api) => api.get(`/api/issues/${issueId}/heartbeat-context`));
 
-    expect(issueRes.status).toBe(200);
+    expect(issueRes.status, JSON.stringify(issueRes.body)).toBe(200);
     expect(issueRes.body.expectedOutput).toBe("audit_brief");
     expect(contextRes.status).toBe(200);
     expect(contextRes.body.issue.expectedOutput).toBe("audit_brief");

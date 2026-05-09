@@ -26,6 +26,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
@@ -66,6 +67,7 @@ export type AdapterManagedRuntimeAsset = RemoteManagedRuntimeAsset;
 
 export interface PreparedAdapterExecutionTargetRuntime {
   target: AdapterExecutionTarget;
+  workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
   restoreWorkspace(): Promise<void>;
@@ -94,6 +96,8 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
   env: Record<string, string>;
   stop(): Promise<void>;
 }
+
+export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -162,6 +166,33 @@ export function adapterExecutionTargetRemoteCwd(
   localCwd: string,
 ): string {
   return target?.kind === "remote" ? target.remoteCwd : localCwd;
+}
+
+export function overrideAdapterExecutionTargetRemoteCwd(
+  target: AdapterExecutionTarget | null | undefined,
+  remoteCwd: string | null | undefined,
+): AdapterExecutionTarget | null | undefined {
+  const nextRemoteCwd = remoteCwd?.trim();
+  if (!target || target.kind !== "remote" || !nextRemoteCwd) {
+    return target;
+  }
+  if (target.remoteCwd === nextRemoteCwd) {
+    return target;
+  }
+  if (target.transport === "ssh") {
+    return {
+      ...target,
+      remoteCwd: nextRemoteCwd,
+      spec: {
+        ...target.spec,
+        remoteCwd: nextRemoteCwd,
+      },
+    };
+  }
+  return {
+    ...target,
+    remoteCwd: nextRemoteCwd,
+  };
 }
 
 export function resolveAdapterExecutionTargetCwd(
@@ -340,11 +371,12 @@ export async function runAdapterExecutionTargetProcess(
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
+    const env = sanitizeRemoteExecutionEnv(options.env);
     return await runner.execute({
       command,
       args,
       cwd: target.remoteCwd,
-      env: options.env,
+      env,
       stdin: options.stdin,
       timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
       onLog: options.onLog,
@@ -354,9 +386,14 @@ export async function runAdapterExecutionTargetProcess(
     });
   }
 
+  const env =
+    target?.kind === "remote" && target.transport === "ssh"
+      ? sanitizeRemoteExecutionEnv(options.env)
+      : options.env;
+
   return await runChildProcess(runId, command, args, {
     cwd: options.cwd,
-    env: options.env,
+    env,
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
@@ -376,9 +413,16 @@ export async function runAdapterExecutionTargetShellCommand(
   const onLog = options.onLog ?? (async () => {});
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();
+    const env = sanitizeRemoteExecutionEnv(options.env);
     if (target.transport === "ssh") {
       try {
-        const result = await runSshCommand(target.spec, `sh -lc ${shellQuote(command)}`, {
+        // Pass the raw command — `runSshCommand` owns profile sourcing and
+        // the outer `sh -lc` wrapper. Wrapping again here would nest a second
+        // `sh -lc` after the explicit `env KEY=VAL` overrides, re-sourcing
+        // login profiles AFTER the override and silently undoing any
+        // identity var (NVM_DIR / PATH / etc.) that a profile re-exports.
+        const result = await runSshCommand(target.spec, command, {
+          env,
           timeoutMs: (options.timeoutSec ?? 15) * 1000,
         });
         if (result.stdout) await onLog("stdout", result.stdout);
@@ -435,7 +479,7 @@ export async function runAdapterExecutionTargetShellCommand(
       command: shellCommand,
       args: ["-lc", command],
       cwd: target.remoteCwd,
-      env: options.env,
+      env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
     });
@@ -842,9 +886,11 @@ export function readAdapterExecutionTarget(input: {
 }
 
 export async function prepareAdapterExecutionTargetRuntime(input: {
+  runId: string;
   target: AdapterExecutionTarget | null | undefined;
   adapterKey: string;
   workspaceLocalDir: string;
+  workspaceRemoteDir?: string;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -856,6 +902,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   if (target.kind === "local") {
     return {
       target,
+      workspaceRemoteDir: null,
       runtimeRootDir: null,
       assetDirs: {},
       restoreWorkspace: async () => {},
@@ -865,12 +912,15 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   if (target.transport === "ssh") {
     const prepared = await prepareRemoteManagedRuntime({
       spec: target.spec,
+      runId: input.runId,
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
+      workspaceRemoteDir: input.workspaceRemoteDir,
       assets: input.assets,
     });
     return {
       target,
+      workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
       restoreWorkspace: prepared.restoreWorkspace,
@@ -888,6 +938,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     },
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
+    workspaceRemoteDir: input.workspaceRemoteDir,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
@@ -896,6 +947,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   });
   return {
     target,
+    workspaceRemoteDir: prepared.workspaceRemoteDir,
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
     restoreWorkspace: prepared.restoreWorkspace,

@@ -1,5 +1,5 @@
 {
-  "id": "7035923a-94d3-45b0-90f7-ed9def325e40",
+  "id": "50cf2dfe-df7b-4f02-a169-edbae599cf39",
   "prevId": "c0bac1d6-c931-4bef-b3d6-f7746ab492ac",
   "version": "7",
   "dialect": "postgresql",
@@ -2966,13 +2966,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": 10485760
-        },
-        "require_output_contracts": {
-          "name": "require_output_contracts",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "require_board_approval_for_new_agents": {
           "name": "require_board_approval_for_new_agents",
@@ -8281,6 +8274,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "author_type": {
+          "name": "author_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by_run_id": {
           "name": "created_by_run_id",
           "type": "uuid",
@@ -8292,6 +8291,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "presentation": {
+          "name": "presentation",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -14450,13 +14461,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "require_output_contracts": {
-          "name": "require_output_contracts",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "pause_reason": {
           "name": "pause_reason",

@@ -248,11 +248,33 @@ describe("adapter routes", () => {
           ]),
         }),
         expect.objectContaining({
-          key: "permissionMode",
-          default: "approve-all",
+          key: "fastMode",
+          default: false,
+          meta: { visibleWhen: { key: "agent", values: ["codex"] } },
+        }),
+        expect.objectContaining({
+          key: "warmHandleIdleMs",
+          default: 0,
         }),
       ]),
     );
+    const keys = res.body.fields.map((field: { key: string }) => field.key);
+    expect(keys).not.toContain("mode");
+    expect(keys).not.toContain("permissionMode");
+    expect(keys).not.toContain("instructionsFilePath");
+    expect(keys).not.toContain("promptTemplate");
+    expect(keys).not.toContain("bootstrapPromptTemplate");
+  });
+
+  it("GET /api/adapters includes ACPX model availability", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
+    expect(acpxLocal).toBeDefined();
+    expect(acpxLocal.modelsCount).toBeGreaterThan(0);
   });
 
   it("rejects signed-in users without org access", async () => {

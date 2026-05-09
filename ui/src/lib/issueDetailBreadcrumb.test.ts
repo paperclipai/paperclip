@@ -115,6 +115,7 @@ describe("issueDetailBreadcrumb", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,
+      workMode: overrides.workMode ?? "standard",
     };
   }
 
