@@ -439,13 +439,6 @@ async function assertExpectedOutputContractForIssue(input: {
   requirePolicyCheck: boolean;
 }) {
   const parsed = parseIssueExpectedOutputContract(input.description);
-  if (parsed.rawValue && !parsed.supported) {
-    throw unprocessable(
-      `Unsupported Expected output: ${parsed.rawValue}. Supported values: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
-      { supportedValues: ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT },
-    );
-  }
-
   if (!input.requirePolicyCheck) return;
 
   const [company, project, assignee] = await Promise.all([
@@ -457,7 +450,16 @@ async function assertExpectedOutputContractForIssue(input: {
     company?.requireOutputContracts === true ||
     project?.requireOutputContracts === true ||
     readRequiresOutputContract(assignee?.metadata);
-  if (required && !parsed.expectedOutput) {
+  if (!required) return;
+
+  if (parsed.rawValue && !parsed.supported) {
+    throw unprocessable(
+      `Unsupported Expected output: ${parsed.rawValue}. Supported values: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
+      { supportedValues: ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT },
+    );
+  }
+
+  if (!parsed.expectedOutput) {
     throw unprocessable(
       `Missing Expected output contract. Add \`Expected output: <value>\` using one of: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
       { supportedValues: ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT },

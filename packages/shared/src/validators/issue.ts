@@ -56,6 +56,12 @@ const issueDescriptionSchema = multilineTextSchema
   .nullable()
   .superRefine(validateExpectedOutputDescription);
 
+const suggestedTaskDescriptionSchema = multilineTextSchema
+  .pipe(z.string().trim().max(20000))
+  .optional()
+  .nullable()
+  .superRefine(validateExpectedOutputDescription);
+
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
   "shared_workspace",
@@ -433,7 +439,7 @@ export const suggestedTaskDraftSchema = z.object({
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
   title: z.string().trim().min(1).max(240),
-  description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
+  description: suggestedTaskDescriptionSchema,
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
   workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),

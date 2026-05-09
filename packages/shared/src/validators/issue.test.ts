@@ -127,6 +127,17 @@ describe("issue validators", () => {
     expect(parsed.description).toBe("Line 1\n\nLine 2");
   });
 
+  it("rejects unsupported Expected output values in generated task drafts", () => {
+    const parsed = suggestedTaskDraftSchema.safeParse({
+      clientKey: "task-1",
+      title: "Follow up",
+      description: "Expected output: issue_update\n\nUnsupported legacy value",
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain("Unsupported Expected output");
+  });
+
   it("normalizes escaped line breaks in thread summaries and documents", () => {
     const response = respondIssueThreadInteractionSchema.parse({
       answers: [],

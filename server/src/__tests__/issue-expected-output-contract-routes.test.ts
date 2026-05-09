@@ -410,6 +410,34 @@ describe("issue Expected output contract routes", () => {
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 
+  it("allows checkout of legacy unsupported Expected output values when no policy requires contracts", async () => {
+    const existing = makeIssue({
+      description: "Expected output: issue_update\n\nLegacy value.",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockAgentService.getById.mockResolvedValue(makeAgent({ metadata: {} }));
+    mockIssueService.checkout.mockResolvedValue(existing);
+
+    const res = await withApi({
+      type: "agent",
+      agentId,
+      companyId,
+      runId,
+      source: "agent_key",
+    }, (api) => api.post(`/api/issues/${issueId}/checkout`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({
+        agentId,
+        expectedStatuses: ["todo"],
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.expectedOutput).toBeNull();
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(issueId, agentId, ["todo"], runId);
+  });
+
   it("exposes derived expectedOutput on issue detail and heartbeat context responses", async () => {
     const existing = makeIssue({
       description: "Expected output: audit_brief\n\nSummarize the risk.",
