@@ -34,6 +34,7 @@ export const routines = pgTable(
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
+    expectedChildCount: integer("expected_child_count"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
     latestRevisionId: uuid("latest_revision_id"),
     latestRevisionNumber: integer("latest_revision_number").notNull().default(1),
