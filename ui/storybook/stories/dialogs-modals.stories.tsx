@@ -424,6 +424,7 @@ const HERMES_AGENT: Agent = {
   role: "engineer",
   title: "Lightweight Routing",
   icon: "code",
+  image: null,
   status: "idle",
   reportsTo: "agent-cto",
   capabilities: "Hermes-backed assistant on an adapter without the cheap-profile contract.",

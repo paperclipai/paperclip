@@ -24,6 +24,7 @@ function createAgent(
     role: "engineer",
     title: null,
     icon,
+    image: null,
     status: "active",
     reportsTo: null,
     capabilities: null,

@@ -71,6 +71,7 @@ import {
   RotateCcw,
   Trash2,
   Plus,
+  Camera,
   Key,
   Eye,
   EyeOff,
@@ -933,6 +934,49 @@ export function AgentDetail() {
     },
   });
 
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadAvatar = useMutation({
+    mutationFn: async (file: File) => {
+      if (!resolvedCompanyId) {
+        throw new Error("Select a company before uploading an avatar.");
+      }
+      const asset = await assetsApi.uploadImage(
+        resolvedCompanyId,
+        file,
+        `agents/${agent?.id ?? "unknown"}`,
+      );
+      return agentsApi.update(agentLookupRef, { image: asset.contentPath }, resolvedCompanyId);
+    },
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to upload avatar");
+    },
+  });
+
+  const removeAvatar = useMutation({
+    mutationFn: () =>
+      agentsApi.update(agentLookupRef, { image: null }, resolvedCompanyId ?? undefined),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to remove avatar");
+    },
+  });
+
   const resetTaskSession = useMutation({
     mutationFn: (taskKey: string | null) =>
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
@@ -1065,16 +1109,48 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
+      <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
+          <input
+            ref={avatarInputRef}
+            type="file"
+            accept="image/*"
+            className="sr-only"
+            disabled={!resolvedCompanyId || uploadAvatar.isPending || removeAvatar.isPending}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              uploadAvatar.mutate(file);
+              event.target.value = "";
+            }}
+          />
+          {agent.image ? (
+            <div
+              data-testid="agent-avatar-display"
+              className="shrink-0 h-12 w-12"
+            >
+              <AgentIcon
+                icon={agent.icon}
+                image={agent.image}
+                alt={agent.name}
+                className="h-12 w-12"
+              />
+            </div>
+          ) : (
+            <AgentIconPicker
+              value={agent.icon}
+              onChange={(icon) => updateIcon.mutate(icon)}
+            >
+              <button
+                type="button"
+                className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors"
+                title="Pick icon"
+              >
+                <AgentIcon icon={agent.icon} className="h-6 w-6" />
+              </button>
+            </AgentIconPicker>
+          )}
           <div className="min-w-0">
             <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
             <p className="text-sm text-muted-foreground truncate">
@@ -1169,6 +1245,41 @@ export function AgentDetail() {
               </button>
             </PopoverContent>
           </Popover>
+        </div>
+      </div>
+        <div data-testid="agent-avatar-controls" className="flex flex-wrap items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={() => avatarInputRef.current?.click()}
+            disabled={!resolvedCompanyId || uploadAvatar.isPending || removeAvatar.isPending}
+          >
+            {uploadAvatar.isPending ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Camera className="h-3 w-3" />
+            )}
+            <span className="ml-1">{agent.image ? "Change photo" : "Upload photo"}</span>
+          </Button>
+          {agent.image ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs text-muted-foreground"
+              onClick={() => removeAvatar.mutate()}
+              disabled={uploadAvatar.isPending || removeAvatar.isPending}
+            >
+              {removeAvatar.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Trash2 className="h-3 w-3" />
+              )}
+              <span className="ml-1">Remove</span>
+            </Button>
+          ) : null}
         </div>
       </div>
 

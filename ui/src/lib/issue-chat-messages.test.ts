@@ -22,6 +22,7 @@ function createAgent(id: string, name: string): Agent {
     role: "engineer",
     title: null,
     icon: "code",
+    image: null,
     status: "active",
     reportsTo: null,
     capabilities: null,

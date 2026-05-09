@@ -11,6 +11,7 @@ const baseAgent: AgentDetail = {
   role: "engineer",
   title: "Senior Product Engineer",
   icon: "code",
+  image: null,
   status: "idle",
   reportsTo: "manager-1",
   capabilities: "Builds product features.",
