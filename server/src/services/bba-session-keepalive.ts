@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -6,7 +6,7 @@ import { logger } from "../middleware/logger.js";
 
 const COOKIE_CACHE = path.join(os.homedir(), ".paperclip", "bba-cookie-cache.json");
 const CASA_URL     = "https://www.casapariurilor.ro/pariuri-online/fotbal";
-const PROFILE_DIR  = "C:\\Users\\thepr\\.paperclip\\bba-playwright-profile";
+const PROFILE_DIR  = path.join(os.homedir(), ".paperclip", "bba-playwright-profile");
 const LOGIN_BTN    = ".header-login-wrapper.user-box-link";
 
 // Check every 30 minutes — Casa's session timeout is ~2h; 30 min gives safe margin even during long BBA runs
@@ -50,7 +50,7 @@ const OVERLAY_SELECTORS = [
   "button:has-text('Am peste 18 ani')",
 ];
 
-async function dismissOverlays(page: import("playwright").Page): Promise<boolean> {
+async function dismissOverlays(page: import("@playwright/test").Page): Promise<boolean> {
   let clickedJoaca = false;
   for (const sel of OVERLAY_SELECTORS) {
     try {

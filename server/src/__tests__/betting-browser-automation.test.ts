@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page } from "@playwright/test";
 import { describe, expect, it, vi } from "vitest";
 
 // bettingPlacedBets / bettingPredictions are imported by the service at module

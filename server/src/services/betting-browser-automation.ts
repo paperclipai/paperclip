@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { Browser, BrowserContext, Locator, Page } from "playwright";
+import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import type { Db } from "@paperclipai/db";
 import { bettingPlacedBets, bettingPredictions } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
@@ -375,6 +375,13 @@ export function resolveEntryUrl(request: BettingAutomationRequest) {
   return (
     request.execution?.startUrl?.trim() ||
     request.bookmakerConfig.postLoginUrl?.trim() ||
+    request.bookmakerConfig.baseUrl.trim() ||
+    request.bookmakerConfig.loginUrl.trim()
+  );
+}
+
+function resolveSkipLoginVerificationUrl(request: BettingAutomationRequest) {
+  return (
     request.bookmakerConfig.baseUrl.trim() ||
     request.bookmakerConfig.loginUrl.trim()
   );
@@ -1918,7 +1925,7 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
           locale: "ro-RO",
           timezoneId: "Europe/Bucharest",
           recordVideo: { dir: paths.videoDir, size: { width: 1280, height: 720 } },
-          ...(isChromium ? { args: CHROMIUM_STEALTH_ARGS, channel: "chrome" as const } : {}),
+          ...(isChromium ? { args: CHROMIUM_STEALTH_ARGS } : {}),
         };
         if (userDataDir) {
           clonedUserDataDir = await cloneUserDataDir(userDataDir, random);
@@ -1988,15 +1995,20 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
           } catch {
             // no cookie cache yet — first run or file missing
           }
-          // Warm-up: navigate to homepage first so anti-bot session is established before deep-linking
-          const warmUpUrl = new URL(request.bookmakerConfig.baseUrl).origin;
-          if (resolveEntryUrl(request) !== warmUpUrl) {
+          // Warm-up: use the configured sportsbook shell, not just the domain origin.
+          // Casa Pariurilor rejects or degrades the root-domain hop, while the /pariuri-online/fotbal
+          // SPA is the verified entry point for authenticated sportsbook automation.
+          const warmUpUrl = resolveSkipLoginVerificationUrl(request);
+          const requiresWarmUp = resolveEntryUrl(request) !== warmUpUrl;
+          if (requiresWarmUp) {
             await appendLog(paths, `warm-up: navigating to ${warmUpUrl} before event page`);
             await page.goto(warmUpUrl, { waitUntil: "domcontentloaded", timeout: runtime.pageTimeoutMs });
             await sleep(pickDelay(2000, 3000, random));
           }
-          await appendLog(paths, `persistent profile mode; verifying authentication at ${request.bookmakerConfig.loginUrl}`);
-          await gotoWithRetry(page, request.bookmakerConfig.loginUrl, runtime, paths, { sleep, random });
+          await appendLog(paths, `persistent profile mode; verifying authentication at ${warmUpUrl}`);
+          if (!requiresWarmUp) {
+            await gotoWithRetry(page, warmUpUrl, runtime, paths, { sleep, random });
+          }
           assertDeadline(startedAt, runtime.sessionTimeoutMs);
           await maybeClickOptional(page, request.bookmakerConfig.cookieAccept, request.bet);
           await maybeClickOptional(page, request.bookmakerConfig.popupClose, request.bet);
