@@ -118,6 +118,33 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
+      "company-1",
+      "https://github.com/vercel-labs/agent-browser",
+      undefined,
+    );
+  });
+
+  it("forwards optional githubToken to skill import service", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({
+        source: "https://github.com/vercel-labs/agent-browser",
+        githubToken: "ghp_example_token",
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
+      "company-1",
+      "https://github.com/vercel-labs/agent-browser",
+      "ghp_example_token",
+    );
   });
 
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {
@@ -294,6 +321,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
+      undefined,
     );
   });
 
