@@ -96,3 +96,38 @@ export function trackErrorHandlerCrash(
 ): void {
   client.track("error.handler_crash", { error_code: dims.errorCode });
 }
+
+export function trackAgentEnteredDegraded(
+  client: TelemetryClient,
+  dims: { agentId: string; agentRole: string; consecutiveFailures: number },
+): void {
+  client.track("agent.entered_degraded", {
+    agent_id: dims.agentId,
+    agent_role: dims.agentRole,
+    consecutive_failures: dims.consecutiveFailures,
+  });
+}
+
+export function trackAgentRecoveredFromDegraded(
+  client: TelemetryClient,
+  dims: { agentId: string; agentRole: string; degradedDurationMs: number },
+): void {
+  client.track("agent.recovered_from_degraded", {
+    agent_id: dims.agentId,
+    agent_role: dims.agentRole,
+    degraded_duration_ms: dims.degradedDurationMs,
+  });
+}
+
+export function trackAgentTerminatedFromDegraded(
+  client: TelemetryClient,
+  dims: { agentId: string; agentRole: string; degradedBeatCount: number; degradedDurationMs: number; reason: "beat_limit" | "duration_limit" },
+): void {
+  client.track("agent.terminated_from_degraded", {
+    agent_id: dims.agentId,
+    agent_role: dims.agentRole,
+    degraded_beat_count: dims.degradedBeatCount,
+    degraded_duration_ms: dims.degradedDurationMs,
+    reason: dims.reason,
+  });
+}

@@ -233,6 +233,7 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
 }
 
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
+  // degraded agents remain invokable — the tickTimers cooldown throttles their wakeup cadence.
   return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
 

@@ -7,6 +7,10 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  DEGRADED_BEAT_LIMIT,
+  DEGRADED_COOLDOWN_SCHEDULE_MS,
+  DEGRADED_DURATION_LIMIT_MS,
+  DEGRADED_FAILURE_THRESHOLD,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
@@ -57,7 +61,12 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
-import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import {
+  trackAgentEnteredDegraded,
+  trackAgentFirstHeartbeat,
+  trackAgentRecoveredFromDegraded,
+  trackAgentTerminatedFromDegraded,
+} from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -6134,28 +6143,119 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
-
+    const isFailure = outcome === "failed" || outcome === "timed_out";
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
+    const now = new Date();
+
+    // Read degraded-state tracking from runtime stateJson.
+    const runtimeState = await getRuntimeState(agentId);
+    const stateJson = (runtimeState?.stateJson ?? {}) as Record<string, unknown>;
+    const consecutiveFailures = typeof stateJson.consecutiveFailures === "number"
+      ? stateJson.consecutiveFailures
+      : 0;
+    const degradedSince = typeof stateJson.degradedSince === "string"
+      ? new Date(stateJson.degradedSince)
+      : null;
+    const degradedBeatCount = typeof stateJson.degradedBeatCount === "number"
+      ? stateJson.degradedBeatCount
+      : 0;
+
+    let nextStatus: string;
+    let nextStateJson: Record<string, unknown> = stateJson;
+    const tc = getTelemetryClient();
+
+    if (runningCount > 0) {
+      // Other runs still active — stay running; don't touch degraded counters.
+      nextStatus = "running";
+    } else if (!isFailure) {
+      // Successful outcome — recover from any degraded state.
+      if (existing.status === "degraded" && degradedSince) {
+        const degradedDurationMs = now.getTime() - degradedSince.getTime();
+        if (tc) {
+          trackAgentRecoveredFromDegraded(tc, {
+            agentId,
+            agentRole: existing.role,
+            degradedDurationMs,
+          });
+        }
+      }
+      nextStatus = "idle";
+      nextStateJson = {};
+    } else {
+      // Failure outcome — apply degraded state machine.
+      const newConsecutiveFailures = consecutiveFailures + 1;
+
+      if (existing.status === "degraded" && degradedSince) {
+        const newDegradedBeatCount = degradedBeatCount + 1;
+        const degradedDurationMs = now.getTime() - degradedSince.getTime();
+        const exceedsBeatLimit = newDegradedBeatCount >= DEGRADED_BEAT_LIMIT;
+        const exceedsDurationLimit = degradedDurationMs >= DEGRADED_DURATION_LIMIT_MS;
+
+        if (exceedsBeatLimit || exceedsDurationLimit) {
+          // Too many failures while degraded — escalate to terminal error.
+          const reason = exceedsBeatLimit ? "beat_limit" : "duration_limit";
+          if (tc) {
+            trackAgentTerminatedFromDegraded(tc, {
+              agentId,
+              agentRole: existing.role,
+              degradedBeatCount: newDegradedBeatCount,
+              degradedDurationMs,
+              reason,
+            });
+          }
+          nextStatus = "error";
+          nextStateJson = {};
+        } else {
+          // Stay degraded, increment beat counter.
+          nextStatus = "degraded";
+          nextStateJson = {
+            ...stateJson,
+            consecutiveFailures: newConsecutiveFailures,
+            degradedBeatCount: newDegradedBeatCount,
+          };
+        }
+      } else if (newConsecutiveFailures >= DEGRADED_FAILURE_THRESHOLD) {
+        // Threshold reached — enter degraded state.
+        if (tc) {
+          trackAgentEnteredDegraded(tc, {
+            agentId,
+            agentRole: existing.role,
+            consecutiveFailures: newConsecutiveFailures,
+          });
+        }
+        nextStatus = "degraded";
+        nextStateJson = {
+          consecutiveFailures: newConsecutiveFailures,
+          degradedSince: now.toISOString(),
+          degradedBeatCount: 1,
+        };
+      } else {
+        // Below threshold — ordinary transient error.
+        nextStatus = "error";
+        nextStateJson = { ...stateJson, consecutiveFailures: newConsecutiveFailures };
+      }
+    }
+
+    // Persist updated degraded-state counters.
+    if (runtimeState) {
+      await db
+        .update(agentRuntimeState)
+        .set({ stateJson: nextStateJson, updatedAt: now })
+        .where(eq(agentRuntimeState.agentId, agentId));
+    }
 
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
-        lastHeartbeatAt: new Date(),
-        updatedAt: new Date(),
+        lastHeartbeatAt: now,
+        updatedAt: now,
       })
       .where(eq(agents.id, agentId))
       .returning()
       .then((rows) => rows[0] ?? null);
 
     if (isFirstHeartbeat && updated) {
-      const tc = getTelemetryClient();
       if (tc) trackAgentFirstHeartbeat(tc, { agentRole: updated.role, agentId: updated.id });
     }
 
@@ -9655,19 +9755,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
-        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Degraded agents use an exponential cooldown instead of the normal interval.
+        if (agent.status === "degraded") {
+          const runtimeState = await getRuntimeState(agent.id);
+          const stateJson = (runtimeState?.stateJson ?? {}) as Record<string, unknown>;
+          const degradedBeatCount = typeof stateJson.degradedBeatCount === "number"
+            ? stateJson.degradedBeatCount
+            : 0;
+          const cooldownIndex = Math.min(degradedBeatCount, DEGRADED_COOLDOWN_SCHEDULE_MS.length - 1);
+          const cooldownMs = DEGRADED_COOLDOWN_SCHEDULE_MS[cooldownIndex];
+          const lastBeatMs = new Date(agent.lastHeartbeatAt ?? agent.updatedAt).getTime();
+          if (now.getTime() - lastBeatMs < cooldownMs) continue;
+        } else {
+          const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
+          const elapsedMs = now.getTime() - baseline;
+          if (elapsedMs < policy.intervalSec * 1000) continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
-          reason: "heartbeat_timer",
+          reason: agent.status === "degraded" ? "degraded_heartbeat_timer" : "heartbeat_timer",
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
           contextSnapshot: {
             source: "scheduler",
-            reason: "interval_elapsed",
+            reason: agent.status === "degraded" ? "degraded_cooldown_elapsed" : "interval_elapsed",
             now: now.toISOString(),
           },
         });
