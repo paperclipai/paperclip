@@ -7,6 +7,8 @@ const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const LEGACY_CODEX_HOOK_RE =
+  /^\[\[hooks\]\]\n\s*event\s*=\s*"([A-Za-z0-9_.-]+)"\n\s*command\s*=\s*"((?:\\"|[^"])*)"$/gm;
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -71,6 +73,28 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
+async function normalizeManagedCodexConfig(
+  target: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing?.isFile()) return;
+
+  const config = await fs.readFile(target, "utf8");
+  const normalized = config.replace(
+    LEGACY_CODEX_HOOK_RE,
+    (_match, event: string, command: string) =>
+      `[[hooks.${event}]]\nhooks = [{ type = "command", command = "${command}" }]`,
+  );
+  if (normalized === config) return;
+
+  await fs.writeFile(target, normalized, "utf8");
+  await onLog(
+    "stdout",
+    `[paperclip] Normalized legacy Codex hook config in "${target}".\n`,
+  );
+}
+
 export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
@@ -94,6 +118,8 @@ export async function prepareManagedCodexHome(
     if (!(await pathExists(source))) continue;
     await ensureCopiedFile(path.join(targetHome, name), source);
   }
+
+  await normalizeManagedCodexConfig(path.join(targetHome, "config.toml"), onLog);
 
   await onLog(
     "stdout",

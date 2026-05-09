@@ -43,4 +43,29 @@ describe("buildCodexExecArgs", () => {
       "-",
     ]);
   });
+
+  it("filters legacy Claude-only extraArgs while preserving Codex args", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.5",
+      extraArgs: [
+        "--setting-sources",
+        "local",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+        "--tools",
+        "Read,Grep,Glob,Bash",
+        "--ignore-rules",
+      ],
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.5",
+      "--ignore-rules",
+      "-",
+    ]);
+  });
 });

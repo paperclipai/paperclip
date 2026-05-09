@@ -12,10 +12,35 @@ export type BuildCodexExecArgsResult = {
   fastModeIgnoredReason: string | null;
 };
 
+const LEGACY_CLAUDE_ONLY_VALUE_ARGS = new Set([
+  "--setting-sources",
+  "--mcp-config",
+  "--tools",
+]);
+
+const LEGACY_CLAUDE_ONLY_BOOLEAN_ARGS = new Set([
+  "--strict-mcp-config",
+]);
+
 function readExtraArgs(config: unknown): string[] {
   const fromExtraArgs = asStringArray(asRecord(config).extraArgs);
-  if (fromExtraArgs.length > 0) return fromExtraArgs;
-  return asStringArray(asRecord(config).args);
+  if (fromExtraArgs.length > 0) return normalizeExtraArgs(fromExtraArgs);
+  return normalizeExtraArgs(asStringArray(asRecord(config).args));
+}
+
+function normalizeExtraArgs(extraArgs: string[]): string[] {
+  const normalized: string[] = [];
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index];
+    if (LEGACY_CLAUDE_ONLY_BOOLEAN_ARGS.has(arg)) continue;
+    if (LEGACY_CLAUDE_ONLY_VALUE_ARGS.has(arg)) {
+      const next = extraArgs[index + 1];
+      if (typeof next === "string" && !next.startsWith("-")) index += 1;
+      continue;
+    }
+    normalized.push(arg);
+  }
+  return normalized;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
