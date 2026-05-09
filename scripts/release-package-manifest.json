@@ -80,6 +80,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/sandbox-providers/daytona",
+    "name": "@paperclipai/plugin-daytona",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/plugins/sandbox-providers/e2b",
     "name": "@paperclipai/plugin-e2b",
     "publishFromCi": true
