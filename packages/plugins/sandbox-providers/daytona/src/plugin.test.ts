@@ -48,8 +48,8 @@ function createMockSandbox(overrides: {
     process: {
       executeCommand: vi.fn().mockResolvedValue({
         exitCode: 0,
-        result: "ok\n",
-        artifacts: { stdout: "ok\n" },
+        result: "bash",
+        artifacts: { stdout: "bash" },
       }),
     },
   };
@@ -156,6 +156,7 @@ describe("Daytona sandbox provider plugin", () => {
       ok: true,
       metadata: {
         provider: "daytona",
+        shellCommand: "bash",
         sandboxId: "sandbox-123",
         remoteCwd: "/home/daytona/paperclip-workspace",
       },
@@ -183,9 +184,39 @@ describe("Daytona sandbox provider plugin", () => {
       providerLeaseId: "sandbox-123",
       metadata: {
         provider: "daytona",
+        shellCommand: "bash",
         sandboxId: "sandbox-123",
         remoteCwd: "/home/daytona/paperclip-workspace",
         reuseLease: true,
+      },
+    });
+  });
+
+  it("falls back to sh metadata when bash is not present in the sandbox image", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockResolvedValue({
+      exitCode: 0,
+      result: "sh",
+      artifacts: { stdout: "sh" },
+    });
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: {
+        image: "busybox:latest",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(lease).toMatchObject({
+      metadata: {
+        shellCommand: "sh",
       },
     });
   });

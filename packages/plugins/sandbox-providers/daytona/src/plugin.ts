@@ -196,15 +196,30 @@ async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string>
   return remoteCwd;
 }
 
+async function detectSandboxShellCommand(sandbox: Sandbox, timeoutSeconds: number): Promise<"bash" | "sh"> {
+  try {
+    const result = await sandbox.process.executeCommand(
+      "if command -v bash >/dev/null 2>&1; then printf bash; else printf sh; fi",
+      undefined,
+      undefined,
+      timeoutSeconds,
+    );
+    return result.result?.trim() === "bash" ? "bash" : "sh";
+  } catch {
+    return "sh";
+  }
+}
+
 function leaseMetadata(input: {
   config: DaytonaDriverConfig;
   sandbox: Sandbox;
+  shellCommand: "bash" | "sh";
   remoteCwd: string;
   resumedLease: boolean;
 }) {
   return {
     provider: "daytona",
-    shellCommand: "bash",
+    shellCommand: input.shellCommand,
     sandboxId: input.sandbox.id,
     sandboxName: input.sandbox.name,
     sandboxState: input.sandbox.state ?? null,
@@ -440,11 +455,13 @@ const plugin = definePlugin({
       const sandbox = await createSandbox(params, config);
       try {
         const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+        const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
         return {
           ok: true,
           summary: `Connected to Daytona sandbox ${sandbox.name}.`,
           metadata: {
             provider: "daytona",
+            shellCommand,
             sandboxId: sandbox.id,
             sandboxName: sandbox.name,
             target: sandbox.target,
@@ -480,9 +497,10 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     const sandbox = await createSandbox(params, config);
     const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+    const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
     return {
       providerLeaseId: sandbox.id,
-      metadata: leaseMetadata({ config, sandbox, remoteCwd, resumedLease: false }),
+      metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false }),
     };
   },
 
@@ -497,9 +515,10 @@ const plugin = definePlugin({
 
     await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
     const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+    const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
     return {
       providerLeaseId: sandbox.id,
-      metadata: leaseMetadata({ config, sandbox, remoteCwd, resumedLease: true }),
+      metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true }),
     };
   },
 
