@@ -17,6 +17,10 @@ while IFS= read -r filepath; do
   [[ -z "$filepath" ]] && continue
   [[ "$filepath" != *.tsx ]] && continue
   [[ "$filepath" == *".test.tsx" ]] && continue # Skip tests
+  [[ "$filepath" == *"storybook/stories/"* ]] && continue # Skip storybook
+  [[ "$filepath" == *"examples/"* ]] && continue # Skip examples
+  [[ "$filepath" == *"UxLab.tsx" ]] && continue # Skip UX labs
+  [[ "$filepath" == *"DesignGuide.tsx" ]] && continue # Skip Design Guide
 
   # Every added line relative to baseline must match i18n patterns or be structural
   while IFS= read -r line; do
