@@ -16,9 +16,10 @@ import {
 } from "../server/src/services/local-service-supervisor.ts";
 
 // Minimal .env parser: KEY=VALUE per line, optional surrounding quotes,
-// `#` comments, blank lines ignored. Mirrors the subset of dotenv we need
-// without pulling in the dotenv package (which doesn't resolve from
-// scripts/ — there's no nearest package.json with it as a dependency).
+// `#` comments (whole-line and inline), blank lines ignored. Mirrors the
+// subset of dotenv we need without pulling in the dotenv package (which
+// doesn't resolve from scripts/ — there's no nearest package.json with it
+// as a dependency).
 function parseEnvFile(contents: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const rawLine of contents.split(/\r?\n/)) {
@@ -29,11 +30,15 @@ function parseEnvFile(contents: string): Record<string, string> {
     const key = line.slice(0, eq).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     let value = line.slice(eq + 1).trim();
-    if (
-      (value.startsWith("\"") && value.endsWith("\"")) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
+    const quote = value[0] === "\"" || value[0] === "'" ? value[0] : null;
+    if (quote) {
+      const closeIdx = value.indexOf(quote, 1);
+      if (closeIdx !== -1) {
+        value = value.slice(1, closeIdx);
+      }
+    } else {
+      const hashIdx = value.indexOf("#");
+      if (hashIdx !== -1) value = value.slice(0, hashIdx).trimEnd();
     }
     result[key] = value;
   }
