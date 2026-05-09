@@ -24,6 +24,7 @@ When a heartbeat fires, Paperclip:
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi Local | `pi_local` | Runs an embedded Pi agent locally |
+| [Qwen Local](/adapters/qwen-local) | `qwen_local` | Runs `qwen-code` CLI against a self-hosted vLLM endpoint (e.g. DGX over Tailscale) |
 | Hermes Local | `hermes_local` | Runs Hermes CLI locally (`hermes-paperclip-adapter`) |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |

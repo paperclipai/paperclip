@@ -37,6 +37,7 @@ Built-in adapters:
 - `claude_local`: runs your local `claude` CLI
 - `codex_local`: runs your local `codex` CLI
 - `opencode_local`: runs your local `opencode` CLI
+- `qwen_local`: runs `qwen-code` CLI against a self-hosted vLLM endpoint
 - `cursor`: runs Cursor in background mode
 - `pi_local`: runs an embedded Pi agent locally
 - `hermes_local`: runs your local `hermes` CLI (`hermes-paperclip-adapter`)
@@ -48,7 +49,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `qwen_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
 ## 3.2 Runtime behavior
 
@@ -177,7 +178,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 
 ## 10. Minimal setup checklist
 
-1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
+1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `qwen_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
 2. Set `cwd` to the target workspace (for local adapters).
 3. Optionally add a prompt template (`promptTemplate`) or use the managed instructions bundle.
 4. Configure heartbeat policy (timer and/or assignment wakeups).

@@ -10,6 +10,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "openclaw_gateway",
   "opencode_local",
   "pi_local",
+  "qwen_local",
   "hermes_local",
   "process",
   "http",

@@ -28,7 +28,7 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
-- `claude_local` / `codex_local` / `opencode_local` for local coding agents
+- `claude_local` / `codex_local` / `opencode_local` / `qwen_local` for local coding agents
 - `openclaw_gateway` / `http` for webhook-based external agents
 - `process` for generic local command execution
 
