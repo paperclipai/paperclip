@@ -30,15 +30,14 @@ Human merges. You GC the worktree + branch.
    a. Create AA-<n> titled `ci-fix: <commit-sha>`, label `ci-failure`, status `todo`.
    b. Allocate worktree at `.paperclip/worktrees/AA-<n>/` branched from **`origin/main`** (NOT from a task branch — `main` is what's broken; task branches diverged earlier and may not reproduce the failure).
    c. Pull the failed run's log via `gh run view <run-id> --log-failed`, extract the first ~30 unique error messages with file:line context, write them into the task body under `## Compile errors`.
-   d. Add the task to the next batch-verify queue (same as Reviewer-done tasks).
-   e. Assign Architect once batch verify writes its manifest.
+   d. Assign Architect immediately once the worktree is allocated; Architect runs cargo itself against the worktree, fixes the listed errors, opens the PR.
    This is the only path that fixes a red `main`. Without it, every `ci-failure` issue stalls because Architect's hard gate has no main-rooted worktree to operate on.
-3. Advance done subtasks:
+3. Advance done subtasks (dispatch Architect synchronously — see §Architect dispatch):
    - Worker done → `in_review` subtask for Reviewer (include Worker's changed-file list)
-   - Reviewer done, `needs-build` → queue for **batch verify** (do NOT assign Architect yet — see §Batch verify below)
-   - Reviewer done, `data-only` → Architect opens PR, then mark parent done after merge
+   - Reviewer done, `needs-build` → assign Architect on the same task branch (Architect runs cargo)
+   - Reviewer done, `data-only` → Architect opens PR (no cargo), then mark parent done after merge
    - Architect done → mark parent done after PR merges
-4. **Batch verify** (see §Batch verify below): if any tasks are queued for Architect review, run cargo once across all of them, then dispatch Architects in parallel.
+4. *(reserved — was Batch verify, removed; Coordinator no longer runs cargo)*
 5. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
 6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
 7. **PR-evidence audit** (see §PR-evidence audit below): for every parent task that went `done` since your last fire, verify a PR exists. Tasks with no PR are silent failures — re-open them.
@@ -111,101 +110,40 @@ Skip allocation if the worktree already exists (idempotent re-promote).
 If the branch name collides (rare — e.g. an aborted task with the same
 ID), append a short hash: `task/{task-id}-{short-uuid}`.
 
-## Batch verify
+## Architect dispatch (cargo is Architect's job — not yours)
 
-Architects do NOT run cargo per-task. cargo runs **once per Coordinator
-fire**, by Coordinator, against an integration worktree that holds every
-queued task branch merged together. All Architects then read the cached
-output in parallel and fix only the errors in files their own task
-touched.
+Coordinator never blocks on cargo. Architects own cargo end-to-end:
+they run `cargo check`/`clippy`/`test` against their own task worktree
+and fix what they find.
 
-Why: cargo against this codebase costs ~30s incremental, ~8 min cold,
-and was the bottleneck for parallel Architects (multiple cargo
-invocations against the shared `CARGO_TARGET_DIR` serialize on lockfile
-contention anyway). Pay it once, parallelize the cheap response work.
+When a `Reviewer done, needs-build` task advances in step 3, dispatch
+its Architect immediately:
+- Create the verify subtask (`in_review` status, `assigneeAgentId` =
+  Architect, label `needs-build`).
+- Assignment-wake fires the Architect within seconds.
+- Coordinator moves on. Cargo runtime is the Architect's problem.
 
-This is a deliberate evolution of the bevy-rpg `CLAUDE.md` "Architect
-Owns Cargo" rule: cargo *output* is still consumed only by Architects,
-but the *invocation* moves to Coordinator so it runs once per cycle
-instead of N times.
+If multiple `needs-build` tasks queue up at once, dispatch all their
+Architects in the same fire. Architects serialize on the shared
+`CARGO_TARGET_DIR` at the OS level (cargo holds its own build lock) —
+that's their concurrency to manage, not yours. The 30s–8min cargo
+cost belongs to whichever Architect owns that lock at the time, not
+to the orchestration layer.
 
-### Phase 1 — collect
+### Architect retries
 
-After step 3 has advanced any `Reviewer done, needs-build` tasks, you
-hold a list of task IDs ready for verify. Call this set `Q`. If `Q` is
-empty, skip Batch verify entirely and move to step 5.
+Architect re-runs cargo in-place after committing fixes (its own retry
+loop, hard-stopped after 3 cycles per Architect's INSTRUCTIONS). You
+don't need a separate re-verify pass; Architect either resolves the
+task by opening the PR or escalates to operator with the residual
+errors. Just observe its outcome on the next fire.
 
-### Phase 2 — integrate
+### No integration worktree
 
-Recycle or create the integration worktree:
-
-```sh
-INT="$PAPERCLIP_PROJECT/.paperclip/worktrees/_verify"
-git fetch origin main
-
-if [ -d "$INT" ]; then
-  git -C "$INT" checkout integration/verify 2>/dev/null || \
-    git -C "$INT" checkout -B integration/verify origin/main
-  git -C "$INT" reset --hard origin/main
-else
-  git worktree add "$INT" -B integration/verify origin/main
-fi
-
-for task_id in $Q; do
-  if ! git -C "$INT" merge --no-ff --no-edit "task/$task_id"; then
-    git -C "$INT" merge --abort
-    # Comment on task: "Merge into integration failed — rebase onto
-    # origin/main and re-submit." Drop from Q and reassign to Worker.
-  fi
-done
-```
-
-Tasks that fail integration merge bounce back to Worker for rebase. Q
-is now the set of tasks that integrated cleanly.
-
-### Phase 3 — single cargo
-
-```sh
-cd "$INT"
-cargo check  2>&1 | tee /tmp/cargo-check-output.txt
-cargo clippy 2>&1 | tee /tmp/cargo-clippy-output.txt
-cargo test   2>&1 | tee /tmp/cargo-test-output.txt
-```
-
-Then write a manifest so Architects can detect stale output:
-
-```sh
-{
-  echo "timestamp=$(date -u +%s)"
-  echo "branches:"
-  for task_id in $Q; do
-    head=$(git -C "$PAPERCLIP_PROJECT/.paperclip/worktrees/$task_id" rev-parse HEAD)
-    echo "  task/$task_id $head"
-  done
-} > /tmp/cargo-verify-manifest.txt
-```
-
-### Phase 4 — dispatch Architects in parallel
-
-For each `task_id` in Q, create the Architect subtask (`in_review`
-status, `assigneeAgentId` = Architect). Assignment-wake fires all
-Architects concurrently. Each reads the cached output, filters to its
-own changed files, fixes or passes.
-
-### Phase 5 — re-verify loop
-
-Architects who commit fixes leave a `needs-reverify` comment on their
-task. Your next fire collects those tasks back into Q and runs Phase 2
-again. Loop until every task reports clean. Hard stop after 3 cycles
-per task → escalate to operator.
-
-### Architect cap removed
-
-With cargo no longer running per-Architect, the previous "1 Architect"
-cap is obsolete. Scale Architects to match Q's depth — 3+ Architects
-fixing 3+ tasks in parallel is the explicit goal of this design.
-Coordinator/Planner/Facilitator caps still apply (those are
-single-instance orchestrators, not workers).
+The previous design merged all queued tasks into a single integration
+tree to amortize cargo across them. Removed: it inverted dependencies
+(Coordinator waiting on cargo) and conflated unrelated tasks' errors.
+Each Architect verifies its own task branch in isolation now.
 
 ## PR-evidence audit
 

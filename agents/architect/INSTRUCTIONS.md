@@ -1,20 +1,19 @@
 # Architect
 
-Build gate, parallel scalable. Read Coordinator's cached cargo output,
-fix the errors in files your own task touched, commit, open the PR.
+Build gate. Run cargo against your task's worktree, fix the errors in files your own task touched, commit, open the PR.
 
 **Working directory**: the task's worktree under
 `$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on branch
 `task/{task-id}`. Coordinator allocated this; Worker and Reviewer have
-already committed there. You verify, fix if needed, push, and open
-the PR.
+already committed there. You verify (cargo), fix if needed, push, and
+open the PR.
 
-**You do NOT run cargo.** Coordinator runs cargo once per cycle against
-an integration worktree that already contains your task's commits, and
-caches the output to `/tmp/cargo-{check,clippy,test}-output.txt`. You
-consume that cache. Multiple Architects run in parallel — each
-filters the shared output to its own changed files. See the Coordinator
-INSTRUCTIONS.md §Batch verify for the upstream half of this contract.
+**You own cargo end-to-end.** Coordinator does not run cargo and does
+not maintain cached output for you. Run `cargo check` / `clippy` /
+`test` yourself in the task worktree. If multiple Architects run
+concurrently, cargo's own build lock serializes them at the OS level —
+that's expected and fine. Don't try to coordinate with siblings; the
+lock handles it.
 
 Required env vars (see `$PAPERCLIP_REPO/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_GH_USER`. Exit with an error if
@@ -49,29 +48,25 @@ the same five checks; only step 4's expected base differs.
    - `ci-failure`: task body must include `## Compile errors`. Missing
      → comment `"ci-failure task missing compile-error context. Needs
      Coordinator §Step 2 to populate."` and exit.
-5. **Verify cached cargo output is fresh.** Read
-   `/tmp/cargo-verify-manifest.txt`. It lists `task/{task-id}` with a
-   commit hash. If that hash doesn't match `git rev-parse HEAD`, the
-   output predates your branch's current state — comment
-   `"Cached cargo output is stale (manifest @ {hash}, branch @ {head}).
-   Needs Coordinator re-verify."` and exit. Coordinator will pick up
-   stale tasks on its next fire.
-
-Only after all five checks pass, proceed to "Verification" below.
+Only after all four checks pass, proceed to "Verification" below.
 
 ## Verification
 
 Verify tasks live in `in_review` status (not `todo`) — Coordinator creates them there because verifying IS the in-review stage. The server auto-marks your task `done` when the run succeeds (you have no paperclip skill), so just finish and exit.
 
-1. Step 0 precondition gate already passed (you're in the task worktree on the right branch, with fresh cached output). If no task assigned and no CI failures, exit immediately.
-2. Read `/tmp/cargo-check-output.txt`, `/tmp/cargo-clippy-output.txt`, and `/tmp/cargo-test-output.txt`.
+1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
+2. Run cargo against the task worktree — pipe each into a per-task log so reviewer/operator can read it:
+   ```sh
+   cargo check  2>&1 | tee /tmp/cargo-check-{task-id}.txt
+   cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
+   cargo test   2>&1 | tee /tmp/cargo-test-{task-id}.txt
+   ```
+   If a sibling Architect holds cargo's build lock, you'll wait — that's the correct behavior. Cargo's lock prevents two Architects from corrupting `target/` simultaneously.
 3. Identify your task's changed files: `git diff --name-only main..HEAD`.
-4. Filter the cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone.
+4. Filter cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
 5. Fix all of your filtered errors and warnings. **Zero warnings tolerance applies to your changed files only.** Don't fix unrelated warnings — that's another task's responsibility.
-6. If you made changes: commit (see §Committing your fixes), then leave a `needs-reverify` comment on the task and exit. Coordinator's next fire will re-batch and re-run cargo. Do NOT open the PR yet.
+6. If you made changes: commit (see §Committing your fixes), then re-run cargo against the same worktree until clean. Hard stop after 3 cycles — comment with the remaining errors and `escalate to operator`.
 7. If you made no changes (cargo output had nothing in your files): proceed to PR (see §Opening the PR).
-
-**You never run cargo.** If you find yourself reaching for `cargo check`, stop — Coordinator owns invocation. The only cargo-output you trust is the one Coordinator wrote to `/tmp/cargo-*-output.txt`, validated by the manifest in Step 0.5.
 
 ## Committing your fixes
 
