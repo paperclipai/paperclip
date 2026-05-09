@@ -1,0 +1,49 @@
+{
+  "title": "लक्ष्य",
+  "projects_title": "प्रोजेक्ट",
+  "actions": {
+    "add_goal": "लक्ष्य जोड़ें",
+    "new_goal": "नया लक्ष्य",
+    "add_project": "प्रोजेक्ट जोड़ें"
+  },
+  "empty": {
+    "select_company": "लक्ष्य देखने के लिए एक कंपनी चुनें।",
+    "no_goals": "अभी तक कोई लक्ष्य नहीं।",
+    "select_company_projects": "प्रोजेक्ट देखने के लिए एक कंपनी चुनें।",
+    "no_projects": "अभी तक कोई प्रोजेक्ट नहीं।"
+  },
+  "properties": {
+    "label_status": "स्थिति",
+    "label_level": "स्तर",
+    "label_owner": "मालिक",
+    "label_parent": "मूल लक्ष्य",
+    "label_created": "बनाया गया",
+    "label_updated": "अपडेट किया गया",
+    "no_owner": "कोई नहीं"
+  },
+  "new_goal_dialog": {
+    "new_sub_goal": "नया उप-लक्ष्य",
+    "new_goal": "नया लक्ष्य",
+    "title_placeholder": "लक्ष्य शीर्षक",
+    "description_placeholder": "विवरण जोड़ें...",
+    "level_company": "कंपनी",
+    "level_team": "टीम",
+    "level_agent": "एजेंट",
+    "level_task": "कार्य",
+    "parent_goal": "मूल लक्ष्य",
+    "no_parent": "कोई मूल नहीं",
+    "creating": "बनाया जा रहा है…",
+    "create_sub_goal": "उप-लक्ष्य बनाएं",
+    "create_goal": "लक्ष्य बनाएं"
+  },
+  "detail": {
+    "goal_fallback": "लक्ष्य",
+    "show_properties": "गुण दिखाएं",
+    "description_placeholder": "विवरण जोड़ें...",
+    "tab_sub_goals": "उप-लक्ष्य ({{count}})",
+    "tab_projects": "प्रोजेक्ट ({{count}})",
+    "add_sub_goal": "उप लक्ष्य",
+    "no_sub_goals": "कोई उप-लक्ष्य नहीं।",
+    "no_linked_projects": "कोई संलग्न प्रोजेक्ट नहीं।"
+  }
+}

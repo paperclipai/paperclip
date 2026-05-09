@@ -145,9 +145,27 @@ import onboardingEL from "./el/onboarding.json";
 import transcriptEL from "./el/transcript.json";
 import commentsEL from "./el/comments.json";
 
+import commonHI from "./hi/common.json";
+import agentsHI from "./hi/agents.json";
+import activityHI from "./hi/activity.json";
+import issuesHI from "./hi/issues.json";
+import goalsHI from "./hi/goals.json";
+import costsHI from "./hi/costs.json";
+import companyHI from "./hi/company.json";
+import approvalsHI from "./hi/approvals.json";
+import routinesHI from "./hi/routines.json";
+import dashboardHI from "./hi/dashboard.json";
+import orgHI from "./hi/org.json";
+import inboxHI from "./hi/inbox.json";
+import settingsHI from "./hi/settings.json";
+import adaptersHI from "./hi/adapters.json";
+import onboardingHI from "./hi/onboarding.json";
+import transcriptHI from "./hi/transcript.json";
+import commentsHI from "./hi/comments.json";
+
 const LANGUAGE_KEY = "paperclip_language";
 
-const SUPPORTED_LANGUAGES = ["en", "ru", "uk", "es", "de", "pt", "zh", "el"] as const;
+const SUPPORTED_LANGUAGES = ["en", "ru", "uk", "es", "de", "pt", "zh", "el", "hi"] as const;
 
 type SupportedLanguage = typeof SUPPORTED_LANGUAGES[number];
 
@@ -322,6 +340,25 @@ i18n.use(initReactI18next).init({
       transcript: transcriptEL,
       comments: commentsEL,
     },
+    hi: {
+      common: commonHI,
+      agents: agentsHI,
+      activity: activityHI,
+      issues: issuesHI,
+      goals: goalsHI,
+      costs: costsHI,
+      company: companyHI,
+      approvals: approvalsHI,
+      routines: routinesHI,
+      dashboard: dashboardHI,
+      org: orgHI,
+      inbox: inboxHI,
+      settings: settingsHI,
+      adapters: adaptersHI,
+      onboarding: onboardingHI,
+      transcript: transcriptHI,
+      comments: commentsHI,
+    },
   },
   lng: getInitialLanguage(),
   fallbackLng: ["en"],
@@ -373,6 +410,7 @@ export const LANGUAGE_NATIVE_NAMES: Record<SupportedLanguage, string> = {
   pt: "Português (BR)",
   zh: "中文",
   el: "Ελληνικά",
+  hi: "हिन्दी",
 };
 
 export { LANGUAGE_KEY, SUPPORTED_LANGUAGES };

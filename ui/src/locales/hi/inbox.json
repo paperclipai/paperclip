@@ -1,0 +1,130 @@
+{
+  "title": "इनबॉक्स",
+  "tabs": {
+    "mine": "मेरा",
+    "board": "बोर्ड",
+    "recent": "हालिया",
+    "unread": "अपठित",
+    "all": "सभी"
+  },
+  "actions": {
+    "retry": "पुनः प्रयास",
+    "retrying": "पुनः प्रयास हो रहा है…",
+    "mark_as_read": "पठित चिह्नित करें",
+    "dismiss": "खारिज करें",
+    "dismiss_from_inbox": "इनबॉक्स से खारिज करें",
+    "mark_all_read": "सभी पठित चिह्नित करें",
+    "marking": "चिह्नित हो रहा है…",
+    "approve": "अनुमोदित करें",
+    "reject": "अस्वीकार करें",
+    "cancel": "रद्द करें"
+  },
+  "group": {
+    "none": "कोई नहीं",
+    "type": "प्रकार",
+    "assignee": "असाइनी",
+    "project": "प्रोजेक्ट",
+    "workspace": "वर्कस्पेस",
+    "archived": "संग्रहीत",
+    "other": "अन्य परिणाम",
+    "group": "समूह",
+    "earlier": "पहले"
+  },
+  "search": {
+    "placeholder": "इनबॉक्स खोजें…"
+  },
+  "filters": {
+    "category": "श्रेणी",
+    "approval_status": "अनुमोदन स्थिति",
+    "category_everything": "सभी श्रेणियाँ",
+    "category_issues_i_touched": "मेरे हालिया कार्य",
+    "category_join_requests": "जुड़ने के अनुरोध",
+    "category_approvals": "अनुमोदन",
+    "category_failed_runs": "विफल रन",
+    "category_alerts": "अलर्ट",
+    "status_all": "सभी अनुमोदन स्थितियाँ",
+    "status_actionable": "कार्रवाई आवश्यक",
+    "status_resolved": "हल किया गया"
+  },
+  "placeholders": {
+    "category": "श्रेणी",
+    "approval_status": "अनुमोदन स्थिति"
+  },
+  "misc": {
+    "human_join_request": "मानव जुड़ने का अनुरोध",
+    "agent_join_request": "एजेंट जुड़ने का अनुरोध",
+    "agent_join_request_named": "एजेंट जुड़ने का अनुरोध: {{name}}",
+    "run_error": "रन त्रुटि के साथ समाप्त हुआ।",
+    "enable_nesting": "parent-child nesting सक्षम करें",
+    "disable_nesting": "parent-child nesting अक्षम करें",
+    "choose_columns": "इनबॉक्स के कौन से कॉलम दिखाई दें चुनें",
+    "failed_run": "विफल रन",
+    "failed_run_named": "विफल रन — {{agent}}",
+    "subtask_count_one": "({{count}} उप-कार्य)",
+    "subtask_count_other": "({{count}} उप-कार्य)",
+    "requested_by": "{{name}} द्वारा अनुरोधित",
+    "updated_time": "{{time}} अपडेट",
+    "requested_time_ip": "{{time}} पर IP {{ip}} से अनुरोधित",
+    "adapter_label": "adapter: {{adapter}}",
+    "alerts_heading": "अलर्ट",
+    "agent_has_errors_one": "{{count}} एजेंट में त्रुटियाँ हैं",
+    "agent_has_errors_other": "{{count}} एजेंटों में त्रुटियाँ हैं",
+    "budget_utilization": "इस महीने बजट {{percent}}% उपयोग में"
+  },
+  "empty": {
+    "select_company": "इनबॉक्स देखने के लिए एक कंपनी चुनें।",
+    "no_search_match": "कोई इनबॉक्स आइटम आपकी खोज से मेल नहीं खाता।",
+    "inbox_zero": "इनबॉक्स खाली।",
+    "no_new": "कोई नया इनबॉक्स आइटम नहीं।",
+    "no_recent": "कोई हालिया इनबॉक्स आइटम नहीं।",
+    "no_match_filters": "इन फ़िल्टर से कोई इनबॉक्स आइटम मेल नहीं खाता।"
+  },
+  "dialog": {
+    "mark_all_title": "सभी पठित चिह्नित करें?",
+    "mark_all_desc_one": "यह {{count}} अपठित आइटम को पठित चिह्नित करेगा।",
+    "mark_all_desc_other": "यह {{count}} अपठित आइटम को पठित चिह्नित करेगा।"
+  },
+  "errors": {
+    "failed_to_approve": "अनुमोदन करने में विफल",
+    "failed_to_reject": "अस्वीकार करने में विफल",
+    "failed_to_approve_join": "जुड़ने के अनुरोध को अनुमोदित करने में विफल",
+    "failed_to_reject_join": "जुड़ने के अनुरोध को अस्वीकार करने में विफल",
+    "failed_to_archive": "कार्य संग्रहीत करने में विफल",
+    "failed_to_undo_archive": "इनबॉक्स संग्रह पूर्ववत करने में विफल"
+  },
+  "creators": {
+    "board": "बोर्ड",
+    "me": "मैं"
+  },
+  "join_queue": {
+    "title": "जुड़ने का अनुरोध कतार",
+    "breadcrumb": "जुड़ने के अनुरोध",
+    "description": "मिश्रित इनबॉक्स फ़ीड के बाहर मानव और एजेंट जुड़ने के अनुरोधों की समीक्षा करें। यह कतार inline इनबॉक्स cards के समान approval mutations उपयोग करती है।",
+    "select_company": "जुड़ने के अनुरोधों की समीक्षा के लिए एक कंपनी चुनें।",
+    "loading": "जुड़ने के अनुरोध लोड हो रहे हैं…",
+    "permission_error": "आपको इस कंपनी के जुड़ने के अनुरोधों की समीक्षा की अनुमति नहीं है।",
+    "failed_load": "जुड़ने के अनुरोध लोड करने में विफल।",
+    "filter_status": "स्थिति",
+    "filter_type": "अनुरोध प्रकार",
+    "status_pending": "अनुमोदन लंबित",
+    "status_approved": "अनुमोदित",
+    "status_rejected": "अस्वीकृत",
+    "type_all": "सभी",
+    "type_human": "मानव",
+    "type_agent": "एजेंट",
+    "empty": "वर्तमान फ़िल्टर से कोई जुड़ने का अनुरोध मेल नहीं खाता।",
+    "toast_approved": "जुड़ने का अनुरोध अनुमोदित",
+    "toast_rejected": "जुड़ने का अनुरोध अस्वीकृत",
+    "unknown_human": "अज्ञात मानव अनुरोधकर्ता",
+    "unknown_agent": "अज्ञात एजेंट अनुरोधकर्ता",
+    "reject": "अस्वीकार करें",
+    "approve": "अनुमोदित करें",
+    "invite_context": "आमंत्रण संदर्भ",
+    "invite_join_invite": "{{type}} जुड़ने का आमंत्रण",
+    "invite_role": " • डिफ़ॉल्ट भूमिका {{role}}",
+    "invite_unavailable": "आमंत्रण metadata अनुपलब्ध",
+    "request_details": "अनुरोध विवरण",
+    "submitted_at": "{{date}} को सबमिट",
+    "source_ip": "स्रोत IP {{ip}}"
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "title": "अनुमोदन",
+  "tabs": {
+    "pending": "लंबित",
+    "all": "सभी"
+  },
+  "empty": {
+    "select_company": "पहले एक कंपनी चुनें।",
+    "no_pending": "कोई लंबित अनुमोदन नहीं।",
+    "no_approvals": "अभी तक कोई अनुमोदन नहीं।"
+  },
+  "card": {
+    "requested_by": "अनुरोधकर्ता",
+    "created_ago": "अनुमोदन अनुरोध {{time}} बनाया गया",
+    "decision_note": "निर्णय नोट।",
+    "approve": "अनुमोदित करें",
+    "approving": "अनुमोदन हो रहा है...",
+    "reject": "अस्वीकार करें",
+    "rejecting": "अस्वीकार हो रहा है...",
+    "view_details": "विवरण देखें"
+  },
+  "status": {
+    "approved": "अनुमोदित",
+    "cancelled": "रद्द",
+    "pending": "लंबित",
+    "rejected": "अस्वीकृत",
+    "revision_requested": "संशोधन अनुरोधित"
+  },
+  "payload": {
+    "type_hire_agent": "एजेंट नियुक्ति",
+    "type_approve_ceo_strategy": "CEO रणनीति",
+    "type_budget_override_required": "बजट Override",
+    "type_request_board_approval": "बोर्ड अनुमोदन",
+    "type_ceo_strategy": "CEO रणनीति",
+    "type_budget_override": "बजट Override",
+    "type_board_approval": "बोर्ड अनुमोदन",
+    "field_name": "नाम",
+    "field_role": "भूमिका",
+    "field_title": "शीर्षक",
+    "field_icon": "आइकन",
+    "field_capabilities": "क्षमताएं",
+    "field_adapter": "Adapter",
+    "field_skills": "कौशल",
+    "field_scope": "दायरा",
+    "field_window": "विंडो",
+    "field_metric": "मेट्रिक",
+    "limit_observed": "सीमा {{limit}} · देखा गया {{observed}}",
+    "board_title": "शीर्षक",
+    "board_summary": "सारांश",
+    "board_recommended_action": "अनुशंसित कार्रवाई",
+    "board_on_approval": "अनुमोदन पर",
+    "board_risks": "जोखिम",
+    "board_proposed_comment": "प्रस्तावित टिप्पणी"
+  },
+  "detail": {
+    "approval_fallback": "अनुमोदन",
+    "not_found": "अनुमोदन नहीं मिला।",
+    "approval_confirmed": "अनुमोदन पुष्टि हुई",
+    "approval_confirmed_desc": "अनुरोधकर्ता एजेंट को इस अनुमोदन और संलग्न कार्यों की समीक्षा के लिए सूचित किया गया।",
+    "see_full_request": "पूर्ण अनुरोध देखें",
+    "decision_note_prefix": "निर्णय नोट",
+    "linked_issues": "संलग्न कार्य",
+    "linked_issues_note": "संलग्न कार्य तब तक खुले रहते हैं जब तक अनुरोधकर्ता एजेंट फॉलो अप करके उन्हें बंद नहीं करता।",
+    "budget_resolve_prefix": "इस बजट रोक को",
+    "budget_resolve_suffix": "के बजट नियंत्रण से हल करें।",
+    "request_revision": "संशोधन अनुरोध करें",
+    "mark_resubmitted": "पुनः सबमिट किया चिह्नित करें",
+    "delete_agent_confirm": "इस अस्वीकृत एजेंट को हटाएं? यह पूर्ववत नहीं किया जा सकता।",
+    "delete_disapproved_agent": "अस्वीकृत एजेंट हटाएं",
+    "comments": "टिप्पणियाँ ({{count}})",
+    "comment_placeholder": "टिप्पणी जोड़ें...",
+    "posting": "पोस्ट हो रहा है…",
+    "post_comment": "टिप्पणी पोस्ट करें",
+    "review_linked_issues": "संलग्न कार्यों की समीक्षा करें",
+    "review_linked_issue": "संलग्न कार्य की समीक्षा करें",
+    "open_hired_agent": "नियुक्त एजेंट खोलें",
+    "back_to_approvals": "अनुमोदनों पर वापस",
+    "board_author": "बोर्ड"
+  },
+  "errors": {
+    "approve_failed": "अनुमोदन करने में विफल",
+    "reject_failed": "अस्वीकार करने में विफल",
+    "revision_failed": "संशोधन अनुरोध में विफल",
+    "resubmit_failed": "पुनः सबमिट करने में विफल",
+    "comment_failed": "टिप्पणी पोस्ट करने में विफल",
+    "delete_failed": "एजेंट हटाने में विफल"
+  }
+}

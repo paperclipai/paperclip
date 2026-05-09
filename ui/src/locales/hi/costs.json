@@ -1,0 +1,260 @@
+{
+  "title": "लागत",
+  "description": "Inference खर्च, platform शुल्क, क्रेडिट और live quota विंडो।",
+  "tabs": {
+    "overview": "अवलोकन",
+    "budgets": "बजट",
+    "providers": "Providers",
+    "billers": "Billers",
+    "finance": "वित्त",
+    "all_providers": "सभी providers",
+    "all_billers": "सभी billers"
+  },
+  "presets": {
+    "mtd": "महीने की शुरुआत से अब तक",
+    "7d": "पिछले 7 दिन",
+    "30d": "पिछले 30 दिन",
+    "ytd": "वर्ष की शुरुआत से अब तक",
+    "all": "सभी समय",
+    "custom": "कस्टम"
+  },
+  "date_range": {
+    "to": "से"
+  },
+  "metrics": {
+    "inference_spend": "Inference खर्च",
+    "budget": "बजट",
+    "finance_net": "वित्त शुद्ध",
+    "finance_events": "वित्त घटनाएं",
+    "debits": "डेबिट",
+    "credits": "क्रेडिट",
+    "net": "शुद्ध",
+    "estimated": "अनुमानित",
+    "active_incidents": "सक्रिय घटनाएं",
+    "pending_approvals": "लंबित अनुमोदन",
+    "paused_agents": "रोके गए एजेंट",
+    "paused_projects": "रोके गए प्रोजेक्ट",
+    "open": "खुला",
+    "no_monthly_cap": "कोई मासिक सीमा नहीं",
+    "unlimited_budget": "असीमित बजट"
+  },
+  "subtitles": {
+    "tokens_across_events": "request-scoped घटनाओं में tokens",
+    "agents_paused_projects_paused": "{{agentCount}} एजेंट रोके · {{projectCount}} प्रोजेक्ट रोके",
+    "monthly_utilized": "इस अवधि में {{percent}}% मासिक बजट उपयोग किया।",
+    "refunds_offsets": "रिफंड, ऑफसेट और क्रेडिट रिटर्न",
+    "debit_minus_credit": "चयनित अवधि के लिए डेबिट माइनस क्रेडिट",
+    "estimated_debits": "अनुमानित डेबिट जो अभी invoice-authoritative नहीं हैं",
+    "threshold_crossings": "खुले soft या hard threshold crossing",
+    "budget_approvals_awaiting": "बोर्ड कार्रवाई की प्रतीक्षा में बजट override अनुमोदन",
+    "heartbeats_blocked": "बजट द्वारा अवरुद्ध एजेंट heartbeats",
+    "execution_blocked": "बजट द्वारा अवरुद्ध प्रोजेक्ट execution",
+    "estimated_in_range": "अवधि में अनुमानित",
+    "debits_credits": "{{debits}} डेबिट · {{credits}} क्रेडिट",
+    "events_in_range_one": "अवधि में {{count}} घटना",
+    "events_in_range_other": "अवधि में {{count}} घटनाएं"
+  },
+  "budget": {
+    "of": "{{budget}} में से {{spend}}",
+    "budget_label": "बजट {{amount}}"
+  },
+  "labels": {
+    "usage": "उपयोग",
+    "tok": "tok",
+    "in_out_tokens": "in {{inTokens}} · out {{outTokens}}",
+    "api_runs": "{{count}} api",
+    "subscription_runs": "{{count}} subscription"
+  },
+  "cards": {
+    "inference_ledger": "Inference बहीखाता",
+    "inference_ledger_desc": "cost_events से request-scoped उपयोग और billed रन।",
+    "inference_ledger_points": {
+      "point1": "tokens + billed dollars",
+      "point2": "provider, biller, model",
+      "point3": "subscription और overage aware"
+    },
+    "finance_ledger": "वित्त बहीखाता",
+    "finance_ledger_desc": "Account-level शुल्क जो एक prompt-response pair नहीं हैं।",
+    "finance_ledger_points": {
+      "point1": "top-ups, refunds, fees",
+      "point2": "Bedrock provisioned या training शुल्क",
+      "point3": "credit expiries और adjustments"
+    },
+    "live_quotas": "Live quotas",
+    "live_quotas_desc": "Provider या biller विंडो जो real time में traffic रोक सकती हैं।",
+    "live_quotas_points": {
+      "point1": "provider quota विंडो",
+      "point2": "biller credit सिस्टम",
+      "point3": "सीधे surfaced त्रुटियाँ"
+    },
+    "accounting_model_title": "Accounting model",
+    "accounting_model_desc": "Paperclip अब request-level inference उपयोग को account-level finance events से अलग करता है। यह provider रिपोर्टिंग को ईमानदार रखता है जब biller OpenRouter, Cloudflare, Bedrock या कोई अन्य intermediary हो।",
+    "by_agent": "एजेंट के अनुसार",
+    "by_agent_desc": "चयनित अवधि में प्रत्येक एजेंट ने क्या उपयोग किया।",
+    "by_project": "प्रोजेक्ट के अनुसार",
+    "by_project_desc": "project-linked कार्यों के माध्यम से attributed रन लागत।",
+    "by_biller": "Biller के अनुसार",
+    "by_biller_desc": "Account-level वित्तीय घटनाएं उनके अनुसार समूहित जिसने शुल्क लिया या क्रेडिट दिया।",
+    "budget_control": "बजट नियंत्रण plane",
+    "budget_control_desc": "एजेंटों और प्रोजेक्ट के लिए hard-stop खर्च सीमाएं। Provider subscription quota अलग रहता है और Providers के अंतर्गत दिखता है।"
+  },
+  "budgets": {
+    "company_policy": "कंपनी-व्यापी मासिक नीति।",
+    "agent_policy": "व्यक्तिगत एजेंटों के लिए आवर्ती मासिक खर्च नीतियां।",
+    "project_policy": "execution-bound प्रोजेक्ट के लिए आजीवन खर्च नीतियां।",
+    "active_incidents_title": "सक्रिय घटनाएं",
+    "resolve_hard_stops": "बजट बढ़ाकर या दायरे को स्पष्ट रूप से रोककर यहाँ hard stops हल करें।",
+    "unattributed": "असाइन नहीं",
+    "company_budgets_title": "कंपनी बजट",
+    "agent_budgets_title": "एजेंट बजट",
+    "project_budgets_title": "प्रोजेक्ट बजट"
+  },
+  "incident_card": {
+    "hard_stop": "hard stop",
+    "resolved": "हल किया गया",
+    "dismissed": "खारिज किया गया",
+    "escalated": "escalated",
+    "pending_approval": "लंबित अनुमोदन",
+    "open": "खुला",
+    "spending_reached": "खर्च {{limit}} की सीमा के विरुद्ध {{observed}} पर पहुंचा।",
+    "new_budget_usd": "नया बजट (USD)",
+    "project_paused": "प्रोजेक्ट execution रोका गया है। बजट घटना हल होने तक इस प्रोजेक्ट में नया काम शुरू नहीं होगा।",
+    "scope_paused": "यह दायरा रोका गया है। बजट घटना हल होने तक नई heartbeats शुरू नहीं होंगी।",
+    "applying": "लागू हो रहा है...",
+    "raise_budget": "बजट बढ़ाएं और फिर शुरू करें",
+    "keep_paused": "रोका रखें",
+    "budget_must_exceed": "नया बजट वर्तमान observed खर्च से अधिक होना चाहिए।"
+  },
+  "policy_card": {
+    "lifetime_budget": "आजीवन बजट",
+    "monthly_budget": "मासिक UTC बजट",
+    "of_limit": "सीमा का {{percent}}%",
+    "no_cap": "कोई सीमा नहीं",
+    "disabled": "अक्षम",
+    "unlimited": "असीमित",
+    "project_paused": "बजट बढ़ाने या घटना खारिज होने तक इस प्रोजेक्ट का execution रोका गया है।",
+    "scope_paused": "बजट बढ़ाने या घटना खारिज होने तक इस दायरे की heartbeats रोकी गई हैं।",
+    "saving": "सहेजा जा रहा है...",
+    "update_budget": "बजट अपडेट करें",
+    "set_budget": "बजट सेट करें",
+    "status_paused": "रोका गया",
+    "status_warning": "चेतावनी",
+    "status_hard_stop": "Hard stop",
+    "status_healthy": "स्वस्थ",
+    "observed": "देखा गया",
+    "budget": "बजट",
+    "soft_alert": "{{percent}}% पर soft alert",
+    "soft_alert_with_pause": "{{percent}}% पर soft alert · {{reason}} pause",
+    "remaining": "शेष",
+    "budget_usd": "बजट (USD)"
+  },
+  "budget_sidebar_marker": {
+    "healthy": "बजट स्वस्थ",
+    "warning": "बजट चेतावनी",
+    "critical": "बजट द्वारा रोका गया"
+  },
+  "empty": {
+    "select_company": "लागत देखने के लिए एक कंपनी चुनें।",
+    "no_cost_events": "अभी तक कोई cost events नहीं।",
+    "no_project_costs": "अभी तक कोई project-attributed रन लागत नहीं।",
+    "no_finance_events": "अभी तक कोई finance events नहीं। Biller invoices या credits आने पर account-level शुल्क जोड़ें।",
+    "no_finance_events_overview": "अभी तक कोई finance events नहीं। Biller invoices या credits आने पर account-level शुल्क जोड़ें।",
+    "no_cost_events_period": "इस अवधि में कोई cost events नहीं।",
+    "no_billable_events": "इस अवधि में कोई billable events नहीं।",
+    "select_date_range": "डेटा लोड करने के लिए प्रारंभ और अंत तिथि चुनें।",
+    "no_budget_policies": "अभी तक कोई बजट नीतियां नहीं। एजेंट और प्रोजेक्ट बजट उनके detail pages से सेट करें, या मौजूदा कंपनी मासिक बजट नियंत्रण उपयोग करें।"
+  },
+  "finance_timeline": {
+    "title": "हालिया वित्तीय घटनाएं",
+    "description": "Top-ups, fees, credits, commitments और अन्य non-request शुल्क।",
+    "no_events": "इस अवधि में कोई वित्तीय घटनाएं नहीं।",
+    "invoice": "invoice {{id}}",
+    "region": "region {{region}}",
+    "tier": "tier {{tier}}",
+    "estimated": "अनुमानित"
+  },
+  "quota_card": {
+    "period_spend": "अवधि खर्च",
+    "of_allocation": "आवंटन का {{percent}}%",
+    "this_week": "इस सप्ताह",
+    "per_week": "~{{amount}} / सप्ताह",
+    "rolling_windows": "Rolling windows",
+    "subscription": "Subscription",
+    "subscription_quota": "Subscription quota",
+    "subscription_share": "subscription के माध्यम से {{percent}}% token उपयोग",
+    "in_label": "in",
+    "out_label": "out",
+    "api_sub_runs": "~{{apiRuns}} api / ~{{subRuns}} sub रन",
+    "api_runs_only": "~{{apiRuns}} api रन",
+    "sub_runs_only": "~{{subRuns}} sub रन",
+    "percent_used": "{{percent}}% उपयोग",
+    "resets": "{{date}} को रीसेट",
+    "runs_label": "रन",
+    "total_label": "कुल",
+    "of_provider_tokens": "provider tokens का {{percent}}%",
+    "of_provider_cost": "provider लागत का {{percent}}%"
+  },
+  "biller_spend": {
+    "metered_runs_one": "{{count}} metered रन",
+    "metered_runs_other": "{{count}} metered रन",
+    "subscription_runs_one": "{{count}} subscription रन",
+    "subscription_runs_other": "{{count}} subscription रन",
+    "this_week": "इस सप्ताह",
+    "billing_types": "Billing प्रकार",
+    "upstream_providers": "Upstream providers",
+    "provider_count_one": "{{count}} provider",
+    "provider_count_other": "{{count}} providers",
+    "model_count_one": "{{count}} model",
+    "model_count_other": "{{count}} models"
+  },
+  "finance_kind": {
+    "title": "वित्तीय घटना मिश्रण",
+    "description": "Account-level शुल्क घटना प्रकार के अनुसार समूहित।",
+    "no_events": "इस अवधि में कोई finance events नहीं।",
+    "events_one": "{{count}} घटना",
+    "events_other": "{{count}} घटनाएं",
+    "billers_one": "{{count}} biller",
+    "billers_other": "{{count}} billers",
+    "debits": "डेबिट"
+  },
+  "subscription_panel": {
+    "title": "Anthropic subscription",
+    "subtitle": "Live Claude quota विंडो।",
+    "runs": "रन",
+    "total": "कुल",
+    "in_label": "in",
+    "out_label": "out",
+    "sub_share": "subscription के माध्यम से {{percent}}% token उपयोग",
+    "subscription": "Subscription",
+    "resets": "{{date}} को रीसेट",
+    "percent_used": "{{percent}}% उपयोग"
+  },
+  "finance_event_kind": {
+    "inference_charge": "Inference शुल्क",
+    "platform_fee": "Platform शुल्क",
+    "credit_purchase": "क्रेडिट खरीद",
+    "credit_refund": "क्रेडिट रिफंड",
+    "credit_expiry": "क्रेडिट समाप्ति",
+    "byok_fee": "BYOK शुल्क",
+    "gateway_overhead": "Gateway overhead",
+    "log_storage_charge": "Log स्टोरेज",
+    "logpush_charge": "Logpush",
+    "provisioned_capacity_charge": "Provisioned capacity",
+    "training_charge": "Training",
+    "custom_model_import_charge": "Custom model import",
+    "custom_model_storage_charge": "Custom model storage",
+    "manual_adjustment": "Manual adjustment"
+  },
+  "finance_direction": {
+    "credit": "क्रेडिट",
+    "debit": "डेबिट"
+  },
+  "billing_type": {
+    "metered_api": "Metered API",
+    "subscription_included": "Subscription",
+    "subscription_overage": "Subscription overage",
+    "credits": "क्रेडिट",
+    "fixed": "Fixed",
+    "unknown": "अज्ञात"
+  }
+}
