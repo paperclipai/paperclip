@@ -1037,8 +1037,13 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       priority?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
     },
-    options?: { allowSecurityRoleBypass?: boolean },
+    options?: {
+      allowSecurityRoleBypass?: boolean;
+      routineOwnerCancel?: { requestedStatus: string | null | undefined };
+    },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1052,6 +1057,43 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      if (
+        options?.routineOwnerCancel
+        && options.routineOwnerCancel.requestedStatus === "cancelled"
+        && issue.originKind === "routine_execution"
+        && typeof issue.originId === "string"
+        && issue.originId.length > 0
+      ) {
+        const routine = await routinesSvc.get(issue.originId);
+        if (
+          routine
+          && routine.companyId === issue.companyId
+          && routine.assigneeAgentId === actorAgentId
+        ) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "cross_assignee_routine_owner_cancel",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              routine_owner_cancel_carve_out: true,
+              callerAgentId: actorAgentId,
+              issueId: issue.id,
+              originKind: issue.originKind,
+              routineId: routine.id,
+              priorAssigneeAgentId: issue.assigneeAgentId,
+              priorStatus: issue.status,
+            },
+          });
+          (req as Request & { routineOwnerCancelBypass?: boolean }).routineOwnerCancelBypass = true;
+          return true;
+        }
       }
       if (
         options?.allowSecurityRoleBypass
@@ -2575,7 +2617,30 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (
+      !(await assertAgentIssueMutationAllowed(req, res, existing, {
+        routineOwnerCancel: { requestedStatus: req.body?.status as string | null | undefined },
+      }))
+    )
+      return;
+
+    if ((req as Request & { routineOwnerCancelBypass?: boolean }).routineOwnerCancelBypass) {
+      const ALLOWED_ROUTINE_OWNER_CANCEL_FIELDS = new Set(["status", "comment"]);
+      const offendingFields = Object.keys(req.body ?? {}).filter(
+        (key) => req.body[key] !== undefined && !ALLOWED_ROUTINE_OWNER_CANCEL_FIELDS.has(key),
+      );
+      if (offendingFields.length > 0 || req.body?.status !== "cancelled") {
+        res.status(403).json({
+          error: "Routine owner cancel carve-out only permits status=cancelled (+ optional comment)",
+          details: {
+            issueId: existing.id,
+            offendingFields,
+            requestedStatus: req.body?.status,
+          },
+        });
+        return;
+      }
+    }
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
