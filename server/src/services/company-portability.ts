@@ -4464,6 +4464,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 enabled: trigger.enabled,
                 cronExpression: trigger.cronExpression!,
                 timezone: trigger.timezone!,
+                fireOnCreate: false,
               }, {
                 agentId: null,
                 userId: actorUserId ?? null,

@@ -1347,6 +1347,15 @@ export function routineService(
         })
         .returning();
 
+      if (input.kind === "schedule" && input.fireOnCreate) {
+        await dispatchRoutineRun({
+          routine,
+          trigger,
+          source: "manual",
+          actor,
+        });
+      }
+
       return {
         trigger: trigger as RoutineTrigger,
         secretMaterial,

@@ -101,6 +101,7 @@ POST /api/routines/{routineId}/triggers
 
 - `cronExpression`: standard 5-field cron syntax
 - `timezone`: IANA timezone string (for example `UTC` or `America/New_York`)
+- `fireOnCreate`: optional boolean (default `false`). When `true`, an immediate manual run is dispatched right after the trigger is created — useful when the current period's cron slot has already passed (e.g., a weekly Friday-8AM routine created Friday evening). Concurrency policy still applies.
 - The server computes `nextRunAt` automatically
 
 ### Webhook

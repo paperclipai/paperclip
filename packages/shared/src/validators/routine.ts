@@ -76,6 +76,7 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
     kind: z.literal("schedule"),
     cronExpression: z.string().trim().min(1),
     timezone: z.string().trim().min(1).default("UTC"),
+    fireOnCreate: z.boolean().optional().default(false),
   }),
   baseTriggerSchema.extend({
     kind: z.literal("webhook"),
