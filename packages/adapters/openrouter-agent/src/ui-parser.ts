@@ -27,7 +27,7 @@ type TranscriptEntry =
       ts: string;
       toolUseId: string;
       toolName?: string;
-      content: string;
+      content: unknown;
       isError: boolean;
     }
   | { kind: "init"; ts: string; model: string; sessionId: string }

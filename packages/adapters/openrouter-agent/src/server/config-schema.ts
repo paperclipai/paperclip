@@ -1,26 +1,13 @@
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 import {
-  DEFAULT_OPENROUTER_LOCAL_MODEL,
   DEFAULT_OPENROUTER_LOCAL_BASE_URL,
   DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS,
   DEFAULT_OPENROUTER_LOCAL_RUN_COMMAND_TIMEOUT_SEC,
 } from "../index.js";
-import { listModels } from "./models.js";
 
 export async function getConfigSchema(): Promise<AdapterConfigSchema> {
-  const models = await listModels();
-
   return {
     fields: [
-      {
-        key: "model",
-        label: "Model",
-        type: "combobox",
-        default: DEFAULT_OPENROUTER_LOCAL_MODEL,
-        required: true,
-        options: models.map((m) => ({ value: m.id, label: m.label })),
-        hint: "Select a model from the catalog or enter a custom slug (e.g. 'openrouter/auto'). Note: The 'Cheap' model profile defaults to 'openai/gpt-4o-mini'.",
-      },
       {
         key: "baseUrl",
         label: "Base URL",

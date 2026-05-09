@@ -53,6 +53,7 @@ export {
 export function createServerAdapter(): ServerAdapterModule {
   return {
     type,
+    label,
     execute,
     testEnvironment,
     models,

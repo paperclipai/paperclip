@@ -129,11 +129,10 @@ describe("buildPaperclipTools", () => {
       const ctx = buildCtx({ paperclipApi: api, currentIssueId: "x" });
       const tools = buildPaperclipTools(ctx);
       const tool = tools.find((t) => t.name === "get_issue")!;
-      const result = await tool.execute({}, ctx);
-      const parsed = JSON.parse(result);
-      expect(parsed.isError).toBe(true);
-      expect(parsed.status).toBe(404);
-      expect(parsed.message).toBeTruthy();
+      const result = await tool.execute({}, ctx) as Record<string, unknown>;
+      expect(result.isError).toBe(true);
+      expect(result.status).toBe(404);
+      expect(result.message).toBeTruthy();
     });
   });
 });

@@ -21,17 +21,60 @@ export interface ToolHandler {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
+  execute(args: Record<string, unknown>, ctx: ToolContext): Promise<unknown>;
 }
 
 export interface ToolDispatchOutcome {
-  content: string;
+  content: unknown;
   isError: boolean;
+}
+
+/**
+ * Recursively remove structural noise from API response objects so the model
+ * receives compact, signal-only data:
+ *   - null values → absent
+ *   - empty arrays (after pruning children) → absent
+ *   - empty objects (after pruning children) → absent
+ *   - "vacuous summary" objects where every value is 0 or "none" → absent
+ *     (catches blockerAttention and similar all-zero count structs)
+ * Non-null falsy scalars (false, "") are preserved.
+ */
+export function pruneEmpty(value: unknown): unknown {
+  if (value === null) return undefined;
+  if (Array.isArray(value)) {
+    const pruned = value.map(pruneEmpty).filter((v) => v !== undefined);
+    return pruned.length === 0 ? undefined : pruned;
+  }
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const pruned = pruneEmpty(v);
+      if (pruned !== undefined) result[k] = pruned;
+    }
+    const vals = Object.values(result);
+    if (vals.length === 0) return undefined;
+    if (vals.every((v) => v === 0 || v === "none")) return undefined;
+    return result;
+  }
+  return value;
+}
+
+/**
+ * Serialize tool result content for the OpenAI messages array.
+ * Objects are pruned of null/empty fields then pretty-printed so the model
+ * receives readable structured data. Strings pass through with truncation only.
+ */
+export function serializeForModel(content: unknown): string {
+  const str = typeof content === "string"
+    ? content
+    : JSON.stringify(pruneEmpty(content), null, 2) ?? "";
+  return truncateForModel(str);
 }
 
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
-function truncateForModel(value: string): string {
+function truncateForModel(value: string | undefined): string {
+  if (!value) return "";
   const buf = Buffer.from(value, "utf-8");
   if (buf.byteLength <= MAX_OUTPUT_BYTES) return value;
   const head = buf.subarray(0, MAX_OUTPUT_BYTES).toString("utf-8");
@@ -331,7 +374,10 @@ export async function dispatchToolCall(
   try {
     const args = parseToolArguments(call.function.arguments ?? "");
     const result = await handler.execute(args, ctx);
-    return { content: truncateForModel(result), isError: false };
+    // Strings (shell output) get truncated in place; objects stay raw so the
+    // caller can embed them as structured JSON in the transcript.
+    const content = typeof result === "string" ? truncateForModel(result) : result;
+    return { content, isError: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { content: `error: ${message}`, isError: true };

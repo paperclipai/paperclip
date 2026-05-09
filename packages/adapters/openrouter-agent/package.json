@@ -13,48 +13,56 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./server": "./src/server/index.ts",
-    "./ui-parser": "./src/ui-parser.ts"
+    ".": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./meta": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./ui-parser": {
+      "types": "./dist/ui-parser.d.ts",
+      "import": "./dist/ui-parser.js"
+    }
   },
   "publishConfig": {
     "access": "public",
     "exports": {
       ".": {
-        "types": "./dist/index.d.ts",
-        "import": "./dist/index.js"
-      },
-      "./server": {
         "types": "./dist/server/index.d.ts",
         "import": "./dist/server/index.js"
+      },
+      "./meta": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
       },
       "./ui-parser": {
         "types": "./dist/ui-parser.d.ts",
         "import": "./dist/ui-parser.js"
       }
     },
-    "main": "./dist/index.js",
-    "types": "./dist/index.d.ts"
+    "main": "./dist/server/index.js",
+    "types": "./dist/server/index.d.ts"
   },
   "files": [
     "dist",
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@paperclipai/adapter-utils": ">=0.3.1"
-  },
-  "dependencies": {
-    "openai": "^4.0.0"
+    "openai": ">=4.0.0"
   },
   "devDependencies": {
     "@paperclipai/adapter-utils": "workspace:*",
     "@types/node": "^24.6.0",
+    "openai": "^4.0.0",
+    "tsup": "^8.0.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.0"
   },

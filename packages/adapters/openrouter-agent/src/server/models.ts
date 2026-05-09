@@ -49,22 +49,23 @@ export function buildModelLabel(model: OpenRouterModel): string {
   return `${model.name} [${tags.join(", ")}]`;
 }
 
-function buildFallbackModels(): AdapterModel[] {
-  const result: AdapterModel[] = [...staticModels];
-  const seen = new Set(result.map((m) => m.id));
+function buildLeadingModels(): AdapterModel[] {
+  const leading: AdapterModel[] = [...staticModels];
+  const seen = new Set(leading.map((m) => m.id));
 
-  for (const [envVar, label] of [
-    ["OPENROUTER_MODEL", "OPENROUTER_MODEL"],
-    ["OPENROUTER_DEFAULT_MODEL", "OPENROUTER_DEFAULT_MODEL"],
-  ] as const) {
+  for (const envVar of ["OPENROUTER_MODEL", "OPENROUTER_DEFAULT_MODEL", "OPENROUTER_LIGHT_MODEL"]) {
     const slug = process.env[envVar]?.trim();
     if (slug && !seen.has(slug)) {
-      result.push({ id: slug, label: `${slug} (${label})` });
+      leading.push({ id: slug, label: slug });
       seen.add(slug);
     }
   }
 
-  return result;
+  return leading;
+}
+
+function buildFallbackModels(): AdapterModel[] {
+  return buildLeadingModels();
 }
 
 let cachedModels: AdapterModel[] | null = null;
@@ -106,18 +107,20 @@ export async function listModels(): Promise<AdapterModel[]> {
       (m) => m.supported_parameters.includes("tools") && !isExpired(m),
     );
 
-    filtered.sort((a, b) => {
-      const aFree = a.pricing.prompt === "0" && a.pricing.completion === "0";
-      const bFree = b.pricing.prompt === "0" && b.pricing.completion === "0";
-      if (aFree && !bFree) return -1;
-      if (!aFree && bFree) return 1;
-      return a.name.localeCompare(b.name);
-    });
+    const sortKey = (id: string) => id.replace(/^~/, "");
+    filtered.sort((a, b) => sortKey(a.id).localeCompare(sortKey(b.id)));
 
-    const result: AdapterModel[] = filtered.map((m) => ({
-      id: m.id,
-      label: buildModelLabel(m),
-    }));
+    const leading = buildLeadingModels();
+    const leadingIds = new Set(leading.map((m) => m.id));
+    // Upgrade leading model labels with API display names when available
+    for (const lm of leading) {
+      const apiModel = rawModels.find((m) => m.id === lm.id);
+      if (apiModel) lm.label = buildModelLabel(apiModel);
+    }
+    const dynamic: AdapterModel[] = filtered
+      .filter((m) => !leadingIds.has(m.id))
+      .map((m) => ({ id: m.id, label: buildModelLabel(m) }));
+    const result = [...leading, ...dynamic];
 
     cachedModels = result;
     cacheExpiresAt = Date.now() + CACHE_TTL_MS;
@@ -139,12 +142,15 @@ export async function detectModel(): Promise<{
   provider: string;
   source: string;
   candidates?: string[];
+  lightModel?: string;
 } | null> {
   const envModel = process.env.OPENROUTER_MODEL?.trim();
-  if (!envModel) return null;
+  const lightModel = process.env.OPENROUTER_LIGHT_MODEL?.trim();
+  if (!envModel && !lightModel) return null;
   return {
-    model: envModel,
+    model: envModel ?? "",
     provider: "openrouter",
-    source: "env_OPENROUTER_MODEL",
+    source: envModel ? "env_OPENROUTER_MODEL" : "env_OPENROUTER_LIGHT_MODEL",
+    ...(lightModel ? { lightModel } : {}),
   };
 }

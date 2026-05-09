@@ -8,12 +8,12 @@ function issueIdFromArgs(args: Record<string, unknown>, ctx: ToolContext): strin
   throw new Error("issue_id is required (no current issue in context)");
 }
 
-function formatApiError(err: unknown): string {
+function formatApiError(err: unknown): Record<string, unknown> {
   if (err instanceof PaperclipApiError) {
-    return JSON.stringify({ isError: true, status: err.status, message: err.message, endpoint: err.endpoint });
+    return { isError: true, status: err.status, message: err.message, endpoint: err.endpoint };
   }
   const message = err instanceof Error ? err.message : String(err);
-  return JSON.stringify({ isError: true, message });
+  return { isError: true, message };
 }
 
 export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
@@ -34,8 +34,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
     async execute(args) {
       try {
         const id = issueIdFromArgs(args, ctx);
-        const result = await api.getIssue(id);
-        return JSON.stringify(result);
+        return await api.getIssue(id);
       } catch (err) {
         return formatApiError(err);
       }
@@ -60,8 +59,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
     async execute(args) {
       try {
         const id = issueIdFromArgs(args, ctx);
-        const result = await api.updateIssue(id, { status: args.status });
-        return JSON.stringify(result);
+        return await api.updateIssue(id, { status: args.status });
       } catch (err) {
         return formatApiError(err);
       }
@@ -84,8 +82,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
       try {
         const id = issueIdFromArgs(args, ctx);
         const body = typeof args.body === "string" ? args.body : String(args.body);
-        const result = await api.addIssueComment(id, { body });
-        return JSON.stringify(result);
+        return await api.addIssueComment(id, { body });
       } catch (err) {
         return formatApiError(err);
       }
@@ -105,8 +102,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
     async execute(args) {
       try {
         const id = issueIdFromArgs(args, ctx);
-        const result = await api.listIssueComments(id);
-        return JSON.stringify(result);
+        return await api.listIssueComments(id);
       } catch (err) {
         return formatApiError(err);
       }
@@ -133,11 +129,10 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
         const parentIssueId = ctx.currentIssueId ?? undefined;
         const issue: Record<string, unknown> = { title: args.title };
         if (typeof args.description === "string") issue.description = args.description;
-        if (typeof args.assignee_id === "string") issue.assigneeId = args.assignee_id;
+        if (typeof args.assignee_id === "string") issue.assigneeAgentId = args.assignee_id;
         if (typeof args.priority === "string") issue.priority = args.priority;
         if (parentIssueId) issue.parentIssueId = parentIssueId;
-        const result = await api.createIssue(ctx.companyId, issue);
-        return JSON.stringify(result);
+        return await api.createIssue(ctx.companyId, issue);
       } catch (err) {
         return formatApiError(err);
       }
@@ -163,8 +158,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
         if (typeof args.status === "string") query.status = args.status;
         if (typeof args.assignee_id === "string") query.assigneeId = args.assignee_id;
         if (typeof args.limit === "number") query.limit = String(args.limit);
-        const result = await api.listCompanyIssues(ctx.companyId, query);
-        return JSON.stringify(result);
+        return await api.listCompanyIssues(ctx.companyId, query);
       } catch (err) {
         return formatApiError(err);
       }
@@ -183,7 +177,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
       try {
         if (!ctx.companyId) throw new Error("companyId not available in context");
         const agents = await api.listCompanyAgents(ctx.companyId);
-        const trimmed = agents.map((a) => ({
+        return agents.map((a) => ({
           id: a.id,
           name: a.name,
           role: a.role,
@@ -191,7 +185,6 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
           model: a.model,
           status: a.status,
         }));
-        return JSON.stringify(trimmed);
       } catch (err) {
         return formatApiError(err);
       }
@@ -223,15 +216,14 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
         if (typeof args.model === "string") hire.model = args.model;
 
         if (ctx.autoApprove) {
-          const result = await api.hireAgent(ctx.companyId, hire);
-          return JSON.stringify(result);
+          return await api.hireAgent(ctx.companyId, hire);
         } else {
           const result = await api.createApproval(ctx.companyId, {
             type: "hire_agent",
             payload: hire,
             requestedBy: ctx.agentId,
           });
-          return JSON.stringify({ pending: true, approval: result });
+          return { pending: true, approval: result };
         }
       } catch (err) {
         return formatApiError(err);
@@ -259,7 +251,7 @@ export function buildPaperclipTools(ctx: ToolContext): ToolHandler[] {
           action: args.action,
           requestedBy: ctx.agentId,
         });
-        return JSON.stringify({ pending: true, approval: result });
+        return { pending: true, approval: result };
       } catch (err) {
         return formatApiError(err);
       }

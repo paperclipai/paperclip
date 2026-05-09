@@ -10,7 +10,8 @@ import { renderTemplate, asString, buildPaperclipEnv } from "@paperclipai/adapte
 import {
   DEFAULT_OPENROUTER_LOCAL_BASE_URL,
   DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS,
-  DEFAULT_OPENROUTER_LOCAL_MODEL,
+  DEFAULT_OPENROUTER_MODEL,
+  DEFAULT_OPENROUTER_LIGHT_MODEL,
   DEFAULT_OPENROUTER_LOCAL_RUN_COMMAND_TIMEOUT_SEC,
   instructionsPathKey,
   type as ADAPTER_TYPE,
@@ -23,6 +24,8 @@ import {
   DEFAULT_TOOLS,
   buildToolMap,
   dispatchToolCall,
+  serializeForModel,
+  pruneEmpty,
   toOpenAiTools,
   type ToolContext,
   type ToolHandler,
@@ -168,9 +171,14 @@ export async function execute(
   const { config, agent, context, onLog } = ctx;
 
   const baseUrl = asString(config.baseUrl, DEFAULT_OPENROUTER_LOCAL_BASE_URL);
+  const isLightRun = config.isLightRun === true;
   const model = asString(
     config.model,
-    process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_LOCAL_MODEL,
+    isLightRun
+      ? process.env.OPENROUTER_LIGHT_MODEL?.trim() ||
+          process.env.OPENROUTER_MODEL?.trim() ||
+          DEFAULT_OPENROUTER_LIGHT_MODEL
+      : process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL,
   );
   const maxIterations = asInt(config.maxIterations, DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS);
   const runCommandTimeoutSec = asInt(
@@ -389,18 +397,21 @@ export async function execute(
           toolUseId: call.id,
         });
         const outcome = await dispatchToolCall(call, toolMap, toolCtx);
-        await emit({
+        const prunedContent = typeof outcome.content === "object" && outcome.content !== null
+          ? pruneEmpty(outcome.content)
+          : outcome.content;
+        await onLog("stdout", `${JSON.stringify({
           kind: "tool_result",
           ts: new Date().toISOString(),
           toolUseId: call.id,
           toolName: call.function.name,
-          content: outcome.content,
+          content: prunedContent,
           isError: outcome.isError,
-        });
+        })}\n`);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: outcome.content,
+          content: serializeForModel(outcome.content),
         });
       }
     }
