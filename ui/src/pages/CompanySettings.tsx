@@ -14,7 +14,9 @@ import { secretsApi } from "../api/secrets";
 import { goalsApi } from "../api/goals";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload, Github } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Settings, Check, Download, Upload, Github, Loader2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -683,7 +685,20 @@ function GitHubSyncSection({ companyId }: { companyId: string }) {
     /^[^/]+\/[^/]+$/.test(repo.trim()) &&
     (patMode === "new" ? newPatValue.trim().length > 0 && newPatName.trim().length > 0 : secretRef.length > 0);
 
-  if (isLoading) return null;
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+          <Github className="h-3.5 w-3.5" />
+          GitHub Sync (one-way, beta)
+        </div>
+        <div className="rounded-md border border-border px-4 py-6 flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading GitHub sync configuration…
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -696,13 +711,16 @@ function GitHubSyncSection({ companyId }: { companyId: string }) {
           <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-xs">
             <span className="text-muted-foreground">
               Syncing to <span className="font-mono text-foreground">{config.repo}</span>
-              {config.dryRun && <span className="ml-2 rounded bg-yellow-100 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300">dry-run</span>}
+              {config.dryRun && <Badge variant="warning" className="ml-2">dry-run</Badge>}
             </span>
             <Button
               size="sm"
               variant="ghost"
               className="text-xs text-destructive"
-              onClick={() => disableMutation.mutate()}
+              onClick={() => {
+                if (!window.confirm("Disable GitHub sync? Existing GitHub issues stay in place.")) return;
+                disableMutation.mutate();
+              }}
               disabled={disableMutation.isPending}
             >
               {disableMutation.isPending ? "Disabling..." : "Disable"}
@@ -728,6 +746,9 @@ function GitHubSyncSection({ companyId }: { companyId: string }) {
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
           />
+          {repo.trim().length > 0 && !/^[^/]+\/[^/]+$/.test(repo.trim()) && (
+            <span className="mt-1 block text-xs text-destructive">Use "owner/repo" format.</span>
+          )}
         </Field>
 
         <Field label="Host" hint='GitHub host — "github.com" or a GitHub Enterprise hostname.'>
@@ -745,14 +766,16 @@ function GitHubSyncSection({ companyId }: { companyId: string }) {
             <div className="flex items-center gap-2 text-xs">
               <button
                 type="button"
-                className={`rounded px-2 py-1 border ${patMode === "existing" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
+                aria-pressed={patMode === "existing"}
+                className={`rounded px-2 py-1 border outline-none focus-visible:ring-2 focus-visible:ring-ring ${patMode === "existing" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
                 onClick={() => setPatMode("existing")}
               >
                 Use existing secret
               </button>
               <button
                 type="button"
-                className={`rounded px-2 py-1 border ${patMode === "new" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
+                aria-pressed={patMode === "new"}
+                className={`rounded px-2 py-1 border outline-none focus-visible:ring-2 focus-visible:ring-ring ${patMode === "new" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
                 onClick={() => setPatMode("new")}
               >
                 Enter new PAT
@@ -800,17 +823,15 @@ function GitHubSyncSection({ companyId }: { companyId: string }) {
           <div className="space-y-1">
             {(goalsList ?? []).map((g) => (
               <label key={g.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={syncedGoalIds.includes(g.id)}
-                  onChange={(e) => {
-                    if (e.target.checked) {
+                  onCheckedChange={(checked) => {
+                    if (checked) {
                       setSyncedGoalIds((prev) => [...prev, g.id]);
                     } else {
                       setSyncedGoalIds((prev) => prev.filter((id) => id !== g.id));
                     }
                   }}
-                  className="rounded border-border"
                 />
                 <span className="text-foreground">{g.title}</span>
               </label>
