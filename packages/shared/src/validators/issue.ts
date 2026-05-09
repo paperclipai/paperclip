@@ -13,6 +13,7 @@ import {
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
   ISSUE_MONITOR_SCHEDULED_BY,
+  ISSUE_ORIGIN_KINDS,
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
   clampIssueRequestDepth,
@@ -236,6 +237,7 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  originKind: z.enum(ISSUE_ORIGIN_KINDS).optional(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
