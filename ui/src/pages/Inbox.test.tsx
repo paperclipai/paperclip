@@ -66,6 +66,8 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
     isUnreadForMe: false,
     ...overrides,
+    reviewerAgentId: overrides.reviewerAgentId ?? null,
+    reviewerUserId: overrides.reviewerUserId ?? null,
   };
 }
 

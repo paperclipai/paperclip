@@ -179,6 +179,8 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: null,
     isUnreadForMe: false,
     ...overrides,
+    reviewerAgentId: overrides.reviewerAgentId ?? null,
+    reviewerUserId: overrides.reviewerUserId ?? null,
   };
 }
 
