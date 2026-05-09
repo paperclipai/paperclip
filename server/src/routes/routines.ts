@@ -171,7 +171,8 @@ export function routineRoutes(
     if (
       req.actor.type === "agent" &&
       req.body.assigneeAgentId !== undefined &&
-      req.body.assigneeAgentId !== req.actor.agentId
+      req.body.assigneeAgentId !== req.actor.agentId &&
+      routine.assigneeAgentId !== req.actor.agentId
     ) {
       throw forbidden("Agents can only assign routines to themselves");
     }

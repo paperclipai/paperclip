@@ -437,6 +437,66 @@ describe("routine routes", () => {
     });
   });
 
+  it("allows current owner to reassign routine to self", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ assigneeAgentId: agentId });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.update).toHaveBeenCalled();
+  });
+
+  it("allows current owner to reassign routine to another agent", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ assigneeAgentId: otherAgentId });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.update).toHaveBeenCalled();
+  });
+
+  it("blocks non-owner agent from self-grabbing a routine", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: otherAgentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ assigneeAgentId: otherAgentId });
+
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks non-owner agent from reassigning routine to another agent", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: otherAgentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ assigneeAgentId: agentId });
+
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
   it("allows routine creation when the board user has tasks:assign", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
     const app = await createApp({
