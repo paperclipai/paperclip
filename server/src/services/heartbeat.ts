@@ -1558,7 +1558,14 @@ export function shouldResetTaskSessionForWake(
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested"
+    wakeReason === "execution_changes_requested" ||
+    // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
+    // carry meaningful continuation state, so reusing the prior task session
+    // for repeated timer wakes accumulates low-value context and pushes the
+    // session toward the 64k compaction threshold (observed in CEO run
+    // 292a5fd1, where timer wakes repeatedly bloated a long-lived manager
+    // session). Reset on every timer wake so each interval starts fresh.
+    wakeReason === "heartbeat_timer"
   ) {
     return true;
   }
@@ -1623,7 +1630,7 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   };
 }
 
-function describeSessionResetReason(
+export function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
@@ -1633,6 +1640,9 @@ function describeSessionResetReason(
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
+  // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
+  // explicit so run logs make session reuse/reset behavior legible.
+  if (wakeReason === "heartbeat_timer") return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
   return null;
 }
 
