@@ -5,6 +5,7 @@ import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/sh
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
+import { logger } from "../middleware/logger.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -328,11 +329,17 @@ export function secretService(db: Db) {
 
       for (const [key, rawBinding] of Object.entries(record)) {
         if (!ENV_KEY_RE.test(key)) {
-          throw unprocessable(`Invalid environment variable name: ${key}`);
+          // Non-env-key entries (e.g. feature settings stored in the wrong column) must
+          // not crash heartbeat execution. Skip and warn so the data is visible in logs.
+          logger.warn({ key }, "resolveEnvBindings: skipping non-env-key entry in projects.env");
+          continue;
         }
         const parsed = envBindingSchema.safeParse(rawBinding);
         if (!parsed.success) {
-          throw unprocessable(`Invalid environment binding for key: ${key}`);
+          // Same rationale: a non-binding value (e.g. { holdHours: 4 }) was persisted via
+          // a path that bypassed write-time validation. Skip instead of bricking the run.
+          logger.warn({ key }, "resolveEnvBindings: skipping non-binding value in projects.env");
+          continue;
         }
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") {
