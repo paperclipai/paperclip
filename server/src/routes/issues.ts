@@ -4217,6 +4217,38 @@ export function issueRoutes(
       metadata: req.body.metadata ?? null,
     });
     await issueReferencesSvc.syncComment(comment.id);
+
+    // Auto-close interactive issues after the assigned agent replies.
+    // Interactive issues are ephemeral (conversational Qs from Telegram);
+    // once the agent has answered, there's no reason to keep them on the board.
+    if (
+      currentIssue.originKind === "interactive" &&
+      actor.actorType === "agent" &&
+      actor.agentId === currentIssue.assigneeAgentId &&
+      currentIssue.status !== "done" &&
+      currentIssue.status !== "cancelled"
+    ) {
+      const closed = await svc.update(currentIssue.id, { status: "done" });
+      if (closed) {
+        currentIssue = closed;
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: "system",
+          actorId: "auto-close-interactive",
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: "done",
+            source: "auto_close_interactive",
+            reason: "interactive issue auto-closed after agent reply",
+            identifier: currentIssue.identifier,
+            commentId: comment.id,
+          },
+        });
+      }
+    }
+
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
       commentReferenceSummaryBefore,
