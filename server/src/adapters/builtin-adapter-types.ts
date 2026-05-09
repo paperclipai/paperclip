@@ -7,6 +7,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "hermes_observable",
   "openclaw_gateway",
   "opencode_local",
   "pi_local",

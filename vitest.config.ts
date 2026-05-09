@@ -11,6 +11,7 @@ export default defineConfig({
       "packages/adapters/codex-local",
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
+      "packages/adapters/hermes-observable",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "server",

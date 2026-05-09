@@ -78,6 +78,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
+  hermes_observable: {
+    label: "Hermes Observable",
+    description: "Hermes gateway adapter with structured streaming events",
+    icon: HermesIcon,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",

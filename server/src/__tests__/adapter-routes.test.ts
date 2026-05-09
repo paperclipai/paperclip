@@ -185,6 +185,15 @@ describe("adapter routes", () => {
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
     });
+
+    const hermesObservableAdapter = res.body.find((a: any) => a.type === "hermes_observable");
+    expect(hermesObservableAdapter).toBeDefined();
+    expect(hermesObservableAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+    });
   });
 
   it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {

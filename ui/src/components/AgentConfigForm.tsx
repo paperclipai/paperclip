@@ -362,8 +362,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const rawModels = fetchedModels ?? externalModels ?? [];
-  const adapterCommandField =
-    adapterType === "hermes_local" ? "hermesCommand" : "command";
+  const usesHermesCommandField =
+    adapterType === "hermes_local" || adapterType === "hermes_observable";
+  const adapterCommandField = usesHermesCommandField ? "hermesCommand" : "command";
   const acpxAgent =
     adapterType === "acpx_local"
       ? isCreate
@@ -448,7 +449,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     const base = config as Record<string, unknown>;
     const next = { ...base, ...overlay.adapterConfig };
-    if (adapterType === "hermes_local") {
+    if (usesHermesCommandField) {
       const hermesCommand =
         typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
           ? next.hermesCommand
@@ -954,7 +955,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           "adapterConfig",
                           adapterCommandField,
                           String(
-                            (adapterType === "hermes_local"
+                            (usesHermesCommandField
                               ? config.hermesCommand ?? config.command
                               : config.command) ?? "",
                           ),
@@ -972,6 +973,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       claude_local: "claude",
                       codex_local: "codex",
                       gemini_local: "gemini",
+                      hermes_observable: "hermes",
                       pi_local: "pi",
                       cursor: "agent",
                       opencode_local: "opencode",

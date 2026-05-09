@@ -69,6 +69,19 @@ import {
   modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as hermesObservableExecute,
+  testEnvironment as hermesObservableTestEnvironment,
+  sessionCodec as hermesObservableSessionCodec,
+  getConfigSchema as getHermesObservableConfigSchema,
+  listSkills as hermesObservableListSkills,
+  syncSkills as hermesObservableSyncSkills,
+  detectModel as detectModelFromHermesObservable,
+} from "@paperclipai/adapter-hermes-observable/server";
+import {
+  agentConfigurationDoc as hermesObservableAgentConfigurationDoc,
+  models as hermesObservableModels,
+} from "@paperclipai/adapter-hermes-observable";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -439,6 +452,24 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const hermesObservableAdapter: ServerAdapterModule = {
+  type: "hermes_observable",
+  execute: hermesObservableExecute,
+  testEnvironment: hermesObservableTestEnvironment,
+  getConfigSchema: getHermesObservableConfigSchema,
+  sessionCodec: hermesObservableSessionCodec,
+  sessionManagement: getAdapterSessionManagement("hermes_observable") ?? undefined,
+  listSkills: hermesObservableListSkills,
+  syncSkills: hermesObservableSyncSkills,
+  models: hermesObservableModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: hermesObservableAgentConfigurationDoc,
+  detectModel: () => detectModelFromHermesObservable(),
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -460,6 +491,7 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    hermesObservableAdapter,
     hermesLocalAdapter,
     processAdapter,
     httpAdapter,
