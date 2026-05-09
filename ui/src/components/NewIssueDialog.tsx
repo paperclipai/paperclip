@@ -110,44 +110,9 @@ import {
 
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
-const ISSUE_THINKING_EFFORT_OPTIONS = {
-  claude_local: [
-    { value: "", label: "Default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-  ],
-  codex_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-  ],
-  opencode_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-    { value: "max", label: "Max" },
-  ],
-} as const;
-
 function isIssueWorkMode(value: unknown): value is IssueWorkMode {
   return value === "standard" || value === "planning";
 }
-
-const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
-  value: IssueWorkMode;
-  label: string;
-  icon: typeof Hammer;
-}> = [
-  { value: "standard", label: "Standard", icon: Hammer },
-  { value: "planning", label: "Planning", icon: ClipboardList },
-];
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -227,12 +192,6 @@ const PRIORITY_CONFIG = [
   { value: "medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
   { value: "low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
-
-const EXECUTION_WORKSPACE_MODES = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
-] as const;
 
 function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
   if (!project) return "";
@@ -388,6 +347,51 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 
 export function NewIssueDialog() {
   const { t } = useTranslation("issues");
+
+  const workModeOptions: ReadonlyArray<{
+    value: IssueWorkMode;
+    label: string;
+    icon: typeof Hammer;
+  }> = useMemo(
+    () => [
+      { value: "standard", label: t("dialog.work_mode_standard"), icon: Hammer },
+      { value: "planning", label: t("dialog.work_mode_planning"), icon: ClipboardList },
+    ],
+    [t],
+  );
+
+  const thinkingEffortOptionsMap = useMemo(() => ({
+    claude_local: [
+      { value: "", label: t("effort.default") },
+      { value: "low", label: t("effort.low") },
+      { value: "medium", label: t("effort.medium") },
+      { value: "high", label: t("effort.high") },
+    ],
+    codex_local: [
+      { value: "", label: t("effort.default") },
+      { value: "minimal", label: t("effort.minimal") },
+      { value: "low", label: t("effort.low") },
+      { value: "medium", label: t("effort.medium") },
+      { value: "high", label: t("effort.high") },
+      { value: "xhigh", label: t("effort.xhigh") },
+    ],
+    opencode_local: [
+      { value: "", label: t("effort.default") },
+      { value: "minimal", label: t("effort.minimal") },
+      { value: "low", label: t("effort.low") },
+      { value: "medium", label: t("effort.medium") },
+      { value: "high", label: t("effort.high") },
+      { value: "xhigh", label: t("effort.xhigh") },
+      { value: "max", label: t("effort.max") },
+    ],
+  }), [t]);
+
+  const executionWorkspaceModeOptions = useMemo(() => [
+    { value: "shared_workspace", label: t("dialog.workspace_mode_shared") },
+    { value: "isolated_workspace", label: t("dialog.workspace_mode_isolated") },
+    { value: "reuse_existing", label: t("dialog.workspace_mode_reuse") },
+  ], [t]);
+
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const statuses: Array<{ value: string; label: string; color: string; description?: string }> = [
     { value: "backlog", label: t("status_labels.backlog"), color: issueStatusText.backlog ?? issueStatusTextDefault, description: t("parked__assignee_will_not_be_woken") },
@@ -431,6 +435,9 @@ export function NewIssueDialog() {
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
+
+  const currentWorkMode = workModeOptions[workMode === "planning" ? 1 : 0]!;
+  const CurrentWorkModeIcon = currentWorkMode.icon;
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -858,10 +865,10 @@ export function NewIssueDialog() {
 
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+        ? thinkingEffortOptionsMap.codex_local
         : assigneeAdapterType === "opencode_local"
-          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          ? thinkingEffortOptionsMap.opencode_local
+          : thinkingEffortOptionsMap.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -1098,10 +1105,10 @@ export function NewIssueDialog() {
         : t("dialog.agent_options");
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
-      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+      ? thinkingEffortOptionsMap.codex_local
       : assigneeAdapterType === "opencode_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        ? thinkingEffortOptionsMap.opencode_local
+      : thinkingEffortOptionsMap.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
     () => recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),
@@ -1184,8 +1191,6 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = ISSUE_WORK_MODE_OPTIONS[workMode === "planning" ? 1 : 0]!;
-  const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
     <Dialog
@@ -1595,7 +1600,7 @@ export function NewIssueDialog() {
                   }
                 }}
               >
-                {EXECUTION_WORKSPACE_MODES.map((option) => {
+                {executionWorkspaceModeOptions.map((option) => {
                   const labelKey = option.value === "shared_workspace" ? "dialog.workspace_mode_shared"
                     : option.value === "isolated_workspace" ? "dialog.workspace_mode_isolated"
                     : "dialog.workspace_mode_reuse";
@@ -1940,7 +1945,7 @@ export function NewIssueDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
-              {ISSUE_WORK_MODE_OPTIONS.map((option) => {
+              {workModeOptions.map((option) => {
                 const Icon = option.icon;
                 return (
                   <button

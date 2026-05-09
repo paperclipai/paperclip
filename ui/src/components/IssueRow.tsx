@@ -89,19 +89,19 @@ export function IssueRow({
   const planningModeIndicator = issue.workMode === "planning" ? (
     <span
       className="ml-1.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="This issue is in planning mode."
+      title={t("chat.planning_mode_active_title")}
     >
-      Planning
+      {t("chat.planning_label")}
     </span>
   ) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <span
       data-testid="issue-row-parked-blocker"
       className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
+      title={t("blocked_by_parked_work__at_least_one_assigned_blocker_is_in_backlog")}
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
-      Blocked by parked work
+      {t("blocked_by_parked_work")}
     </span>
   ) : null;
 
