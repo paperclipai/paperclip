@@ -5,6 +5,7 @@ import {
   DEFAULT_BBA_CHROMIUM_PROFILE,
   type BettingAutomationExecutionOptions,
 } from "../services/betting-browser-automation.js";
+import { instrumentBettingService } from "../services/bba-memory-instrumentation.js";
 import { secretService } from "../services/secrets.js";
 import { assertCompanyAccess } from "./authz.js";
 import { unprocessable } from "../errors.js";
@@ -131,7 +132,7 @@ export function normalizeExecutionForPreAuth(
 export function bettingBrowserAutomationRoutes(db: Db) {
   const router = Router();
   const secrets = secretService(db);
-  const svc = bettingBrowserAutomationService(db, {
+  const svc = instrumentBettingService(bettingBrowserAutomationService(db, {
     resolveSecret: async (companyId, ref) => {
       if (ref.secretId) {
         return secrets.resolveSecretValue(companyId, ref.secretId, "latest");
@@ -150,7 +151,7 @@ export function bettingBrowserAutomationRoutes(db: Db) {
       if (!bot) return;
       await bot.send(text);
     },
-  });
+  }));
 
   router.post("/companies/:companyId/betting-browser-automation/execute", async (req, res) => {
     const companyId = req.params.companyId as string;

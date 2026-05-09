@@ -181,7 +181,7 @@ export function pruneOldRuns(days = 30): { deletedRuns: number; deletedFiles: nu
 
   // Cascade delete via FK (popups_seen, failures use ON DELETE CASCADE).
   const result = db.prepare(`DELETE FROM runs WHERE started_at < ?`).run(cutoff);
-  const deletedRuns = result.changes;
+  const deletedRuns = Number(result.changes);
 
   // VACUUM occasionally to reclaim disk; cheap if nothing changed.
   if (deletedRuns > 0) {

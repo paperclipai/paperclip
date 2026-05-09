@@ -91,7 +91,7 @@ export function listTrainingSessions(limit = 50): TrainingSessionRow[] {
       `SELECT * FROM training_sessions
        ORDER BY started_at DESC LIMIT ?`,
     )
-    .all(limit) as TrainingSessionRow[];
+    .all(limit) as unknown as TrainingSessionRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ export function getRun(id: number): RunRow | null {
 export function listRecentRuns(limit = 100): RunRow[] {
   return getDb()
     .prepare(`SELECT * FROM runs ORDER BY started_at DESC LIMIT ?`)
-    .all(limit) as RunRow[];
+    .all(limit) as unknown as RunRow[];
 }
 
 export function listRunsForSession(sessionId: number): RunRow[] {
@@ -187,7 +187,7 @@ export function listRunsForSession(sessionId: number): RunRow[] {
       `SELECT * FROM runs WHERE training_session_id = ?
        ORDER BY started_at ASC`,
     )
-    .all(sessionId) as RunRow[];
+    .all(sessionId) as unknown as RunRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ export function getSelectorsByPurpose(
        WHERE purpose = ? AND enabled = 1
        ORDER BY priority ASC, net_hits DESC, id ASC`,
     )
-    .all(purpose) as SelectorRanked[];
+    .all(purpose) as unknown as SelectorRanked[];
   return rows;
 }
 
@@ -222,7 +222,7 @@ export function listAllSelectors(): SelectorRanked[] {
        FROM selectors_observed
        ORDER BY purpose ASC, priority ASC, id ASC`,
     )
-    .all() as SelectorRanked[];
+    .all() as unknown as SelectorRanked[];
 }
 
 /**
@@ -367,13 +367,13 @@ export function getPopupReviewQueue(): PopupRow[] {
        WHERE is_new = 1 AND review_status = 'pending'
        ORDER BY seen_at DESC`,
     )
-    .all() as PopupRow[];
+    .all() as unknown as PopupRow[];
 }
 
 export function listPopupsForRun(runId: number): PopupRow[] {
   return getDb()
     .prepare(`SELECT * FROM popups_seen WHERE run_id = ? ORDER BY seen_at ASC`)
-    .all(runId) as PopupRow[];
+    .all(runId) as unknown as PopupRow[];
 }
 
 /**
@@ -461,7 +461,7 @@ export function listFailuresForRun(runId: number): FailureRow[] {
     .prepare(
       `SELECT * FROM failures WHERE run_id = ? ORDER BY occurred_at ASC`,
     )
-    .all(runId) as FailureRow[];
+    .all(runId) as unknown as FailureRow[];
 }
 
 // ---------------------------------------------------------------------------
