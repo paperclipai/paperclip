@@ -12,12 +12,7 @@ import { defaultIssueFilterState } from "../lib/issue-filters";
 
 vi.mock("react-i18next", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-i18next")>();
-  return {
-    ...actual,
-    useTranslation: () => ({
-      t: (key: string) => key,
-    }),
-  };
+  return { ...actual, useTranslation: () => ({ t: (key: string) => key }) };
 });
 
 vi.mock("@/components/ui/popover", () => ({
