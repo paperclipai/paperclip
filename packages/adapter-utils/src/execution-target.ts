@@ -28,6 +28,10 @@ import {
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox } from "./sandbox-shell.js";
+import {
+  detectRuntimeCommandPreflightViolation,
+  type RuntimeCommandPreflightViolation,
+} from "./runtime-command-preflight.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
@@ -246,7 +250,8 @@ function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecut
   return requireSandboxRunner(target);
 }
 
-function adapterExecutionTargetShellCommand(target: AdapterCommandCapableExecutionTarget): "bash" | "sh" {
+function adapterExecutionTargetShellCommand(target: AdapterExecutionTarget | null | undefined): "bash" | "sh" {
+  if (!target || target.kind === "local") return "sh";
   return target.transport === "ssh" ? "sh" : preferredSandboxShell(target);
 }
 
@@ -254,6 +259,25 @@ function adapterExecutionTargetTimeoutMs(
   target: AdapterCommandCapableExecutionTarget,
 ): number | null | undefined {
   return target.transport === "sandbox" ? target.timeoutMs : undefined;
+}
+
+async function runtimeCommandPreflightRefusalResult(
+  violation: RuntimeCommandPreflightViolation,
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): Promise<RunProcessResult> {
+  const stderr = `${violation.safeMessage}\n`;
+  if (onLog) {
+    await onLog("stderr", stderr);
+  }
+  return {
+    exitCode: 126,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr,
+    pid: null,
+    startedAt: null,
+  };
 }
 
 export async function ensureAdapterExecutionTargetCommandResolvable(
@@ -369,6 +393,11 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
+  const preflightViolation = detectRuntimeCommandPreflightViolation({ command, args });
+  if (preflightViolation) {
+    return await runtimeCommandPreflightRefusalResult(preflightViolation, options.onLog);
+  }
+
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
@@ -411,6 +440,14 @@ export async function runAdapterExecutionTargetShellCommand(
   options: AdapterExecutionTargetShellOptions,
 ): Promise<RunProcessResult> {
   const onLog = options.onLog ?? (async () => {});
+  const preflightViolation = detectRuntimeCommandPreflightViolation({
+    command: adapterExecutionTargetShellCommand(target),
+    args: ["-lc", command],
+  });
+  if (preflightViolation) {
+    return await runtimeCommandPreflightRefusalResult(preflightViolation, onLog);
+  }
+
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();
     const env = sanitizeRemoteExecutionEnv(options.env);

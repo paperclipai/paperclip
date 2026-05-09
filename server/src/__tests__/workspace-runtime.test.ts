@@ -32,6 +32,7 @@ import {
   resetRuntimeServicesForTests,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
+  runWorkspaceJobForControl,
   sanitizeRuntimeServiceBaseEnv,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -190,6 +191,48 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
+  });
+});
+
+describe("workspace command runtime preflight", () => {
+  it("records a safe refusal for broad environment commands without executing them", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-preflight-"));
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(
+      runWorkspaceJobForControl({
+        actor: {
+          id: "agent-1",
+          name: "Agent",
+          companyId: "company-1",
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          title: "Test",
+        },
+        workspace: buildWorkspace(root),
+        command: {
+          name: "dump-substitution-env",
+          command: "echo $(printenv)",
+        },
+        adapterEnv: {
+          PAPERCLIP_SENTINEL_SECRET: "should-not-appear",
+        },
+        recorder,
+      }),
+    ).rejects.toThrow("Runtime command refused before execution");
+
+    expect(operations).toHaveLength(1);
+    expect(operations[0]?.result).toMatchObject({
+      status: "failed",
+      exitCode: 126,
+      stdout: "",
+    });
+    expect(operations[0]?.result.stderr).toContain("heartbeat context");
+    expect(JSON.stringify(operations)).not.toContain("should-not-appear");
+
+    await fs.rm(root, { recursive: true, force: true });
   });
 });
 

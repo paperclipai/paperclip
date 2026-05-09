@@ -5,6 +5,7 @@ import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { detectRuntimeCommandPreflightViolation } from "./runtime-command-preflight.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -1891,6 +1892,24 @@ export async function runChildProcess(
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
+  const preflightViolation = detectRuntimeCommandPreflightViolation({ command, args });
+  if (preflightViolation) {
+    const stderr = `${preflightViolation.safeMessage}\n`;
+    try {
+      await opts.onLog("stderr", stderr);
+    } catch (err) {
+      onLogError(err, runId, "failed to append runtime command preflight refusal");
+    }
+    return {
+      exitCode: 126,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr,
+      pid: null,
+      startedAt: null,
+    };
+  }
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
       ...sanitizeInheritedPaperclipEnv(process.env),
