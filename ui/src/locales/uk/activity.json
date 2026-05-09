@@ -4,7 +4,7 @@
     "placeholder": "Фільтр за типом",
     "all_types": "Всі типи",
     "entity_types": {
-      "issue": "Задача",
+      "issue": "Завдання",
       "agent": "Агент",
       "project": "Проєкт",
       "goal": "Ціль",
@@ -12,7 +12,7 @@
       "invite": "Запрошення",
       "company": "Компанія",
       "heartbeat_run": "Моніторинг",
-      "environment_lease": "Оренда Середовища"
+      "environment_lease": "Оренда середовища"
     }
   },
   "empty": {
@@ -29,11 +29,11 @@
   },
   "actor": {
     "system": "Система",
-    "board": "Рада",
+    "board": "Дошка",
     "you": "Ви",
     "unknown": "Невідомо",
     "agent_fallback": "агент",
-    "issue_fallback": "задача",
+    "issue_fallback": "завдання",
     "user_short": "користувач {{id}}"
   },
   "verbs": {
@@ -84,10 +84,10 @@
     "environment_lease_released": "звільнив середовище"
   },
   "issue_labels": {
-    "issue_created": "створив задачу",
-    "issue_updated": "оновив задачу",
-    "issue_checked_out": "взяв задачу в роботу",
-    "issue_released": "звільнив задачу",
+    "issue_created": "створив завдання",
+    "issue_updated": "оновив завдання",
+    "issue_checked_out": "взяв завдання в роботу",
+    "issue_released": "звільнив завдання",
     "issue_comment_added": "додав коментар",
     "issue_comment_cancelled": "скасував коментар у черзі",
     "issue_feedback_vote_saved": "зберіг відгук на результат ШІ",
@@ -96,7 +96,7 @@
     "issue_document_created": "створив документ",
     "issue_document_updated": "оновив документ",
     "issue_document_deleted": "видалив документ",
-    "issue_deleted": "видалив задачу",
+    "issue_deleted": "видалив завдання",
     "issue_read_marked": "позначив як прочитане",
     "agent_created": "створив агента",
     "agent_updated": "оновив агента",
@@ -120,16 +120,16 @@
     "changed_status_to_detail": "змінив статус на {{to}}",
     "changed_priority_from_detail": "змінив пріоритет з {{from}} на {{to}}",
     "changed_priority_to_detail": "змінив пріоритет на {{to}}",
-    "assigned_to": "призначив задачу {{name}}",
-    "unassigned": "зняв призначення задачі",
+    "assigned_to": "призначив завдання {{name}}",
+    "unassigned": "зняв призначення завдання",
     "updated_title": "оновив заголовок",
     "updated_description": "оновив опис",
     "blocker_singular": "блокер",
     "blocker_plural": "блокери",
     "reviewer_singular": "перевіряючий",
-    "reviewer_plural": "перевіряючих",
-    "approver_singular": "погоджуючий",
-    "approver_plural": "погоджуючих",
+    "reviewer_plural": "перевіряючі",
+    "approver_singular": "погоджувач",
+    "approver_plural": "погоджувачі",
     "added_to": "додав {{changed}} до",
     "added": "додав {{changed}}",
     "removed_from": "видалив {{changed}} із",
@@ -144,19 +144,19 @@
     "unassigned": "Не призначено",
     "status_label": "Статус",
     "assignee_label": "Виконавець",
-    "updated_task": "оновив цю задачу",
+    "workspace_label": "Робочий простір",
+    "updated_task": "оновив це завдання",
     "requested_follow_up": "запросив подальші дії",
     "system": "Система",
-    "environment_label": "Середовище",
-    "failure_label": "Збій",
-    "lease_label": "Оренда",
-    "no_entries": "Немає записів у хроніці.",
     "none": "Немає",
-    "provider_label": "Провайдер",
+    "no_entries": "Записів у хроніці ще немає.",
     "run_label": "запуск",
-    "workspace_label": "Робочий простір"
+    "environment_label": "Середовище",
+    "provider_label": "Провайдер",
+    "lease_label": "Оренда",
+    "failure_label": "Збій"
   },
-  "system": "System",
-  "board": "Board",
-  "unknown": "Unknown"
+  "system": "Система",
+  "board": "Дошка",
+  "unknown": "Невідомо"
 }

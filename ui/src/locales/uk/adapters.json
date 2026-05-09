@@ -40,7 +40,7 @@
     "no_builtin": "Вбудованих адаптерів не знайдено.",
     "external_adapters": "Зовнішні адаптери",
     "alpha_title": "Адаптери в альфа-версії.",
-    "alpha_desc": "Середовище виконання адаптерів та поверхня API ще змінюються. Очікуйте breaking-змін доки ця функція не стабілізується.",
+    "alpha_desc": "Середовище виконання адаптерів та поверхня API ще змінюються. Очікуйте кардинальних змін доки ця функція не стабілізується.",
     "builtin_adapters": "Вбудовані адаптери",
     "badge_external": "Зовнішній",
     "badge_builtin": "Вбудований",
@@ -77,60 +77,26 @@
     "removing_btn": "Видалення...",
     "path_example": "/mnt/e/Projects/my-adapter  або  E:\\Projects\\my-adapter",
     "package_name_example": "my-paperclip-adapter",
-    "version_example": "останнє"
+    "version_example": "latest"
   },
   "claude_local": {
     "instructions_file": "Файл інструкцій агента",
     "instructions_file_hint": "Абсолютний шлях до markdown-файлу (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md",
     "enable_chrome": "Увімкнути Chrome",
     "skip_permissions": "Пропустити дозволи",
-    "max_turns": "Макс. кроків за запуск",
-    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
-  },
-  "openclaw": {
-    "gateway_url": "URL шлюзу",
-    "gateway_url_placeholder": "ws://127.0.0.1:18789",
-    "api_url_override": "Перевизначення URL API Paperclip",
-    "api_url_placeholder": "https://paperclip.example",
-    "claimed_api_key_path": "Шлях до збереженого API-ключа",
-    "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
-    "session_strategy": "Стратегія сесії",
-    "session_key": "Ключ сесії",
-    "session_key_placeholder": "paperclip",
-    "gateway_auth_token": "Токен автентифікації шлюзу (x-openclaw-token)",
-    "gateway_auth_placeholder": "Токен шлюзу OpenClaw",
-    "role": "Роль",
-    "role_placeholder": "operator",
-    "scopes": "Обмеження (через кому)",
-    "scopes_placeholder": "operator.admin",
-    "wait_timeout": "Таймаут очікування (мс)",
-    "wait_timeout_placeholder": "120000",
-    "device_auth": "Автентифікація пристрою",
-    "device_auth_desc": "Завжди увімкнено для агентів шлюзу. Paperclip зберігає ключ пристрою під час онбордингу, щоб підтвердження сполучення залишалися стабільними між запусками.",
-    "session_strategy_fixed": "Фіксована",
-    "session_strategy_issue": "На кожну задачу",
-    "session_strategy_run": "На кожен запуск"
-  },
-  "http": {
-    "webhook_url": "URL вебхука",
-    "webhook_url_placeholder": "https://..."
-  },
-  "process": {
-    "command": "Команда",
-    "command_placeholder": "напр. node, python",
-    "args": "Аргументи (через кому)",
-    "args_placeholder": "напр. script.js, --flag"
+    "max_turns": "Макс. кроків за запуск"
   },
   "codex_local": {
+    "instructions_file": "Файл інструкцій агента",
+    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання. Примітка: Codex може також автоматично застосовувати файли AGENTS.md з робочої директорії.",
+    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md",
     "bypass_sandbox": "Обхід пісочниці",
     "enable_search": "Увімкнути пошук",
     "fast_mode": "Швидкий режим",
     "fast_mode_manual": "Швидкий режим буде передано для цієї ручної моделі. Якщо Codex його відхилить, вимкніть перемикач.",
     "fast_mode_supported": "Швидкий режим витрачає кредити/токени значно швидше за звичайні запуски Codex.",
-    "fast_mode_unsupported": "Швидкий режим наразі працює лише на {{models}} або ручних ідентифікаторах моделей. Paperclip ігноруватиме цей перемикач, доки модель не буде змінена.",
-    "instructions_file": "Файл інструкцій агента",
-    "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання. Примітка: Codex може також автоматично застосовувати файли AGENTS.md з робочої директорії.",
-    "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
+    "fast_mode_unsupported": "Швидкий режим наразі працює лише на {{models}} або ручних ідентифікаторах моделей. Paperclip ігноруватиме цей перемикач, доки модель не буде змінена."
   },
   "cursor": {
     "instructions_file": "Файл інструкцій агента",
@@ -147,41 +113,75 @@
     "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
     "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
   },
+  "openclaw": {
+    "gateway_url": "URL шлюзу",
+    "gateway_url_placeholder": "ws://127.0.0.1:18789",
+    "api_url_override": "Перевизначення URL API Paperclip",
+    "api_url_placeholder": "https://paperclip.example",
+    "claimed_api_key_path": "Шлях до збереженого API-ключа",
+    "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    "session_strategy": "Стратегія сесії",
+    "session_strategy_fixed": "Фіксована",
+    "session_strategy_issue": "На кожне завдання",
+    "session_strategy_run": "На кожен запуск",
+    "session_key": "Ключ сесії",
+    "session_key_placeholder": "paperclip",
+    "gateway_auth_token": "Токен автентифікації шлюзу (x-openclaw-token)",
+    "gateway_auth_placeholder": "Токен шлюзу OpenClaw",
+    "role": "Роль",
+    "role_placeholder": "operator",
+    "scopes": "Області (через кому)",
+    "scopes_placeholder": "operator.admin",
+    "wait_timeout": "Таймаут очікування (мс)",
+    "wait_timeout_placeholder": "120000",
+    "device_auth": "Автентифікація пристрою",
+    "device_auth_desc": "Завжди увімкнено для агентів шлюзу. Paperclip зберігає ключ пристрою під час онбордингу, щоб підтвердження сполучення залишалися стабільними між запусками."
+  },
   "opencode_local": {
     "instructions_file": "Файл інструкцій агента",
     "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
     "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md",
     "skip_permissions": "Пропустити дозволи"
   },
-  "path_instructions": {
-    "title": "Як отримати повний шлях",
-    "choose": "Вибрати",
-    "description_prefix": "Вставте абсолютний шлях (напр.",
-    "description_suffix": ") у поле введення.",
-    "platform_linux": "Linux",
-    "platform_mac": "macOS",
-    "platform_windows": "Windows",
-    "linux_step_1": "Відкрийте термінал і перейдіть до директорії за допомогою cd.",
-    "linux_step_2": "Виконайте pwd для виведення повного шляху.",
-    "linux_step_3": "Скопіюйте вивід і вставте сюди.",
-    "linux_tip": "У більшості файлових менеджерів Ctrl+L відкриває повний шлях в адресному рядку.",
-    "mac_step_1": "Відкрийте Finder і перейдіть до папки.",
-    "mac_step_2": "Клацніть правою кнопкою (або Ctrl+клік) по папці.",
-    "mac_step_3": "Утримуйте клавішу Option (⌥) — пункт «Скопіювати» зміниться на «Скопіювати шлях».",
-    "mac_step_4": "Натисніть «Скопіювати шлях» і вставте сюди.",
-    "mac_tip": "Також можна відкрити Terminal, ввести cd, перетягнути папку у вікно терміналу й натиснути Enter. Потім введіть pwd, щоб побачити повний шлях.",
-    "windows_step_1": "Відкрийте Провідник і перейдіть до папки.",
-    "windows_step_2": "Клацніть по адресному рядку вгорі — відобразиться повний шлях.",
-    "windows_step_3": "Скопіюйте шлях і вставте сюди.",
-    "windows_tip": "Альтернатива: утримуючи Shift, клацніть правою кнопкою по папці та виберіть «Копіювати як шлях»."
-  },
   "pi_local": {
     "instructions_file": "Файл інструкцій агента",
     "instructions_file_hint": "Абсолютний шлях до файлу markdown (напр. AGENTS.md), що визначає поведінку агента. Підставляється в системний промпт під час виконання.",
     "instructions_placeholder": "/абсолютний/шлях/до/AGENTS.md"
   },
+  "http": {
+    "webhook_url": "URL вебхука",
+    "webhook_url_placeholder": "https://..."
+  },
+  "process": {
+    "command": "Команда",
+    "command_placeholder": "напр. node, python",
+    "args": "Аргументи (через кому)",
+    "args_placeholder": "напр. script.js, --flag"
+  },
   "runtime_json": {
-    "payload_template_json": "JSON шаблону корисного навантаження",
-    "runtime_services_json": "JSON сервісів середовища виконання"
+    "runtime_services_json": "JSON сервісів середовища виконання",
+    "payload_template_json": "JSON шаблону корисного навантаження"
+  },
+  "path_instructions": {
+    "choose": "Вибрати",
+    "title": "Як отримати повний шлях",
+    "description_prefix": "Вставте абсолютний шлях (напр.",
+    "description_suffix": ") у поле введення.",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "Відкрийте Finder і перейдіть до папки.",
+    "mac_step_2": "Клацніть правою кнопкою (або Ctrl+клік) по папці.",
+    "mac_step_3": "Утримуйте клавішу Option (⌥) — пункт «Скопіювати» зміниться на «Скопіювати як шлях».",
+    "mac_step_4": "Натисніть «Скопіювати як шлях», а потім вставте сюди.",
+    "mac_tip": "Також можна відкрити Термінал, ввести cd, перетягнути папку у вікно терміналу й натиснути Enter. Потім введіть pwd, щоб побачити повний шлях.",
+    "windows_step_1": "Відкрийте Провідник і перейдіть до папки.",
+    "windows_step_2": "Клацніть по адресному рядку вгорі — відобразиться повний шлях.",
+    "windows_step_3": "Скопіюйте шлях і вставте сюди.",
+    "windows_tip": "Альтернатива: утримуючи Shift, клацніть правою кнопкою по папці та виберіть «Копіювати як шлях».",
+    "linux_step_1": "Відкрийте термінал і перейдіть до директорії за допомогою cd.",
+    "linux_step_2": "Виконайте pwd для виведення повного шляху.",
+    "linux_step_3": "Скопіюйте вивід і вставте сюди.",
+    "linux_tip": "У більшості файлових менеджерів Ctrl+L відкриває повний шлях в адресному рядку."
   }
 }

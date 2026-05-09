@@ -1,6 +1,6 @@
 {
   "title": "Процедури",
-  "description": "Визначення повторюваних завдань, які матеріалізуються в задачі для аудиту виконання.",
+  "description": "Визначення повторюваних робіт, які матеріалізуються в завдання для аудиту виконання.",
   "tabs": {
     "routines": "Процедури",
     "recent_runs": "Останні запуски"
@@ -15,7 +15,7 @@
     "received": "Отримано",
     "coalesced": "Об'єднано",
     "skipped": "Пропущено",
-    "issue_created": "Задачу створено",
+    "issue_created": "Завдання створено",
     "completed": "Завершено",
     "failed": "Помилка"
   },
@@ -31,8 +31,7 @@
     "edit": "Редагувати",
     "group": "Група",
     "sort": "Сортування",
-    "cancel": "Скасувати",
-    "more_actions": "Більше дій для {{title}}"
+    "cancel": "Скасувати"
   },
   "sort": {
     "updated": "Оновлено",
@@ -58,20 +57,35 @@
     "unknown_agent": "Невідомий агент",
     "no_default_agent": "Немає агента за замовчуванням",
     "never": "Ніколи",
+    "running": "Запуск...",
+    "edit": "Редагувати",
+    "run_routine": "Запустити процедуру",
+    "routine_changed": "Процедуру змінено",
+    "routine_changed_body": "Хтось інший оновив цю процедуру. Перезавантажте, щоб побачити останню версію.",
+    "webhook_restored": "Вебхук-тригер відновлено",
+    "trigger_restored_with_secrets": "Стан тригера відновлено зі знімка. Нові секрети вебхука доступні в банері вище.",
+    "trigger_restored": "Стан тригера відновлено зі знімка.",
+    "failed_restore_revision": "Не вдалося відновити версію",
+    "failed_restore_revision_body": "Paperclip не зміг відновити версію.",
+    "no_managed_routines": "Керованих процедур немає.",
+    "configure": "Налаштувати",
+    "managed_by": "Керується {{name}}",
+    "schedule": "Розклад {{cronExpression}}",
+    "routine_defaults_can_be_repaired": "Значення процедури за замовчуванням можуть бути відновлені.",
     "draft_saved": "Чернетку збережено. Додайте агента за замовчуванням перед увімкненням автоматизації.",
     "routine_count_one": "{{count}} процедура",
-    "routine_count_few": "{{count}} процедури",
-    "routine_count_many": "{{count}} процедур",
     "routine_count_other": "{{count}} процедур",
     "routine_created": "Процедуру створено",
-    "routine_created_body": "Додайте перший тригер, щоб запустити процедуру.",
-    "failed_load": "Не вдалося завантажити процедури"
+    "routine_created_body": "Додайте перший тригер, щоб перетворити її на активний робочий процес.",
+    "failed_load": "Не вдалося завантажити процедури",
+    "routine_count_few": "{{count}} процедури",
+    "routine_count_many": "{{count}} процедур"
   },
   "trigger_kind": {
     "schedule": "Розклад",
     "webhook": "Вебхук",
     "api": "API",
-    "issue_created": "Задачу створено"
+    "issue_created": "Завдання створено"
   },
   "signing_mode_label": {
     "bearer": "Bearer",
@@ -96,7 +110,7 @@
   },
   "empty": {
     "select_company": "Оберіть компанію для перегляду процедур.",
-    "no_routines": "Процедур ще немає. Натисніть «Створити процедуру», щоб визначити перший повторюваний робочий процес."
+    "no_routines": "Процедур ще немає. Скористайтеся «Створити процедуру», щоб визначити перший повторюваний робочий процес."
   },
   "composer": {
     "new_routine": "Нова процедура",
@@ -244,19 +258,19 @@
     "default_value_placeholder": "Значення за замовчуванням",
     "hint": "Використовуйте плейсхолдери `{{code}}` в інструкціях, щоб запитувати вхідні дані під час запуску процедури."
   },
-  "routines": "Routines",
-  "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Recurring work definitions that materialize into auditable execution issues.",
-  "create_routine": "Create routine",
-  "recent_runs": "Recent Runs",
-  "n_routine": "N routine(s)",
-  "new_routine": "New routine",
-  "routine_title": "Routine title",
-  "for": "For",
-  "in": "in",
-  "add_instructions": "Add instructions...",
-  "advanced_delivery_settings": "Advanced delivery settings",
-  "concurrency": "Concurrency",
-  "catch_up": "Catch-up",
-  "creating": "Creating...",
-  "no_routines_yet": "No routines yet."
+  "routines": "Процедури",
+  "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Визначення повторюваних робіт, які матеріалізуються в завдання для аудиту виконання.",
+  "create_routine": "Створити процедуру",
+  "recent_runs": "Останні запуски",
+  "n_routine": "{{count}} процедура(и)",
+  "new_routine": "Нова процедура",
+  "routine_title": "Назва процедури",
+  "for": "Для",
+  "in": "в",
+  "add_instructions": "Додати інструкції...",
+  "advanced_delivery_settings": "Розширені налаштування доставки",
+  "concurrency": "Паралельність",
+  "catch_up": "Наздогін",
+  "creating": "Створення...",
+  "no_routines_yet": "Процедур ще немає."
 }

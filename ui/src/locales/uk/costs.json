@@ -52,9 +52,7 @@
     "estimated_in_range": "оцінка за період",
     "debits_credits": "{{debits}} дебетів · {{credits}} кредитів",
     "events_in_range_one": "{{count}} подія за період",
-    "events_in_range_other": "{{count}} подій за період",
-    "events_in_range_few": "{{count}} події за період",
-    "events_in_range_many": "{{count}} подій за період"
+    "events_in_range_other": "{{count}} подій за період"
   },
   "budget": {
     "of": "{{spend}} з {{budget}}",
@@ -70,27 +68,17 @@
   "cards": {
     "inference_ledger": "Реєстр інференсу",
     "inference_ledger_desc": "Витрати на інференс у межах запитів за обраний період.",
-    "finance_ledger": "Фінансовий реєстр",
-    "finance_ledger_desc": "Нарахування на рівні акаунту, не прив'язані до конкретного запиту.",
-    "by_agent": "За агентом",
-    "by_agent_desc": "Що витратив кожен агент за обраний період.",
-    "by_project": "За проєктом",
-    "by_project_desc": "Витрати, атрибутовані через задачі, пов'язані з проєктом.",
-    "by_biller": "За білером",
-    "by_biller_desc": "Фінансові події на рівні акаунту, згруповані за ініціатором.",
-    "budget_control": "Управління бюджетом",
-    "budget_control_desc": "Жорсткі ліміти витрат для агентів і проєктів. Квота підписки провайдера ведеться окремо і відображається в розділі Провайдери.",
-    "accounting_model_desc": "Paperclip тепер розділяє використання інференсу на рівні запитів і фінансові події на рівні акаунту. Це забезпечує чесну звітність провайдера, коли платником є OpenRouter, Cloudflare, Bedrock або інший посередник.",
-    "accounting_model_title": "Модель обліку",
-    "finance_ledger_points": {
-      "point1": "поповнення, повернення, комісії",
-      "point2": "плата Bedrock за резервування або навчання",
-      "point3": "закінчення та коригування кредитів"
-    },
     "inference_ledger_points": {
       "point1": "токени + оплачені долари",
       "point2": "провайдер, платник, модель",
       "point3": "облік підписки та перевищень"
+    },
+    "finance_ledger": "Фінансовий реєстр",
+    "finance_ledger_desc": "Нарахування на рівні акаунту, не прив'язані до конкретного запиту.",
+    "finance_ledger_points": {
+      "point1": "поповнення, повернення, комісії",
+      "point2": "плата Bedrock за резервування або навчання",
+      "point3": "закінчення та коригування кредитів"
     },
     "live_quotas": "Живі квоти",
     "live_quotas_desc": "Вікна провайдера або платника, які можуть зупинити трафік у реальному часі.",
@@ -98,7 +86,17 @@
       "point1": "вікна квот провайдера",
       "point2": "кредитні системи платника",
       "point3": "помилки безпосередньо відображаються"
-    }
+    },
+    "accounting_model_title": "Модель обліку",
+    "accounting_model_desc": "Paperclip тепер розділяє використання інференсу на рівні запитів і фінансові події на рівні акаунту. Це забезпечує чесну звітність провайдера, коли платником є OpenRouter, Cloudflare, Bedrock або інший посередник.",
+    "by_agent": "За агентом",
+    "by_agent_desc": "Що витратив кожен агент за обраний період.",
+    "by_project": "За проєктом",
+    "by_project_desc": "Витрати, атрибутовані через завдання, пов'язані з проєктом.",
+    "by_biller": "За білером",
+    "by_biller_desc": "Фінансові події на рівні акаунту, згруповані за ініціатором.",
+    "budget_control": "Управління бюджетом",
+    "budget_control_desc": "Жорсткі ліміти витрат для агентів і проєктів. Квота підписки провайдера ведеться окремо і відображається в розділі Провайдери."
   },
   "budgets": {
     "company_policy": "Загальна місячна політика компанії.",
@@ -112,20 +110,20 @@
     "project_budgets_title": "Бюджети проєктів"
   },
   "incident_card": {
+    "hard_stop": "жорстка зупинка",
+    "resolved": "Вирішено",
+    "dismissed": "Відхилено",
+    "escalated": "Ескальовано",
+    "pending_approval": "Очікує затвердження",
+    "open": "Відкрито",
+    "spending_reached": "Витрати досягли {{observed}} при ліміті {{limit}}.",
+    "new_budget_usd": "Новий бюджет (USD)",
     "project_paused": "Виконання проєкту призупинено. Нова робота в цьому проєкті не розпочнеться, доки ви не вирішите бюджетний інцидент.",
     "scope_paused": "Ця область призупинена. Нові запуски моніторингу не розпочнуться, доки ви не вирішите бюджетний інцидент.",
     "applying": "Застосування...",
     "raise_budget": "Підвищити бюджет і відновити",
     "keep_paused": "Залишити призупиненим",
-    "budget_must_exceed": "Новий бюджет має перевищувати поточні спостережені витрати.",
-    "dismissed": "Відхилено",
-    "escalated": "Ескальовано",
-    "hard_stop": "жорстка зупинка",
-    "new_budget_usd": "Новий бюджет (USD)",
-    "open": "Відкрито",
-    "pending_approval": "Очікує затвердження",
-    "resolved": "Вирішено",
-    "spending_reached": "Витрати досягли {{observed}} при ліміті {{limit}}."
+    "budget_must_exceed": "Новий бюджет має перевищувати поточні спостережені витрати."
   },
   "policy_card": {
     "lifetime_budget": "Бюджет на весь термін",
@@ -151,10 +149,9 @@
     "budget_usd": "Бюджет (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Призупинено через бюджет",
-    "critical": "Призупинено за бюджетом",
     "healthy": "Бюджет в порядку",
-    "warning": "Попередження бюджету"
+    "warning": "Попередження бюджету",
+    "critical": "Призупинено за бюджетом"
   },
   "empty": {
     "select_company": "Оберіть компанію для перегляду витрат.",
@@ -192,39 +189,31 @@
     "sub_runs_only": "~{{subRuns}} підп. запусків",
     "percent_used": "{{percent}}% використано",
     "resets": "оновлюється {{date}}",
-    "of_provider_cost": "{{percent}}% витрат провайдера",
-    "of_provider_tokens": "{{percent}}% токенів провайдера",
     "runs_label": "запусків",
-    "total_label": "всього"
+    "total_label": "всього",
+    "of_provider_tokens": "{{percent}}% токенів провайдера",
+    "of_provider_cost": "{{percent}}% витрат провайдера"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} тарифікований запуск",
-    "metered_runs_few": "{{count}} тарифікованих запуски",
-    "metered_runs_many": "{{count}} тарифікованих запусків",
     "metered_runs_other": "{{count}} тарифікованих запусків",
     "subscription_runs_one": "{{count}} запуск за підпискою",
-    "subscription_runs_few": "{{count}} запуски за підпискою",
-    "subscription_runs_many": "{{count}} запусків за підпискою",
     "subscription_runs_other": "{{count}} запусків за підпискою",
     "this_week": "цього тижня",
     "billing_types": "Типи тарифікації",
     "upstream_providers": "Провайдери",
-    "model_count_one": "{{count}} модель",
-    "model_count_other": "{{count}} моделей",
     "provider_count_one": "{{count}} провайдер",
-    "provider_count_other": "{{count}} провайдерів"
+    "provider_count_other": "{{count}} провайдерів",
+    "model_count_one": "{{count}} модель",
+    "model_count_other": "{{count}} моделей"
   },
   "finance_kind": {
     "title": "Структура фінансових подій",
     "description": "Нарахування на рівні акаунту, згруповані за типом події.",
     "no_events": "Фінансових подій за цей період немає.",
     "events_one": "{{count}} подія",
-    "events_few": "{{count}} події",
-    "events_many": "{{count}} подій",
     "events_other": "{{count}} подій",
     "billers_one": "{{count}} білер",
-    "billers_few": "{{count}} білери",
-    "billers_many": "{{count}} білерів",
     "billers_other": "{{count}} білерів",
     "debits": "дебети"
   },
