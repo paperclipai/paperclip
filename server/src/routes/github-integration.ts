@@ -166,6 +166,45 @@ export function githubIntegrationRoutes(db: Db) {
       dryRun: body["dryRun"] !== false,
     };
 
+    // Validate that the configured token is authorised on the target repo whenever
+    // the repo value changes.  Skipped when repo is unchanged to avoid an extra
+    // GitHub round-trip on every config save.
+    const existingSettings = await registry.getCompanySettings(plugin.id, companyId);
+    const prevRepo = existingSettings ? parseConfig(existingSettings.settingsJson).repo : "";
+
+    if (configToSave.repo !== prevRepo) {
+      const [owner, repo] = configToSave.repo.split("/");
+      const apiHost = configToSave.host === "github.com" ? "api.github.com" : configToSave.host;
+      const token = await secrets.resolveSecretValue(companyId, configToSave.secretRef, "latest");
+
+      let handshakeStatus: number | null = null;
+      let handshakeBody = "";
+      try {
+        const resp = await fetch(`https://${apiHost}/repos/${owner}/${repo}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "paperclip-github-sync/0.1.0",
+          },
+          redirect: "error",
+        });
+        handshakeStatus = resp.status;
+        if (!resp.ok) {
+          handshakeBody = await resp.text().catch(() => "");
+        }
+      } catch {
+        // Network/redirect error — allow the config save; the first sync will surface it.
+      }
+
+      if (handshakeStatus === 401 || handshakeStatus === 403 || handshakeStatus === 404) {
+        const raw = `GitHub ${handshakeStatus}: ${handshakeBody.slice(0, 200)}`;
+        const redacted = token ? raw.split(token).join("[REDACTED]") : raw;
+        throw unprocessable(`GitHub token is not authorised on the configured repo: ${redacted}`);
+      }
+    }
+
     const updated = await registry.upsertCompanySettings(plugin.id, companyId, {
       enabled: true,
       settingsJson: configToSave as unknown as Record<string, unknown>,
@@ -299,6 +338,8 @@ export function githubIntegrationRoutes(db: Db) {
       return;
     }
 
+    const redact = (s: string) => (token ? s.split(token).join("[REDACTED]") : s);
+
     const existingRaw = await stateStore.get(plugin.id, "issue", "gh-issue-number", {
       scopeId: issueId,
       namespace: "github-sync",
@@ -324,7 +365,7 @@ export function githubIntegrationRoutes(db: Db) {
       });
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
-        throw new Error(`GitHub API error ${response.status}: ${errText.slice(0, 200)}`);
+        throw new Error(redact(`GitHub API error ${response.status}: ${errText.slice(0, 200)}`));
       }
       return response.json() as Promise<T>;
     }
@@ -368,7 +409,7 @@ export function githubIntegrationRoutes(db: Db) {
         action = "updated";
       }
     } catch (err) {
-      const errMsg = String(err);
+      const errMsg = redact(String(err));
       await registry.upsertCompanySettings(plugin.id, companyId, {
         enabled: true,
         settingsJson: settings.settingsJson,
