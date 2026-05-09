@@ -1,4 +1,11 @@
 import { z } from "zod";
+import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
+import {
+  issueCommentAuthorTypeSchema,
+  issueCommentMetadataSchema,
+  issueCommentPresentationSchema,
+} from "./issue.js";
+import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -14,6 +21,7 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),
@@ -35,7 +43,12 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
+  attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
+  feedbackDataSharingEnabled: z.boolean().default(false),
+  feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
+  feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
+  feedbackDataSharingTermsVersion: z.string().nullable().default(null),
 });
 
 export const portabilitySidebarOrderSchema = z.object({
@@ -119,7 +132,18 @@ export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
 export const portabilityIssueRoutineManifestEntrySchema = z.object({
   concurrencyPolicy: z.string().nullable(),
   catchUpPolicy: z.string().nullable(),
+  variables: z.array(routineVariableSchema).nullable().optional(),
   triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
+});
+
+export const portabilityIssueCommentManifestEntrySchema = z.object({
+  body: z.string().min(1),
+  authorType: issueCommentAuthorTypeSchema,
+  authorAgentSlug: z.string().min(1).nullable(),
+  authorUserId: z.string().nullable(),
+  presentation: issueCommentPresentationSchema.nullable(),
+  metadata: issueCommentMetadataSchema.nullable(),
+  createdAt: z.string().datetime().nullable(),
 });
 
 export const portabilityIssueManifestEntrySchema = z.object({
@@ -140,6 +164,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   billingCode: z.string().nullable(),
   executionWorkspaceSettings: z.record(z.unknown()).nullable(),
   assigneeAdapterOverrides: z.record(z.unknown()).nullable(),
+  comments: z.array(portabilityIssueCommentManifestEntrySchema).default([]),
   metadata: z.record(z.unknown()).nullable(),
 });
 

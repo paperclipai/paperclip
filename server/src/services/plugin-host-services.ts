@@ -1,6 +1,14 @@
 import type { Db } from "@paperclipai/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@paperclipai/db";
-import { eq, and, like, desc } from "drizzle-orm";
+import {
+  agentTaskSessions as agentTaskSessionsTable,
+  agents as agentsTable,
+  budgetIncidents,
+  costEvents,
+  heartbeatRuns,
+  issues as issuesTable,
+  pluginLogs,
+} from "@paperclipai/db";
+import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
 import type {
   HostServices,
   Company,
@@ -10,30 +18,55 @@ import type {
   Goal,
   PluginWorkspace,
   IssueComment,
+  PluginIssueAssigneeSummary,
+  PluginIssueOrchestrationSummary,
 } from "@paperclipai/plugin-sdk";
+import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
+import { budgetService } from "./budgets.js";
+import { issueApprovalService } from "./issue-approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { activityService } from "./activity.js";
 import { costService } from "./costs.js";
 import { assetService } from "./assets.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
+import { pluginDatabaseService } from "./plugin-database.js";
+import { pluginManagedAgentService } from "./plugin-managed-agents.js";
+import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
+import {
+  assertConfiguredLocalFolder,
+  assertWritableConfiguredLocalFolder,
+  getStoredLocalFolders,
+  inspectPluginLocalFolder,
+  listPluginLocalFolderEntries,
+  preparePluginLocalFolder,
+  readPluginLocalFolderText,
+  requireLocalFolderDeclaration,
+  setStoredLocalFolder,
+  writePluginLocalFolderTextAtomic,
+} from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { getTelemetryClient } from "../telemetry.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -47,6 +80,7 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -442,19 +476,50 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
+  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
+  const pluginDb = pluginDatabaseService(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
   const agents = agentService(db);
-  const heartbeat = heartbeatService(db);
+  const managedAgents = pluginManagedAgentService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+    instructionTemplateVariables: async (companyId) => {
+      const variables: Record<string, string | null | undefined> = {};
+      for (const declaration of options.manifest?.localFolders ?? []) {
+        const status = await inspectPluginLocalFolder({
+          folderKey: declaration.folderKey,
+          declaration,
+          storedConfig: await getStoredLocalFolderConfig(companyId, declaration.folderKey),
+        });
+        const prefix = `localFolders.${declaration.folderKey}`;
+        variables[`${prefix}.path`] = status.realPath ?? status.path ?? null;
+        variables[`${prefix}.agentsPath`] = status.realPath ? path.join(status.realPath, "AGENTS.md") : null;
+      }
+      return variables;
+    },
+  });
+  const managedRoutines = pluginManagedRoutineService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const projects = projectService(db);
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
   const activity = activityService(db);
   const costs = costService(db);
+  const budgets = budgetService(db);
+  const issueApprovals = issueApprovalService(db);
   const assets = assetService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
@@ -494,6 +559,23 @@ export function buildHostServices(
    */
   const ensurePluginAvailableForCompany = async (_companyId: string) => {};
 
+  const getLocalFolderDeclaration = (folderKey: string) =>
+    requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);
+
+  const getStoredLocalFolderConfig = async (companyId: string, folderKey: string) => {
+    ensureCompanyId(companyId);
+    await ensurePluginAvailableForCompany(companyId);
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    return getStoredLocalFolders(settings?.settingsJson)[folderKey] ?? null;
+  };
+
+  const inspectStoredLocalFolder = async (companyId: string, folderKey: string) =>
+    inspectPluginLocalFolder({
+      folderKey,
+      declaration: getLocalFolderDeclaration(folderKey),
+      storedConfig: await getStoredLocalFolderConfig(companyId, folderKey),
+    });
+
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
     companyId: string,
@@ -510,11 +592,301 @@ export function buildHostServices(
     return record;
   };
 
+  const pluginActivityDetails = (
+    details: Record<string, unknown> | null | undefined,
+    actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null },
+  ) => {
+    const initiatingActorType = actor?.actorAgentId ? "agent" : actor?.actorUserId ? "user" : null;
+    const initiatingActorId = actor?.actorAgentId ?? actor?.actorUserId ?? null;
+    return {
+      ...(details ?? {}),
+      sourcePluginId: pluginId,
+      sourcePluginKey: pluginKey,
+      initiatingActorType,
+      initiatingActorId,
+      initiatingAgentId: actor?.actorAgentId ?? null,
+      initiatingUserId: actor?.actorUserId ?? null,
+      initiatingRunId: actor?.actorRunId ?? null,
+      pluginId,
+      pluginKey,
+    };
+  };
+
+  const defaultPluginOriginKind = `plugin:${pluginKey}`;
+  const normalizePluginOriginKind = (originKind: unknown = defaultPluginOriginKind) => {
+    if (originKind == null || originKind === "") return defaultPluginOriginKind;
+    if (typeof originKind !== "string") {
+      throw new Error("Plugin issue originKind must be a string");
+    }
+    if (originKind === defaultPluginOriginKind || originKind.startsWith(`${defaultPluginOriginKind}:`)) {
+      return originKind;
+    }
+    throw new Error(`Plugin may only use originKind values under ${defaultPluginOriginKind}`);
+  };
+
+  const assertReadableOriginFilter = (originKind: unknown) => {
+    if (typeof originKind !== "string" || !originKind.startsWith("plugin:")) return;
+    normalizePluginOriginKind(originKind);
+  };
+
+  const logPluginActivity = async (input: {
+    companyId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    details?: Record<string, unknown> | null;
+    actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null };
+  }) => {
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "plugin",
+      actorId: pluginId,
+      agentId: input.actor?.actorAgentId ?? null,
+      runId: input.actor?.actorRunId ?? null,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      details: pluginActivityDetails(input.details, input.actor),
+    });
+  };
+
+  const collectIssueSubtreeIds = async (companyId: string, rootIssueId: string) => {
+    const seen = new Set<string>([rootIssueId]);
+    let frontier = [rootIssueId];
+
+    while (frontier.length > 0) {
+      const children = await db
+        .select({ id: issuesTable.id })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.parentId, frontier)));
+      frontier = children.map((child) => child.id).filter((id) => !seen.has(id));
+      for (const id of frontier) seen.add(id);
+    }
+
+    return [...seen];
+  };
+
+  const getIssueRunSummaries = async (
+    companyId: string,
+    issueIds: string[],
+    options: { activeOnly?: boolean } = {},
+  ) => {
+    if (issueIds.length === 0) return [];
+    const issueIdExpr = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const statusCondition = options.activeOnly
+      ? inArray(heartbeatRuns.status, ["queued", "running"])
+      : undefined;
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        issueId: issueIdExpr,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        error: heartbeatRuns.error,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(issueIdExpr, issueIds), statusCondition))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(100);
+
+    return rows.map((row) => ({
+      ...row,
+      startedAt: row.startedAt?.toISOString() ?? null,
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  };
+
+  const setBlockedByWithActivity = async (params: {
+    issueId: string;
+    companyId: string;
+    blockedByIssueIds: string[];
+    mutation: "set" | "add" | "remove";
+    actorAgentId?: string | null;
+    actorUserId?: string | null;
+    actorRunId?: string | null;
+  }) => {
+    const existing = requireInCompany("Issue", await issues.getById(params.issueId), params.companyId);
+    const previous = await issues.getRelationSummaries(params.issueId);
+    await issues.update(params.issueId, {
+      blockedByIssueIds: params.blockedByIssueIds,
+      actorAgentId: params.actorAgentId ?? null,
+      actorUserId: params.actorUserId ?? null,
+    } as any);
+    const relations = await issues.getRelationSummaries(params.issueId);
+    await logPluginActivity({
+      companyId: params.companyId,
+      action: "issue.relations.updated",
+      entityType: "issue",
+      entityId: params.issueId,
+      actor: {
+        actorAgentId: params.actorAgentId,
+        actorUserId: params.actorUserId,
+        actorRunId: params.actorRunId,
+      },
+      details: {
+        identifier: existing.identifier,
+        mutation: params.mutation,
+        blockedByIssueIds: params.blockedByIssueIds,
+        previousBlockedByIssueIds: previous.blockedBy.map((relation) => relation.id),
+      },
+    });
+    return relations;
+  };
+
+  const getIssueCostSummary = async (
+    companyId: string,
+    issueIds: string[],
+    billingCode?: string | null,
+  ) => {
+    const scopeConditions = [
+      issueIds.length > 0 ? inArray(costEvents.issueId, issueIds) : undefined,
+      billingCode ? eq(costEvents.billingCode, billingCode) : undefined,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    if (scopeConditions.length === 0) {
+      return {
+        costCents: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        billingCode: billingCode ?? null,
+      };
+    }
+    const scopeCondition = scopeConditions.length === 1 ? scopeConditions[0]! : and(...scopeConditions);
+    const [row] = await db
+      .select({
+        costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+        inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+        cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+        outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
+      })
+      .from(costEvents)
+      .where(and(eq(costEvents.companyId, companyId), scopeCondition));
+
+    return {
+      costCents: Number(row?.costCents ?? 0),
+      inputTokens: Number(row?.inputTokens ?? 0),
+      cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
+      outputTokens: Number(row?.outputTokens ?? 0),
+      billingCode: billingCode ?? null,
+    };
+  };
+
+  const getOpenBudgetIncidents = async (companyId: string) => {
+    const rows = await db
+      .select({
+        id: budgetIncidents.id,
+        scopeType: budgetIncidents.scopeType,
+        scopeId: budgetIncidents.scopeId,
+        metric: budgetIncidents.metric,
+        windowKind: budgetIncidents.windowKind,
+        thresholdType: budgetIncidents.thresholdType,
+        amountLimit: budgetIncidents.amountLimit,
+        amountObserved: budgetIncidents.amountObserved,
+        status: budgetIncidents.status,
+        approvalId: budgetIncidents.approvalId,
+        createdAt: budgetIncidents.createdAt,
+      })
+      .from(budgetIncidents)
+      .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
+      .orderBy(desc(budgetIncidents.createdAt));
+
+    return rows.map((row) => ({
+      ...row,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  };
+
   return {
     config: {
       async get() {
         const configRow = await registry.getConfig(pluginId);
         return configRow?.configJson ?? {};
+      },
+    },
+
+    localFolders: {
+      async declarations() {
+        return options.manifest?.localFolders ?? [];
+      },
+
+      async configure(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const declaration = getLocalFolderDeclaration(params.folderKey);
+        const existing = await registry.getCompanySettings(pluginId, companyId);
+        const existingConfig = getStoredLocalFolders(existing?.settingsJson)[params.folderKey] ?? null;
+        await preparePluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration,
+          storedConfig: existingConfig,
+          overrideConfig: {
+            path: params.path,
+          },
+        });
+        const status = await inspectPluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration,
+          storedConfig: existingConfig,
+          overrideConfig: {
+            path: params.path,
+          },
+        });
+
+        const nextSettings = setStoredLocalFolder(existing?.settingsJson, params.folderKey, {
+          path: params.path,
+          access: status.access,
+          requiredDirectories: status.requiredDirectories,
+          requiredFiles: status.requiredFiles,
+        });
+        await registry.upsertCompanySettings(pluginId, companyId, {
+          enabled: existing?.enabled ?? true,
+          settingsJson: nextSettings,
+          lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
+        });
+        return status;
+      },
+
+      async status(params) {
+        return inspectStoredLocalFolder(params.companyId, params.folderKey);
+      },
+
+      async list(params) {
+        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
+        assertConfiguredLocalFolder(status);
+        const listing = await listPluginLocalFolderEntries(status.realPath!, {
+          relativePath: params.relativePath,
+          recursive: params.recursive,
+          maxEntries: params.maxEntries,
+        });
+        return { ...listing, folderKey: params.folderKey };
+      },
+
+      async readText(params) {
+        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
+        assertConfiguredLocalFolder(status);
+        return readPluginLocalFolderText(status.realPath!, params.relativePath);
+      },
+
+      async writeTextAtomic(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await preparePluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration: getLocalFolderDeclaration(params.folderKey),
+          storedConfig: await getStoredLocalFolderConfig(companyId, params.folderKey),
+        });
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        if (status.access !== "readWrite" || !status.writable) {
+          throw new Error("Local folder is not configured for writes");
+        }
+        await writePluginLocalFolderTextAtomic(status.realPath!, params.relativePath, params.contents);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
       },
     },
 
@@ -539,6 +911,18 @@ export function buildHostServices(
           scopeId: params.scopeId,
           namespace: params.namespace,
         });
+      },
+    },
+
+    db: {
+      async namespace() {
+        return pluginDb.getRuntimeNamespace(pluginId);
+      },
+      async query(params) {
+        return pluginDb.query(pluginId, params.sql, params.params);
+      },
+      async execute(params) {
+        return pluginDb.execute(pluginId, params.sql, params.params);
       },
     },
 
@@ -602,12 +986,12 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         await logActivity(db, {
           companyId,
-          actorType: "system",
+          actorType: "plugin",
           actorId: pluginId,
           action: params.message,
           entityType: params.entityType ?? "plugin",
           entityId: params.entityId ?? pluginId,
-          details: params.metadata,
+          details: pluginActivityDetails(params.metadata),
         });
       },
     },
@@ -633,6 +1017,20 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered metric flush failed:", err);
           });
         }
+      },
+    },
+
+    telemetry: {
+      async track(params) {
+        const eventName = String(params.eventName ?? "").trim();
+        if (!TELEMETRY_EVENT_NAME_REGEX.test(eventName)) {
+          throw new Error(
+            'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
+          );
+        }
+        const telemetryClient = getTelemetryClient();
+        if (!telemetryClient) return;
+        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, params.dimensions);
       },
     },
 
@@ -753,12 +1151,84 @@ export function buildHostServices(
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
       },
+      async getManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+          createIfMissing: false,
+        });
+      },
+      async reconcileManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+        });
+      },
+      async resetManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+          reset: true,
+        });
+      },
+    },
+
+    routines: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.get(params.routineKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.reconcile(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.reset(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+      async managedUpdate(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.update(params.routineKey, companyId, {
+          status: params.status,
+        });
+      },
+      async managedRun(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.run(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
     },
 
     issues: {
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
+        assertReadableOriginFilter(params.originKind);
         return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
       },
       async get(params) {
@@ -770,13 +1240,460 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return (await issues.create(companyId, params as any)) as Issue;
+        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const normalizedOriginKind = normalizePluginOriginKind(
+          surfaceVisibility === "plugin_operation" && !originKind
+            ? pluginOperationIssueOriginKind(pluginKey)
+            : originKind,
+        );
+        const issue = (await issues.create(companyId, {
+          ...(issueInput as any),
+          originKind: normalizedOriginKind,
+          originId: params.originId ?? null,
+          originRunId: params.originRunId ?? actorRunId ?? null,
+          createdByAgentId: actorAgentId ?? null,
+          createdByUserId: actorUserId ?? null,
+        })) as Issue;
+        await logPluginActivity({
+          companyId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId, actorUserId, actorRunId },
+          details: {
+            title: issue.title,
+            identifier: issue.identifier,
+            originKind: normalizedOriginKind,
+            originId: issue.originId,
+            billingCode: issue.billingCode,
+            blockedByIssueIds: params.blockedByIssueIds ?? [],
+          },
+        });
+        return issue;
       },
       async update(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
+        const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const patch = { ...(params.patch as Record<string, unknown>) };
+        const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
+        const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
+        const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;
+        delete patch.actorAgentId;
+        delete patch.actorUserId;
+        delete patch.actorRunId;
+        if (patch.originKind !== undefined) {
+          patch.originKind = normalizePluginOriginKind(patch.originKind);
+        }
+        const updated = (await issues.update(params.issueId, {
+          ...(patch as any),
+          actorAgentId,
+          actorUserId,
+        })) as Issue;
+        await logPluginActivity({
+          companyId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: updated.id,
+          actor: { actorAgentId, actorUserId, actorRunId },
+          details: {
+            identifier: updated.identifier,
+            patch,
+            _previous: {
+              status: existing.status,
+              assigneeAgentId: existing.assigneeAgentId,
+              assigneeUserId: existing.assigneeUserId,
+            },
+          },
+        });
+        return updated;
+      },
+      async getRelations(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
         requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.update(params.issueId, params.patch as any)) as Issue;
+        return await issues.getRelationSummaries(params.issueId);
+      },
+      async setBlockedBy(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return setBlockedByWithActivity({
+          companyId,
+          issueId: params.issueId,
+          blockedByIssueIds: params.blockedByIssueIds,
+          mutation: "set",
+          actorAgentId: params.actorAgentId,
+          actorUserId: params.actorUserId,
+          actorRunId: params.actorRunId,
+        });
+      },
+      async addBlockers(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const previous = await issues.getRelationSummaries(params.issueId);
+        const nextBlockedByIssueIds = [
+          ...new Set([
+            ...previous.blockedBy.map((relation) => relation.id),
+            ...params.blockerIssueIds,
+          ]),
+        ];
+        return setBlockedByWithActivity({
+          companyId,
+          issueId: params.issueId,
+          blockedByIssueIds: nextBlockedByIssueIds,
+          mutation: "add",
+          actorAgentId: params.actorAgentId,
+          actorUserId: params.actorUserId,
+          actorRunId: params.actorRunId,
+        });
+      },
+      async removeBlockers(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const previous = await issues.getRelationSummaries(params.issueId);
+        const removals = new Set(params.blockerIssueIds);
+        const nextBlockedByIssueIds = previous.blockedBy
+          .map((relation) => relation.id)
+          .filter((issueId) => !removals.has(issueId));
+        return setBlockedByWithActivity({
+          companyId,
+          issueId: params.issueId,
+          blockedByIssueIds: nextBlockedByIssueIds,
+          mutation: "remove",
+          actorAgentId: params.actorAgentId,
+          actorUserId: params.actorUserId,
+          actorRunId: params.actorRunId,
+        });
+      },
+      async assertCheckoutOwner(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const ownership = await issues.assertCheckoutOwner(
+          params.issueId,
+          params.actorAgentId,
+          params.actorRunId,
+        );
+        if (ownership.adoptedFromRunId) {
+          await logPluginActivity({
+            companyId,
+            action: "issue.checkout_lock_adopted",
+            entityType: "issue",
+            entityId: params.issueId,
+            actor: {
+              actorAgentId: params.actorAgentId,
+              actorRunId: params.actorRunId,
+            },
+            details: {
+              previousCheckoutRunId: ownership.adoptedFromRunId,
+              checkoutRunId: params.actorRunId,
+              reason: "stale_checkout_run",
+            },
+          });
+        }
+        return {
+          issueId: ownership.id,
+          status: ownership.status as Issue["status"],
+          assigneeAgentId: ownership.assigneeAgentId,
+          checkoutRunId: ownership.checkoutRunId,
+          adoptedFromRunId: ownership.adoptedFromRunId,
+        };
+      },
+      async getSubtree(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const includeRoot = params.includeRoot !== false;
+        const subtreeIssueIds = await collectIssueSubtreeIds(companyId, rootIssue.id);
+        const issueIds = includeRoot ? subtreeIssueIds : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
+        const issueRows = issueIds.length > 0
+          ? await db
+            .select()
+            .from(issuesTable)
+            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)))
+          : [];
+        const issuesById = new Map(issueRows.map((issue) => [issue.id, issue as Issue]));
+        const outputIssues = issueIds
+          .map((issueId) => issuesById.get(issueId))
+          .filter((issue): issue is Issue => Boolean(issue));
+
+        const assigneeAgentIds = [
+          ...new Set(outputIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
+        ];
+
+        const [relationPairs, documentPairs, activeRunRows, assigneeRows] = await Promise.all([
+          params.includeRelations
+            ? Promise.all(issueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const))
+            : Promise.resolve(null),
+          params.includeDocuments
+            ? Promise.all(
+              issueIds.map(async (issueId) => {
+                const docs = await documents.listIssueDocuments(issueId);
+                const summaries: IssueDocumentSummary[] = docs.map((document) => {
+                  const { body: _body, ...summary } = document as typeof document & { body?: string };
+                  return { ...summary, format: "markdown" as const };
+                });
+                return [
+                  issueId,
+                  summaries,
+                ] as const;
+              }),
+            )
+            : Promise.resolve(null),
+          params.includeActiveRuns
+            ? getIssueRunSummaries(companyId, issueIds, { activeOnly: true })
+            : Promise.resolve(null),
+          params.includeAssignees && assigneeAgentIds.length > 0
+            ? db
+              .select({
+                id: agentsTable.id,
+                name: agentsTable.name,
+                role: agentsTable.role,
+                title: agentsTable.title,
+                status: agentsTable.status,
+              })
+              .from(agentsTable)
+              .where(and(eq(agentsTable.companyId, companyId), inArray(agentsTable.id, assigneeAgentIds)))
+            : Promise.resolve(params.includeAssignees ? [] : null),
+        ]);
+
+        const activeRuns = activeRunRows
+          ? Object.fromEntries(issueIds.map((issueId) => [
+            issueId,
+            activeRunRows.filter((run) => run.issueId === issueId),
+          ]))
+          : undefined;
+
+        return {
+          rootIssueId: rootIssue.id,
+          companyId,
+          issueIds,
+          issues: outputIssues,
+          ...(relationPairs ? { relations: Object.fromEntries(relationPairs) } : {}),
+          ...(documentPairs ? { documents: Object.fromEntries(documentPairs) } : {}),
+          ...(activeRuns ? { activeRuns } : {}),
+          ...(assigneeRows
+            ? {
+                assignees: Object.fromEntries(assigneeRows.map((agent) => [
+                  agent.id,
+                  { ...agent, status: agent.status as Agent["status"] } as PluginIssueAssigneeSummary,
+                ])),
+              }
+            : {}),
+        };
+      },
+      async requestWakeup(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        if (!issue.assigneeAgentId) {
+          throw new Error("Issue has no assigned agent to wake");
+        }
+        if (["backlog", "done", "cancelled"].includes(issue.status)) {
+          throw new Error(`Issue is not wakeable in status: ${issue.status}`);
+        }
+        const relations = await issues.getRelationSummaries(issue.id);
+        const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+        if (unresolvedBlockers.length > 0) {
+          throw new Error("Issue is blocked by unresolved blockers");
+        }
+        const budgetBlock = await budgets.getInvocationBlock(companyId, issue.assigneeAgentId, {
+          issueId: issue.id,
+          projectId: issue.projectId,
+        });
+        if (budgetBlock) {
+          throw new Error(budgetBlock.reason);
+        }
+        const contextSource = params.contextSource ?? "plugin.issue.requestWakeup";
+        const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: params.reason ?? "plugin_issue_wakeup_requested",
+          payload: {
+            issueId: issue.id,
+            mutation: "plugin_wakeup",
+            pluginId,
+            pluginKey,
+            contextSource,
+          },
+          idempotencyKey: params.idempotencyKey ?? null,
+          requestedByActorType: "system",
+          requestedByActorId: pluginId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: params.reason ?? "plugin_issue_wakeup_requested",
+            source: contextSource,
+            pluginId,
+            pluginKey,
+          },
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.assignment_wakeup_requested",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: {
+            actorAgentId: params.actorAgentId,
+            actorUserId: params.actorUserId,
+            actorRunId: params.actorRunId,
+          },
+          details: {
+            identifier: issue.identifier,
+            assigneeAgentId: issue.assigneeAgentId,
+            runId: run?.id ?? null,
+            reason: params.reason ?? "plugin_issue_wakeup_requested",
+            contextSource,
+          },
+        });
+        return { queued: Boolean(run), runId: run?.id ?? null };
+      },
+      async requestWakeups(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const results = [];
+        for (const issueId of [...new Set(params.issueIds)]) {
+          const issue = requireInCompany("Issue", await issues.getById(issueId), companyId);
+          if (!issue.assigneeAgentId) {
+            throw new Error("Issue has no assigned agent to wake");
+          }
+          if (["backlog", "done", "cancelled"].includes(issue.status)) {
+            throw new Error(`Issue is not wakeable in status: ${issue.status}`);
+          }
+          const relations = await issues.getRelationSummaries(issue.id);
+          const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+          if (unresolvedBlockers.length > 0) {
+            throw new Error("Issue is blocked by unresolved blockers");
+          }
+          const budgetBlock = await budgets.getInvocationBlock(companyId, issue.assigneeAgentId, {
+            issueId: issue.id,
+            projectId: issue.projectId,
+          });
+          if (budgetBlock) {
+            throw new Error(budgetBlock.reason);
+          }
+          const contextSource = params.contextSource ?? "plugin.issue.requestWakeups";
+          const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: params.reason ?? "plugin_issue_wakeup_requested",
+            payload: {
+              issueId: issue.id,
+              mutation: "plugin_wakeup",
+              pluginId,
+              pluginKey,
+              contextSource,
+            },
+            idempotencyKey: params.idempotencyKeyPrefix ? `${params.idempotencyKeyPrefix}:${issue.id}` : null,
+            requestedByActorType: "system",
+            requestedByActorId: pluginId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: params.reason ?? "plugin_issue_wakeup_requested",
+              source: contextSource,
+              pluginId,
+              pluginKey,
+            },
+          });
+          await logPluginActivity({
+            companyId,
+            action: "issue.assignment_wakeup_requested",
+            entityType: "issue",
+            entityId: issue.id,
+            actor: {
+              actorAgentId: params.actorAgentId,
+              actorUserId: params.actorUserId,
+              actorRunId: params.actorRunId,
+            },
+            details: {
+              identifier: issue.identifier,
+              assigneeAgentId: issue.assigneeAgentId,
+              runId: run?.id ?? null,
+              reason: params.reason ?? "plugin_issue_wakeup_requested",
+              contextSource,
+            },
+          });
+          results.push({ issueId: issue.id, queued: Boolean(run), runId: run?.id ?? null });
+        }
+        return results;
+      },
+      async getOrchestrationSummary(params): Promise<PluginIssueOrchestrationSummary> {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const subtreeIssueIds = params.includeSubtree
+          ? await collectIssueSubtreeIds(companyId, rootIssue.id)
+          : [rootIssue.id];
+        const relationPairs = await Promise.all(
+          subtreeIssueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const),
+        );
+        const approvalRows = (
+          await Promise.all(
+            subtreeIssueIds.map(async (issueId) => {
+              const rows = await issueApprovals.listApprovalsForIssue(issueId);
+              return rows.map((approval) => ({
+                issueId,
+                id: approval.id,
+                type: approval.type,
+                status: approval.status,
+                requestedByAgentId: approval.requestedByAgentId,
+                requestedByUserId: approval.requestedByUserId,
+                decidedByUserId: approval.decidedByUserId,
+                decidedAt: approval.decidedAt?.toISOString() ?? null,
+                createdAt: approval.createdAt.toISOString(),
+              }));
+            }),
+          )
+        ).flat();
+        const [runs, costsSummary, openBudgetIncidents] = await Promise.all([
+          getIssueRunSummaries(companyId, subtreeIssueIds),
+          getIssueCostSummary(companyId, subtreeIssueIds, params.billingCode ?? rootIssue.billingCode ?? null),
+          getOpenBudgetIncidents(companyId),
+        ]);
+        const issueRows = await db
+          .select({
+            id: issuesTable.id,
+            assigneeAgentId: issuesTable.assigneeAgentId,
+            projectId: issuesTable.projectId,
+          })
+          .from(issuesTable)
+          .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, subtreeIssueIds)));
+        const invocationBlocks = (
+          await Promise.all(
+            issueRows
+              .filter((issueRow) => issueRow.assigneeAgentId)
+              .map(async (issueRow) => {
+                const block = await budgets.getInvocationBlock(companyId, issueRow.assigneeAgentId!, {
+                  issueId: issueRow.id,
+                  projectId: issueRow.projectId,
+                });
+                return block
+                  ? {
+                    issueId: issueRow.id,
+                    agentId: issueRow.assigneeAgentId!,
+                    scopeType: block.scopeType,
+                    scopeId: block.scopeId,
+                    scopeName: block.scopeName,
+                    reason: block.reason,
+                  }
+                  : null;
+              }),
+          )
+        ).filter((block): block is NonNullable<typeof block> => block !== null);
+        return {
+          issueId: rootIssue.id,
+          companyId,
+          subtreeIssueIds,
+          relations: Object.fromEntries(relationPairs),
+          approvals: approvalRows,
+          runs,
+          costs: costsSummary,
+          openBudgetIncidents,
+          invocationBlocks,
+        };
       },
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -787,12 +1704,48 @@ export function buildHostServices(
       async createComment(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.addComment(
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const comment = (await issues.addComment(
           params.issueId,
           params.body,
-          {},
+          { agentId: params.authorAgentId },
         )) as IssueComment;
+        await logPluginActivity({
+          companyId,
+          action: "issue.comment.created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: params.authorAgentId ?? null },
+          details: {
+            identifier: issue.identifier,
+            commentId: comment.id,
+            bodySnippet: comment.body.slice(0, 120),
+          },
+        });
+        return comment;
+      },
+      async createInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const interaction = await issueThreadInteractionService(db).create(issue, params.interaction as CreateIssueThreadInteraction, {
+          agentId: params.authorAgentId ?? null,
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.thread_interaction_created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: params.authorAgentId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            continuationPolicy: interaction.continuationPolicy,
+          },
+        });
+        return interaction as any;
       },
     },
 
@@ -814,7 +1767,7 @@ export function buildHostServices(
       async upsert(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         const result = await documents.upsertIssueDocument({
           issueId: params.issueId,
           key: params.key,
@@ -823,13 +1776,35 @@ export function buildHostServices(
           format: params.format ?? "markdown",
           changeSummary: params.changeSummary ?? null,
         });
+        await logPluginActivity({
+          companyId,
+          action: "issue.document_upserted",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            documentKey: params.key,
+            title: params.title ?? null,
+            format: params.format ?? "markdown",
+          },
+        });
         return result.document as any;
       },
       async delete(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         await documents.deleteIssueDocument(params.issueId, params.key);
+        await logPluginActivity({
+          companyId,
+          action: "issue.document_deleted",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            documentKey: params.key,
+          },
+        });
       },
     },
 
@@ -878,6 +1853,21 @@ export function buildHostServices(
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
+      },
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.get(params.agentKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.reconcile(params.agentKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.reset(params.agentKey, companyId);
       },
     },
 

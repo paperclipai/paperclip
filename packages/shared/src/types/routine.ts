@@ -1,4 +1,13 @@
-import type { IssueOriginKind } from "../constants.js";
+import type {
+  IssueOriginKind,
+  IssuePriority,
+  RoutineCatchUpPolicy,
+  RoutineConcurrencyPolicy,
+  RoutineStatus,
+  RoutineTriggerKind,
+  RoutineTriggerSigningMode,
+  RoutineVariableType,
+} from "../constants.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -25,19 +34,33 @@ export interface RoutineIssueSummary {
   updatedAt: Date;
 }
 
+export type RoutineVariableDefaultValue = string | number | boolean | null;
+
+export interface RoutineVariable {
+  name: string;
+  label: string | null;
+  type: RoutineVariableType;
+  defaultValue: RoutineVariableDefaultValue;
+  required: boolean;
+  options: string[];
+}
+
 export interface Routine {
   id: string;
   companyId: string;
-  projectId: string;
+  projectId: string | null;
   goalId: string | null;
   parentIssueId: string | null;
   title: string;
   description: string | null;
-  assigneeAgentId: string;
+  assigneeAgentId: string | null;
   priority: string;
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  variables: RoutineVariable[];
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;
@@ -46,6 +69,71 @@ export interface Routine {
   lastEnqueuedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  managedByPlugin?: RoutineManagedByPlugin | null;
+}
+
+export interface RoutineManagedByPlugin {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  pluginDisplayName: string;
+  resourceKind: "routine";
+  resourceKey: string;
+  defaultsJson: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface RoutineRevisionSnapshotRoutineV1 {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  goalId: string | null;
+  parentIssueId: string | null;
+  title: string;
+  description: string | null;
+  assigneeAgentId: string | null;
+  priority: IssuePriority;
+  status: RoutineStatus;
+  concurrencyPolicy: RoutineConcurrencyPolicy;
+  catchUpPolicy: RoutineCatchUpPolicy;
+  variables: RoutineVariable[];
+}
+
+export interface RoutineRevisionSnapshotTriggerV1 {
+  id: string;
+  kind: RoutineTriggerKind;
+  label: string | null;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string | null;
+  publicId: string | null;
+  signingMode: RoutineTriggerSigningMode | null;
+  replayWindowSec: number | null;
+}
+
+export interface RoutineRevisionSnapshotV1 {
+  version: 1;
+  routine: RoutineRevisionSnapshotRoutineV1;
+  triggers: RoutineRevisionSnapshotTriggerV1[];
+}
+
+export type RoutineRevisionSnapshot = RoutineRevisionSnapshotV1;
+
+export interface RoutineRevision {
+  id: string;
+  companyId: string;
+  routineId: string;
+  revisionNumber: number;
+  title: string;
+  description: string | null;
+  snapshot: RoutineRevisionSnapshot;
+  changeSummary: string | null;
+  restoredFromRevisionId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  createdAt: Date;
 }
 
 export interface RoutineTrigger {
@@ -83,6 +171,7 @@ export interface RoutineRun {
   triggeredAt: Date;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
+  dispatchFingerprint: string | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
   failureReason: string | null;
@@ -117,7 +206,7 @@ export interface RoutineExecutionIssueOrigin {
 }
 
 export interface RoutineListItem extends Routine {
-  triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "nextRunAt" | "lastFiredAt" | "lastResult">[];
+  triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "nextRunAt" | "lastFiredAt" | "lastResult">[];
   lastRun: RoutineRunSummary | null;
   activeIssue: RoutineIssueSummary | null;
 }

@@ -13,7 +13,8 @@ Only the latest release on the `main` branch receives security updates.
 
 **Do not open a public issue for security vulnerabilities.**
 
-Instead, please report vulnerabilities through [GitHub Security Advisories](https://github.com/abhilashjaiswal0110/paperclip/security/advisories/new).
+Please report security vulnerabilities through GitHub's Security Advisory feature:
+[https://github.com/paperclipai/paperclip/security/advisories/new](https://github.com/paperclipai/paperclip/security/advisories/new)
 
 ### What to Include
 

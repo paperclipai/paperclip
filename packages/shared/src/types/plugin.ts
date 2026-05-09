@@ -9,7 +9,26 @@ import type {
   PluginLauncherAction,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+  AgentAdapterType,
+  AgentRole,
+  AgentStatus,
+  IssuePriority,
+  ProjectStatus,
+  RoutineCatchUpPolicy,
+  RoutineConcurrencyPolicy,
+  RoutineStatus,
+  IssueSurfaceVisibility,
 } from "../constants.js";
+import type { Agent } from "./agent.js";
+import type { Project } from "./project.js";
+import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – plugins declare config schemas as JSON Schema
@@ -20,6 +39,13 @@ import type {
  * Plugins provide these as plain JSON Schema compatible objects.
  */
 export type JsonSchema = Record<string, unknown>;
+
+export type {
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+} from "../constants.js";
 
 // ---------------------------------------------------------------------------
 // Manifest sub-types — nested declarations within PaperclipPluginManifestV1
@@ -76,6 +102,186 @@ export interface PluginToolDeclaration {
 }
 
 /**
+ * Declares an environment runtime driver contributed by the plugin.
+ *
+ * Requires the `environment.drivers.register` capability.
+ */
+export interface PluginEnvironmentDriverDeclaration {
+  /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
+  driverKey: string;
+  /**
+   * Driver classification.
+   *
+   * `environment_driver` is used by core `driver: "plugin"` environments.
+   * `sandbox_provider` is used by core `driver: "sandbox"` environments whose
+   * provider key is implemented by a plugin.
+   */
+  kind?: "environment_driver" | "sandbox_provider";
+  /** Human-readable name shown in environment configuration UI. */
+  displayName: string;
+  /** Optional description for operator-facing docs or UI affordances. */
+  description?: string;
+  /** JSON Schema describing the driver's provider-specific configuration. */
+  configSchema: JsonSchema;
+}
+
+/**
+ * Declares a normal Paperclip agent that a plugin can provision and later
+ * resolve by stable key within each company.
+ */
+export interface PluginManagedAgentDeclaration {
+  /** Stable identifier for this managed agent, unique within the plugin. */
+  agentKey: string;
+  /** Suggested visible agent name. */
+  displayName: string;
+  /** Optional suggested role. Defaults to `general`. */
+  role?: AgentRole | string;
+  /** Optional suggested title shown in agent surfaces. */
+  title?: string | null;
+  /** Optional icon for agent list/detail surfaces. */
+  icon?: string | null;
+  /** Suggested capability summary for the agent. */
+  capabilities?: string | null;
+  /** Suggested adapter type. Defaults to `process`. */
+  adapterType?: AgentAdapterType | string;
+  /**
+   * Optional ordered list of compatible adapter types. When present, the host
+   * prefers the most-used compatible adapter already configured in the company,
+   * falling back to `adapterType`.
+   */
+  adapterPreference?: Array<AgentAdapterType | string>;
+  /** Suggested adapter configuration. */
+  adapterConfig?: Record<string, unknown>;
+  /** Suggested Paperclip runtime configuration. */
+  runtimeConfig?: Record<string, unknown>;
+  /** Suggested permissions object. Normalized by the host on create/reset. */
+  permissions?: Record<string, unknown>;
+  /** Suggested starting status when no board approval is required. */
+  status?: Extract<AgentStatus, "idle" | "paused">;
+  /** Suggested monthly budget in cents. */
+  budgetMonthlyCents?: number;
+  /** Optional managed instructions content or pointer metadata for plugin UI. */
+  instructions?: {
+    entryFile?: string;
+    content?: string;
+    assetPath?: string;
+  };
+}
+
+/**
+ * Declares a company-scoped local folder a trusted plugin wants the operator
+ * to configure. The host treats this as a generic filesystem root: plugin
+ * code may request required relative folders/files, then use SDK helpers for
+ * path-safe reads and atomic writes under that root.
+ */
+export interface PluginLocalFolderDeclaration {
+  /** Stable identifier for this folder, unique within the plugin. */
+  folderKey: string;
+  /** Human-readable name shown in plugin settings. */
+  displayName: string;
+  /** Optional operator-facing description. */
+  description?: string;
+  /** Access level requested by the plugin. Defaults to `readWrite`. */
+  access?: "read" | "readWrite";
+  /** Relative directories expected to exist under the configured root. */
+  requiredDirectories?: string[];
+  /** Relative files expected to exist under the configured root. */
+  requiredFiles?: string[];
+}
+
+/**
+ * Declares a normal Paperclip project that a plugin can provision and later
+ * resolve by stable key within each company.
+ */
+export interface PluginManagedProjectDeclaration {
+  /** Stable identifier for this managed project, unique within the plugin. */
+  projectKey: string;
+  /** Suggested visible project name. */
+  displayName: string;
+  /** Suggested project description. */
+  description?: string | null;
+  /** Suggested starting status. Defaults to `in_progress`. */
+  status?: ProjectStatus;
+  /** Suggested project color. Defaults to the normal project palette. */
+  color?: string | null;
+  /** Optional plugin-specific defaults retained for reset/reconcile UI. */
+  settings?: Record<string, unknown>;
+}
+
+export type PluginManagedResourceKind = "agent" | "project" | "routine";
+
+export interface PluginManagedResourceRef {
+  pluginKey?: string;
+  resourceKind: PluginManagedResourceKind;
+  resourceKey: string;
+}
+
+export interface PluginManagedRoutineDeclaration {
+  /** Stable identifier for this managed routine, unique within the plugin. */
+  routineKey: string;
+  /** Suggested routine title template. */
+  title: string;
+  /** Suggested routine description template. */
+  description?: string | null;
+  /** Stable managed agent reference for the default assignee. */
+  assigneeRef?: PluginManagedResourceRef | null;
+  /** Stable managed project reference for routine-created issues. */
+  projectRef?: PluginManagedResourceRef | null;
+  /** Optional goal id to set on the routine in this company. */
+  goalId?: string | null;
+  /** Suggested starting status. Defaults to `paused` when no assignee is resolved, otherwise `active`. */
+  status?: RoutineStatus;
+  /** Suggested issue priority. Defaults to `medium`. */
+  priority?: IssuePriority;
+  /** Suggested concurrency behavior. Defaults to core routine default. */
+  concurrencyPolicy?: RoutineConcurrencyPolicy;
+  /** Suggested missed-trigger behavior. Defaults to core routine default. */
+  catchUpPolicy?: RoutineCatchUpPolicy;
+  /** Suggested routine variables. */
+  variables?: RoutineVariable[];
+  /** Suggested triggers created when the routine is first reconciled. */
+  triggers?: Array<Pick<RoutineTrigger, "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "signingMode" | "replayWindowSec">>;
+  /** Defaults for issues created by this routine. */
+  issueTemplate?: {
+    surfaceVisibility?: IssueSurfaceVisibility;
+    originId?: string | null;
+    billingCode?: string | null;
+  };
+}
+
+export interface PluginManagedAgentResolution {
+  pluginKey: string;
+  resourceKind: "agent";
+  resourceKey: string;
+  companyId: string;
+  agentId: string | null;
+  agent: Agent | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+  approvalId?: string | null;
+}
+
+export interface PluginManagedProjectResolution {
+  pluginKey: string;
+  resourceKind: "project";
+  resourceKey: string;
+  companyId: string;
+  projectId: string | null;
+  project: Project | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+}
+
+export interface PluginManagedRoutineResolution {
+  pluginKey: string;
+  resourceKind: "routine";
+  resourceKey: string;
+  companyId: string;
+  routineId: string | null;
+  routine: Routine | null;
+  status: "missing" | "missing_refs" | "resolved" | "created" | "relinked" | "reset";
+  missingRefs?: PluginManagedResourceRef[];
+}
+
+/**
  * Declares a UI extension slot the plugin fills with a React component.
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
@@ -95,7 +301,7 @@ export interface PluginUiSlotDeclaration {
    */
   entityTypes?: PluginUiSlotEntityType[];
   /**
-   * Optional company-scoped route segment for page slots.
+   * Optional company-scoped route segment for page and routeSidebar slots.
    * Example: `kitchensink` becomes `/:companyPrefix/kitchensink`.
    */
   routePath?: string;
@@ -190,6 +396,44 @@ export interface PluginUiDeclaration {
   launchers?: PluginLauncherDeclaration[];
 }
 
+/**
+ * Declares restricted database access for trusted orchestration plugins.
+ *
+ * The host derives the final namespace from the plugin key and optional slug,
+ * applies SQL migrations before worker startup, and gates runtime SQL through
+ * the `database.namespace.*` capabilities.
+ */
+export interface PluginDatabaseDeclaration {
+  /** Optional stable human-readable slug included in the host-derived namespace. */
+  namespaceSlug?: string;
+  /** SQL migration directory relative to the plugin package root. */
+  migrationsDir: string;
+  /** Public core tables this plugin may read or join at runtime. */
+  coreReadTables?: PluginDatabaseCoreReadTable[];
+}
+
+export type PluginApiRouteCompanyResolution =
+  | { from: "body"; key: string }
+  | { from: "query"; key: string }
+  | { from: "issue"; param: string };
+
+export interface PluginApiRouteDeclaration {
+  /** Stable plugin-defined route key passed to the worker. */
+  routeKey: string;
+  /** HTTP method accepted by this route. */
+  method: PluginApiRouteMethod;
+  /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
+  path: string;
+  /** Actor class allowed to call the route. */
+  auth: PluginApiRouteAuthMode;
+  /** Capability required to expose the route. Currently `api.routes.register`. */
+  capability: "api.routes.register";
+  /** Optional checkout policy enforced by the host before worker dispatch. */
+  checkoutPolicy?: PluginApiRouteCheckoutPolicy;
+  /** How the host resolves company access for this route. */
+  companyResolution?: PluginApiRouteCompanyResolution;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -240,6 +484,20 @@ export interface PaperclipPluginManifestV1 {
   webhooks?: PluginWebhookDeclaration[];
   /** Agent tools this plugin contributes. Requires `agent.tools.register` capability. */
   tools?: PluginToolDeclaration[];
+  /** Restricted plugin-owned database namespace declaration. */
+  database?: PluginDatabaseDeclaration;
+  /** Scoped JSON API routes mounted under `/api/plugins/:pluginId/api/*`. */
+  apiRoutes?: PluginApiRouteDeclaration[];
+  /** Environment drivers this plugin contributes. Requires `environment.drivers.register` capability. */
+  environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  /** Suggested company-scoped agents this plugin can provision and resolve by stable key. */
+  agents?: PluginManagedAgentDeclaration[];
+  /** Suggested company-scoped projects this plugin can provision and resolve by stable key. */
+  projects?: PluginManagedProjectDeclaration[];
+  /** Suggested company-scoped routines this plugin can provision and resolve by stable key. */
+  routines?: PluginManagedRoutineDeclaration[];
+  /** Trusted local folders this plugin can configure and access by stable key. */
+  localFolders?: PluginLocalFolderDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.
@@ -284,6 +542,31 @@ export interface PluginRecord {
   installedAt: Date;
   /** Timestamp of the most recent status or metadata change. */
   updatedAt: Date;
+}
+
+export interface PluginDatabaseNamespaceRecord {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  namespaceName: string;
+  namespaceMode: PluginDatabaseNamespaceMode;
+  status: PluginDatabaseNamespaceStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PluginMigrationRecord {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  namespaceName: string;
+  migrationKey: string;
+  checksum: string;
+  pluginVersion: string;
+  status: PluginDatabaseMigrationStatus;
+  startedAt: Date;
+  appliedAt: Date | null;
+  errorMessage: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +628,22 @@ export interface PluginConfig {
   /** Timestamp when the config row was created. */
   createdAt: Date;
   /** Timestamp of the most recent config update. */
+  updatedAt: Date;
+}
+
+/**
+ * Company-scoped plugin settings row. This is intentionally generic; plugin
+ * features such as local folders live inside `settingsJson` under namespaced
+ * keys instead of requiring feature-specific database columns.
+ */
+export interface PluginCompanySettings {
+  id: string;
+  companyId: string;
+  pluginId: string;
+  enabled: boolean;
+  settingsJson: Record<string, unknown>;
+  lastError: string | null;
+  createdAt: Date;
   updatedAt: Date;
 }
 

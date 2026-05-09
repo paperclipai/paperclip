@@ -21,6 +21,8 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import type { Issue } from "@paperclipai/shared";
+import { AlertTriangle } from "lucide-react";
+import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 
 const boardStatuses = [
   "backlog",
@@ -63,16 +65,22 @@ function KanbanColumn({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
+  const isEmpty = issues.length === 0;
+
   return (
-    <div className="flex flex-col min-w-[260px] w-[260px] shrink-0">
-      <div className="flex items-center gap-2 px-2 py-2 mb-1">
+    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
+      <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
         <StatusIcon status={status} />
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {statusLabel(status)}
-        </span>
-        <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
-          {issues.length}
-        </span>
+        {(!isEmpty || isOver) && (
+          <>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {statusLabel(status)}
+            </span>
+            <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
+              {issues.length}
+            </span>
+          </>
+        )}
       </div>
       <div
         ref={setNodeRef}
@@ -142,6 +150,7 @@ function KanbanCard({
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
+        disableIssueQuicklook
         className="block no-underline text-inherit"
         onClick={(e) => {
           // Prevent navigation during drag
@@ -152,6 +161,16 @@ function KanbanCard({
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
+          {isSuccessfulRunHandoffRequired(issue) ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+              title="This issue needs a next step"
+              aria-label="Needs next step"
+            >
+              <AlertTriangle className="h-3 w-3" />
+              Next step
+            </span>
+          ) : null}
           {isLive && (
             <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
               <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />

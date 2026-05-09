@@ -9,13 +9,20 @@ import {
   asNumber,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  maybeRunSandboxInstallCommand,
+  runAdapterExecutionTargetProcess,
+  describeAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { isBedrockModelId } from "./models.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -55,10 +62,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = target?.kind === "remote";
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "claude_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "claude_cwd_valid",
       level: "info",
@@ -79,8 +104,17 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "claude",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
       code: "claude_command_resolvable",
       level: "info",
@@ -95,9 +129,36 @@ export async function testEnvironment(
     });
   }
 
+  // When probing a remote target, the Paperclip host's process.env does not
+  // reflect what the agent will actually see at runtime. Only consider env
+  // vars from the adapter config in that case; the probe itself will surface
+  // any auth issues on the remote box.
+  const considerHostEnv = !targetIsRemote;
+  const hasBedrock =
+    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "1") ||
+    (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "true") ||
+    isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL) ||
+    (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
+
   const configApiKey = env.ANTHROPIC_API_KEY;
-  const hostApiKey = process.env.ANTHROPIC_API_KEY;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
+  const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
+  if (hasBedrock) {
+    const source =
+      env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+      env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+      isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL)
+        ? "adapter config env"
+        : "server environment";
+    checks.push({
+      code: "claude_bedrock_auth",
+      level: "info",
+      message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
+      detail: `Detected in ${source}.`,
+      hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
+    });
+  } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
@@ -107,7 +168,7 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else {
+  } else if (!targetIsRemote) {
     checks.push({
       code: "claude_subscription_mode_possible",
       level: "info",
@@ -131,7 +192,7 @@ export async function testEnvironment(
       const effort = asString(config.effort, "").trim();
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
-      const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
+      const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -141,13 +202,17 @@ export async function testEnvironment(
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
-      if (model) args.push("--model", model);
+      // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
+      if (model && (!hasBedrock || isBedrockModelId(model))) {
+        args.push("--model", model);
+      }
       if (effort) args.push("--effort", effort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      const probe = await runChildProcess(
-        `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      const probe = await runAdapterExecutionTargetProcess(
+        runId,
+        target,
         command,
         args,
         {

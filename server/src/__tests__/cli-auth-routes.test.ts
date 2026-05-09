@@ -34,36 +34,71 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn((name: string) => name),
 }));
 
-function createApp(actor: any) {
+function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+    deduplicateAgentName: vi.fn((name: string) => name),
+  }));
+}
+
+let appImportCounter = 0;
+
+async function createApp(actor: any, db: any = {} as any) {
+  appImportCounter += 1;
+  const routeModulePath = `../routes/access.js?cli-auth-routes-${appImportCounter}`;
+  const middlewareModulePath = `../middleware/index.js?cli-auth-routes-${appImportCounter}`;
+  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/access.js")>,
+    import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
+  ]);
+
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = actor;
+    req.actor = {
+      ...actor,
+      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
+      memberships: Array.isArray(actor.memberships)
+        ? actor.memberships.map((membership: unknown) =>
+            typeof membership === "object" && membership !== null
+              ? { ...membership }
+              : membership,
+          )
+        : actor.memberships,
+    };
     next();
   });
-  return import("../routes/access.js").then(({ accessRoutes }) =>
-    import("../middleware/index.js").then(({ errorHandler }) => {
-      app.use(
-        "/api",
-        accessRoutes({} as any, {
-          deploymentMode: "authenticated",
-          deploymentExposure: "private",
-          bindHost: "127.0.0.1",
-          allowedHostnames: [],
-        }),
-      );
-      app.use(errorHandler);
-      return app;
-    })
+  app.use(
+    "/api",
+    accessRoutes(db, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    }),
   );
+  app.use(errorHandler);
+  return app;
 }
 
-describe("cli auth routes", () => {
+describe.sequential("cli auth routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
   });
 
-  it("creates a CLI auth challenge with approval metadata", async () => {
+  it.sequential("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {
         id: "challenge-1",
@@ -82,19 +117,61 @@ describe("cli auth routes", () => {
         requestedAccess: "board",
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
     expect(res.body).toMatchObject({
       id: "challenge-1",
       token: "pcp_cli_auth_secret",
-      boardApiToken: "pcp_board_token",
       approvalPath: "/cli-auth/challenge-1?token=pcp_cli_auth_secret",
       pollPath: "/cli-auth/challenges/challenge-1",
       expiresAt: "2026-03-23T13:00:00.000Z",
     });
+    expect(res.body.boardApiToken).toBe("pcp_board_token");
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
   });
 
-  it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
+  it.sequential("rejects anonymous access to generic skill documents", async () => {
+    const indexApp = await createApp({ type: "none", source: "none" });
+    const skillApp = await createApp({ type: "none", source: "none" });
+
+    const indexRes = await request(indexApp).get("/api/skills/index");
+    const skillRes = await request(skillApp).get("/api/skills/paperclip");
+
+    expect(indexRes.status, JSON.stringify(indexRes.body)).toBe(401);
+    expect(skillRes.status, skillRes.text || JSON.stringify(skillRes.body)).toBe(401);
+  });
+
+  it.sequential("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
+    const invite = {
+      id: "invite-1",
+      companyId: "company-1",
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      tokenHash: "hash",
+      defaultsPayload: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      invitedByUserId: null,
+      revokedAt: null,
+      acceptedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([invite]),
+        })),
+      })),
+    };
+
+    const app = await createApp({ type: "none", source: "none" }, db);
+    const res = await request(app).get("/api/invites/token-123/skills/paperclip");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/markdown");
+    expect(res.text).toContain("# Paperclip Skill");
+  });
+
+  it.sequential("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
       id: "challenge-1",
       status: "pending",
@@ -117,7 +194,7 @@ describe("cli auth routes", () => {
     expect(res.body.canApprove).toBe(false);
   });
 
-  it("approves a CLI auth challenge for a signed-in board user", async () => {
+  it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -147,13 +224,11 @@ describe("cli auth routes", () => {
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      approved: true,
-      status: "approved",
-      userId: "user-1",
-      keyId: "board-key-1",
-      expiresAt: "2026-03-23T13:00:00.000Z",
-    });
+    expect(mockBoardAuthService.approveCliAuthChallenge).toHaveBeenCalledWith(
+      "challenge-1",
+      "pcp_cli_auth_secret",
+      "user-1",
+    );
     expect(mockLogActivity).toHaveBeenCalledTimes(1);
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -164,7 +239,7 @@ describe("cli auth routes", () => {
     );
   });
 
-  it("logs approve activity for instance admins without company memberships", async () => {
+  it.sequential("logs approve activity for instance admins without company memberships", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -197,7 +272,7 @@ describe("cli auth routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("logs revoke activity with resolved audit company ids", async () => {
+  it.sequential("logs revoke activity with resolved audit company ids", async () => {
     mockBoardAuthService.assertCurrentBoardKey.mockResolvedValue({
       id: "board-key-3",
       userId: "admin-2",

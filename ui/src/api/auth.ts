@@ -1,27 +1,63 @@
-export type AuthSession = {
-  session: { id: string; userId: string };
-  user: { id: string; email: string | null; name: string | null };
-};
+import {
+  authSessionSchema,
+  currentUserProfileSchema,
+  type AuthSession,
+  type CurrentUserProfile,
+  type UpdateCurrentUserProfile,
+} from "@paperclipai/shared";
+
+type AuthErrorBody =
+  | {
+    code?: string;
+    message?: string;
+    error?: string | { code?: string; message?: string };
+  }
+  | null;
+
+export class AuthApiError extends Error {
+  status: number;
+  code: string | null;
+  body: unknown;
+
+  constructor(message: string, status: number, body: unknown, code: string | null = null) {
+    super(message);
+    this.name = "AuthApiError";
+    this.status = status;
+    this.code = code;
+    this.body = body;
+  }
+}
 
 function toSession(value: unknown): AuthSession | null {
+  const direct = authSessionSchema.safeParse(value);
+  if (direct.success) return direct.data;
+
   if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  const sessionValue = record.session;
-  const userValue = record.user;
-  if (!sessionValue || typeof sessionValue !== "object") return null;
-  if (!userValue || typeof userValue !== "object") return null;
-  const session = sessionValue as Record<string, unknown>;
-  const user = userValue as Record<string, unknown>;
-  if (typeof session.id !== "string" || typeof session.userId !== "string") return null;
-  if (typeof user.id !== "string") return null;
-  return {
-    session: { id: session.id, userId: session.userId },
-    user: {
-      id: user.id,
-      email: typeof user.email === "string" ? user.email : null,
-      name: typeof user.name === "string" ? user.name : null,
-    },
-  };
+  const nested = authSessionSchema.safeParse((value as Record<string, unknown>).data);
+  return nested.success ? nested.data : null;
+}
+
+function extractAuthError(payload: AuthErrorBody, status: number) {
+  const nested =
+    payload?.error && typeof payload.error === "object"
+      ? payload.error
+      : null;
+  const code =
+    typeof nested?.code === "string"
+      ? nested.code
+      : typeof payload?.code === "string"
+        ? payload.code
+        : null;
+  const message =
+    typeof nested?.message === "string" && nested.message.trim().length > 0
+      ? nested.message
+      : typeof payload?.message === "string" && payload.message.trim().length > 0
+        ? payload.message
+        : typeof payload?.error === "string" && payload.error.trim().length > 0
+          ? payload.error
+          : `Request failed: ${status}`;
+
+  return new AuthApiError(message, status, payload, code);
 }
 
 async function authPost(path: string, body: Record<string, unknown>) {
@@ -33,14 +69,23 @@ async function authPost(path: string, body: Record<string, unknown>) {
   });
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
-    const message =
-      (payload as { error?: { message?: string } | string } | null)?.error &&
-      typeof (payload as { error?: { message?: string } | string }).error === "object"
-        ? ((payload as { error?: { message?: string } }).error?.message ?? `Request failed: ${res.status}`)
-        : (payload as { error?: string } | null)?.error ?? `Request failed: ${res.status}`;
-    throw new Error(message);
+    throw extractAuthError(payload as AuthErrorBody, res.status);
   }
   return payload;
+}
+
+async function authPatch<T>(path: string, body: Record<string, unknown>, parse: (value: unknown) => T): Promise<T> {
+  const res = await fetch(`/api/auth${path}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw extractAuthError(payload as AuthErrorBody, res.status);
+  }
+  return parse(payload);
 }
 
 export const authApi = {
@@ -67,6 +112,21 @@ export const authApi = {
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
     await authPost("/sign-up/email", input);
   },
+
+  getProfile: async (): Promise<CurrentUserProfile> => {
+    const res = await fetch("/api/auth/profile", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((payload as { error?: string } | null)?.error ?? `Failed to load profile (${res.status})`);
+    }
+    return currentUserProfileSchema.parse(payload);
+  },
+
+  updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
+    authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
 
   signOut: async () => {
     await authPost("/sign-out", {});

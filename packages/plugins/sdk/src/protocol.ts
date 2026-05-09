@@ -27,20 +27,38 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueThreadInteraction,
+  CreateIssueThreadInteraction,
+  PluginManagedAgentResolution,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineResolution,
+  Routine,
+  RoutineRun,
   Agent,
   Goal,
+  PluginLocalFolderDeclaration,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
   PluginEvent,
+  PluginIssueCheckoutOwnership,
+  PluginIssueOrchestrationSummary,
+  PluginIssueRelationSummary,
+  PluginIssueSubtree,
+  PluginIssueWakeupBatchResult,
+  PluginIssueWakeupResult,
   PluginJobContext,
   PluginWorkspace,
   ToolRunContext,
   ToolResult,
+  PluginLocalFolderListing,
+  PluginLocalFolderStatus,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
+  PluginApiRequestInput,
+  PluginApiResponse,
   PluginConfigValidationResult,
   PluginWebhookInput,
 } from "./define-plugin.js";
@@ -219,6 +237,8 @@ export interface InitializeParams {
   };
   /** Host API version. */
   apiVersion: number;
+  /** Host-derived plugin database namespace, when the manifest declares database access. */
+  databaseNamespace?: string | null;
 }
 
 /**
@@ -313,6 +333,99 @@ export interface ExecuteToolParams {
   runContext: ToolRunContext;
 }
 
+export interface PluginEnvironmentDiagnostic {
+  severity: "info" | "warning" | "error";
+  message: string;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDriverBaseParams {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  config: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentValidateConfigParams {
+  driverKey: string;
+  config: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentValidationResult {
+  ok: boolean;
+  warnings?: string[];
+  errors?: string[];
+  normalizedConfig?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentProbeParams extends PluginEnvironmentDriverBaseParams {}
+
+export interface PluginEnvironmentProbeResult {
+  ok: boolean;
+  summary?: string;
+  diagnostics?: PluginEnvironmentDiagnostic[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentLease {
+  providerLeaseId: string | null;
+  metadata?: Record<string, unknown>;
+  expiresAt?: string | null;
+}
+
+export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
+  runId: string;
+  workspaceMode?: string;
+  requestedCwd?: string;
+}
+
+export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
+
+export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  workspace: {
+    localPath?: string;
+    remotePath?: string;
+    mode?: string;
+    metadata?: Record<string, unknown>;
+  };
+}
+
+export interface PluginEnvironmentRealizeWorkspaceResult {
+  cwd: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: string;
+  timeoutMs?: number;
+}
+
+export interface PluginEnvironmentExecuteResult {
+  exitCode: number | null;
+  signal?: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  metadata?: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // UI launcher / modal host interaction payloads
 // ---------------------------------------------------------------------------
@@ -374,12 +487,46 @@ export interface HostToWorkerMethods {
   runJob: [params: RunJobParams, result: void];
   /** @see PLUGIN_SPEC.md §13.7 */
   handleWebhook: [params: PluginWebhookInput, result: void];
+  /** Scoped plugin API route dispatch. */
+  handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
   performAction: [params: PerformActionParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.10 */
   executeTool: [params: ExecuteToolParams, result: ToolResult];
+  environmentValidateConfig: [
+    params: PluginEnvironmentValidateConfigParams,
+    result: PluginEnvironmentValidationResult,
+  ];
+  environmentProbe: [
+    params: PluginEnvironmentProbeParams,
+    result: PluginEnvironmentProbeResult,
+  ];
+  environmentAcquireLease: [
+    params: PluginEnvironmentAcquireLeaseParams,
+    result: PluginEnvironmentLease,
+  ];
+  environmentResumeLease: [
+    params: PluginEnvironmentResumeLeaseParams,
+    result: PluginEnvironmentLease,
+  ];
+  environmentReleaseLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: void,
+  ];
+  environmentDestroyLease: [
+    params: PluginEnvironmentDestroyLeaseParams,
+    result: void,
+  ];
+  environmentRealizeWorkspace: [
+    params: PluginEnvironmentRealizeWorkspaceParams,
+    result: PluginEnvironmentRealizeWorkspaceResult,
+  ];
+  environmentExecute: [
+    params: PluginEnvironmentExecuteParams,
+    result: PluginEnvironmentExecuteResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -399,9 +546,18 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "onEvent",
   "runJob",
   "handleWebhook",
+  "handleApiRequest",
   "getData",
   "performAction",
   "executeTool",
+  "environmentValidateConfig",
+  "environmentProbe",
+  "environmentAcquireLease",
+  "environmentResumeLease",
+  "environmentReleaseLease",
+  "environmentDestroyLease",
+  "environmentRealizeWorkspace",
+  "environmentExecute",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -418,6 +574,44 @@ export interface WorkerToHostMethods {
   // Config
   "config.get": [params: Record<string, never>, result: Record<string, unknown>];
 
+  // Trusted local folders
+  "localFolders.declarations": [
+    params: Record<string, never>,
+    result: PluginLocalFolderDeclaration[],
+  ];
+  "localFolders.configure": [
+    params: {
+      companyId: string;
+      folderKey: string;
+      path: string;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    },
+    result: PluginLocalFolderStatus,
+  ];
+  "localFolders.status": [
+    params: { companyId: string; folderKey: string },
+    result: PluginLocalFolderStatus,
+  ];
+  "localFolders.list": [
+    params: { companyId: string; folderKey: string; relativePath?: string | null; recursive?: boolean; maxEntries?: number },
+    result: PluginLocalFolderListing,
+  ];
+  "localFolders.readText": [
+    params: { companyId: string; folderKey: string; relativePath: string },
+    result: string,
+  ];
+  "localFolders.writeTextAtomic": [
+    params: {
+      companyId: string;
+      folderKey: string;
+      relativePath: string;
+      contents: string;
+    },
+    result: PluginLocalFolderStatus,
+  ];
+
   // State
   "state.get": [
     params: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string },
@@ -430,6 +624,20 @@ export interface WorkerToHostMethods {
   "state.delete": [
     params: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string },
     result: void,
+  ];
+
+  // Restricted plugin database namespace
+  "db.namespace": [
+    params: Record<string, never>,
+    result: string,
+  ];
+  "db.query": [
+    params: { sql: string; params?: unknown[] },
+    result: unknown[],
+  ];
+  "db.execute": [
+    params: { sql: string; params?: unknown[] },
+    result: { rowCount: number },
   ];
 
   // Entities
@@ -519,6 +727,12 @@ export interface WorkerToHostMethods {
     result: void,
   ];
 
+  // Telemetry
+  "telemetry.track": [
+    params: { eventName: string; dimensions?: Record<string, string | number | boolean> },
+    result: void,
+  ];
+
   // Logger
   "log": [
     params: { level: "info" | "warn" | "error" | "debug"; message: string; meta?: Record<string, unknown> },
@@ -556,6 +770,57 @@ export interface WorkerToHostMethods {
     params: { issueId: string; companyId: string },
     result: PluginWorkspace | null,
   ];
+  "projects.managed.get": [
+    params: { projectKey: string; companyId: string },
+    result: PluginManagedProjectResolution,
+  ];
+  "projects.managed.reconcile": [
+    params: { projectKey: string; companyId: string },
+    result: PluginManagedProjectResolution,
+  ];
+  "projects.managed.reset": [
+    params: { projectKey: string; companyId: string },
+    result: PluginManagedProjectResolution,
+  ];
+  "routines.managed.get": [
+    params: { routineKey: string; companyId: string },
+    result: PluginManagedRoutineResolution,
+  ];
+  "routines.managed.reconcile": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      projectId?: string | null;
+    },
+    result: PluginManagedRoutineResolution,
+  ];
+  "routines.managed.reset": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      projectId?: string | null;
+    },
+    result: PluginManagedRoutineResolution,
+  ];
+  "routines.managed.update": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      status?: string;
+    },
+    result: Routine,
+  ];
+  "routines.managed.run": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      projectId?: string | null;
+    },
+    result: RoutineRun,
+  ];
 
   // Issues
   "issues.list": [
@@ -563,7 +828,11 @@ export interface WorkerToHostMethods {
       companyId: string;
       projectId?: string;
       assigneeAgentId?: string;
+      originKind?: string;
+      originKindPrefix?: string;
+      originId?: string;
       status?: string;
+      includePluginOperations?: boolean;
       limit?: number;
       offset?: number;
     },
@@ -579,10 +848,28 @@ export interface WorkerToHostMethods {
       projectId?: string;
       goalId?: string;
       parentId?: string;
+      inheritExecutionWorkspaceFromIssueId?: string;
       title: string;
       description?: string;
+      status?: string;
+      workMode?: string;
       priority?: string;
       assigneeAgentId?: string;
+      assigneeUserId?: string | null;
+      requestDepth?: number;
+      billingCode?: string | null;
+      surfaceVisibility?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
+      originRunId?: string | null;
+      blockedByIssueIds?: string[];
+      labelIds?: string[];
+      executionWorkspaceId?: string | null;
+      executionWorkspacePreference?: string | null;
+      executionWorkspaceSettings?: Record<string, unknown> | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
     },
     result: Issue,
   ];
@@ -594,13 +881,115 @@ export interface WorkerToHostMethods {
     },
     result: Issue,
   ];
+  "issues.relations.get": [
+    params: { issueId: string; companyId: string },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.relations.setBlockedBy": [
+    params: {
+      issueId: string;
+      companyId: string;
+      blockedByIssueIds: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.relations.addBlockers": [
+    params: {
+      issueId: string;
+      companyId: string;
+      blockerIssueIds: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.relations.removeBlockers": [
+    params: {
+      issueId: string;
+      companyId: string;
+      blockerIssueIds: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.assertCheckoutOwner": [
+    params: {
+      issueId: string;
+      companyId: string;
+      actorAgentId: string;
+      actorRunId: string;
+    },
+    result: PluginIssueCheckoutOwnership,
+  ];
+  "issues.getSubtree": [
+    params: {
+      issueId: string;
+      companyId: string;
+      includeRoot?: boolean;
+      includeRelations?: boolean;
+      includeDocuments?: boolean;
+      includeActiveRuns?: boolean;
+      includeAssignees?: boolean;
+    },
+    result: PluginIssueSubtree,
+  ];
+  "issues.requestWakeup": [
+    params: {
+      issueId: string;
+      companyId: string;
+      reason?: string;
+      contextSource?: string;
+      idempotencyKey?: string | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueWakeupResult,
+  ];
+  "issues.requestWakeups": [
+    params: {
+      issueIds: string[];
+      companyId: string;
+      reason?: string;
+      contextSource?: string;
+      idempotencyKeyPrefix?: string | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueWakeupBatchResult[],
+  ];
+  "issues.summaries.getOrchestration": [
+    params: {
+      issueId: string;
+      companyId: string;
+      includeSubtree?: boolean;
+      billingCode?: string | null;
+    },
+    result: PluginIssueOrchestrationSummary,
+  ];
   "issues.listComments": [
     params: { issueId: string; companyId: string },
     result: IssueComment[],
   ];
   "issues.createComment": [
-    params: { issueId: string; body: string; companyId: string },
+    params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
     result: IssueComment,
+  ];
+  "issues.createInteraction": [
+    params: {
+      issueId: string;
+      companyId: string;
+      interaction: CreateIssueThreadInteraction;
+      authorAgentId?: string | null;
+    },
+    result: IssueThreadInteraction,
   ];
 
   // Issue Documents
@@ -651,6 +1040,18 @@ export interface WorkerToHostMethods {
   "agents.invoke": [
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
+  ];
+  "agents.managed.get": [
+    params: { agentKey: string; companyId: string },
+    result: PluginManagedAgentResolution,
+  ];
+  "agents.managed.reconcile": [
+    params: { agentKey: string; companyId: string },
+    result: PluginManagedAgentResolution,
+  ];
+  "agents.managed.reset": [
+    params: { agentKey: string; companyId: string },
+    result: PluginManagedAgentResolution,
   ];
 
   // Agent Sessions

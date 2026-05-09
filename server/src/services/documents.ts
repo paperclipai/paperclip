@@ -1,7 +1,7 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { issueDocumentKeySchema } from "@paperclipai/shared";
+import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {
@@ -64,50 +64,42 @@ function mapIssueDocumentRow(
   };
 }
 
+const issueDocumentSelect = {
+  id: documents.id,
+  companyId: documents.companyId,
+  issueId: issueDocuments.issueId,
+  key: issueDocuments.key,
+  title: documents.title,
+  format: documents.format,
+  latestBody: documents.latestBody,
+  latestRevisionId: documents.latestRevisionId,
+  latestRevisionNumber: documents.latestRevisionNumber,
+  createdByAgentId: documents.createdByAgentId,
+  createdByUserId: documents.createdByUserId,
+  updatedByAgentId: documents.updatedByAgentId,
+  updatedByUserId: documents.updatedByUserId,
+  createdAt: documents.createdAt,
+  updatedAt: documents.updatedAt,
+};
+
 export function documentService(db: Db) {
+  const filterSystemDocuments = <T extends { key: string }>(rows: T[], includeSystem: boolean) =>
+    includeSystem ? rows : rows.filter((row) => !isSystemIssueDocumentKey(row.key));
+
   return {
-    getIssueDocumentPayload: async (issue: { id: string; description: string | null }) => {
+    getIssueDocumentPayload: async (
+      issue: { id: string; description: string | null },
+      options: { includeSystem?: boolean } = {},
+    ) => {
       const [planDocument, documentSummaries] = await Promise.all([
         db
-          .select({
-            id: documents.id,
-            companyId: documents.companyId,
-            issueId: issueDocuments.issueId,
-            key: issueDocuments.key,
-            title: documents.title,
-            format: documents.format,
-            latestBody: documents.latestBody,
-            latestRevisionId: documents.latestRevisionId,
-            latestRevisionNumber: documents.latestRevisionNumber,
-            createdByAgentId: documents.createdByAgentId,
-            createdByUserId: documents.createdByUserId,
-            updatedByAgentId: documents.updatedByAgentId,
-            updatedByUserId: documents.updatedByUserId,
-            createdAt: documents.createdAt,
-            updatedAt: documents.updatedAt,
-          })
+          .select(issueDocumentSelect)
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, "plan")))
           .then((rows) => rows[0] ?? null),
         db
-          .select({
-            id: documents.id,
-            companyId: documents.companyId,
-            issueId: issueDocuments.issueId,
-            key: issueDocuments.key,
-            title: documents.title,
-            format: documents.format,
-            latestBody: documents.latestBody,
-            latestRevisionId: documents.latestRevisionId,
-            latestRevisionNumber: documents.latestRevisionNumber,
-            createdByAgentId: documents.createdByAgentId,
-            createdByUserId: documents.createdByUserId,
-            updatedByAgentId: documents.updatedByAgentId,
-            updatedByUserId: documents.updatedByUserId,
-            createdAt: documents.createdAt,
-            updatedAt: documents.updatedAt,
-          })
+          .select(issueDocumentSelect)
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(eq(issueDocuments.issueId, issue.id))
@@ -118,7 +110,8 @@ export function documentService(db: Db) {
 
       return {
         planDocument: planDocument ? mapIssueDocumentRow(planDocument, true) : null,
-        documentSummaries: documentSummaries.map((row) => mapIssueDocumentRow(row, false)),
+        documentSummaries: filterSystemDocuments(documentSummaries, options.includeSystem ?? false)
+          .map((row) => mapIssueDocumentRow(row, false)),
         legacyPlanDocument: legacyPlanBody
           ? {
               key: "plan" as const,
@@ -129,52 +122,20 @@ export function documentService(db: Db) {
       };
     },
 
-    listIssueDocuments: async (issueId: string) => {
+    listIssueDocuments: async (issueId: string, options: { includeSystem?: boolean } = {}) => {
       const rows = await db
-        .select({
-          id: documents.id,
-          companyId: documents.companyId,
-          issueId: issueDocuments.issueId,
-          key: issueDocuments.key,
-          title: documents.title,
-          format: documents.format,
-          latestBody: documents.latestBody,
-          latestRevisionId: documents.latestRevisionId,
-          latestRevisionNumber: documents.latestRevisionNumber,
-          createdByAgentId: documents.createdByAgentId,
-          createdByUserId: documents.createdByUserId,
-          updatedByAgentId: documents.updatedByAgentId,
-          updatedByUserId: documents.updatedByUserId,
-          createdAt: documents.createdAt,
-          updatedAt: documents.updatedAt,
-        })
+        .select(issueDocumentSelect)
         .from(issueDocuments)
         .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
         .where(eq(issueDocuments.issueId, issueId))
         .orderBy(asc(issueDocuments.key), desc(documents.updatedAt));
-      return rows.map((row) => mapIssueDocumentRow(row, true));
+      return filterSystemDocuments(rows, options.includeSystem ?? false).map((row) => mapIssueDocumentRow(row, true));
     },
 
     getIssueDocumentByKey: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       const row = await db
-        .select({
-          id: documents.id,
-          companyId: documents.companyId,
-          issueId: issueDocuments.issueId,
-          key: issueDocuments.key,
-          title: documents.title,
-          format: documents.format,
-          latestBody: documents.latestBody,
-          latestRevisionId: documents.latestRevisionId,
-          latestRevisionNumber: documents.latestRevisionNumber,
-          createdByAgentId: documents.createdByAgentId,
-          createdByUserId: documents.createdByUserId,
-          updatedByAgentId: documents.updatedByAgentId,
-          updatedByUserId: documents.updatedByUserId,
-          createdAt: documents.createdAt,
-          updatedAt: documents.updatedAt,
-        })
+        .select(issueDocumentSelect)
         .from(issueDocuments)
         .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
@@ -192,6 +153,8 @@ export function documentService(db: Db) {
           issueId: issueDocuments.issueId,
           key: issueDocuments.key,
           revisionNumber: documentRevisions.revisionNumber,
+          title: documentRevisions.title,
+          format: documentRevisions.format,
           body: documentRevisions.body,
           changeSummary: documentRevisions.changeSummary,
           createdByAgentId: documentRevisions.createdByAgentId,
@@ -215,6 +178,7 @@ export function documentService(db: Db) {
       baseRevisionId?: string | null;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
+      createdByRunId?: string | null;
     }) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
@@ -269,10 +233,13 @@ export function documentService(db: Db) {
                 companyId: issue.companyId,
                 documentId: existing.id,
                 revisionNumber: nextRevisionNumber,
+                title: input.title ?? null,
+                format: input.format,
                 body: input.body,
                 changeSummary: input.changeSummary ?? null,
                 createdByAgentId: input.createdByAgentId ?? null,
                 createdByUserId: input.createdByUserId ?? null,
+                createdByRunId: input.createdByRunId ?? null,
                 createdAt: now,
               })
               .returning();
@@ -340,10 +307,13 @@ export function documentService(db: Db) {
               companyId: issue.companyId,
               documentId: document.id,
               revisionNumber: 1,
+              title: input.title ?? null,
+              format: input.format,
               body: input.body,
               changeSummary: input.changeSummary ?? null,
               createdByAgentId: input.createdByAgentId ?? null,
               createdByUserId: input.createdByUserId ?? null,
+              createdByRunId: input.createdByRunId ?? null,
               createdAt: now,
             })
             .returning();
@@ -391,27 +361,105 @@ export function documentService(db: Db) {
       }
     },
 
+    restoreIssueDocumentRevision: async (input: {
+      issueId: string;
+      key: string;
+      revisionId: string;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    }) => {
+      const key = normalizeDocumentKey(input.key);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(issueDocumentSelect)
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .where(and(eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) throw notFound("Document not found");
+
+        const revision = await tx
+          .select({
+            id: documentRevisions.id,
+            companyId: documentRevisions.companyId,
+            documentId: documentRevisions.documentId,
+            revisionNumber: documentRevisions.revisionNumber,
+            title: documentRevisions.title,
+            format: documentRevisions.format,
+            body: documentRevisions.body,
+          })
+          .from(documentRevisions)
+          .where(and(eq(documentRevisions.id, input.revisionId), eq(documentRevisions.documentId, existing.id)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!revision) throw notFound("Document revision not found");
+        if (existing.latestRevisionId === revision.id) {
+          throw conflict("Selected revision is already the latest revision", {
+            currentRevisionId: existing.latestRevisionId,
+          });
+        }
+
+        const now = new Date();
+        const nextRevisionNumber = existing.latestRevisionNumber + 1;
+        const [restoredRevision] = await tx
+          .insert(documentRevisions)
+          .values({
+            companyId: existing.companyId,
+            documentId: existing.id,
+            revisionNumber: nextRevisionNumber,
+            title: revision.title ?? null,
+            format: revision.format,
+            body: revision.body,
+            changeSummary: `Restored from revision ${revision.revisionNumber}`,
+            createdByAgentId: input.createdByAgentId ?? null,
+            createdByUserId: input.createdByUserId ?? null,
+            createdAt: now,
+          })
+          .returning();
+
+        await tx
+          .update(documents)
+          .set({
+            title: revision.title ?? null,
+            format: revision.format,
+            latestBody: revision.body,
+            latestRevisionId: restoredRevision.id,
+            latestRevisionNumber: nextRevisionNumber,
+            updatedByAgentId: input.createdByAgentId ?? null,
+            updatedByUserId: input.createdByUserId ?? null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existing.id));
+
+        await tx
+          .update(issueDocuments)
+          .set({ updatedAt: now })
+          .where(eq(issueDocuments.documentId, existing.id));
+
+        return {
+          restoredFromRevisionId: revision.id,
+          restoredFromRevisionNumber: revision.revisionNumber,
+          document: {
+            ...existing,
+            title: revision.title ?? null,
+            format: revision.format,
+            body: revision.body,
+            latestRevisionId: restoredRevision.id,
+            latestRevisionNumber: nextRevisionNumber,
+            updatedByAgentId: input.createdByAgentId ?? null,
+            updatedByUserId: input.createdByUserId ?? null,
+            updatedAt: now,
+          },
+        };
+      });
+    },
+
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
         const existing = await tx
-          .select({
-            id: documents.id,
-            companyId: documents.companyId,
-            issueId: issueDocuments.issueId,
-            key: issueDocuments.key,
-            title: documents.title,
-            format: documents.format,
-            latestBody: documents.latestBody,
-            latestRevisionId: documents.latestRevisionId,
-            latestRevisionNumber: documents.latestRevisionNumber,
-            createdByAgentId: documents.createdByAgentId,
-            createdByUserId: documents.createdByUserId,
-            updatedByAgentId: documents.updatedByAgentId,
-            updatedByUserId: documents.updatedByUserId,
-            createdAt: documents.createdAt,
-            updatedAt: documents.updatedAt,
-          })
+          .select(issueDocumentSelect)
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
