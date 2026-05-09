@@ -24,7 +24,7 @@ while [[ "${1:-}" == -* ]]; do
   case "$1" in
     -v|--verbose) VERBOSE=true; shift ;;
     *)            echo "Unknown flag: $1" >&2
-                  echo "usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|build|status|logs|env}" >&2
+                  echo "usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|status|logs|env|make [target...]}" >&2
                   exit 1 ;;
   esac
 done
@@ -135,11 +135,6 @@ strip_dotenv_keys() {
     fi
   done < <(grep -E '^[A-Z_][A-Z0-9_]*=' .env | cut -d= -f1)
 
-  # The base compose uses ${BETTER_AUTH_SECRET:?...} which rejects empty
-  # strings.  In stub mode, provide a harmless non-empty dummy.
-  if [[ "$mode" == "stub" ]]; then
-    export BETTER_AUTH_SECRET="unused-not-started"
-  fi
 }
 
 # Pre-flight: BETTER_AUTH_SECRET must be declared (even as an op:// URI that
@@ -199,8 +194,6 @@ with_secrets() {
 # Run a compose subcommand that does NOT need real secret values.
 # strip_dotenv_keys in stub mode exports empty strings for every .env key,
 # which satisfies compose interpolation without leaking shell values.
-# BETTER_AUTH_SECRET gets a non-empty dummy (handled inside strip_dotenv_keys)
-# because the base compose uses the :? required-variable syntax.
 without_secrets() {
   strip_dotenv_keys stub
   ensure_gh_token
@@ -211,12 +204,10 @@ without_secrets() {
     "HOME=${HOME:-}"
     "PATH=${PATH:-}"
     "GH_TOKEN=${GH_TOKEN:-}"
-    "BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}"
   )
 
   while IFS= read -r k; do
-    # Skip keys we handled explicitly above to avoid duplicates
-    [[ "$k" == "GH_TOKEN" || "$k" == "BETTER_AUTH_SECRET" ]] && continue
+    [[ "$k" == "GH_TOKEN" ]] && continue
     env_args+=("$k=${!k:-}")
   done < <(grep -E '^[A-Z_][A-Z0-9_]*=' .env 2>/dev/null | cut -d= -f1)
 
@@ -248,7 +239,7 @@ print_env_summary() {
 
 usage() {
   cat >&2 <<EOF
-usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|build|status|logs [service]|env}
+usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|status|logs [service]|env|version|make [target...]}
 
   -v, --verbose  Show environment summary on start/restart and log each
                  shell variable that is unset before invoking compose.
@@ -257,14 +248,17 @@ usage: $(basename "$0") [-v|--verbose] {start|stop|restart|teardown|build|status
   stop      Stop containers; keep them and all volumes.
   restart   stop, then start.
   teardown  docker compose down (removes containers, KEEPS volumes).
-  build     Rebuild the server image (no cache reuse for app source layers).
-            Run after pulling/cherry-picking changes to server or UI source.
-            Does not start or restart containers — follow with `start` or
-            `restart` to pick up the new image.
   status    docker compose ps.
   logs      Tail logs (optional service name).
   env       Print env diagnostics: op:// refs by source, and the env block
             that each service will receive from compose (no secret values).
+  version   Print version and build info: repo tag/sha, server package version,
+            running container image and build date, adapter version/sha/build
+            date for both source and deployed. Shows sync status.
+  make      Pass-through to make after establishing the 1Password security
+            environment. Use for make targets that invoke pcc restart.
+            Example: pcc make deploy-adapter
+            Run \`make help\` for available targets.
 EOF
   exit 1
 }
@@ -387,6 +381,100 @@ env_diagnostics() {
     '
 }
 
+# Read a field from a JSON file without requiring jq (uses node if available, else python3).
+read_json_field() {
+  local file="$1" field="$2"
+  if command -v node >/dev/null 2>&1; then
+    node -p "JSON.parse(require('fs').readFileSync('${file}','utf8')).${field}" 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json; d=json.load(open('${file}')); print(d.get('${field}',''))" 2>/dev/null || true
+  fi
+}
+
+# Format a UTC ISO timestamp to a short human-readable form (strips sub-seconds).
+fmt_date() { local s="${1%%.*}"; echo "${s%Z}" | tr 'T' ' '; }
+
+# Print version and build metadata for the repo, running container, and adapter.
+show_versions() {
+  local adapter_src="${ADAPTER_SRC:-packages/adapters/openrouter-agent}"
+  local adapter_deploy="${HOME}/Projects/linkcast/crew/paperclip/companies/linkcast/adapters/paperclip-openrouter-agent"
+
+  # ── Repo ──────────────────────────────────────────────────────────────────
+  local git_tag git_sha git_date server_version
+  git_tag=$(git describe --tags --always 2>/dev/null || echo "unknown")
+  git_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  git_date=$(git log -1 --format='%ai' 2>/dev/null || echo "")
+  server_version=$(read_json_field server/package.json version)
+  echo "=== Paperclip repo ==="
+  echo "  tag:    ${git_tag}"
+  echo "  sha:    ${git_sha}${git_date:+  (${git_date})}"
+  echo "  server: ${server_version:-unknown}"
+
+  # ── Container ─────────────────────────────────────────────────────────────
+  echo ""
+  echo "=== Container ==="
+  local ctr_id
+  ctr_id=$(docker compose -p "$PROJECT" ps -q server 2>/dev/null | head -1)
+  if [[ -n "$ctr_id" ]]; then
+    local img_id img_created img_sha img_label_created img_label_sha
+    img_id=$(docker inspect "$ctr_id" --format '{{.Image}}' 2>/dev/null)
+    img_label_created=$(docker image inspect "$img_id" \
+      --format '{{index .Config.Labels "org.opencontainers.image.created"}}' 2>/dev/null || true)
+    img_label_sha=$(docker image inspect "$img_id" \
+      --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)
+    img_created=$(docker image inspect "$img_id" --format '{{.Created}}' 2>/dev/null || true)
+    local short_id="${img_id#sha256:}"
+    echo "  status: running"
+    echo "  image:  ${short_id:0:12}"
+    if [[ -n "$img_label_created" ]]; then
+      echo "  built:  $(fmt_date "$img_label_created") UTC"
+    elif [[ -n "$img_created" ]]; then
+      echo "  built:  $(fmt_date "$img_created") UTC  (no build label)"
+    fi
+    [[ -n "$img_label_sha" ]] && echo "  sha:    ${img_label_sha}"
+  else
+    echo "  status: not running"
+  fi
+
+  # Helper: print one adapter block and return its sha for sync comparison.
+  print_adapter_info() {
+    local label="$1" dir="$2" sha_var="$3"
+    local build_info="${dir}/dist/build-info.json"
+    echo ""
+    echo "=== Adapter (${label}) ==="
+    if [[ -f "$build_info" ]]; then
+      local ver sha built
+      ver=$(read_json_field "$build_info" version)
+      sha=$(read_json_field "$build_info" gitSha)
+      built=$(read_json_field "$build_info" buildDate)
+      echo "  version: ${ver:-unknown}"
+      echo "  sha:     ${sha:-unknown}"
+      echo "  built:   $(fmt_date "${built:-}") UTC"
+      printf -v "$sha_var" '%s' "${sha:-}"
+    else
+      local ver mtime
+      ver=$(read_json_field "${dir}/package.json" version 2>/dev/null || echo "unknown")
+      mtime=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${dir}/dist" 2>/dev/null \
+           || stat --format='%y' "${dir}/dist" 2>/dev/null | cut -c1-16 \
+           || echo "unknown")
+      echo "  version: ${ver}  (no build-info.json)"
+      echo "  built:   ${mtime}  (dist mtime)"
+      printf -v "$sha_var" '%s' "${ver}"
+    fi
+  }
+
+  local src_sha deployed_sha
+  print_adapter_info "source"   "$adapter_src"    src_sha
+  print_adapter_info "deployed" "$adapter_deploy" deployed_sha
+
+  echo ""
+  if [[ "$src_sha" == "$deployed_sha" && -n "$src_sha" ]]; then
+    echo "  ✓ adapter in sync"
+  else
+    echo "  ⚠ adapter out of sync  (source: ${src_sha:-?}  deployed: ${deployed_sha:-?})"
+  fi
+}
+
 # Print the server URL after a successful start.
 print_server_url() {
   local url
@@ -397,17 +485,20 @@ print_server_url() {
   echo
 }
 
-# Subcommand dispatch. Only start/restart need secret resolution; the rest
-# are pure docker compose pass-throughs that use `without_secrets` to satisfy
-# compose's variable-required checks without needing OP_SERVICE_ACCOUNT_TOKEN.
+# Subcommand dispatch. start/restart need secret resolution via `with_secrets`.
+# Docker compose pass-throughs use `without_secrets` to satisfy variable-required
+# checks without needing OP_SERVICE_ACCOUNT_TOKEN.
+# Build/deploy targets live in the Makefile; use `make <target>` directly, or
+# `pcc make <target>` to inherit the established security environment.
 case "${1:-}" in
   start)    print_env_summary; with_secrets up -d && print_server_url ;;
   stop)     without_secrets stop ;;
   restart)  without_secrets stop; print_env_summary; with_secrets up -d && print_server_url ;;
   teardown) without_secrets down ;;
-  build)    without_secrets build server ;;
   status)   without_secrets ps ;;
   logs)     without_secrets logs -f "${@:2}" ;;
   env)      env_diagnostics ;;
+  version)  show_versions ;;
+  make)     make "${@:2}" ;;
   *)        usage ;;
 esac
