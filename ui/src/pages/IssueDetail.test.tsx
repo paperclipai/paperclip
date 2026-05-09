@@ -194,6 +194,10 @@ vi.mock("../components/IssueDocumentsSection", () => ({
   IssueDocumentsSection: () => <div>Documents</div>,
 }));
 
+vi.mock("../components/IssueWorkProductsSection", () => ({
+  IssueWorkProductsSection: () => <div>Work Products</div>,
+}));
+
 vi.mock("../components/IssuesList", () => ({
   IssuesList: (props: { issueBadgeById?: Map<string, string> }) => {
     mockIssuesListRender(props);

@@ -65,6 +65,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssueWorkProductsSection } from "../components/IssueWorkProductsSection";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
@@ -3217,6 +3218,8 @@ export function IssueDetail() {
         }}
         extraActions={!hasAttachments ? attachmentUploadButton : null}
       />
+
+      <IssueWorkProductsSection products={issue.workProducts ?? []} />
 
       {attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
