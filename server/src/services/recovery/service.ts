@@ -1607,6 +1607,48 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function findPendingAssigneeBoardApproval(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+  ): Promise<{ approvalId: string } | null> {
+    const rows = await db
+      .select({ approvalId: approvals.id })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          eq(approvals.requestedByAgentId, assigneeAgentId),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        ),
+      )
+      .limit(1);
+    return rows[0] ? { approvalId: rows[0].approvalId } : null;
+  }
+
+  async function findPendingAssigneeWakeInteraction(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+  ): Promise<{ interactionId: string; kind: string } | null> {
+    const rows = await db
+      .select({ id: issueThreadInteractions.id, kind: issueThreadInteractions.kind })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+          eq(issueThreadInteractions.createdByAgentId, assigneeAgentId),
+        ),
+      )
+      .limit(1);
+    return rows[0] ? { interactionId: rows[0].id, kind: rows[0].kind } : null;
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -1628,6 +1670,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       escalated: 0,
       skipped: 0,
+      skippedDueToPendingApproval: 0,
+      skippedDueToPendingWakeAssigneeInteraction: 0,
       issueIds: [] as string[],
     };
 
@@ -1647,6 +1691,71 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
+      }
+
+      // PLA-407: An `in_progress` issue parked on a pending board approval
+      // (request_board_approval) or a wake_assignee interaction
+      // (ask_user_questions, request_confirmation, …) requested by the
+      // current assignee is not stranded — the assignee will resume when the
+      // CEO/board responds. Skip without escalating, without flipping status,
+      // and without enqueueing recovery wakes. This mirrors the
+      // `hasExplicitWaitingPath` logic already used by the `in_review` branch
+      // via `classifyIssueGraphLiveness`.
+      if (issue.status === "in_progress") {
+        const pendingApproval = await findPendingAssigneeBoardApproval(
+          issue.companyId,
+          issue.id,
+          agentId,
+        );
+        if (pendingApproval) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.recovery_skipped",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              source: "recovery.reconcile_stranded_assigned_issue_skipped",
+              reason: "pending_board_approval",
+              approvalId: pendingApproval.approvalId,
+            },
+          });
+          result.skipped += 1;
+          result.skippedDueToPendingApproval += 1;
+          continue;
+        }
+
+        const pendingInteraction = await findPendingAssigneeWakeInteraction(
+          issue.companyId,
+          issue.id,
+          agentId,
+        );
+        if (pendingInteraction) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.recovery_skipped",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              source: "recovery.reconcile_stranded_assigned_issue_skipped",
+              reason: "pending_wake_assignee_interaction",
+              interactionId: pendingInteraction.interactionId,
+              kind: pendingInteraction.kind,
+            },
+          });
+          result.skipped += 1;
+          result.skippedDueToPendingWakeAssigneeInteraction += 1;
+          continue;
+        }
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
