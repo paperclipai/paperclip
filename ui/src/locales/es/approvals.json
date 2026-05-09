@@ -75,7 +75,7 @@
     "review_linked_issue": "Revisar tarea vinculada",
     "open_hired_agent": "Abrir agente contratado",
     "back_to_approvals": "Volver a aprobaciones",
-    "board_author": "Board"
+    "board_author": "Consejo"
   },
   "errors": {
     "approve_failed": "Error al aprobar",

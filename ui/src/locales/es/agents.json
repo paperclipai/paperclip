@@ -228,7 +228,7 @@
     "new_secret": "Nuevo",
     "seal": "Sellar",
     "paperclip_vars_note": "Las variables PAPERCLIP_* se inyectan automáticamente en tiempo de ejecución.",
-    "value_placeholder": "value"
+    "value_placeholder": "valor"
   },
   "config_form": {
     "unsaved_changes": "Cambios sin guardar",

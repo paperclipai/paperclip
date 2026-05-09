@@ -596,7 +596,7 @@
   "language": {
     "title": "Idioma",
     "description": "Cambiar el idioma de la interfaz. Surte efecto inmediatamente.",
-    "en": "English",
+    "en": "Inglés",
     "ru": "Русский",
     "uk": "Українська"
   },
@@ -631,7 +631,7 @@
     "field_status": "Estado",
     "field_lead": "Líder",
     "field_goals": "Objetivos",
-    "field_env": "Env",
+    "field_env": "Ent.",
     "field_created": "Creado",
     "field_updated": "Actualizado",
     "field_target_date": "Fecha objetivo",

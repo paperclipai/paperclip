@@ -66,7 +66,7 @@
     "workspace": "Espacio de trabajo",
     "parent": "Tarea padre",
     "none": "Ninguno",
-    "project": "Project"
+    "project": "Proyecto"
   },
   "no_project": "Sin proyecto",
   "properties": {
@@ -582,10 +582,10 @@
     "lane_custom": "Personalizado",
     "lane_primary_desc": "Se ejecuta en el modelo principal del agente.",
     "lane_custom_desc": "Anule el modelo y el esfuerzo solo para esta tarea.",
-    "lane_cheap_prefix": "Sends",
-    "lane_cheap_adapter_default": "· adapter default",
-    "lane_cheap_uses_profile": "· uses the agent's configured cheap profile",
-    "lane_cheap_fallback": "· falls back to the primary model if no cheap profile is configured",
+    "lane_cheap_prefix": "Envía",
+    "lane_cheap_adapter_default": "· predeterminado del adaptador",
+    "lane_cheap_uses_profile": "· usa el perfil económico configurado del agente",
+    "lane_cheap_fallback": "· recurre al modelo principal si no hay perfil económico configurado",
     "enable_chrome": "Habilitar Chrome (--chrome)",
     "documents": "Documentos",
     "remove_document": "Eliminar documento",

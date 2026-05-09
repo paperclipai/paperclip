@@ -25,7 +25,7 @@
     "stored_in": "Almacenado en el almacenamiento de archivos de Paperclip para {{company}}.",
     "select_company_avatar": "Seleccione una empresa para subir un avatar al almacenamiento de Paperclip.",
     "name_label": "Nombre para mostrar",
-    "name_placeholder": "Board",
+    "name_placeholder": "Consejo",
     "name_hint": "Se muestra en el pie de cuenta de la barra lateral y en las superficies de autor de comentarios.",
     "email_label": "Correo electrónico",
     "email_hint": "El correo electrónico es gestionado por su sesión de autenticación y es de solo lectura aquí.",
@@ -103,7 +103,7 @@
   "language": {
     "title": "Idioma",
     "description": "Elija el idioma de visualización para la interfaz de Paperclip. Los cambios surten efecto inmediatamente sin reinicio.",
-    "en": "English",
+    "en": "Inglés",
     "ru": "Русский",
     "uk": "Ucraniano",
     "es": "Español",

@@ -871,7 +871,7 @@
     "admin_grants": "Puede crear agentes, invitar usuarios, asignar tareas y aprobar solicitudes de unión.",
     "owner_desc": "Acceso completo a la empresa, incluida la gestión de membresías y permisos.",
     "owner_grants": "Todo lo de Administrador, más gestión de miembros y concesiones de permisos.",
-    "board": "Board",
+    "board": "Consejo",
     "me": "Yo"
   },
   "invite_status": {
