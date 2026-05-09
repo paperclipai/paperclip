@@ -12,13 +12,16 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Kilocode prompt at runtime.";
 
 export function KilocodeLocalConfigFields({
+  mode,
   isCreate,
+  adapterType,
   values,
   set,
   config,
   eff,
   mark,
   hideInstructionsFile,
+  models,
 }: AdapterConfigFieldsProps) {
   return (
     <>
@@ -55,6 +58,9 @@ export function KilocodeLocalConfigFields({
         config={config}
         mark={mark}
         eff={eff}
+        mode={mode}
+        adapterType={adapterType}
+        models={models}
       />
     </>
   );
