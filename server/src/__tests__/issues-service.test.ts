@@ -1075,6 +1075,152 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
   });
+
+  it("returns reviewer fields in list responses", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with reviewer",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId,
+      reviewerAgentId,
+    });
+
+    const [result] = await svc.list(companyId, { status: "in_review" });
+
+    expect(result).toMatchObject({
+      id: issueId,
+      assigneeAgentId,
+      reviewerAgentId,
+      reviewerUserId: null,
+    });
+  });
+
+  it("lists only in_review issues without any reviewer", async () => {
+    const companyId = randomUUID();
+    const missingReviewerId = randomUUID();
+    const reviewerAgentIssueId = randomUUID();
+    const reviewerUserIssueId = randomUUID();
+    const todoIssueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: missingReviewerId,
+        companyId,
+        title: "Missing reviewer",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId,
+      },
+      {
+        id: reviewerAgentIssueId,
+        companyId,
+        title: "Has reviewer agent",
+        status: "in_review",
+        priority: "medium",
+        reviewerAgentId,
+      },
+      {
+        id: reviewerUserIssueId,
+        companyId,
+        title: "Has reviewer user",
+        status: "in_review",
+        priority: "medium",
+        reviewerUserId: "user-1",
+      },
+      {
+        id: todoIssueId,
+        companyId,
+        title: "Wrong status",
+        status: "todo",
+        priority: "low",
+      },
+    ]);
+
+    const result = await svc.listInReviewWithoutReviewer(companyId);
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: missingReviewerId,
+        status: "in_review",
+        assigneeAgentId,
+        reviewerAgentId: null,
+        reviewerUserId: null,
+      }),
+    ]);
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

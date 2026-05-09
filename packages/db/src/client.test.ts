@@ -541,4 +541,95 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "replays migration 0075 safely when reviewer columns are rolled back on issues",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const reviewerColumnsHash = await migrationHash("0075_goofy_stepford_cuckoos.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${reviewerColumnsHash}'`,
+        );
+        await sql.unsafe(`
+          ALTER TABLE "issues" DROP CONSTRAINT IF EXISTS "issues_reviewer_agent_id_agents_id_fk";
+          ALTER TABLE "issues" DROP COLUMN IF EXISTS "reviewer_agent_id";
+          ALTER TABLE "issues" DROP COLUMN IF EXISTS "reviewer_user_id";
+        `);
+
+        const columns = await sql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'issues'
+              AND column_name IN ('reviewer_agent_id', 'reviewer_user_id')
+            ORDER BY column_name
+          `,
+        );
+        expect(columns).toEqual([]);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0075_goofy_stepford_cuckoos.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; data_type: string }[]>(
+          `
+            SELECT column_name, is_nullable, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'issues'
+              AND column_name IN ('reviewer_agent_id', 'reviewer_user_id')
+            ORDER BY column_name
+          `,
+        );
+        expect(columns).toEqual([
+          expect.objectContaining({
+            column_name: "reviewer_agent_id",
+            is_nullable: "YES",
+            data_type: "uuid",
+          }),
+          expect.objectContaining({
+            column_name: "reviewer_user_id",
+            is_nullable: "YES",
+            data_type: "text",
+          }),
+        ]);
+
+        const constraints = await verifySql.unsafe<{ conname: string }[]>(
+          `
+            SELECT conname
+            FROM pg_constraint
+            WHERE conname = 'issues_reviewer_agent_id_agents_id_fk'
+          `,
+        );
+        expect(constraints).toEqual([
+          expect.objectContaining({
+            conname: "issues_reviewer_agent_id_agents_id_fk",
+          }),
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });

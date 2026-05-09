@@ -141,6 +141,21 @@ type IssueActiveRunRow = {
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type InReviewIssueWithoutReviewer = Pick<
+  IssueRow,
+  | "id"
+  | "companyId"
+  | "title"
+  | "status"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "reviewerAgentId"
+  | "reviewerUserId"
+  | "identifier"
+  | "createdAt"
+  | "updatedAt"
+>;
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -1394,6 +1409,8 @@ const issueListSelect = {
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
+  reviewerAgentId: issues.reviewerAgentId,
+  reviewerUserId: issues.reviewerUserId,
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
@@ -2453,6 +2470,36 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
+    },
+
+    listInReviewWithoutReviewer: async (
+      companyId: string,
+      dbOrTx: any = db,
+    ): Promise<InReviewIssueWithoutReviewer[]> => {
+      return await dbOrTx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          reviewerAgentId: issues.reviewerAgentId,
+          reviewerUserId: issues.reviewerUserId,
+          identifier: issues.identifier,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.hiddenAt),
+          isNull(issues.reviewerAgentId),
+          isNull(issues.reviewerUserId),
+        ))
+        .orderBy(desc(issues.updatedAt), desc(issues.createdAt), desc(issues.id));
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
