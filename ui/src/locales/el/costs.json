@@ -251,7 +251,7 @@
     "debit": "Χρέωση"
   },
   "billing_type": {
-    "metered_api": "Metered API",
+    "metered_api": "Χρέωση ανά χρήση",
     "subscription_included": "Συνδρομή",
     "subscription_overage": "Υπέρβαση συνδρομής",
     "credits": "Πιστώσεις",
