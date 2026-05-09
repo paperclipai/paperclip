@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "smoke": "bash scripts/build-start-smoke.sh"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",
