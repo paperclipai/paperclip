@@ -6227,7 +6227,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         nextStateJson = {
           consecutiveFailures: newConsecutiveFailures,
           degradedSince: now.toISOString(),
-          degradedBeatCount: 1,
+          degradedBeatCount: 0,
         };
       } else {
         // Below threshold — ordinary transient error.
@@ -6236,13 +6236,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    // Persist updated degraded-state counters.
-    if (runtimeState) {
-      await db
-        .update(agentRuntimeState)
-        .set({ stateJson: nextStateJson, updatedAt: now })
-        .where(eq(agentRuntimeState.agentId, agentId));
-    }
+    // Persist updated degraded-state counters (upsert: insert if no row yet).
+    await db
+      .insert(agentRuntimeState)
+      .values({
+        agentId,
+        companyId: existing.companyId,
+        adapterType: existing.adapterType,
+        stateJson: nextStateJson,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: agentRuntimeState.agentId,
+        set: { stateJson: nextStateJson, updatedAt: now },
+      });
 
     const updated = await db
       .update(agents)

@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
@@ -101,5 +101,5 @@ async function suppressVestigialIssue(
   await db
     .update(issues)
     .set({ status: "cancelled", cancelledAt: new Date(), updatedAt: new Date() })
-    .where(eq(issues.id, issue.id));
+    .where(and(eq(issues.id, issue.id), notInArray(issues.status, ["done", "cancelled"])));
 }
