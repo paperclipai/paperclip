@@ -117,4 +117,34 @@ export class NotifierApi {
     const arr = Array.isArray(list) ? list : list.items ?? [];
     return arr[0] ?? null;
   }
+
+  /**
+   * Issues created by a routine's executions. The server doesn't filter by
+   * `originId` server-side, so we ask for `originKind=routine_execution` and
+   * narrow client-side. Used by the weekly_digest event type to track when a
+   * routine's run-issue has been completed and a digest comment posted.
+   */
+  async listRoutineExecutionIssues(
+    routineId: string,
+    statuses: string[],
+    limit = 50,
+  ): Promise<IssueRef[]> {
+    const params: Record<string, string | number> = {
+      originKind: "routine_execution",
+      limit,
+    };
+    if (statuses.length === 1) {
+      params.status = statuses[0];
+    }
+    const list = await this.get<IssueRef[] | { items?: IssueRef[] }>(
+      `/api/companies/${this.companyId}/issues`,
+      params,
+    );
+    const arr = Array.isArray(list) ? list : list.items ?? [];
+    return arr.filter(
+      (i) =>
+        i.originId === routineId &&
+        (statuses.length === 0 || (i.status != null && statuses.includes(i.status))),
+    );
+  }
 }

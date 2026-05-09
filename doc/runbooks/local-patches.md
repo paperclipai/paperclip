@@ -17,6 +17,7 @@
 | 2026-05-08 | `b5132a5b` | [THE-343](https://paperclip.thethirdchair.ru/THE/issues/THE-343) | `packages/telegram-bot/` скелет: 5 команд (`/login`, `/task`, `/issue`, `/approve`, `/deny` + reply→comment), internal-server `/internal/resolve-code`, CodeStore + ReplyStore, 21 тест | (нет — local-only) |
 | 2026-05-08 | `799f9bb4` | [THE-344](https://paperclip.thethirdchair.ru/THE/issues/THE-344) | Outbound notifier: 30s poller, 4 шаблона (interaction / approval / blocked / done), JSON file dedup, server-side filtering по THE-346 + client-side defense-in-depth, 22 теста (43/43 total) | (нет — local-only) |
 | 2026-05-08 | `49c83868` | [THE-345](https://paperclip.thethirdchair.ru/THE/issues/THE-345) | Deploy artefacts: `docker/systemd/paperclip-tg-bot.service`, `packages/telegram-bot/.env.example`, `doc/runbooks/telegram-bot.md` (Stage 1/2 flow). Не модифицирует server-код. | (нет — local-only) |
+| 2026-05-09 | `94425dd4` | [THE-397](https://paperclip.thethirdchair.ru/THE/issues/THE-397) | 5-й тип notifier-событий `weekly_digest`: poller следит за `originKind=routine_execution` issues от routine `9e2f3eea-b5e1-4677-8981-ea27f8ea1288` (CEO Weekly Board Digest), пересылает digest-комментарий в `DINAR_TG_CHAT_ID=-1003986807361` (board group). Dedup `weekly_digest:<runIssueId>`. Hardcoded prod default routine id, `CEO_WEEKLY_DIGEST_ROUTINE_ID=disabled` отключает. +9 unit-тестов. | (нет — local-only) |
 
 Применил: SRE Agent (`sre@thethirdchair.ru`).
 Релиз trigger: [THE-347](https://paperclip.thethirdchair.ru/THE/issues/THE-347).

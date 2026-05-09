@@ -279,6 +279,177 @@ describe("NotifierPoller", () => {
     expect(dedup.has("approval", "approval:ap-flaky")).toBe(false);
   });
 
+  it("weekly_digest: forwards CEO digest comment from a routine_execution issue to dinarChatId", async () => {
+    const ROUTINE = "9e2f3eea-routine";
+    const RUN_ISSUE = "run-issue-id";
+    const DIGEST_BODY = "# 📊 Weekly Board Digest — 2026-W19\n\nTop closed: THE-100";
+    const fetchImpl = mockFetch((req) => {
+      if (
+        req.method === "GET" &&
+        req.url.includes("/issues") &&
+        req.url.includes("originKind=routine_execution")
+      ) {
+        return {
+          status: 200,
+          body: [
+            {
+              id: RUN_ISSUE,
+              identifier: "THE-393",
+              title: "CEO Weekly Board Digest",
+              status: "in_review",
+              originKind: "routine_execution",
+              originId: ROUTINE,
+            },
+            // distractor: another routine's run-issue must NOT be picked up
+            {
+              id: "other",
+              identifier: "THE-200",
+              title: "CFO Daily Pulse",
+              status: "done",
+              originKind: "routine_execution",
+              originId: "different-routine",
+            },
+          ],
+        };
+      }
+      if (req.url.includes(`/api/issues/${RUN_ISSUE}/comments`)) {
+        return { status: 200, body: [{ id: "comment-1", body: DIGEST_BODY }] };
+      }
+      return { status: 200, body: [] };
+    });
+
+    const api = new NotifierApi({
+      baseUrl: "http://test.local",
+      apiKey: "bot-key",
+      companyId: "co",
+      fetchImpl,
+    });
+    const dedup = new NotifierDedup({ filePath: path.join(tmpDir, "wd.json") });
+    const replyStore = new ReplyStore();
+    const { send, sent } = setupSender();
+
+    const poller = new NotifierPoller({
+      api,
+      dedup,
+      replyStore,
+      send,
+      dinarUserId: DINAR,
+      dinarChatId: CHAT,
+      intervalMs: 60_000,
+      weeklyDigestRoutineId: ROUTINE,
+    });
+    const result = await poller.tick();
+    expect(result.sent).toBe(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].chatId).toBe(CHAT);
+    expect(sent[0].text).toContain("📊 Weekly Board Digest");
+    expect(sent[0].text).toContain("Top closed: THE-100");
+    expect(sent[0].text).toContain(
+      "https://paperclip.thethirdchair.ru/THE/issues/THE-393",
+    );
+    // distractor must not appear
+    expect(sent[0].text).not.toContain("CFO Daily Pulse");
+
+    // Second tick — no re-delivery (dedup).
+    await poller.tick();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("weekly_digest: skipped entirely when weeklyDigestRoutineId is unset", async () => {
+    let routineCalls = 0;
+    const fetchImpl = mockFetch((req) => {
+      if (
+        req.method === "GET" &&
+        req.url.includes("/issues") &&
+        req.url.includes("originKind=routine_execution")
+      ) {
+        routineCalls += 1;
+        return { status: 200, body: [] };
+      }
+      return { status: 200, body: [] };
+    });
+
+    const api = new NotifierApi({
+      baseUrl: "http://test.local",
+      apiKey: "bot-key",
+      companyId: "co",
+      fetchImpl,
+    });
+    const dedup = new NotifierDedup({ filePath: path.join(tmpDir, "wd-disabled.json") });
+    const replyStore = new ReplyStore();
+    const { send } = setupSender();
+
+    const poller = new NotifierPoller({
+      api,
+      dedup,
+      replyStore,
+      send,
+      dinarUserId: DINAR,
+      dinarChatId: CHAT,
+      intervalMs: 60_000,
+      // weeklyDigestRoutineId omitted on purpose
+    });
+    await poller.tick();
+    expect(routineCalls).toBe(0);
+  });
+
+  it("weekly_digest: defers when routine_execution issue has no comment yet (dedup not poisoned)", async () => {
+    const ROUTINE = "ceo-routine-empty";
+    const RUN_ISSUE = "run-empty";
+    const fetchImpl = mockFetch((req) => {
+      if (
+        req.method === "GET" &&
+        req.url.includes("/issues") &&
+        req.url.includes("originKind=routine_execution")
+      ) {
+        return {
+          status: 200,
+          body: [
+            {
+              id: RUN_ISSUE,
+              identifier: "THE-999",
+              title: "Pre-comment digest",
+              status: "in_review",
+              originKind: "routine_execution",
+              originId: ROUTINE,
+            },
+          ],
+        };
+      }
+      if (req.url.includes(`/api/issues/${RUN_ISSUE}/comments`)) {
+        return { status: 200, body: [] };
+      }
+      return { status: 200, body: [] };
+    });
+
+    const api = new NotifierApi({
+      baseUrl: "http://test.local",
+      apiKey: "bot-key",
+      companyId: "co",
+      fetchImpl,
+    });
+    const dedup = new NotifierDedup({ filePath: path.join(tmpDir, "wd-defer.json") });
+    const replyStore = new ReplyStore();
+    const { send, sent } = setupSender();
+
+    const poller = new NotifierPoller({
+      api,
+      dedup,
+      replyStore,
+      send,
+      dinarUserId: DINAR,
+      dinarChatId: CHAT,
+      intervalMs: 60_000,
+      weeklyDigestRoutineId: ROUTINE,
+    });
+    const result = await poller.tick();
+    expect(sent).toHaveLength(0);
+    expect(result.skipped).toBeGreaterThan(0);
+    // Dedup must NOT have remembered this run-issue — next tick can still
+    // deliver once the comment lands.
+    expect(dedup.has("weekly_digest", `weekly_digest:${RUN_ISSUE}`)).toBe(false);
+  });
+
   it("survives a Paperclip API outage on one event type without crashing the whole tick", async () => {
     const fetchImpl = mockFetch((req) => {
       if (req.method === "GET" && req.url.includes("status=in_review")) {

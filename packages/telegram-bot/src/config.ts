@@ -14,10 +14,24 @@ export type NotifierConfig = {
   dinarChatId: string;
   intervalMs: number;
   dedupFilePath?: string;
+  /**
+   * UUID of the CEO Weekly Board Digest routine. When set, the notifier
+   * forwards the digest comment from each `routine_execution` issue (status
+   * `in_review`/`done`) to the same chat as the other 4 event types — in
+   * production that's the `-1003986807361` board group via
+   * `DINAR_TG_CHAT_ID`. Unset → 5th event type silently disabled.
+   */
+  weeklyDigestRoutineId?: string;
 };
 
 export const DEFAULT_CEO_AGENT_ID = "262a08ea-c041-4af7-a310-e2a0fedc8348";
 export const DEFAULT_NOTIFIER_INTERVAL_MS = 30_000;
+// Production routine ID for the CEO Weekly Board Digest (THE-365 / THE-397).
+// Hardcoded so a service restart picks up THE-397 without requiring the
+// EnvironmentFile (`/etc/paperclip/telegram-bot.env`, root-owned) to be
+// edited. Override with `CEO_WEEKLY_DIGEST_ROUTINE_ID` in staging/test.
+// Set `CEO_WEEKLY_DIGEST_ROUTINE_ID=disabled` to opt out of the 5th event.
+export const DEFAULT_WEEKLY_DIGEST_ROUTINE_ID = "9e2f3eea-b5e1-4677-8981-ea27f8ea1288";
 
 function required(name: string, value: string | undefined): string {
   if (!value || value.trim().length === 0) {
@@ -60,5 +74,13 @@ function loadNotifierConfig(env: NodeJS.ProcessEnv): NotifierConfig | null {
     dinarChatId,
     intervalMs,
     dedupFilePath: env.NOTIFIER_DEDUP_FILE?.trim() || undefined,
+    weeklyDigestRoutineId: resolveWeeklyDigestRoutineId(env.CEO_WEEKLY_DIGEST_ROUTINE_ID),
   };
+}
+
+function resolveWeeklyDigestRoutineId(raw: string | undefined): string | undefined {
+  const v = raw?.trim();
+  if (v === undefined || v.length === 0) return DEFAULT_WEEKLY_DIGEST_ROUTINE_ID;
+  if (v.toLowerCase() === "disabled") return undefined;
+  return v;
 }

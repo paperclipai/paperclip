@@ -103,6 +103,7 @@ export async function main(): Promise<void> {
       dinarUserId: config.notifier.dinarUserId,
       dinarChatId: config.notifier.dinarChatId,
       intervalMs: config.notifier.intervalMs,
+      weeklyDigestRoutineId: config.notifier.weeklyDigestRoutineId ?? null,
       logger: {
         info: (m, c) => console.log("[notifier]", m, c ?? ""),
         warn: (m, c) => console.warn("[notifier]", m, c ?? ""),

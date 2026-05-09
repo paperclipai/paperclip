@@ -71,3 +71,22 @@ export function renderDone(
   if (tail) lines.push(`Итог: ${tail}`);
   return lines.join("\n");
 }
+
+const TG_HARD_LIMIT = 4096;
+const DIGEST_HEADER = "📊 Weekly Board Digest";
+
+export function renderWeeklyDigest(
+  issue: IssueRef,
+  comment: CommentRef | null | undefined,
+): string {
+  const body = comment?.body?.trim() ?? "";
+  const link = `https://paperclip.thethirdchair.ru/THE/issues/${issue.identifier ?? issue.id}`;
+  const footer = `\n\n📄 Источник: ${link}`;
+  const header = `${DIGEST_HEADER}\n\n`;
+  const room = TG_HARD_LIMIT - header.length - footer.length;
+  let payload = body;
+  if (payload.length > room) {
+    payload = `${payload.slice(0, room - 1).trimEnd()}…`;
+  }
+  return `${header}${payload}${footer}`;
+}

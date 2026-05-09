@@ -10,6 +10,8 @@ export type IssueRef = {
   createdByAgentId?: string | null;
   updatedAt?: string | null;
   description?: string | null;
+  originKind?: string | null;
+  originId?: string | null;
 };
 
 export type InteractionRef = {
@@ -53,7 +55,12 @@ export type CommentRef = {
   authorUserId?: string | null;
 };
 
-export type NotifierEventType = "interaction" | "approval" | "blocked" | "done";
+export type NotifierEventType =
+  | "interaction"
+  | "approval"
+  | "blocked"
+  | "done"
+  | "weekly_digest";
 
 export type RenderedEvent = {
   type: NotifierEventType;

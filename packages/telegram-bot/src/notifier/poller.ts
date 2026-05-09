@@ -19,6 +19,7 @@ import {
   renderBlocked,
   renderDone,
   renderInteraction,
+  renderWeeklyDigest,
 } from "./templates.js";
 
 export type TgSendResult = { message_id: number };
@@ -61,6 +62,15 @@ export type NotifierPollerOptions = {
   metrics?: NotifierMetrics;
   /** Bound on Telegram messages emitted per tick (per-type). Defaults 20. */
   perTypeBatchLimit?: number;
+  /**
+   * If set, the poller emits a `weekly_digest` event for each
+   * `routine_execution` issue created by this routine that has progressed
+   * past CEO publication (status `in_review` or `done`). The latest comment
+   * on that issue is forwarded verbatim to `dinarChatId` (which is the
+   * `-1003986807361` board group in production). When unset, the 5th event
+   * type is disabled — the existing 4 types still poll normally.
+   */
+  weeklyDigestRoutineId?: string | null;
 };
 
 export class NotifierPoller {
@@ -74,6 +84,7 @@ export class NotifierPoller {
   private readonly maxSendAttempts: number;
   private readonly baseSendBackoffMs: number;
   private readonly perTypeBatchLimit: number;
+  private readonly weeklyDigestRoutineId: string | null;
   private readonly log: Logger;
   private readonly metrics: NotifierMetrics;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -91,6 +102,7 @@ export class NotifierPoller {
     this.maxSendAttempts = opts.maxSendAttempts ?? 4;
     this.baseSendBackoffMs = opts.baseSendBackoffMs ?? 500;
     this.perTypeBatchLimit = opts.perTypeBatchLimit ?? 20;
+    this.weeklyDigestRoutineId = opts.weeklyDigestRoutineId?.trim() || null;
     this.log = opts.logger ?? NOOP_LOGGER;
     this.metrics = opts.metrics ?? NOOP_METRICS;
   }
@@ -142,6 +154,9 @@ export class NotifierPoller {
       () => this.pollBlocked(),
       () => this.pollDone(),
     ];
+    if (this.weeklyDigestRoutineId) {
+      handlers.push(() => this.pollWeeklyDigest(this.weeklyDigestRoutineId!));
+    }
 
     for (const run of handlers) {
       try {
@@ -312,6 +327,61 @@ export class NotifierPoller {
       }
       const text = renderDone(issue, agent, lastComment);
       const ok = await this.deliver({ type: "done", dedupKey, issueId: issue.id, text });
+      if (ok) {
+        sent += 1;
+      } else {
+        errors += 1;
+      }
+      if (sent >= this.perTypeBatchLimit) break;
+    }
+    return { sent, skipped, errors };
+  }
+
+  private async pollWeeklyDigest(
+    routineId: string,
+  ): Promise<{ sent: number; skipped: number; errors: number }> {
+    let issues: IssueRef[];
+    try {
+      issues = await this.api.listRoutineExecutionIssues(routineId, ["in_review", "done"]);
+    } catch (err) {
+      this.metrics.pollError("weekly_digest");
+      this.log.warn("weekly_digest list failed", { routineId, err: String(err) });
+      return { sent: 0, skipped: 0, errors: 1 };
+    }
+    let sent = 0;
+    let skipped = 0;
+    let errors = 0;
+    for (const issue of issues) {
+      const dedupKey = `weekly_digest:${issue.id}`;
+      if (this.dedup.has("weekly_digest", dedupKey)) {
+        skipped += 1;
+        continue;
+      }
+      let lastComment = null;
+      try {
+        lastComment = await this.api.getLatestComment(issue.id);
+      } catch (err) {
+        errors += 1;
+        this.log.warn("weekly_digest last-comment failed", {
+          issueId: issue.id,
+          err: String(err),
+        });
+        continue;
+      }
+      if (!lastComment?.body?.trim()) {
+        // Run-issue has progressed past CEO publication but no comment yet
+        // (race condition: status flipped before comment landed). Skip this
+        // tick — next tick will retry, dedup not yet recorded.
+        skipped += 1;
+        continue;
+      }
+      const text = renderWeeklyDigest(issue, lastComment);
+      const ok = await this.deliver({
+        type: "weekly_digest",
+        dedupKey,
+        issueId: issue.id,
+        text,
+      });
       if (ok) {
         sent += 1;
       } else {

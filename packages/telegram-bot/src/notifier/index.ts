@@ -18,6 +18,7 @@ export {
   renderBlocked,
   renderDone,
   renderInteraction,
+  renderWeeklyDigest,
   truncate,
 } from "./templates.js";
 export type {

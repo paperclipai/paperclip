@@ -24,7 +24,7 @@ export function defaultDedupPath(): string {
 
 const EMPTY: Persisted = {
   version: FILE_VERSION,
-  seen: { interaction: [], approval: [], blocked: [], done: [] },
+  seen: { interaction: [], approval: [], blocked: [], done: [], weekly_digest: [] },
 };
 
 /**
@@ -104,6 +104,7 @@ function clone(p: Persisted): Persisted {
       approval: [...p.seen.approval],
       blocked: [...p.seen.blocked],
       done: [...p.seen.done],
+      weekly_digest: [...p.seen.weekly_digest],
     },
   };
 }

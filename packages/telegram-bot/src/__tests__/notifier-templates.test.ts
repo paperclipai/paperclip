@@ -4,6 +4,7 @@ import {
   renderBlocked,
   renderDone,
   renderInteraction,
+  renderWeeklyDigest,
   truncate,
 } from "../notifier/templates.js";
 
@@ -102,5 +103,39 @@ describe("notifier templates", () => {
     expect(truncate("hello", 10)).toBe("hello");
     expect(truncate("hello world", 5)).toBe("hell…");
     expect(truncate(null, 10)).toBe("");
+  });
+
+  it("weekly_digest forwards comment body verbatim with header and source link", () => {
+    const body = "# 📊 Weekly Board Digest — 2026-W19\n\n## Сделано\n- THE-100 — fix bug";
+    const text = renderWeeklyDigest(
+      { id: "issue-1", identifier: "THE-393", title: "CEO Weekly Board Digest" },
+      { id: "c1", body },
+    );
+    expect(text).toContain("📊 Weekly Board Digest");
+    expect(text).toContain("THE-100 — fix bug");
+    expect(text).toContain(
+      "📄 Источник: https://paperclip.thethirdchair.ru/THE/issues/THE-393",
+    );
+  });
+
+  it("weekly_digest truncates body that would push the message over Telegram's 4096 limit", () => {
+    const longBody = "x".repeat(8_000);
+    const text = renderWeeklyDigest(
+      { id: "issue-2", identifier: "THE-394", title: "Big Digest" },
+      { id: "c2", body: longBody },
+    );
+    expect(text.length).toBeLessThanOrEqual(4096);
+    expect(text).toContain("…");
+    expect(text).toContain("📄 Источник:");
+  });
+
+  it("weekly_digest falls back to issue id when identifier is null", () => {
+    const text = renderWeeklyDigest(
+      { id: "abc-uuid", identifier: null, title: "x" },
+      { id: "c3", body: "tiny" },
+    );
+    expect(text).toContain(
+      "📄 Источник: https://paperclip.thethirdchair.ru/THE/issues/abc-uuid",
+    );
   });
 });
