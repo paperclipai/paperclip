@@ -177,6 +177,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         provider: "local_encrypted",
         value: config.privateKey,
       });
+      await secretService(db).createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "privateKeySecretRef",
+      });
       config = {
         ...config,
         privateKey: null,
@@ -548,6 +555,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driver: "sandbox",
       config: providerConfig,
     };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
     await environmentService(db).update(environment.id, {
       driver: "sandbox",
       name: environment.name,

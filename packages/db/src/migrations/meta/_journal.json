@@ -575,6 +575,20 @@
       "when": 1778067785040,
       "tag": "0081_optimal_dormammu",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1778067785041,
+      "tag": "0082_dry_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1778074536410,
+      "tag": "0083_company_secret_provider_configs",
+      "breakpoints": true
     }
   ]
 }

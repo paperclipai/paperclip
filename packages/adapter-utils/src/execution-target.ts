@@ -27,7 +27,7 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
-import { preferredShellForSandbox } from "./sandbox-shell.js";
+import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
@@ -319,7 +319,7 @@ async function ensureSandboxCommandResolvable(
     try {
       const installResult = await runner.execute({
         command: "sh",
-        args: ["-lc", installCommand],
+        args: shellCommandArgs(installCommand),
         cwd: target.remoteCwd,
         timeoutMs: target.timeoutMs ?? 300_000,
       });
@@ -417,8 +417,8 @@ export async function runAdapterExecutionTargetShellCommand(
     if (target.transport === "ssh") {
       try {
         // Pass the raw command — `runSshCommand` owns profile sourcing and
-        // the outer `sh -lc` wrapper. Wrapping again here would nest a second
-        // `sh -lc` after the explicit `env KEY=VAL` overrides, re-sourcing
+        // the outer shell wrapper. Wrapping again here would nest a second
+        // shell after the explicit `env KEY=VAL` overrides, re-sourcing
         // login profiles AFTER the override and silently undoing any
         // identity var (NVM_DIR / PATH / etc.) that a profile re-exports.
         const result = await runSshCommand(target.spec, command, {
@@ -477,7 +477,7 @@ export async function runAdapterExecutionTargetShellCommand(
     const shellCommand = preferredSandboxShell(target);
     return await requireSandboxRunner(target).execute({
       command: shellCommand,
-      args: ["-lc", command],
+      args: shellCommandArgs(command),
       cwd: target.remoteCwd,
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,

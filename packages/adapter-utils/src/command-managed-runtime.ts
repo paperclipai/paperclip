@@ -6,7 +6,7 @@ import {
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
 } from "./sandbox-managed-runtime.js";
-import { preferredShellForSandbox } from "./sandbox-shell.js";
+import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 export interface CommandManagedRuntimeRunner {
@@ -65,7 +65,7 @@ export function createCommandManagedRuntimeClient(input: {
   const runShell = async (script: string, opts: { stdin?: string; timeoutMs?: number } = {}) => {
     const result = await input.runner.execute({
       command: shellCommand,
-      args: ["-lc", script],
+      args: shellCommandArgs(script),
       cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
@@ -116,7 +116,7 @@ export function createCommandManagedRuntimeClient(input: {
     remove: async (remotePath) => {
       const result = await input.runner.execute({
         command: shellCommand,
-        args: ["-lc", `rm -rf ${shellQuote(remotePath)}`],
+        args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
       });
@@ -125,7 +125,7 @@ export function createCommandManagedRuntimeClient(input: {
     run: async (command, options) => {
       const result = await input.runner.execute({
         command: shellCommand,
-        args: ["-lc", command],
+        args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
       });
@@ -176,7 +176,7 @@ export async function prepareCommandManagedRuntime(input: {
     if (detectCommand) {
       const probe = await input.runner.execute({
         command: shellCommand,
-        args: ["-lc", `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`],
+        args: shellCommandArgs(`command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`),
         cwd: commandCwd,
         timeoutMs,
       });
@@ -195,7 +195,7 @@ export async function prepareCommandManagedRuntime(input: {
     }
     const result = await input.runner.execute({
       command: shellCommand,
-      args: ["-lc", installCommand],
+      args: shellCommandArgs(installCommand),
       cwd: commandCwd,
       timeoutMs,
     });

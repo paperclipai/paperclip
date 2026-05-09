@@ -144,6 +144,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
