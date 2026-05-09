@@ -1571,6 +1571,111 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("does not reassign a parent that already has an assignee", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const goalId = randomUUID();
+    const originatorAgentId = randomUUID();
+    const existingAssigneeAgentId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      orchestratorPolicy: "originator",
+    });
+
+    await db.insert(agents).values([
+      {
+        id: originatorAgentId,
+        companyId,
+        name: "Originator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: existingAssigneeAgentId,
+        companyId,
+        name: "Existing assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Ship child helpers",
+      level: "task",
+      status: "active",
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      goalId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: originatorAgentId,
+      assigneeAgentId: existingAssigneeAgentId,
+    });
+
+    await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      goalId,
+      title: "First child",
+      createdByAgentId: originatorAgentId,
+    });
+
+    await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      goalId,
+      title: "Second child",
+      createdByAgentId: originatorAgentId,
+    });
+
+    const parent = await svc.getById(parentIssueId);
+    expect(parent).toMatchObject({
+      id: parentIssueId,
+      assigneeAgentId: existingAssigneeAgentId,
+      assigneeUserId: null,
+    });
+
+    const assignmentEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.parent_orchestrator_assigned"));
+    expect(assignmentEvents).toHaveLength(0);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, existingAssigneeAgentId));
+    expect(wakeups).toHaveLength(0);
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
