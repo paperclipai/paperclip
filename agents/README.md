@@ -67,14 +67,16 @@ States: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`, `blo
 
 ## Skills + permissions
 
-| Role | Skills | `dangerouslySkipPermissions` | Scalable |
+| Role | Skills | `dangerouslySkipPermissions` | `maxConcurrentRuns` (default) |
 |---|---|---|---|
-| Worker | none | false | ✓ |
-| Reviewer | `paperclip` | true | ✓ |
-| Architect | none | true (needs shell for cargo + gh) | — single instance |
-| Coordinator | `paperclip`, `paperclip-create-agent` | true | — single instance |
-| Planner | `paperclip` | true | — single instance |
-| Facilitator | `paperclip` | true | — single instance |
+| Worker | none | false | 4 |
+| Reviewer | `paperclip` | true | 4 |
+| Architect | none | true (needs shell for cargo + gh) | **8** |
+| Coordinator | `paperclip`, `paperclip-create-agent` | true | 1 |
+| Planner | `paperclip` | true | 1 |
+| Facilitator | `paperclip` | true | 1 |
+
+One agent instance per role; concurrency comes from `maxConcurrentRuns`. Architect's high cap is intentional — cargo's build lock serializes the cargo step, but everything else (analyzing output, applying fixes, committing, pushing, opening PR) parallelizes, which is exactly the bottleneck-around-cargo flow you want.
 
 Workers have no skills because the adapter injects task context directly into their prompt; agents that hit the API need the `paperclip` skill (which uses `curl`, hence skip-permissions).
 

@@ -233,31 +233,40 @@ cross-reference active task IDs. Any worktree directory whose task is
 
 ## Scaling
 
-Backlogged Workers/Reviewers → spin up via `paperclip-create-agent`. Always 1 Architect, 1 Planner.
+One agent instance per role. Concurrency comes from the agent's own
+`runtimeConfig.heartbeat.maxConcurrentRuns` setting — multiple wake-fires
+against the same agent run as parallel runs (each is its own session).
 
 **Hard cap before any `paperclip-create-agent` call**: query the existing
 agent roster first (`GET /api/companies/:companyId/agents`) and count
-agents by role. The caps are:
+by role. Caps:
 
-| Role | Max instances |
-|---|---|
-| Architect | 1 |
-| Planner | 1 |
-| Facilitator | 1 |
-| Coordinator | 1 |
-| Worker | unbounded (gated by backlog depth) |
-| Reviewer | unbounded (gated by review queue depth) |
+| Role | Max instances | Default `maxConcurrentRuns` |
+|---|---|---|
+| Architect | 1 | **8** — cargo's build lock serializes the cargo step; everything else (read errors, fix, commit, push, open PR) parallelizes |
+| Worker | 1 | 4 — independent task branches, no shared lock |
+| Reviewer | 1 | 4 — independent task branches |
+| Planner | 1 | 1 — single-writer on `docs/ROADMAP.md` |
+| Facilitator | 1 | 1 — global pipeline-health sweep |
+| Coordinator | 1 | 1 — single-writer on task graph + worktree allocation |
 
-If a role is already at cap, **do not create another** — and do not
-delete the existing one to make room (kept agents may have in-flight
-runs you can't see). If multiple already exist (e.g. 3 Architects from
-a prior over-creation), accept the current state, but do not add a
-fourth — leave decommissioning of the excess to the operator.
+If you need more throughput in a role, **bump `maxConcurrentRuns`**, do
+not spawn a second agent. Multiple agent instances of the same role
+fragment the wake-fire routing (Coordinator can't pick which one to
+assign to) and confuse the audit trail. Update via:
+
+```
+PATCH /api/agents/:id
+{"runtimeConfig":{"heartbeat":{...existing fields..., "maxConcurrentRuns":N}}}
+```
+
+If a role is already at instance cap (1), **do not create another**.
+If multiple already exist from a prior over-creation, accept the
+current state, but do not add a fourth — leave decommissioning of the
+excess to the operator.
 
 The `paperclip-create-agent` skill does not enforce this cap itself;
-the check belongs to the caller. Skipping it produces the
-3-Architects-running failure mode (cargo toolchain contention on a
-shared target dir).
+the check belongs to the caller.
 
 ## Context
 
