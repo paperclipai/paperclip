@@ -519,12 +519,17 @@ const plugin = definePlugin({
     }
 
     await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-    const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
-    const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-    return {
-      providerLeaseId: sandbox.id,
-      metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true }),
-    };
+    try {
+      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      return {
+        providerLeaseId: sandbox.id,
+        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true }),
+      };
+    } catch (error) {
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+      throw error;
+    }
   },
 
   async onEnvironmentReleaseLease(

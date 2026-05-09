@@ -244,6 +244,29 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it("deletes the sandbox if resume setup throws after the sandbox starts", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-resume", state: "stopped" });
+    sandbox.getWorkDir.mockRejectedValue(new Error("workdir lookup failed"));
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-resume",
+        config: {
+          timeoutMs: 300000,
+          reuseLease: true,
+        },
+      }),
+    ).rejects.toThrow("workdir lookup failed");
+
+    expect(sandbox.start).toHaveBeenCalled();
+    expect(sandbox.delete).toHaveBeenCalledTimes(1);
+  });
+
   it("marks missing reusable leases as expired on resume", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     mockGet.mockRejectedValue(new MockDaytonaNotFoundError("missing"));
