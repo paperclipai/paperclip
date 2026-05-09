@@ -190,6 +190,52 @@ describe("POST /integrations/github — token-to-repo handshake", () => {
     expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledOnce();
   });
 
+  it("accepts dryRun:true with empty syncedGoalIds (onboarding path)", async () => {
+    mockFetch.mockResolvedValue(makeFetchResponse(200));
+
+    const app = await createApp();
+    const res = await post(app, {
+      repo: "owner/new-repo",
+      secretRef: SECRET_ID,
+      syncedGoalIds: [],
+      dryRun: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledOnce();
+  });
+
+  it("accepts dryRun:false when syncedGoalIds is non-empty", async () => {
+    const goalId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    mockGoals.list.mockResolvedValue([{ id: goalId }]);
+    mockFetch.mockResolvedValue(makeFetchResponse(200));
+
+    const app = await createApp();
+    const res = await post(app, {
+      repo: "owner/new-repo",
+      secretRef: SECRET_ID,
+      syncedGoalIds: [goalId],
+      dryRun: false,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledOnce();
+  });
+
+  it("returns 422 and does not persist when dryRun:false and syncedGoalIds is empty", async () => {
+    const app = await createApp();
+    const res = await post(app, {
+      repo: "owner/new-repo",
+      secretRef: SECRET_ID,
+      syncedGoalIds: [],
+      dryRun: false,
+    });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/syncedGoalIds must list at least one goal/i);
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
   it("redacts token from 401 error body before surfacing", async () => {
     const leakyBody = `{"message":"Bad credentials for token ${FAKE_TOKEN}"}`;
     mockFetch.mockResolvedValue(makeFetchResponse(401, leakyBody));

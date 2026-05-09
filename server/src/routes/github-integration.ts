@@ -166,6 +166,12 @@ export function githubIntegrationRoutes(db: Db) {
       dryRun: body["dryRun"] !== false,
     };
 
+    if (configToSave.dryRun === false && configToSave.syncedGoalIds.length === 0) {
+      throw unprocessable(
+        "syncedGoalIds must list at least one goal when dryRun is disabled — leaving it empty would mirror every issue in the company. Either pick the goal subtrees you want to sync, or keep dryRun enabled.",
+      );
+    }
+
     // Validate that the configured token is authorised on the target repo whenever
     // the repo value changes.  Skipped when repo is unchanged to avoid an extra
     // GitHub round-trip on every config save.
