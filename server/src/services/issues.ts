@@ -1483,6 +1483,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  supersededById: issues.supersededById,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
