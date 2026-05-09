@@ -1,0 +1,1 @@
+CREATE INDEX "activity_log_issue_released_recent_idx" ON "activity_log" USING btree ("entity_id","created_at" DESC NULLS LAST) WHERE entity_type = 'issue' AND action = 'issue.released';

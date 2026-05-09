@@ -148,6 +148,14 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
+  const approveLabel =
+    typeof payload.acceptActionLabel === "string" && payload.acceptActionLabel.trim()
+      ? payload.acceptActionLabel.trim()
+      : "Approve";
+  const rejectLabel =
+    typeof payload.rejectActionLabel === "string" && payload.rejectActionLabel.trim()
+      ? payload.rejectActionLabel.trim()
+      : "Reject";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
@@ -269,7 +277,7 @@ export function ApprovalDetail() {
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
-                Approve
+                {approveMutation.isPending ? "Approving…" : approveLabel}
               </Button>
               <Button
                 variant="destructive"
@@ -277,7 +285,7 @@ export function ApprovalDetail() {
                 onClick={() => rejectMutation.mutate()}
                 disabled={rejectMutation.isPending}
               >
-                Reject
+                {rejectMutation.isPending ? "Rejecting…" : rejectLabel}
               </Button>
             </>
           )}

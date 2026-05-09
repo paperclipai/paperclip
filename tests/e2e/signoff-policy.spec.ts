@@ -56,11 +56,37 @@ async function createAgentRequest(token: string): Promise<APIRequestContext> {
   });
 }
 
-/** Invoke a heartbeat run for an agent, returning the run ID. */
-async function invokeHeartbeat(board: APIRequestContext, agentId: string): Promise<string> {
-  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`);
-  expect(res.ok()).toBe(true);
+async function waitForHeartbeatTerminal(board: APIRequestContext, runId: string): Promise<void> {
+  const terminalStatuses = new Set(["succeeded", "failed", "cancelled", "timed_out", "timeout", "error"]);
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${runId}`);
+    expect(runRes.ok()).toBe(true);
+    const current = await runRes.json();
+    if (terminalStatuses.has(current.status)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Heartbeat run ${runId} did not reach a terminal status`);
+}
+
+/** Invoke an issue-scoped heartbeat run for an agent, wait for terminal evidence extraction, then return the run ID. */
+async function invokeHeartbeat(board: APIRequestContext, agentId: string, issueId: string): Promise<string> {
+  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/wakeup`, {
+    data: {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "e2e-signoff-policy",
+      forceFreshSession: true,
+      payload: { issueId },
+    },
+  });
+  if (!res.ok()) {
+    throw new Error(`Heartbeat invoke failed: ${res.status()} ${await res.text()}`);
+  }
   const run = await res.json();
+  if (!run || typeof run.id !== "string") {
+    throw new Error(`Heartbeat invoke did not return a run id: ${JSON.stringify(run)}`);
+  }
+  await waitForHeartbeatTerminal(board, run.id);
   return run.id;
 }
 
@@ -75,16 +101,14 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   };
 }
 
-/** PATCH an issue as an agent with a fresh heartbeat run ID. */
+/** PATCH an issue as an agent. Review/approval decisions run inside the issue workflow and must not start a new issue-scoped execution wake while the executor owns the issue execution lock. */
 async function agentPatch(
   board: APIRequestContext,
   agent: AgentAuth,
   issueId: string,
   data: Record<string, unknown>,
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
   const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
     data,
   });
   return res;
@@ -98,7 +122,7 @@ async function agentCheckoutAndPatch(
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
+  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
   // Checkout (sets executionRunId so PATCH is allowed)
   const checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
     headers: { "X-Paperclip-Run-Id": runId },
@@ -173,7 +197,15 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
         adapterType: "process",
         adapterConfig: {
           command: process.execPath,
-          args: ["-e", "process.stdout.write('done\\n')"],
+          args: ["-e", "process.stdout.write('pnpm test\\n0 failed\\n')"],
+        },
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 300,
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
         },
       },
     });
@@ -235,7 +267,7 @@ async function createIssueWithPolicy(ctx: TestContext, title: string, stages?: u
   return issue;
 }
 
-test.describe("Signoff execution policy", () => {
+test.describe.serial("Signoff execution policy", () => {
   let ctx: TestContext;
 
   test.beforeAll(async () => {

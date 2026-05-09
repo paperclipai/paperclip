@@ -276,6 +276,28 @@ export type {
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
+export type {
+  AgentContractSummary,
+  ApprovalGateSummary,
+  AutonomyActorType,
+  AutonomyApprovalGateStatus,
+  AutonomyEvidenceEntry,
+  AutonomyEvidenceStatus,
+  AutonomyEvidenceType,
+  AutonomyEvidenceVerdict,
+  AutonomyInboxItem,
+  AutonomyIncident,
+  AutonomyIncidentSeverity,
+  AutonomyIncidentStatus,
+  AutonomyIncidentType,
+  AutonomyJsonValue,
+  AutonomyLaneStatus,
+  AutonomyRunKernelState,
+  AutonomyRunTransition,
+  AutonomySourceType,
+  AutonomyTerminalClassification,
+  CompanyLaneStatus,
+} from "./autonomy.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";

@@ -16,6 +16,14 @@ describe("approvalLabel", () => {
       }),
     ).toBe("Board Approval: Reply with an ASCII frog");
   });
+
+  it("labels autonomy preflight gates with the governed action", () => {
+    expect(
+      approvalLabel("autonomy_preflight_gate", {
+        governedAction: "deploy_production",
+      }),
+    ).toBe("Autonomy Run Approval: deploy_production");
+  });
 });
 
 describe("ApprovalPayloadRenderer", () => {
@@ -28,6 +36,40 @@ describe("ApprovalPayloadRenderer", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("renders autonomy preflight gate payloads as operator-readable approval cards", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ApprovalPayloadRenderer
+          type="autonomy_preflight_gate"
+          payload={{
+            governedAction: "deploy_production",
+            laneKey: "default",
+            runId: "run-123",
+            issueId: "issue-456",
+            risk: "Contract requires board approval before production deploys.",
+            policySource: "agent_contract:contract-1",
+            acceptActionLabel: "Approve autonomous run",
+            rejectActionLabel: "Deny autonomous run",
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Governed action");
+    expect(container.textContent).toContain("deploy_production");
+    expect(container.textContent).toContain("default");
+    expect(container.textContent).toContain("agent_contract:contract-1");
+    expect(container.textContent).toContain("Contract requires board approval");
+    expect(container.textContent).toContain("Approve autonomous run / Deny autonomous run");
+    expect(container.textContent).not.toContain("\"governedAction\"");
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders request_board_approval payload fields without falling back to raw JSON", () => {

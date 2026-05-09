@@ -1289,6 +1289,7 @@ export function buildHostServices(
           ...(patch as any),
           actorAgentId,
           actorUserId,
+          actorRunId,
         })) as Issue;
         await logPluginActivity({
           companyId,

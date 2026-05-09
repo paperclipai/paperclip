@@ -1,4 +1,4 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Bot } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -6,6 +6,7 @@ export const typeLabel: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  autonomy_preflight_gate: "Autonomy Run Approval",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -23,6 +24,7 @@ export function approvalSubject(payload?: Record<string, unknown> | null): strin
     payload?.name,
     payload?.summary,
     payload?.recommendedAction,
+    payload?.governedAction,
   );
 }
 
@@ -41,6 +43,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  autonomy_preflight_gate: Bot,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -161,6 +164,44 @@ export function BoardApprovalPayload({
   );
 }
 
+export function AutonomyPreflightGatePayload({ payload }: { payload: Record<string, unknown> }) {
+  const governedAction = firstNonEmptyString(payload.governedAction) ?? "autonomous run";
+  const laneKey = firstNonEmptyString(payload.laneKey);
+  const risk = firstNonEmptyString(payload.risk);
+  const policySource = firstNonEmptyString(payload.policySource);
+  const issueId = firstNonEmptyString(payload.issueId);
+  const runId = firstNonEmptyString(payload.runId);
+  const acceptActionLabel = firstNonEmptyString(payload.acceptActionLabel) ?? "Approve autonomous run";
+  const rejectActionLabel = firstNonEmptyString(payload.rejectActionLabel) ?? "Deny autonomous run";
+
+  return (
+    <div className="mt-4 space-y-3.5 text-sm">
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
+        <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
+          Governed action
+        </p>
+        <p className="mt-1 font-medium leading-6 text-foreground">{governedAction}</p>
+      </div>
+      <div className="grid gap-1.5 text-xs text-muted-foreground sm:grid-cols-2">
+        <PayloadField label="Lane" value={laneKey} />
+        <PayloadField label="Policy" value={policySource} />
+        <PayloadField label="Issue" value={issueId} />
+        <PayloadField label="Run" value={runId} />
+      </div>
+      {risk && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Why approval is required</p>
+          <p className="leading-6 text-foreground/90">{risk}</p>
+        </div>
+      )}
+      <div className="rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
+        Approving records a visible board decision for the autonomy kernel and lets the requesting agent continue this governed action. Rejecting keeps the run blocked.
+        <div className="mt-2 font-medium text-foreground">Actions: {acceptActionLabel} / {rejectActionLabel}</div>
+      </div>
+    </div>
+  );
+}
+
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
   const risks = Array.isArray(payload.risks)
     ? payload.risks
@@ -240,6 +281,7 @@ export function ApprovalPayloadRenderer({
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  if (type === "autonomy_preflight_gate") return <AutonomyPreflightGatePayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }

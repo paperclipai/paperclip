@@ -2945,11 +2945,11 @@ export function agentRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: run.id,
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,
-      details: { agentId: id },
+      details: { agentId: id, requestedByRunId: actor.runId ?? null },
     });
 
     res.status(202).json(run);
@@ -3030,11 +3030,11 @@ export function agentRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: run.id,
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,
-      details: { agentId: id },
+      details: { agentId: id, requestedByRunId: actor.runId ?? null },
     });
 
     res.status(202).json(run);

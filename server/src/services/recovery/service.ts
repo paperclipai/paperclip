@@ -64,6 +64,13 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const DEFAULT_RECOVERY_HANDOFF_GRACE_MS = 60_000;
+const RECOVERY_HANDOFF_GRACE_MS_ENV = process.env.RECOVERY_HANDOFF_GRACE_MS;
+const RECOVERY_HANDOFF_GRACE_MS = (() => {
+  if (!RECOVERY_HANDOFF_GRACE_MS_ENV) return DEFAULT_RECOVERY_HANDOFF_GRACE_MS;
+  const parsed = Number.parseInt(RECOVERY_HANDOFF_GRACE_MS_ENV, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RECOVERY_HANDOFF_GRACE_MS;
+})();
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -533,6 +540,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             where blocked_issue.id = ${issueRelations.relatedIssueId}
               and blocked_issue.company_id = ${issues.companyId}
               and blocked_issue.status not in ('done', 'cancelled')
+          )`,
+          // JLL-98 R2: skip issues released within the handoff-grace window so a
+          // deliberate Lead→Engineer handoff is not re-pinned to the creator
+          // before the engineer can claim. Indexed by
+          // activity_log_issue_released_recent_idx (partial: entity_type='issue'
+          // AND action='issue.released').
+          sql`not exists (
+            select 1
+            from activity_log released
+            where released.entity_type = 'issue'
+              and released.entity_id = ${issues.id}::text
+              and released.action = 'issue.released'
+              and released.created_at > now() - make_interval(secs => ${Math.max(0, Math.floor(RECOVERY_HANDOFF_GRACE_MS / 1000))})
           )`,
         ),
       );
