@@ -55,5 +55,19 @@ module.exports = {
         ...notifierEnv,
       },
     },
+    {
+      // Watches source dirs and triggers rebuild + pm2 restart on change.
+      // Debounced 5s so rapid multi-file saves don't stack builds.
+      name: "asset-library-watcher",
+      cwd: path.resolve(__dirname),
+      script: path.resolve(__dirname, "watch-and-build.mjs"),
+      interpreter: `/opt/homebrew/opt/node@20/bin/node`,
+      autorestart: true,
+      max_restarts: 5,
+      env: {
+        NODE_ENV: "production",
+        PATH: `/opt/homebrew/opt/node@20/bin:${process.env.PATH ?? ""}`,
+      },
+    },
   ],
 };

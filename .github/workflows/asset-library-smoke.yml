@@ -1,0 +1,61 @@
+name: Asset Library Smoke
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "scripts/asset-library/**"
+      - ".github/workflows/asset-library-smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: scripts/asset-library
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: scripts/asset-library/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Start
+        run: node node_modules/.bin/next start -p 7700 &
+        env:
+          NODE_ENV: production
+
+      - name: Wait for server (30s)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:7700/; then
+              echo "server up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: server did not respond within 30s" >&2
+          exit 1
+
+      - name: Smoke — root (expect 200)
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7700/)
+          [ "$code" = "200" ] || { echo "root: expected 200, got $code" >&2; exit 1; }
+
+      - name: Smoke — /asset/:id (expect 200, graceful not-found page)
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7700/asset/ci-smoke-placeholder)
+          [ "$code" = "200" ] || { echo "/asset/ci-smoke-placeholder: expected 200, got $code" >&2; exit 1; }
