@@ -1,18 +1,60 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { resolvePaperclipEnvPath } from "../server/src/paths.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
+
+// Minimal .env parser: KEY=VALUE per line, optional surrounding quotes,
+// `#` comments, blank lines ignored. Mirrors the subset of dotenv we need
+// without pulling in the dotenv package (which doesn't resolve from
+// scripts/ — there's no nearest package.json with it as a dependency).
+function parseEnvFile(contents: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+// Pre-load the Paperclip home .env (mirrors what server/src/config.ts does on
+// startup) so that any deployment-related values present in .env are visible
+// in process.env BEFORE we construct the child process env below. This lets
+// users override the --tailscale-auth flag's defaults from their .env file
+// (the child uses dotenv with override:false and would otherwise see whatever
+// we forced here first).
+const HOME_ENV_FILE_PATH = resolvePaperclipEnvPath();
+if (existsSync(HOME_ENV_FILE_PATH)) {
+  const parsed = parseEnvFile(readFileSync(HOME_ENV_FILE_PATH, "utf8"));
+  for (const [key, value] of Object.entries(parsed)) {
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -95,11 +137,20 @@ if (mode === "watch") {
 }
 
 if (tailscaleAuth) {
-  env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
-  env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-  env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
-  env.HOST = "0.0.0.0";
-  console.log("[paperclip] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
+  // Use ??= so any value already present in process.env (typically from the
+  // Paperclip home .env pre-loaded above) takes precedence over these
+  // convenience defaults. This is what makes setting PAPERCLIP_PUBLIC_URL +
+  // PAPERCLIP_AUTH_BASE_URL_MODE=explicit in .env actually stick.
+  env.PAPERCLIP_DEPLOYMENT_MODE ??= "authenticated";
+  env.PAPERCLIP_DEPLOYMENT_EXPOSURE ??= "private";
+  env.PAPERCLIP_AUTH_BASE_URL_MODE ??= "auto";
+  env.HOST ??= "0.0.0.0";
+  const baseUrlMode = env.PAPERCLIP_AUTH_BASE_URL_MODE;
+  const publicUrl = env.PAPERCLIP_PUBLIC_URL;
+  const detail = baseUrlMode === "explicit" && publicUrl ? ` baseURL=${publicUrl}` : "";
+  console.log(
+    `[paperclip] dev mode: ${env.PAPERCLIP_DEPLOYMENT_MODE}/${env.PAPERCLIP_DEPLOYMENT_EXPOSURE} (tailscale-friendly) on ${env.HOST}${detail}`,
+  );
 } else {
   console.log("[paperclip] dev mode: local_trusted (default)");
 }
