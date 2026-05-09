@@ -5797,6 +5797,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      // Fetch the issue row to check its own status (not just dependency blockers).
+      const [issueRow] = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .limit(1);
+
+      // Cancel runs for issues in terminal states — they will never be actionable.
+      if (issueRow && (issueRow.status === "done" || issueRow.status === "cancelled")) {
+        logger.debug(
+          { runId: run.id, issueId, issueStatus: issueRow.status },
+          "claimQueuedRun: cancelling run for issue in terminal status",
+        );
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: `Issue ${issueRow.status} — run no longer actionable`,
+          errorCode: "issue_terminal_status",
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: `Issue ${issueRow.status} — run no longer actionable`,
+        });
+        return null;
+      }
+
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
@@ -5812,6 +5837,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
+        );
+        return null;
+      }
+
+      // Skip (but don't cancel) runs for issues in blocked status unless this is an
+      // interaction wake (comment/mention). The run stays queued so it is picked up
+      // automatically once the issue is unblocked.
+      if (
+        issueRow &&
+        issueRow.status === "blocked" &&
+        !allowsIssueInteractionWake(context) &&
+        unresolvedBlockerCount === 0
+      ) {
+        logger.debug(
+          { runId: run.id, issueId, issueStatus: issueRow.status },
+          "claimQueuedRun: skipping run for blocked issue (no dependency blockers)",
         );
         return null;
       }
@@ -8631,6 +8672,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // Skip terminal-status issues — they will never be actionable.
+        if (issue.status === "done" || issue.status === "cancelled") {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_terminal_status",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        // Skip blocked issues unless this is an interaction wake (comment/mention).
+        // Dependency-blocked issues are caught later via dependencyReadiness; this
+        // guard catches issues that are in blocked status without dependency blockers.
+        if (
+          issue.status === "blocked" &&
+          !allowsIssueInteractionWake(enrichedContextSnapshot)
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_blocked_status",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
           const issueCancelled = issue.status === "cancelled";
           if (
@@ -8712,6 +8794,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
           return true;
         };
+
 
         let activeExecutionRun = issue.executionRunId
           ? await tx
