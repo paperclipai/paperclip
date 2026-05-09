@@ -1,12 +1,14 @@
 /**
- * Active Memory Enforcement (VOG-5736, schema updated VOG-5838)
+ * Server-side Memory Reader (VOG-5838)
  *
- * Reads agent memory files tagged with `trigger: always-check` and
- * builds a concise "Self-Check" section that is prepended to the agent's
- * system prompt on every wake, giving the model a mandatory reminder before
- * it can take any action.
+ * Provides `readAlwaysCheckMemories(agentHome)` for use by the heartbeat service
+ * and any other server component that needs to inspect an agent's always-check memories.
  *
- * Feature flag: set env var ACTIVE_MEMORY_ENFORCEMENT_ENABLED=false to disable.
+ * Design notes:
+ * - Field name: `trigger` (canonical). Legacy `enforcement` field is read as fallback.
+ * - Governance: each agent marks only their own memories; max 15 always-check per agent.
+ * - Default: files without a `trigger` field are treated as `trigger: optional`.
+ * - Memory index: read via `{memoryDir}/MEMORY.md` link list.
  */
 
 import fs from "node:fs/promises";
@@ -15,20 +17,18 @@ import path from "node:path";
 
 export type MemoryTrigger = "always-check" | "triggered" | "optional";
 
-export interface ActiveMemory {
+export interface MemoryEntry {
   name: string;
   description: string;
+  howToApply: string;
   trigger: MemoryTrigger;
-  howToApply: string | null;
 }
 
 const MEMORY_INDEX_FILE = "MEMORY.md";
-// Regex to extract markdown links:  [display text](filename.md)
 const MEMORY_LINK_RE = /\[([^\]]+)\]\(([^)]+\.md)\)/g;
-// Regex to extract "**How to apply:** <text>" from memory body
 const HOW_TO_APPLY_RE = /\*\*How to apply:\*\*\s*([^\n]+)/;
 
-/** Parse YAML-style frontmatter from a markdown file (simple key: value). */
+/** Parse YAML-style frontmatter (simple key: value lines). */
 function parseFrontmatter(content: string): Record<string, string> {
   const normalized = content.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) return {};
@@ -52,27 +52,28 @@ function bodyAfterFrontmatter(content: string): string {
   return closing >= 0 ? normalized.slice(closing + 5).trim() : normalized.trim();
 }
 
-async function parseMemoryFile(filePath: string): Promise<ActiveMemory | null> {
+/** Parse a single memory file; returns null on read/parse error. */
+async function parseMemoryFile(filePath: string): Promise<MemoryEntry | null> {
   try {
     const content = await fs.readFile(filePath, "utf-8");
     const fm = parseFrontmatter(content);
     const name = fm["name"] ?? path.basename(filePath, ".md");
     const description = fm["description"] ?? "";
+    // `trigger` is canonical; fall back to legacy `enforcement` for backward compat.
     const rawTrigger = fm["trigger"] ?? fm["enforcement"] ?? "optional";
     const trigger: MemoryTrigger =
       rawTrigger === "always-check" || rawTrigger === "triggered"
         ? (rawTrigger as MemoryTrigger)
         : "optional";
     const body = bodyAfterFrontmatter(content);
-    const howToApplyMatch = HOW_TO_APPLY_RE.exec(body);
-    const howToApply = howToApplyMatch?.[1]?.trim() ?? null;
+    const howToApply = HOW_TO_APPLY_RE.exec(body)?.[1]?.trim() ?? "";
     return { name, description, trigger, howToApply };
   } catch {
     return null;
   }
 }
 
-/** Extract memory file links from a MEMORY.md index. */
+/** Extract linked memory file paths from MEMORY.md index. */
 function parseMemoryLinks(indexContent: string): string[] {
   const links: string[] = [];
   MEMORY_LINK_RE.lastIndex = 0;
@@ -86,28 +87,26 @@ function parseMemoryLinks(indexContent: string): string[] {
 /**
  * Convert a filesystem path to a Claude Code project directory ID.
  * Claude Code encodes CWDs by replacing `\`, `/`, `:`, and `.` with `-`.
- * e.g. "C:\Users\wj\.paperclip\..." → "C--Users-wj--paperclip-..."
  */
 function cwdToClaudeProjectId(cwdPath: string): string {
   return cwdPath.replace(/[:\\/.]/g, "-");
 }
 
 /**
- * Locate the memory directory for the given CWD.
- * Tries two locations in order:
- *   1. `<cwd>/memory/`     — in-repo memory (used by ERP-style agents)
- *   2. `~/.claude/projects/<encoded-cwd>/memory/` — Claude Code auto-memory
+ * Locate the memory directory for the given agent home directory.
+ *
+ * Tries two locations:
+ *   1. `{agentHome}/memory/`                           — in-repo memory
+ *   2. `~/.claude/projects/{encoded-agentHome}/memory/` — Claude Code auto-memory
  */
-async function resolveMemoryDir(cwd: string): Promise<string | null> {
-  // Option 1: in-repo memory
-  const inRepoDir = path.join(cwd, "memory");
+async function resolveMemoryDir(agentHome: string): Promise<string | null> {
+  const inRepoDir = path.join(agentHome, "memory");
   const inRepoIndex = path.join(inRepoDir, MEMORY_INDEX_FILE);
   if (await fs.stat(inRepoIndex).then(() => true).catch(() => false)) {
     return inRepoDir;
   }
 
-  // Option 2: Claude Code auto-memory
-  const projectId = cwdToClaudeProjectId(cwd);
+  const projectId = cwdToClaudeProjectId(agentHome);
   const claudeDir = path.join(os.homedir(), ".claude", "projects", projectId, "memory");
   const claudeIndex = path.join(claudeDir, MEMORY_INDEX_FILE);
   if (await fs.stat(claudeIndex).then(() => true).catch(() => false)) {
@@ -118,11 +117,18 @@ async function resolveMemoryDir(cwd: string): Promise<string | null> {
 }
 
 /**
- * Load all memories tagged `trigger: always-check` from the agent's memory directory.
- * Returns an empty array if no memory directory is found or no always-check memories exist.
+ * Return all memories tagged `trigger: always-check` for the given agent home directory.
+ *
+ * @param agentHome  The agent's workspace root (e.g. from `resolveDefaultAgentWorkspaceDir`).
+ * @returns  Filtered list of MemoryEntry objects ready for injection into the system prompt.
+ *
+ * Governance rules (VOG-5838):
+ * - Each agent marks only their own memories.
+ * - Max 15 always-check entries per agent (warning only, not enforced here).
+ * - Returns empty array when no memory directory or no always-check entries exist.
  */
-export async function loadActiveMemories(cwd: string): Promise<ActiveMemory[]> {
-  const memoryDir = await resolveMemoryDir(cwd);
+export async function readAlwaysCheckMemories(agentHome: string): Promise<MemoryEntry[]> {
+  const memoryDir = await resolveMemoryDir(agentHome);
   if (!memoryDir) return [];
 
   const indexContent = await fs.readFile(path.join(memoryDir, MEMORY_INDEX_FILE), "utf-8").catch(() => null);
@@ -131,29 +137,14 @@ export async function loadActiveMemories(cwd: string): Promise<ActiveMemory[]> {
   const links = parseMemoryLinks(indexContent);
   const parsed = await Promise.all(links.map((link) => parseMemoryFile(path.join(memoryDir, link))));
 
-  return parsed.filter((m): m is ActiveMemory => m !== null && m.trigger === "always-check");
-}
+  const alwaysCheck = parsed.filter((m): m is MemoryEntry => m !== null && m.trigger === "always-check");
 
-/**
- * Build the "## Active Memories — Self-Check Before Each Action" section
- * to prepend to the agent's system prompt.
- */
-export function buildActiveMemorySection(memories: ActiveMemory[]): string {
-  if (memories.length === 0) return "";
+  if (alwaysCheck.length > 15) {
+    // Governance warning — log to stderr but do not truncate.
+    process.stderr.write(
+      `[paperclip] Warning: agent at "${agentHome}" has ${alwaysCheck.length} always-check memories (governance limit is 15). Consider downgrading low-priority entries to "optional".\n`,
+    );
+  }
 
-  const items = memories.map((m) => {
-    const lines: string[] = [`**${m.name}**`];
-    if (m.description) lines.push(m.description);
-    if (m.howToApply) lines.push(`→ ${m.howToApply}`);
-    return lines.join("\n");
-  });
-
-  return [
-    "## Active Memories — Self-Check Before Each Action",
-    "",
-    "The following memories are marked `always-check`.",
-    "Before taking any action, verify you are NOT violating these rules:",
-    "",
-    ...items.flatMap((item) => [item, ""]),
-  ].join("\n");
+  return alwaysCheck;
 }
