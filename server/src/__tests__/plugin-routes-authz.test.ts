@@ -599,4 +599,177 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.body).toEqual({ runId: "run-1", jobId: "job-1" });
     expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual");
   });
+
+  // ─── Agent JWT tool execution ────────────────────────────────────────────────
+
+  it("allows agent JWT to execute a tool from an enabled plugin (no settings row)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(
+      {
+        type: "agent",
+        agentId: agentA,
+        companyId: companyA,
+        runId: runA,
+      },
+      {},
+      {
+        // Queue: agent-company, run, project, plugin_company_settings (no row = enabled)
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyA }],
+          [],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+    );
+  });
+
+  it("allows agent JWT to execute a tool when plugin_company_settings row has enabled=true", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(
+      { type: "agent", agentId: agentA, companyId: companyA, runId: runA },
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyA }],
+          [{ enabled: true }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalled();
+  });
+
+  it("rejects agent JWT when the plugin is disabled for the company", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(
+      { type: "agent", agentId: agentA, companyId: companyA, runId: runA },
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyA }],
+          [{ enabled: false }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent JWT when runContext.agentId does not match the JWT subject", async () => {
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const executeTool = vi.fn();
+    const { app } = await createApp(
+      { type: "agent", agentId: agentA, companyId: companyA, runId: runA },
+      {},
+      {
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: otherAgent, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("allows board user to call tools regardless of plugin_company_settings (no settings query for board)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      // Board user: only 3 rows needed for validateToolRunContextScope
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalled();
+  });
 });

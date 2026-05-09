@@ -30,6 +30,7 @@ import {
   agents,
   companies,
   heartbeatRuns,
+  pluginCompanySettings,
   pluginLogs,
   pluginWebhookDeliveries,
   projects,
@@ -61,6 +62,7 @@ import {
   assertAuthenticated,
   assertBoard,
   assertBoardOrgAccess,
+  assertBoardOrAgentAccess,
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
@@ -574,6 +576,32 @@ export function pluginRoutes(
     return companyId;
   }
 
+  /**
+   * For agent JWT requests, verify the plugin is not explicitly disabled for
+   * the agent's company. Returns true when access is permitted.
+   *
+   * Plugins are enabled by default (no row in plugin_company_settings). A row
+   * with enabled=false means the company has explicitly turned off this plugin.
+   * Board-level callers bypass this check — they already passed assertBoardOrgAccess.
+   */
+  async function assertAgentPluginAccess(pluginDbId: string, companyId: string): Promise<void> {
+    const [setting] = await db
+      .select({ enabled: pluginCompanySettings.enabled })
+      .from(pluginCompanySettings)
+      .where(
+        and(
+          eq(pluginCompanySettings.pluginId, pluginDbId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ),
+      )
+      .limit(1);
+    // A row exists only when the company has overridden defaults. If enabled is
+    // explicitly false, the plugin is off for this company — reject the call.
+    if (setting && !setting.enabled) {
+      throw forbidden("Plugin is not enabled for this company");
+    }
+  }
+
   async function validateToolRunContextScope(runContext: ToolRunContext): Promise<string | null> {
     const [agent] = await db
       .select({ companyId: agents.companyId })
@@ -768,7 +796,7 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgentAccess(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -801,6 +829,12 @@ export function pluginRoutes(
       return;
     }
 
+    // Agent JWTs may only execute tools on behalf of themselves
+    if (req.actor.type === "agent" && req.actor.agentId !== runContext.agentId) {
+      res.status(403).json({ error: "Agent JWT sub does not match runContext.agentId" });
+      return;
+    }
+
     assertCompanyAccess(req, runContext.companyId);
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
@@ -813,6 +847,12 @@ export function pluginRoutes(
     if (!registeredTool) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
       return;
+    }
+
+    // Agent JWTs may only call tools from plugins enabled for their company.
+    // Board callers bypass this — they passed assertBoardOrgAccess above.
+    if (req.actor.type === "agent") {
+      await assertAgentPluginAccess(registeredTool.pluginDbId, runContext.companyId);
     }
 
     try {
