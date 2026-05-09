@@ -8,6 +8,8 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  listComments: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -217,6 +219,8 @@ describe("issue update comment wakeups", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({ unresolvedBlockerCount: 0 });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -313,5 +317,143 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("suppresses unchanged mirrored recap comments on closed issues", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-prev",
+        body: "Mirrored from completed review thread: duplicate context, no new evidence or scope.",
+        authorUserId: "local-board",
+      },
+    ]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "Mirrored from completed review thread: duplicate context, no new evidence or scope.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("suppresses unchanged mirrored recap comments on blocked issues", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-prev",
+        body: "Mirrored from completed review thread: duplicate context, no new evidence or scope.",
+        authorUserId: "local-board",
+      },
+    ]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "Mirrored from completed review thread: duplicate context, no new evidence or scope.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not suppress mirrored recap comments when payload adds net-new evidence", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-prev",
+        body: "Mirrored from completed review thread: duplicate context, no new evidence or scope.",
+        authorUserId: "local-board",
+      },
+    ]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-next",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Mirrored summary, but there is net-new evidence: leaked valve in Room 214 requires maintenance follow-up.",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "Mirrored summary, but there is net-new evidence: leaked valve in Room 214 requires maintenance follow-up.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits at most one mirrored recap comment for repeated identical blocked/done recap inputs", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    const updated = { ...existing };
+    const recapBody = "Mirrored from completed review thread: duplicate context, no new evidence or scope.";
+
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.listComments
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "comment-prev",
+          body: recapBody,
+          authorUserId: "local-board",
+        },
+      ])
+      .mockResolvedValue([
+        {
+          id: "comment-prev",
+          body: recapBody,
+          authorUserId: "local-board",
+        },
+      ]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-new",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: recapBody,
+    });
+
+    const app = await createApp();
+    const first = await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: recapBody });
+    const second = await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: recapBody });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(0);
   });
 });
