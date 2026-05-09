@@ -13,7 +13,6 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
-import { LanguageSwitcher } from "@/components/LanguageSwitcher/LanguageSwitcher";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -328,18 +327,6 @@ export function InstanceGeneralSettings() {
             className="text-xs text-muted-foreground"
             dangerouslySetInnerHTML={{ __html: t("instance.feedback.retest_hint") }}
           />
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">{t("instance.language.title")}</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              {t("instance.language.description")}
-            </p>
-          </div>
-          <LanguageSwitcher />
         </div>
       </section>
 
