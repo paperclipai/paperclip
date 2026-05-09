@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveSessionRotationReason,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -299,8 +300,12 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
   });
 
-  it("preserves session context on timer heartbeats", () => {
-    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
+  it("resets session context on taskless timer heartbeats", () => {
+    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(true);
+  });
+
+  it("preserves session context on timer wakes with an explicit task", () => {
+    expect(shouldResetTaskSessionForWake({ wakeSource: "timer", taskKey: "issue-1" })).toBe(false);
   });
 
   it("preserves session context on manual on-demand invokes by default", () => {
@@ -367,8 +372,8 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ issueId: "issue-456" }, null)).toBe("issue-456");
   });
 
-  it("returns __heartbeat__ for timer wakes with no explicit key", () => {
-    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBe("__heartbeat__");
+  it("does not synthesize a task key for timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBeNull();
   });
 
   it("prefers explicit key over heartbeat fallback even on timer wakes", () => {
@@ -557,5 +562,47 @@ describe("parseSessionCompactionPolicy", () => {
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
     });
+  });
+});
+
+describe("resolveSessionRotationReason", () => {
+  it("forces a reset above the hard raw input token limit even when policy is disabled", () => {
+    expect(
+      resolveSessionRotationReason({
+        policy: {
+          enabled: false,
+          maxSessionRuns: 0,
+          maxRawInputTokens: 0,
+          maxSessionAgeHours: 0,
+        },
+        latestRawUsage: {
+          inputTokens: 5_000_001,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+        },
+        runCount: 1,
+        sessionAgeHours: 0,
+      }),
+    ).toContain("hard reset threshold 5,000,000");
+  });
+
+  it("does not force the hard reset at the threshold boundary", () => {
+    expect(
+      resolveSessionRotationReason({
+        policy: {
+          enabled: false,
+          maxSessionRuns: 0,
+          maxRawInputTokens: 0,
+          maxSessionAgeHours: 0,
+        },
+        latestRawUsage: {
+          inputTokens: 5_000_000,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+        },
+        runCount: 1,
+        sessionAgeHours: 0,
+      }),
+    ).toBeNull();
   });
 });

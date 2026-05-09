@@ -936,7 +936,7 @@ interface WakeupOptions {
   contextSnapshot?: Record<string, unknown>;
 }
 
-type UsageTotals = {
+export type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -1404,9 +1404,49 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
   };
 }
 
+const HARD_SESSION_RAW_INPUT_TOKEN_LIMIT = 5_000_000;
+
 function formatCount(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "0";
   return value.toLocaleString("en-US");
+}
+
+export function resolveSessionRotationReason(input: {
+  policy: SessionCompactionPolicy;
+  latestRawUsage: UsageTotals | null;
+  runCount: number;
+  sessionAgeHours: number;
+}) {
+  const { policy, latestRawUsage, runCount, sessionAgeHours } = input;
+  if (
+    latestRawUsage &&
+    latestRawUsage.inputTokens > HARD_SESSION_RAW_INPUT_TOKEN_LIMIT
+  ) {
+    return (
+      `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
+      `(hard reset threshold ${formatCount(HARD_SESSION_RAW_INPUT_TOKEN_LIMIT)})`
+    );
+  }
+
+  if (policy.enabled && policy.maxSessionRuns > 0 && runCount > policy.maxSessionRuns) {
+    return `session exceeded ${policy.maxSessionRuns} runs`;
+  }
+  if (
+    policy.enabled &&
+    policy.maxRawInputTokens > 0 &&
+    latestRawUsage &&
+    latestRawUsage.inputTokens >= policy.maxRawInputTokens
+  ) {
+    return (
+      `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
+      `(threshold ${formatCount(policy.maxRawInputTokens)})`
+    );
+  }
+  if (policy.enabled && policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+    return `session age reached ${Math.floor(sessionAgeHours)} hours`;
+  }
+
+  return null;
 }
 
 export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
@@ -1503,14 +1543,6 @@ function parseIssueAssigneeAdapterOverrides(
   };
 }
 
-/**
- * Synthetic task key for timer/heartbeat wakes that have no issue context.
- * This allows timer wakes to participate in the `agentTaskSessions` system
- * and benefit from robust session resume, instead of relying solely on the
- * simpler `agentRuntimeState.sessionId` fallback.
- */
-const HEARTBEAT_TASK_KEY = "__heartbeat__";
-
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -1526,32 +1558,30 @@ function deriveTaskKey(
   );
 }
 
-/**
- * Extended task key derivation that falls back to a stable synthetic key
- * for timer/heartbeat wakes. This ensures timer wakes can resume their
- * previous session via `agentTaskSessions` instead of starting fresh.
- *
- * The synthetic key is only used when:
- * - No explicit task/issue key exists in the context
- * - The wake source is "timer" (scheduled heartbeat)
- */
 export function deriveTaskKeyWithHeartbeatFallback(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  const explicit = deriveTaskKey(contextSnapshot, payload);
-  if (explicit) return explicit;
+  return deriveTaskKey(contextSnapshot, payload);
+}
 
+function isHeartbeatOnlyWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  if (deriveTaskKey(contextSnapshot, null)) return false;
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
-
-  return null;
+  if (wakeSource !== "timer") return false;
+  if (extractWakeCommentIds(contextSnapshot).length > 0) return false;
+  if (readNonEmptyString(contextSnapshot?.wakeCommentId)) return false;
+  if (readNonEmptyString(contextSnapshot?.commentId)) return false;
+  return true;
 }
 
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return true;
+  if (isHeartbeatOnlyWake(contextSnapshot)) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
@@ -1627,6 +1657,7 @@ function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
+  if (isHeartbeatOnlyWake(contextSnapshot)) return "wake is a taskless timer heartbeat";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
@@ -3195,7 +3226,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const policy = parseSessionCompactionPolicy(agent);
-    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
+    const hasConfigurableThresholds = policy.enabled && hasSessionCompactionThresholds(policy);
+    if (!hasConfigurableThresholds) {
       return {
         rotate: false,
         reason: null,
@@ -3241,20 +3273,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : 0;
 
-    let reason: string | null = null;
-    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
-      reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawUsage.inputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
-    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
-      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
-    }
+    const reason = resolveSessionRotationReason({
+      policy,
+      latestRawUsage,
+      runCount: runs.length,
+      sessionAgeHours,
+    });
 
     if (!reason || !latestRun) {
       return {
@@ -7329,6 +7353,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
       context.paperclipSessionRotationReason = sessionCompaction.reason;
       context.paperclipPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
+      if (
+        latestRawUsage != null &&
+        latestRawUsage.inputTokens > HARD_SESSION_RAW_INPUT_TOKEN_LIMIT
+      ) {
+        logger.warn(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
+            reason: sessionCompaction.reason,
+          },
+          "forcing session reset after hard raw input token limit",
+        );
+      }
       runtimeSessionIdForAdapter = null;
       runtimeSessionParamsForAdapter = null;
       previousSessionDisplayId = null;
@@ -8482,9 +8521,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
     const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
+    const resetSessionForWake = shouldResetTaskSessionForWake(enrichedContextSnapshot);
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
-      await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
+      (resetSessionForWake ? null : await resolveSessionBeforeForWakeup(agent, effectiveTaskKey));
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
     const writeSkippedRequest = async (skipReason: string) => {
