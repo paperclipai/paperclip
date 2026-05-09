@@ -40,6 +40,7 @@ export interface DetectedAdapterModel {
   provider: string;
   source: string;
   candidates?: string[];
+  lightModel?: string;
 }
 
 export interface ClaudeLoginResult {
