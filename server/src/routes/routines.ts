@@ -168,6 +168,8 @@ export function routineRoutes(
     if (statusWillActivate) {
       await assertBoardCanAssignTasks(req, routine.companyId);
     }
+    // Current owner may reassign to any agent in the company (unilateral handoff).
+    // Non-owners may only assign to themselves (unchanged).
     if (
       req.actor.type === "agent" &&
       req.body.assigneeAgentId !== undefined &&
