@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
-import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
+import { Camera, Link2, LoaderCircle, Save, Send, Trash2, Unlink, UserRoundPen } from "lucide-react";
+import type { AuthSession, CurrentUserProfile, TelegramLinkStatus, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
+import { telegramLinkApi } from "@/api/telegramLink";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -117,6 +118,42 @@ export function ProfileSettings() {
     },
   });
 
+  const telegramQuery = useQuery({
+    queryKey: queryKeys.auth.telegramLink,
+    queryFn: () => telegramLinkApi.get(),
+    retry: false,
+  });
+
+  const [telegramCode, setTelegramCode] = useState("");
+  const [telegramError, setTelegramError] = useState<string | null>(null);
+
+  function syncTelegramStatus(status: TelegramLinkStatus) {
+    queryClient.setQueryData<TelegramLinkStatus>(queryKeys.auth.telegramLink, status);
+  }
+
+  const linkTelegramMutation = useMutation({
+    mutationFn: (code: string) => telegramLinkApi.link(code),
+    onSuccess: (status) => {
+      setTelegramError(null);
+      setTelegramCode("");
+      syncTelegramStatus(status);
+    },
+    onError: (error) => {
+      setTelegramError(error instanceof Error ? error.message : "Не удалось привязать Telegram.");
+    },
+  });
+
+  const unlinkTelegramMutation = useMutation({
+    mutationFn: () => telegramLinkApi.unlink(),
+    onSuccess: (status) => {
+      setTelegramError(null);
+      syncTelegramStatus(status);
+    },
+    onError: (error) => {
+      setTelegramError(error instanceof Error ? error.message : "Не удалось отвязать Telegram.");
+    },
+  });
+
   if (sessionQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading profile...</div>;
   }
@@ -136,6 +173,12 @@ export function ProfileSettings() {
   const uploadHint = selectedCompany
     ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
     : "Select a company to upload an avatar into Paperclip storage.";
+  const telegramStatus = telegramQuery.data ?? null;
+  const telegramLinked = telegramStatus?.linked ?? false;
+  const telegramUsername = telegramStatus?.telegramUsername ?? null;
+  const trimmedTelegramCode = telegramCode.trim();
+  const isTelegramCodeValid = /^\d{6}$/u.test(trimmedTelegramCode);
+  const isTelegramBusy = linkTelegramMutation.isPending || unlinkTelegramMutation.isPending;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -267,6 +310,100 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
+
+        <div className="rounded-[20px] border border-border/70 bg-card p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Send className="h-5 w-5 text-muted-foreground" />
+                <h2 className="text-base font-semibold">Telegram</h2>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Привяжи Telegram-аккаунт, чтобы общаться с агентами через бота.
+              </p>
+            </div>
+            {telegramLinked ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600">
+                <Link2 className="size-3.5" />
+                Привязан
+              </span>
+            ) : null}
+          </div>
+
+          {telegramError ? (
+            <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {telegramError}
+            </div>
+          ) : null}
+
+          {telegramQuery.isLoading ? (
+            <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+              <LoaderCircle className="size-4 animate-spin" />
+              Загрузка...
+            </div>
+          ) : telegramLinked ? (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm">
+                <span className="text-muted-foreground">Telegram: </span>
+                <span className="font-medium">
+                  {telegramUsername ? `@${telegramUsername}` : "привязан"}
+                </span>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => unlinkTelegramMutation.mutate()}
+                disabled={isTelegramBusy}
+              >
+                {unlinkTelegramMutation.isPending ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : (
+                  <Unlink className="size-4" />
+                )}
+                Отвязать
+              </Button>
+            </div>
+          ) : (
+            <form
+              className="mt-4 space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!isTelegramCodeValid || isTelegramBusy) return;
+                linkTelegramMutation.mutate(trimmedTelegramCode);
+              }}
+            >
+              <p className="text-sm text-muted-foreground">
+                Напиши <code className="rounded bg-muted px-1 py-0.5 text-xs">/login</code> боту в Telegram — он пришлёт 6-значный код. Введи его ниже.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <div className="flex-1 min-w-[180px] space-y-1">
+                  <Label htmlFor="telegram-code">Код привязки</Label>
+                  <Input
+                    id="telegram-code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    placeholder="123456"
+                    value={telegramCode}
+                    onChange={(event) => setTelegramCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    disabled={isTelegramBusy}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button type="submit" disabled={!isTelegramCodeValid || isTelegramBusy}>
+                    {linkTelegramMutation.isPending ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <Link2 className="size-4" />
+                    )}
+                    Привязать
+                  </Button>
+                </div>
+              </div>
+            </form>
+          )}
+        </div>
       </section>
     </div>
   );

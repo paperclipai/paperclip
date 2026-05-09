@@ -20,6 +20,12 @@ const mockAssetsApi = vi.hoisted(() => ({
   uploadCompanyLogo: vi.fn(),
 }));
 
+const mockTelegramLinkApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  link: vi.fn(),
+  unlink: vi.fn(),
+}));
+
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
@@ -28,6 +34,10 @@ vi.mock("@/api/auth", () => ({
 
 vi.mock("@/api/assets", () => ({
   assetsApi: mockAssetsApi,
+}));
+
+vi.mock("@/api/telegramLink", () => ({
+  telegramLinkApi: mockTelegramLinkApi,
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -79,6 +89,9 @@ describe("ProfileSettings", () => {
       email: "jane@example.com",
       image: input.image,
     }));
+    mockTelegramLinkApi.get.mockResolvedValue({ linked: false, telegramUsername: null });
+    mockTelegramLinkApi.link.mockResolvedValue({ linked: true, telegramUsername: "dinar" });
+    mockTelegramLinkApi.unlink.mockResolvedValue({ linked: false, telegramUsername: null });
   });
 
   afterEach(() => {
@@ -125,6 +138,89 @@ describe("ProfileSettings", () => {
       name: "Jane Example",
       image: "/api/assets/asset-1/content",
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("links Telegram via the entered code and calls the API once", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProfileSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const codeInput = container.querySelector('input#telegram-code') as HTMLInputElement | null;
+    expect(codeInput).not.toBeNull();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      setter?.call(codeInput, "654321");
+      codeInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const linkButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Привязать"),
+    );
+    expect(linkButton).toBeTruthy();
+
+    await act(async () => {
+      linkButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockTelegramLinkApi.link).toHaveBeenCalledWith("654321");
+    expect(container.textContent).toContain("@dinar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("unlinks Telegram when already linked", async () => {
+    mockTelegramLinkApi.get.mockResolvedValue({ linked: true, telegramUsername: "dinar" });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProfileSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("@dinar");
+
+    const unlinkButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Отвязать"),
+    );
+    expect(unlinkButton).toBeTruthy();
+
+    await act(async () => {
+      unlinkButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockTelegramLinkApi.unlink).toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
