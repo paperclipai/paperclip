@@ -1620,7 +1620,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activityDetailsText).not.toContain(apiKeySecret);
   });
 
-  it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
+  it("escalates an exhausted failed successful-run handoff to manual review without waking another agent", async () => {
     const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -1662,14 +1662,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ),
       ).then((rows) => rows[0] ?? null),
     );
-    expect(recovery?.assigneeAgentId).toBe(agentId);
+    expect(recovery?.assigneeAgentId).toBeNull();
+    expect(recovery?.status).toBe("in_review");
     expect(recovery?.title).toContain("Recover missing next step");
     expect(recovery?.description).toContain("Normalized cause: `successful_run_missing_state`");
     expect(recovery?.description).toContain("not a runtime/adapter crash report");
+    expect(recovery?.description).toContain("manual Steward/board review");
     expect(recovery?.description).toContain(`Source run: [\`${sourceRunId}\`]`);
     expect(recovery?.description).toContain("Missing disposition: `clear_next_step`");
     expect(recovery?.description).toContain("Source assignee: [CodexCoder]");
     expect(recovery?.description).not.toContain("sk-test-successful-handoff-secret");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_assigned")));
+    expect(wakeups).toHaveLength(1); // only the original source wake; no recovery-owner wake was enqueued
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
@@ -1690,7 +1698,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           title: "Recovery owner",
           rows: expect.arrayContaining([
             expect.objectContaining({ type: "issue_link", identifier: recovery?.identifier }),
-            expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CodexCoder" }),
+            expect.objectContaining({ type: "key_value", label: "Recovery owner", value: "unknown" }),
           ]),
         }),
         expect.objectContaining({
@@ -1749,8 +1757,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ),
       ).then((rows) => rows[0] ?? null),
     );
+    expect(recovery?.status).toBe("in_review");
+    expect(recovery?.assigneeAgentId).toBeNull();
     expect(recovery?.description).toContain("Latest handoff run status: `succeeded`");
-    expect(recovery?.description).toContain("Suggested");
+    expect(recovery?.description).toContain("manual Steward/board review");
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

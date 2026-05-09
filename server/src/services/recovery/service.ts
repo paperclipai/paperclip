@@ -1448,7 +1448,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Latest handoff run status: \`${input.latestRun?.status ?? "unknown"}\``,
         `- Normalized cause: \`${SUCCESSFUL_RUN_MISSING_STATE_REASON}\``,
         `- Missing disposition: \`${missingDisposition}\``,
-        "- Suggested manager action: choose and record a valid issue disposition without copying transcript content.",
+        "- Suggested manager action: leave this recovery issue in manual Steward/board review until someone records a valid issue disposition without copying transcript content.",
         "",
         "## Required Action",
         "",
@@ -1498,12 +1498,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
-    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
-    if (!ownerAgentId) return null;
+    const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const usesManualReviewRecovery = recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON;
+    const ownerAgentId = usesManualReviewRecovery
+      ? null
+      : await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+    if (!usesManualReviewRecovery && !ownerAgentId) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
-    const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     let recovery: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       recovery = await issuesSvc.create(input.issue.companyId, {
@@ -1519,7 +1522,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
           sourceAssignee,
         }),
-        status: "todo",
+        status: usesManualReviewRecovery ? "in_review" : "todo",
         priority: input.issue.priority,
         parentId: input.issue.id,
         projectId: input.issue.projectId,
@@ -1546,28 +1549,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return raced;
     }
 
-    await deps.enqueueWakeup(ownerAgentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: withRecoveryModelProfileHint({
-        issueId: recovery.id,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-        recoveryCause,
-      }),
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: withRecoveryModelProfileHint({
-        issueId: recovery.id,
-        taskId: recovery.id,
-        wakeReason: "issue_assigned",
-        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-        recoveryCause,
-      }),
-    });
+    if (ownerAgentId) {
+      await deps.enqueueWakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint({
+          issueId: recovery.id,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+          recoveryCause,
+        }),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: recovery.id,
+          taskId: recovery.id,
+          wakeReason: "issue_assigned",
+          source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+          recoveryCause,
+        }),
+      });
+    }
 
     return recovery;
   }
