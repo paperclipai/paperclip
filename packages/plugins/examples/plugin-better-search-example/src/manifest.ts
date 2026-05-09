@@ -17,6 +17,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.sidebar.register",
     "issues.read",
     "issue.comments.read",
+    "plugin.state.read",
+    "plugin.state.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

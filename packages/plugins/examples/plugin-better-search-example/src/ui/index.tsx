@@ -1,15 +1,20 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   useHostContext,
+  usePluginAction,
   usePluginData,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
-import type { SearchResult } from "../worker.js";
+import type { Preset, SearchResult } from "../worker.js";
 
 type SearchData = {
   results: SearchResult[];
   query: string;
   error?: string;
+};
+
+type PresetsData = {
+  presets: Preset[];
 };
 
 type AuthorFilter = "all" | "human" | "agent";
@@ -185,6 +190,334 @@ function ResultRow({
 }
 
 // ---------------------------------------------------------------------------
+// Preset button with inline rename + ⋮ menu
+// ---------------------------------------------------------------------------
+
+function PresetButton({
+  preset,
+  onApply,
+  onRename,
+  onDelete,
+}: {
+  preset: Preset;
+  onApply: (p: Preset) => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(preset.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
+
+  // Close menu when clicking outside.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+        setConfirmDelete(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [menuOpen]);
+
+  // Focus rename input when entering rename mode.
+  useEffect(() => {
+    if (renaming) {
+      renameRef.current?.select();
+    }
+  }, [renaming]);
+
+  function commitRename() {
+    const trimmed = renameValue.trim();
+    if (trimmed && trimmed !== preset.name) {
+      onRename(preset.id, trimmed);
+    }
+    setRenaming(false);
+  }
+
+  const btnBase: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "0",
+    borderRadius: "12px",
+    border: "1px solid var(--border)",
+    background: "transparent",
+    overflow: "hidden",
+    flexShrink: 0,
+  };
+
+  const labelBtn: CSSProperties = {
+    padding: "2px 8px",
+    background: "transparent",
+    border: "none",
+    cursor: "pointer",
+    fontSize: "11px",
+    color: "var(--foreground)",
+    whiteSpace: "nowrap",
+    maxWidth: "100px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  };
+
+  const menuBtn: CSSProperties = {
+    padding: "2px 5px",
+    background: "transparent",
+    border: "none",
+    borderLeft: "1px solid var(--border)",
+    cursor: "pointer",
+    fontSize: "11px",
+    color: "var(--muted-foreground)",
+    lineHeight: 1,
+  };
+
+  const menuStyle: CSSProperties = {
+    position: "absolute",
+    top: "calc(100% + 2px)",
+    left: 0,
+    zIndex: 100,
+    background: "var(--background)",
+    border: "1px solid var(--border)",
+    borderRadius: "6px",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+    minWidth: "130px",
+    overflow: "hidden",
+  };
+
+  const menuItemStyle: CSSProperties = {
+    display: "block",
+    width: "100%",
+    padding: "6px 10px",
+    background: "transparent",
+    border: "none",
+    textAlign: "left",
+    cursor: "pointer",
+    fontSize: "12px",
+    color: "var(--foreground)",
+  };
+
+  const menuItemDangerStyle: CSSProperties = {
+    ...menuItemStyle,
+    color: "#ef4444",
+  };
+
+  if (renaming) {
+    return (
+      <input
+        ref={renameRef}
+        value={renameValue}
+        onChange={(e) => setRenameValue(e.target.value)}
+        onBlur={commitRename}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commitRename();
+          if (e.key === "Escape") { setRenaming(false); setRenameValue(preset.name); }
+        }}
+        style={{
+          ...inputStyle,
+          width: "auto",
+          minWidth: "80px",
+          maxWidth: "120px",
+          padding: "2px 6px",
+          fontSize: "11px",
+          borderRadius: "12px",
+        }}
+      />
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }} ref={menuRef}>
+      <div style={btnBase}>
+        <button
+          type="button"
+          style={labelBtn}
+          onClick={() => onApply(preset)}
+          title={`Apply preset: ${preset.name}`}
+        >
+          {preset.name}
+        </button>
+        <button
+          type="button"
+          style={menuBtn}
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); setConfirmDelete(false); }}
+          title="Preset options"
+          aria-label="Preset options"
+        >
+          ⋮
+        </button>
+      </div>
+
+      {menuOpen && (
+        <div style={menuStyle}>
+          <button
+            type="button"
+            style={menuItemStyle}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "color-mix(in srgb, var(--accent, #6366f1) 10%, transparent)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+            onClick={() => { setMenuOpen(false); setRenaming(true); setRenameValue(preset.name); }}
+          >
+            Rename
+          </button>
+          {!confirmDelete ? (
+            <button
+              type="button"
+              style={menuItemDangerStyle}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "color-mix(in srgb, #ef4444 10%, transparent)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete…
+            </button>
+          ) : (
+            <button
+              type="button"
+              style={{ ...menuItemDangerStyle, fontWeight: 600 }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "color-mix(in srgb, #ef4444 20%, transparent)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+              onClick={() => { setMenuOpen(false); setConfirmDelete(false); onDelete(preset.id); }}
+            >
+              Confirm delete
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Presets row (above results)
+// ---------------------------------------------------------------------------
+
+function PresetsRow({
+  presets,
+  onApply,
+  onRename,
+  onDelete,
+}: {
+  presets: Preset[];
+  onApply: (p: Preset) => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (presets.length === 0) {
+    return (
+      <div
+        style={{
+          color: "var(--muted-foreground)",
+          fontSize: "11px",
+          fontStyle: "italic",
+          padding: "2px 0",
+        }}
+      >
+        No presets yet — search for something and click "Save as preset".
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: "4px",
+        flexWrap: "wrap",
+        alignItems: "center",
+      }}
+    >
+      {presets.map((p) => (
+        <PresetButton
+          key={p.id}
+          preset={p}
+          onApply={onApply}
+          onRename={onRename}
+          onDelete={onDelete}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Save-as-preset inline form
+// ---------------------------------------------------------------------------
+
+function SavePresetForm({
+  defaultName,
+  onSave,
+  onCancel,
+}: {
+  defaultName: string;
+  onSave: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.select(); }, []);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: "4px",
+        alignItems: "center",
+        padding: "4px 0",
+      }}
+    >
+      <input
+        ref={inputRef}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && name.trim()) onSave(name.trim());
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder="Preset name…"
+        style={{ ...inputStyle, flex: 1, padding: "3px 6px", fontSize: "12px" }}
+        autoComplete="off"
+      />
+      <button
+        type="button"
+        disabled={!name.trim()}
+        onClick={() => { if (name.trim()) onSave(name.trim()); }}
+        style={{
+          padding: "3px 8px",
+          borderRadius: "6px",
+          border: "none",
+          background: "var(--primary, #6366f1)",
+          color: "var(--primary-foreground, #fff)",
+          fontSize: "11px",
+          cursor: name.trim() ? "pointer" : "not-allowed",
+          opacity: name.trim() ? 1 : 0.5,
+          flexShrink: 0,
+        }}
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          padding: "3px 6px",
+          borderRadius: "6px",
+          border: "1px solid var(--border)",
+          background: "transparent",
+          color: "var(--muted-foreground)",
+          fontSize: "11px",
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -193,6 +526,33 @@ export function BetterSearchPanel() {
   const [inputValue, setInputValue] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [filter, setFilter] = useState<AuthorFilter>("all");
+
+  // Preset state — loaded from worker on mount, kept in sync via refresh token.
+  const [presetsRefresh, setPresetsRefresh] = useState(0);
+  const [localPresets, setLocalPresets] = useState<Preset[] | null>(null);
+  const [savingPreset, setSavingPreset] = useState(false);
+
+  const savePreset = usePluginAction("savePreset");
+  const deletePreset = usePluginAction("deletePreset");
+
+  const companyId = context.companyId ?? "";
+  const userId = context.userId ?? "";
+  const hasUserContext = !!(companyId && userId);
+
+  // Fetch persisted presets; refresh token forces re-fetch after mutations.
+  const presetsData = usePluginData<PresetsData>(
+    "getPresets",
+    hasUserContext ? { companyId, userId, _r: presetsRefresh } : undefined
+  );
+
+  // Seed local state from remote once loaded; don't overwrite pending optimistic updates.
+  useEffect(() => {
+    if (!presetsData.loading && presetsData.data) {
+      setLocalPresets(presetsData.data.presets);
+    }
+  }, [presetsData.data, presetsData.loading]);
+
+  const presets = localPresets ?? [];
 
   // Debounce input → query
   useEffect(() => {
@@ -206,8 +566,8 @@ export function BetterSearchPanel() {
 
   const searchData = usePluginData<SearchData>(
     "searchIssues",
-    debouncedQuery && context.companyId
-      ? { companyId: context.companyId, q: debouncedQuery }
+    debouncedQuery && companyId
+      ? { companyId, q: debouncedQuery }
       : undefined
   );
 
@@ -226,6 +586,63 @@ export function BetterSearchPanel() {
   const isSearching = searchData.loading && debouncedQuery.length > 0;
   const hasError = !!searchData.error;
   const hasQuery = debouncedQuery.length > 0;
+  const canSavePreset = hasUserContext && (hasQuery || filter !== "all");
+
+  // Apply a preset atomically: set both query and filter, then trigger search.
+  function applyPreset(p: Preset) {
+    const q = p.query;
+    const f = (p.filters.authorType as AuthorFilter) ?? "all";
+    setInputValue(q);
+    setDebouncedQuery(q.trim());
+    setFilter(f);
+    setSavingPreset(false);
+  }
+
+  async function handleSavePreset(name: string) {
+    if (!hasUserContext) return;
+    const preset: Preset = {
+      id: crypto.randomUUID(),
+      name,
+      query: debouncedQuery,
+      filters: { authorType: filter },
+    };
+    // Optimistic update.
+    setLocalPresets((prev) => [...(prev ?? []), preset]);
+    setSavingPreset(false);
+    try {
+      await savePreset({ companyId, userId, preset });
+    } catch {
+      // On failure, roll back and re-sync from server.
+      setPresetsRefresh((n) => n + 1);
+    }
+  }
+
+  async function handleRenamePreset(id: string, name: string) {
+    if (!hasUserContext) return;
+    const preset = presets.find((p) => p.id === id);
+    if (!preset) return;
+    const updated = { ...preset, name };
+    // Optimistic update (preserve position).
+    setLocalPresets((prev) =>
+      (prev ?? []).map((p) => (p.id === id ? updated : p))
+    );
+    try {
+      await savePreset({ companyId, userId, preset: updated });
+    } catch {
+      setPresetsRefresh((n) => n + 1);
+    }
+  }
+
+  async function handleDeletePreset(id: string) {
+    if (!hasUserContext) return;
+    // Optimistic update.
+    setLocalPresets((prev) => (prev ?? []).filter((p) => p.id !== id));
+    try {
+      await deletePreset({ companyId, userId, presetId: id });
+    } catch {
+      setPresetsRefresh((n) => n + 1);
+    }
+  }
 
   return (
     <div style={panelStyle}>
@@ -251,7 +668,40 @@ export function BetterSearchPanel() {
               {f === "all" ? "All" : f === "human" ? "Human" : "AI Agent"}
             </button>
           ))}
+          {canSavePreset && !savingPreset && (
+            <button
+              type="button"
+              style={{
+                ...chipStyle(false),
+                borderStyle: "dashed",
+                color: "var(--primary, #6366f1)",
+                borderColor: "var(--primary, #6366f1)",
+              }}
+              onClick={() => setSavingPreset(true)}
+              title="Save current query + filters as a preset"
+            >
+              + Save as preset
+            </button>
+          )}
         </div>
+      )}
+
+      {savingPreset && (
+        <SavePresetForm
+          defaultName={debouncedQuery}
+          onSave={handleSavePreset}
+          onCancel={() => setSavingPreset(false)}
+        />
+      )}
+
+      {/* Preset row — always visible when context is available */}
+      {hasUserContext && (
+        <PresetsRow
+          presets={presets}
+          onApply={applyPreset}
+          onRename={handleRenamePreset}
+          onDelete={handleDeletePreset}
+        />
       )}
 
       {isSearching && (
