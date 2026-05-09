@@ -316,6 +316,29 @@ describe("Daytona sandbox provider plugin", () => {
     expect(errored.delete).toHaveBeenCalledWith(300);
   });
 
+  it("falls back to delete when stopping a healthy reusable lease fails mid-call", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-running", state: "started" });
+    sandbox.stop.mockRejectedValueOnce(new Error("api timeout"));
+    mockGet.mockResolvedValue(sandbox);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-running",
+      config: {
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(sandbox.stop).toHaveBeenCalledWith(300);
+    expect(sandbox.delete).toHaveBeenCalledWith(300);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
   it("executes commands one-shot and returns combined output via stdout", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();

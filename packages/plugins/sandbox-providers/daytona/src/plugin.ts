@@ -540,11 +540,14 @@ const plugin = definePlugin({
         try {
           await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
         } catch (error) {
-          if (sandbox.state === "error") {
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
-            return;
-          }
-          throw error;
+          console.warn(
+            `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
+          );
+          await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch((deleteError) => {
+            console.warn(
+              `Failed to delete Daytona sandbox after stop failure: ${formatErrorMessage(deleteError)}`,
+            );
+          });
         }
       }
       return;
