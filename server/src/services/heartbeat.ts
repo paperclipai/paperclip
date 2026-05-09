@@ -6110,6 +6110,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    errorMessage?: string | null,
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -6138,6 +6139,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(agents.id, agentId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    // When setting status to error, also update agentRuntimeState.lastError
+    // to prevent error status with null lastError (BRA-469, BRA-464 pattern)
+    console.log('[BRA-469 trace] finalizeAgentStatus:', { agentId, nextStatus, errorMessage, outcome });
+    if (nextStatus === "error") {
+      const result = await db
+        .update(agentRuntimeState)
+        .set({
+          lastError: errorMessage || "unknown_error",
+          updatedAt: new Date(),
+        })
+        .where(eq(agentRuntimeState.agentId, agentId))
+        .returning();
+      console.log('[BRA-469 trace] agentRuntimeState update result:', { agentId, rowsAffected: result.length, lastError: result[0]?.lastError });
+    } else if ((nextStatus === "idle" || nextStatus === "running") && outcome === "succeeded") {
+      // Clear lastError only on successful completion, not manual recovery
+      // This preserves diagnostic evidence when errors are manually cleared
+      await db
+        .update(agentRuntimeState)
+        .set({
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentRuntimeState.agentId, agentId));
+    }
 
     if (isFirstHeartbeat && updated) {
       const tc = getTelemetryClient();
@@ -6493,7 +6519,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", baseMessage);
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -7876,7 +7902,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(
+        agent.id,
+        outcome,
+        outcome === "succeeded" || outcome === "cancelled"
+          ? null
+          : adapterResult.errorMessage ?? "run_failed",
+      );
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -7954,7 +7986,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", message);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -7997,7 +8029,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await finalizeAgentStatus(run.agentId, "failed", message).catch(() => undefined);
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
           await releaseEnvironmentLeasesForRun({
