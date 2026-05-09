@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import type { AdapterEnvironmentTestResult, EnvBinding } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
+import { secretsApi } from "../api/secrets";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -45,7 +46,9 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { mergeAdapterEnv } from "../lib/onboarding-env-merge";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { EnvVarEditor } from "./EnvVarEditor";
 import {
   Building2,
   Bot,
@@ -123,6 +126,7 @@ export function OnboardingWizard() {
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  const [userEnv, setUserEnv] = useState<Record<string, EnvBinding>>({});
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState(
@@ -199,6 +203,31 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+
+  const { data: availableSecrets = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.secrets.list(createdCompanyId)
+      : ["secrets", "none"],
+    queryFn: () => secretsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2,
+  });
+
+  const createSecret = useMutation({
+    mutationFn: async (input: { name: string; value: string }) => {
+      if (!createdCompanyId) {
+        throw new Error("Create a company before creating secrets");
+      }
+      return secretsApi.create(createdCompanyId, input);
+    },
+    onSuccess: () => {
+      if (createdCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.secrets.list(createdCompanyId),
+        });
+      }
+    },
+  });
+
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
@@ -296,6 +325,7 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setUserEnv({});
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -341,15 +371,16 @@ export function OnboardingWizard() {
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
-    if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
-      const env =
-        typeof config.env === "object" &&
-        config.env !== null &&
-        !Array.isArray(config.env)
-          ? { ...(config.env as Record<string, unknown>) }
-          : {};
-      env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
-      config.env = env;
+    const mergedEnv = mergeAdapterEnv({
+      adapterEnv: config.env,
+      userEnv,
+      adapterType,
+      forceUnsetAnthropicApiKey,
+    });
+    if (mergedEnv !== undefined) {
+      config.env = mergedEnv;
+    } else {
+      delete config.env;
     }
     return config;
   }
@@ -752,6 +783,9 @@ export function OnboardingWizard() {
                           )}
                           onClick={() => {
                             const nextType = opt.type;
+                            if (nextType !== adapterType) {
+                              setUserEnv({});
+                            }
                             setAdapterType(nextType);
                             if (nextType === "codex_local") {
                               if (!model) {
@@ -810,6 +844,9 @@ export function OnboardingWizard() {
                              onClick={() => {
                                if (opt.comingSoon) return;
                                const nextType = opt.type;
+                              if (nextType !== adapterType) {
+                                setUserEnv({});
+                              }
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
@@ -1080,6 +1117,39 @@ export function OnboardingWizard() {
                       />
                     </div>
                   )}
+
+                  <details className="rounded-md border border-border bg-muted/30 p-3 group">
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground select-none flex items-center gap-1.5">
+                      <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
+                      Environment variables (advanced)
+                    </summary>
+                    <div className="mt-3 space-y-2">
+                      <p className="text-[11px] text-muted-foreground">
+                        Inject env vars into the spawned subprocess. Useful for
+                        things like{" "}
+                        <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-background">
+                          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+                        </code>{" "}
+                        or pointing{" "}
+                        <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-background">
+                          CLAUDE_CONFIG_DIR
+                        </code>{" "}
+                        at an alternate Claude Code config.
+                      </p>
+                      <EnvVarEditor
+                        value={userEnv}
+                        secrets={availableSecrets}
+                        onCreateSecret={async (name, value) => {
+                          const created = await createSecret.mutateAsync({
+                            name,
+                            value,
+                          });
+                          return created;
+                        }}
+                        onChange={(env) => setUserEnv(env ?? {})}
+                      />
+                    </div>
+                  </details>
                 </div>
               )}
 
