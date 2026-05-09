@@ -317,3 +317,37 @@ V1 issues git credentials by resolving a per-company secret stored in
 ### V2 plan
 
 V2 replaces the static PAT with a GitHub App installation token minted on-demand for the specific repo the agent is about to clone. The `/api/workspace/git-credentials` contract stays unchanged.
+
+## Production rate limiting
+
+The `/api/agent-auth/exchange`, `/api/runs/:runId/events`, and
+`/api/workspace/git-credentials` endpoints carry sliding-window rate limits.
+The limit budgets are:
+
+| Endpoint                            | Window | Max  | Keyed by              |
+|-------------------------------------|--------|------|-----------------------|
+| `/api/agent-auth/exchange`          | 60s    | 10   | client IP             |
+| `/api/runs/:runId/events`           | 60s    | 1000 | run id (`run:<id>`)   |
+| `/api/workspace/git-credentials`    | 60s    | 30   | run id, IP fallback   |
+
+### Backing store
+
+By default the limits use a per-process in-memory sliding-window. **In a
+multi-replica deployment this is insufficient**: a client distributing
+requests across replicas evades the limit because each process sees a
+fraction of the volume.
+
+For production, set `PAPERCLIP_REDIS_URL` to a Redis 6+ instance reachable
+from every replica. Format: `redis://[:password@]host:port[/db]` or
+`rediss://...` for TLS.
+
+When `PAPERCLIP_REDIS_URL` is set, the server uses an atomic Lua-script
+based limiter against Redis sorted sets. Keys are namespaced
+`paperclip:rl:<limiter>:<consume-key>` and expire `windowMs * 2` after the
+last hit, so abandoned keys do not accumulate.
+
+### Failure mode
+
+Redis errors during `consume()` fail open: the request is admitted, the
+error is logged. This protects availability when Redis blips at the cost of
+admitting a request that should have been throttled.
