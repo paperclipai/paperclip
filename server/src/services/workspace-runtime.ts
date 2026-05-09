@@ -1526,8 +1526,20 @@ function renderRuntimeServiceEnv(input: {
 }) {
   const rendered: Record<string, string> = {};
   for (const [key, value] of Object.entries(input.envConfig)) {
-    if (typeof value !== "string") continue;
-    rendered[key] = renderTemplate(value, input.templateData);
+    // Paperclip stores env vars as {type: "plain"|"secret", value: string}
+    // or as raw strings. Unwrap the structured format before rendering.
+    let resolved: string | undefined;
+    if (typeof value === "string") {
+      resolved = value;
+    } else if (
+      typeof value === "object" && value !== null &&
+      "value" in value && typeof (value as { value: unknown }).value === "string"
+    ) {
+      resolved = (value as { value: string }).value;
+    }
+    if (resolved !== undefined) {
+      rendered[key] = renderTemplate(resolved, input.templateData);
+    }
   }
   return rendered;
 }
