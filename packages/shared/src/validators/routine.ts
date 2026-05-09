@@ -12,6 +12,7 @@ import {
   ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
   issueExecutionWorkspaceSettingsSchema,
 } from "./issue.js";
+import { multilineTextSchema } from "./text.js";
 
 const routineVariableValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
 
@@ -53,7 +54,7 @@ export const createRoutineSchema = z.object({
   goalId: z.string().uuid().optional().nullable(),
   parentIssueId: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
-  description: z.string().optional().nullable(),
+  description: multilineTextSchema.optional().nullable(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
