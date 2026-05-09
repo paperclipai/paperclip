@@ -148,14 +148,12 @@ function ComboboxField({
           }}
           onBlur={() => {
             // Delay close to allow click on option to register first.
-            // If the typed value doesn't match any option, commit it as a
-            // custom slug (so paste + click-away works without pressing Enter).
+            // Always commit a non-empty typed value on blur so paste + click-away
+            // works without pressing Enter, even when the list has partial matches.
             setTimeout(() => {
               setOpen(false);
-              if (filter && filtered.length === 0) {
+              if (filter) {
                 select(filter);
-              } else {
-                setFilter("");
               }
             }, 150);
           }}
