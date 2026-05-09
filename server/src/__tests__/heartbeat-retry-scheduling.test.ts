@@ -7,13 +7,17 @@ import {
   agentWakeupRequests,
   budgetPolicies,
   companies,
+  companySkills,
   createDb,
+  documents,
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueDocuments,
   issueRelations,
   issues,
 } from "@paperclipai/db";
+import { ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -49,11 +53,14 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    await db.delete(issueDocuments);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(budgetPolicies);
+    await db.delete(companySkills);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -621,6 +628,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       outcome: "retry_exhausted",
       attempt: 3,
       maxAttempts: 2,
+      rateLimitPause: null,
     });
 
     const runCount = await db
@@ -1148,6 +1156,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       outcome: "retry_exhausted",
       attempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length + 1,
       maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      rateLimitPause: null,
     });
 
     const runCount = await db
@@ -1336,5 +1345,149 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  it("auto-pauses an issue when claude_transient_upstream retries exhaust", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date();
+    const retryNotBefore = new Date(now.getTime() + 60 * 60 * 1000);
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Rate-limited work",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      error: "claude rate-limited",
+      errorCode: "claude_transient_upstream",
+      finishedAt: now,
+      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      scheduledRetryReason: "transient_failure",
+      resultJson: {
+        errorFamily: "transient_upstream",
+        retryNotBefore: retryNotBefore.toISOString(),
+        transientRetryNotBefore: retryNotBefore.toISOString(),
+      },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "transient_failure_retry",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(exhausted.outcome).toBe("retry_exhausted");
+    if (exhausted.outcome !== "retry_exhausted") return;
+    expect(exhausted.rateLimitPause).toEqual({
+      pauseUntil: retryNotBefore.toISOString(),
+      previousStatus: "in_progress",
+    });
+
+    const blockedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssue?.status).toBe("blocked");
+
+    const pauseDoc = await db
+      .select({ key: issueDocuments.key, body: documents.latestBody })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .where(
+        and(
+          eq(issueDocuments.issueId, issueId),
+          eq(issueDocuments.key, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(pauseDoc).not.toBeNull();
+    const parsed = JSON.parse(pauseDoc?.body ?? "{}");
+    expect(parsed.pauseUntil).toBe(retryNotBefore.toISOString());
+    expect(parsed.previousStatus).toBe("in_progress");
+    expect(parsed.lastAgentId).toBe(agentId);
+
+    // Skip-guard: a fresh wake before pauseUntil is dropped.
+    const skipped = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+      contextSnapshot: { issueId, source: "scheduler" },
+    });
+    expect(skipped).toBeNull();
+    const skippedRequests = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(skippedRequests.some((row) => row.reason === "rate_limit_pause" && row.status === "skipped")).toBe(true);
+
+    // Auto-unblock when pauseUntil has elapsed.
+    const afterPause = new Date(retryNotBefore.getTime() + 60 * 1000);
+    const tickResult = await heartbeat.processDueRateLimitPauses(afterPause);
+    expect(tickResult.cleared).toBe(1);
+
+    const restoredIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(restoredIssue?.status).toBe("in_progress");
+
+    const docAfter = await db
+      .select({ key: issueDocuments.key })
+      .from(issueDocuments)
+      .where(
+        and(
+          eq(issueDocuments.issueId, issueId),
+          eq(issueDocuments.key, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY),
+        ),
+      );
+    expect(docAfter).toEqual([]);
+
+    const wakes = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.some((row) => row.reason === "rate_limit_pause_resumed")).toBe(true);
   });
 });

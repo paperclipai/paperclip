@@ -13,6 +13,16 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+// Anthropic API rate-limit responses include an ISO-8601 reset hint, e.g.
+// "This request would exceed your organization's rate limit ... · resets at 2026-05-09T08:00:00Z".
+// The CLI usage-cap regex above does not match these, so we look for the ISO timestamp
+// near a rate-limit phrase as a fallback.
+const CLAUDE_API_RATE_LIMIT_ISO_RESET_RE =
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|exceed[^\n]{0,40}?\brate\s+limit)[\s\S]{0,200}?\bresets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)/i;
+// Some upstream messages include `retry_after` (seconds) or `Retry-After: <seconds>` headers
+// when ISO is absent; honor those as a secondary fallback.
+const CLAUDE_RETRY_AFTER_SECONDS_RE =
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b)[\s\S]{0,200}?\bretry[-_\s]?after[:=\s]+(\d{1,6})/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -362,9 +372,40 @@ export function extractClaudeRetryNotBefore(
   now = new Date(),
 ): Date | null {
   const haystack = buildClaudeTransientHaystack(input);
-  const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
-  if (!match) return null;
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  if (!haystack) return null;
+
+  const usageMatch = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
+  if (usageMatch) {
+    const fromUsage = parseClaudeResetClockTime(usageMatch[1] ?? "", now, usageMatch[2]);
+    if (fromUsage) return fromUsage;
+  }
+
+  const apiMatch = haystack.match(CLAUDE_API_RATE_LIMIT_ISO_RESET_RE);
+  if (apiMatch) {
+    const fromIso = parseClaudeResetIsoTimestamp(apiMatch[1] ?? "", now);
+    if (fromIso) return fromIso;
+  }
+
+  const retryAfterMatch = haystack.match(CLAUDE_RETRY_AFTER_SECONDS_RE);
+  if (retryAfterMatch) {
+    const seconds = Number.parseInt(retryAfterMatch[1] ?? "", 10);
+    if (Number.isInteger(seconds) && seconds > 0 && seconds <= 24 * 60 * 60) {
+      return new Date(now.getTime() + seconds * 1000);
+    }
+  }
+
+  return null;
+}
+
+function parseClaudeResetIsoTimestamp(text: string, now: Date): Date | null {
+  const trimmed = text.trim().replace(" ", "T");
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  // Reject obviously bogus timestamps that would extend the pause unboundedly.
+  const maxFuture = now.getTime() + 7 * 24 * 60 * 60 * 1000;
+  if (parsed.getTime() > maxFuture) return null;
+  return parsed;
 }
 
 export function isClaudeTransientUpstreamError(input: {
