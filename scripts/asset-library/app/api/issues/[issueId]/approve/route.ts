@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   evaluateApprovalGate,
+  evaluateIssueApprovalGate,
   parseProvenance,
   type ExceptionRef,
   type IssueDocument,
@@ -63,6 +64,98 @@ export async function POST(
     body = {};
   }
   const docKey = body.docKey ?? "";
+
+  // -----------------------------------------------------------------------
+  // Issue-level approve: no docKey → visual-mandatory gate
+  // -----------------------------------------------------------------------
+  if (!docKey) {
+    let docs: IssueDocument[] = [];
+    try {
+      const r = await fetch(
+        `${apiUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(params.issueId)}/documents`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, cache: "no-store" },
+      );
+      if (r.ok) docs = (await r.json()) as IssueDocument[];
+    } catch { /* noop */ }
+
+    let comments: { body?: string | null }[] = [];
+    try {
+      const r = await fetch(
+        `${apiUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(params.issueId)}/comments`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, cache: "no-store" },
+      );
+      if (r.ok) {
+        const data = (await r.json()) as unknown;
+        comments = Array.isArray(data) ? (data as { body?: string | null }[]) : [];
+      }
+    } catch { /* noop */ }
+
+    const issueGate = evaluateIssueApprovalGate(docs, comments);
+    if (!issueGate.allowed) {
+      return NextResponse.json(
+        { error: "gate_blocked", gate: issueGate },
+        { status: 422 },
+      );
+    }
+
+    const ts = new Date().toISOString();
+    const commentBody = `## ✅ Brief approved by founder via asset library — ${ts}
+
+- Visual gate: ${issueGate.hasVisual ? "passed (image/video asset present)" : "waived ([visual-waiver] comment on issue)"}
+- Status → \`todo\` (ready to ship)`;
+
+    const headersOut: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    };
+    if (runId) headersOut["X-Paperclip-Run-Id"] = runId;
+
+    const commentRes = await fetch(
+      `${apiUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(params.issueId)}/comments`,
+      {
+        method: "POST",
+        headers: headersOut,
+        body: JSON.stringify({ body: commentBody }),
+        cache: "no-store",
+      },
+    );
+    if (!commentRes.ok) {
+      const text = await commentRes.text();
+      return NextResponse.json(
+        { error: "comment_failed", upstreamStatus: commentRes.status, body: text },
+        { status: 502 },
+      );
+    }
+
+    const patchRes = await fetch(
+      `${apiUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(params.issueId)}`,
+      {
+        method: "PATCH",
+        headers: headersOut,
+        body: JSON.stringify({ status: "todo" }),
+        cache: "no-store",
+      },
+    );
+    if (!patchRes.ok) {
+      const text = await patchRes.text();
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "patch_failed",
+          upstreamStatus: patchRes.status,
+          body: text,
+          commentPosted: true,
+        },
+        { status: 502 },
+      );
+    }
+
+    return NextResponse.json({ ok: true, status: "todo", gate: issueGate });
+  }
+
+  // -----------------------------------------------------------------------
+  // Per-document approve: docKey present → provenance gate
+  // -----------------------------------------------------------------------
 
   // Server-side gate evaluation — defence in depth, never trust the client.
   let doc: IssueDocument | null = null;

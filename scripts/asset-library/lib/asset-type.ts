@@ -80,6 +80,7 @@ export type ProvenanceKind =
   | "local-ai"
   | "founder-original"
   | "cloud-ai-exception"
+  | "text-only"
   | "missing"
   | "unknown";
 
@@ -185,6 +186,14 @@ export function parseProvenance(
     kindRaw === "cloud-exception"
   ) {
     kind = "cloud-ai-exception";
+  } else if (
+    kindRaw === "text-only" ||
+    kindRaw === "text_only" ||
+    kindRaw === "text"
+  ) {
+    // Text copy (briefs, X/LinkedIn/Reddit posts) — no AI-media generation,
+    // so AI-provenance gate is not applicable. Founder approves on copy merit.
+    kind = "text-only";
   } else if (kindRaw) {
     kind = "unknown";
   }
@@ -270,6 +279,76 @@ export type ApprovalGate = {
   stockPattern: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Issue-level visual-mandatory gate (founder policy: every brief needs ≥1 visual)
+// ---------------------------------------------------------------------------
+
+export type IssueApprovalGateStatus = "ok" | "missing-visual" | "waiver";
+
+export type IssueApprovalGate = {
+  allowed: boolean;
+  status: IssueApprovalGateStatus;
+  banner: string | null;
+  bannerTone: "ok" | "warn" | "block";
+  hasVisual: boolean;
+  hasWaiver: boolean;
+};
+
+const VISUAL_KINDS: ReadonlySet<AssetKind> = new Set(["image", "video"]);
+
+export function hasVisualAsset(
+  docs: Pick<IssueDocument, "key" | "format" | "body">[],
+): boolean {
+  return docs.some((d) => VISUAL_KINDS.has(detectKind(d)));
+}
+
+export function hasVisualWaiver(comments: { body?: string | null }[]): boolean {
+  return comments.some((c) => /\[visual-waiver\]/i.test(c.body ?? ""));
+}
+
+export function evaluateIssueApprovalGate(
+  docs: Pick<IssueDocument, "key" | "format" | "body">[],
+  comments: { body?: string | null }[],
+): IssueApprovalGate {
+  const visual = hasVisualAsset(docs);
+  const waiver = !visual && hasVisualWaiver(comments);
+
+  if (visual) {
+    return {
+      allowed: true,
+      status: "ok",
+      banner: null,
+      bannerTone: "ok",
+      hasVisual: true,
+      hasWaiver: false,
+    };
+  }
+  if (waiver) {
+    return {
+      allowed: true,
+      status: "waiver",
+      banner:
+        "[visual-waiver] detected — approving without visual asset (reason documented in waiver comment).",
+      bannerTone: "warn",
+      hasVisual: false,
+      hasWaiver: true,
+    };
+  }
+  return {
+    allowed: false,
+    status: "missing-visual",
+    banner:
+      "Cannot approve — no image/video asset attached. Add a paired visual (Flux/SDXL/CogVideoX) before posting.",
+    bannerTone: "block",
+    hasVisual: false,
+    hasWaiver: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-document provenance gate
+// ---------------------------------------------------------------------------
+
 export function evaluateApprovalGate(
   prov: Provenance,
   docKey: string,
@@ -286,6 +365,20 @@ export function evaluateApprovalGate(
       exceptionRequired: null,
       cloudPattern: null,
       stockPattern: stock.label,
+    };
+  }
+
+  // Text-only briefs (X/LinkedIn/Reddit posts, copy-only) — no AI-media generation,
+  // approve on copy merit. AI-provenance gate is not applicable.
+  if (prov.kind === "text-only") {
+    return {
+      allowed: true,
+      status: "ok",
+      banner: "Text-only asset — copy review (no AI-media provenance required)",
+      bannerTone: "ok",
+      exceptionRequired: null,
+      cloudPattern: null,
+      stockPattern: null,
     };
   }
 
