@@ -14,7 +14,7 @@ describe("buildActiveMemorySection", () => {
       {
         name: "No bare numbers",
         description: "Never report bare numbers to board.",
-        enforcement: "always-check",
+        trigger: "always-check",
         howToApply: "Always include units and context when reporting metrics.",
       },
     ]);
@@ -29,7 +29,7 @@ describe("buildActiveMemorySection", () => {
       {
         name: "Rule A",
         description: "desc",
-        enforcement: "always-check",
+        trigger: "always-check",
         howToApply: null,
       },
     ]);
@@ -39,8 +39,8 @@ describe("buildActiveMemorySection", () => {
 
   it("includes all always-check memory entries", () => {
     const result = buildActiveMemorySection([
-      { name: "Rule A", description: "desc A", enforcement: "always-check", howToApply: null },
-      { name: "Rule B", description: "desc B", enforcement: "always-check", howToApply: "apply B" },
+      { name: "Rule A", description: "desc A", trigger: "always-check", howToApply: null },
+      { name: "Rule B", description: "desc B", trigger: "always-check", howToApply: "apply B" },
     ]);
     expect(result).toContain("**Rule A**");
     expect(result).toContain("**Rule B**");
@@ -103,7 +103,7 @@ describe("loadActiveMemories", () => {
           "name: Rule A",
           "description: Always-check rule",
           "type: feedback",
-          "enforcement: always-check",
+          "trigger: always-check",
           "---",
           "",
           "Do X always.",
@@ -119,7 +119,7 @@ describe("loadActiveMemories", () => {
           "name: Rule B",
           "description: Optional rule",
           "type: feedback",
-          "enforcement: optional",
+          "trigger: optional",
           "---",
           "",
           "Do Y sometimes.",
@@ -130,7 +130,7 @@ describe("loadActiveMemories", () => {
         content: [
           "---",
           "name: Rule C",
-          "description: Default (no enforcement field)",
+          "description: Default (no trigger field)",
           "type: feedback",
           "---",
           "",
@@ -142,7 +142,7 @@ describe("loadActiveMemories", () => {
     const result = await loadActiveMemories(cwd);
     expect(result).toHaveLength(1);
     expect(result[0]!.name).toBe("Rule A");
-    expect(result[0]!.enforcement).toBe("always-check");
+    expect(result[0]!.trigger).toBe("always-check");
     expect(result[0]!.howToApply).toBe("do X before every action");
   });
 
@@ -151,11 +151,11 @@ describe("loadActiveMemories", () => {
     const { cwd } = await makeMemoryDir(tmp, [
       {
         filename: "rule_a.md",
-        content: "---\nname: Rule A\nenforcement: triggered\n---\nContent.",
+        content: "---\nname: Rule A\ntrigger: triggered\n---\nContent.",
       },
       {
         filename: "rule_b.md",
-        content: "---\nname: Rule B\nenforcement: optional\n---\nContent.",
+        content: "---\nname: Rule B\ntrigger: optional\n---\nContent.",
       },
     ]);
 
@@ -181,7 +181,7 @@ describe("loadActiveMemories", () => {
       "name: Claude Memory Rule",
       "description: Auto-memory rule",
       "type: feedback",
-      "enforcement: always-check",
+      "trigger: always-check",
       "---",
       "",
       "Rule body.",
@@ -204,5 +204,30 @@ describe("loadActiveMemories", () => {
     // The real ~/.claude won't have this fake path, so we expect empty.
     // The important thing is it doesn't throw.
     expect(Array.isArray(result)).toBe(true);
+  });
+
+  it("reads legacy enforcement field for backward compatibility (VOG-5838)", async () => {
+    const tmp = os.tmpdir();
+    const { cwd } = await makeMemoryDir(tmp, [
+      {
+        filename: "legacy_rule.md",
+        content: [
+          "---",
+          "name: Legacy Rule",
+          "description: Old-format rule using enforcement field",
+          "type: feedback",
+          "enforcement: always-check",
+          "---",
+          "",
+          "Legacy body.",
+          "**How to apply:** apply legacy.",
+        ].join("\n"),
+      },
+    ]);
+
+    const result = await loadActiveMemories(cwd);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe("Legacy Rule");
+    expect(result[0]!.trigger).toBe("always-check");
   });
 });
