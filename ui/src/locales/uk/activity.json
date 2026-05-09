@@ -50,7 +50,6 @@
     "issue_document_deleted": "видалив документ із",
     "issue_commented": "прокоментував",
     "issue_deleted": "видалив",
-    "issue_read_marked": "позначив як прочитане",
     "agent_created": "створив",
     "agent_updated": "оновив",
     "agent_paused": "призупинив",
@@ -80,6 +79,7 @@
     "invite_accepted": "прийняв запрошення",
     "invite_cancelled": "скасував запрошення",
     "invite_expired": "запрошення вийшло",
+    "issue_read_marked": "позначив як прочитане",
     "environment_lease_acquired": "отримав середовище",
     "environment_lease_released": "звільнив середовище"
   },
@@ -97,7 +97,6 @@
     "issue_document_updated": "оновив документ",
     "issue_document_deleted": "видалив документ",
     "issue_deleted": "видалив завдання",
-    "issue_read_marked": "позначив як прочитане",
     "agent_created": "створив агента",
     "agent_updated": "оновив агента",
     "agent_paused": "призупинив агента",
@@ -108,6 +107,7 @@
     "approval_created": "запросив погодження",
     "approval_approved": "погодив",
     "approval_rejected": "відхилив",
+    "issue_read_marked": "позначив як прочитане",
     "environment_lease_acquired": "отримав середовище",
     "environment_lease_released": "звільнив середовище"
   },

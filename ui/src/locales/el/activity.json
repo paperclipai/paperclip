@@ -144,6 +144,7 @@
     "unassigned": "Μη ανατεθειμένο",
     "status_label": "Κατάσταση",
     "assignee_label": "Ανατεθειμένο σε",
+    "workspace_label": "Χώρος εργασίας",
     "updated_task": "ενημέρωσε αυτή την εργασία",
     "requested_follow_up": "ζήτησε παρακολούθηση",
     "system": "Σύστημα",
@@ -153,8 +154,7 @@
     "environment_label": "Περιβάλλον",
     "provider_label": "Πάροχος",
     "lease_label": "Μίσθωση",
-    "failure_label": "Αποτυχία",
-    "workspace_label": "Χώρος εργασίας"
+    "failure_label": "Αποτυχία"
   },
   "system": "Σύστημα",
   "board": "Πίνακας",

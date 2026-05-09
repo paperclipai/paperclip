@@ -220,6 +220,7 @@
     "secret_name_prompt": "Имя секрета",
     "failed_create_secret": "Не удалось создать секрет",
     "key_placeholder": "КЛЮЧ",
+    "value_placeholder": "value",
     "plain": "Текст",
     "secret": "Секрет",
     "select_secret": "Выберите секрет...",
@@ -227,8 +228,7 @@
     "seal_title": "Сохранить значение как секрет и заменить ссылкой",
     "new_secret": "Новый",
     "seal": "Запечатать",
-    "paperclip_vars_note": "Переменные PAPERCLIP_* автоматически подставляются в среду выполнения.",
-    "value_placeholder": "value"
+    "paperclip_vars_note": "Переменные PAPERCLIP_* автоматически подставляются в среду выполнения."
   },
   "config_form": {
     "unsaved_changes": "Несохранённые изменения",

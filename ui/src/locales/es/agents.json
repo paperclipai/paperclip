@@ -75,8 +75,6 @@
       "created_by_run": "Creado por esta ejecución",
       "reused_existing": "Espacio de trabajo existente reutilizado"
     },
-    "copy_as_markdown": "Copiar como Markdown",
-    "signal": "señal",
     "save_failed": "Error al guardar",
     "save_config": "Guardar",
     "saving_config": "Guardando…",
@@ -155,6 +153,7 @@
     "file_contents_placeholder": "Contenido del archivo",
     "cancel": "Cancelar",
     "delete": "Eliminar",
+    "copy_as_markdown": "Copiar como Markdown",
     "can_assign_tasks_desc": "Puede asignar tareas a otros agentes",
     "save_failed_msg": "No se pudo guardar el agente",
     "failed_resume": "Error al reanudar la ejecución",
@@ -164,6 +163,7 @@
     "clear_session_confirm": "Limpiando sesión...",
     "clear_session_btn": "limpiar sesión para estas tareas",
     "exit_code": "Código de salida",
+    "signal": "señal",
     "action_failed": "Acción fallida",
     "failed_reset_session": "Error al restablecer la sesión",
     "failed_update_permissions": "Error al actualizar los permisos",
@@ -220,6 +220,7 @@
     "secret_name_prompt": "Nombre del secreto",
     "failed_create_secret": "Error al crear el secreto",
     "key_placeholder": "CLAVE",
+    "value_placeholder": "valor",
     "plain": "Texto plano",
     "secret": "Secreto",
     "select_secret": "Seleccionar secreto...",
@@ -227,17 +228,19 @@
     "seal_title": "Almacenar valor como secreto y reemplazar con referencia",
     "new_secret": "Nuevo",
     "seal": "Sellar",
-    "paperclip_vars_note": "Las variables PAPERCLIP_* se inyectan automáticamente en tiempo de ejecución.",
-    "value_placeholder": "valor"
+    "paperclip_vars_note": "Las variables PAPERCLIP_* se inyectan automáticamente en tiempo de ejecución."
   },
   "config_form": {
     "unsaved_changes": "Cambios sin guardar",
     "section_identity": "Identidad",
     "section_adapter": "Adaptador",
+    "section_execution": "Ejecución",
     "section_permissions": "Permisos y configuración",
     "section_run_policy": "Política de ejecución",
     "heartbeat_prefix": "Ejecutar heartbeat cada",
     "hint_prefix": "Sugerencia",
+    "experimental_badge": "Experimental",
+    "primary_model": "Modelo principal",
     "model_default": "Por defecto",
     "model_required": "Seleccionar modelo (requerido)",
     "model_select": "Seleccionar modelo",
@@ -254,6 +257,9 @@
       "prompt_template": "Plantilla de prompt",
       "prompt_template_placeholder": "Usted es el agente {{ agent.name }}. Su rol es {{ agent.role }}...",
       "adapter_type": "Tipo de adaptador",
+      "default_environment": "Entorno predeterminado",
+      "default_environment_hint": "Objetivo de ejecución predeterminado a nivel de agente. La configuración del proyecto y la tarea pueden anularlo.",
+      "default_environment_company_local": "Predeterminado de empresa (local)",
       "working_dir": "Directorio de trabajo (obsoleto)",
       "working_dir_placeholder": "/ruta/al/proyecto",
       "command": "Comando",
@@ -266,6 +272,9 @@
       "grace_sec": "Período de gracia de interrupción (seg)",
       "cooldown_sec": "Tiempo de enfriamiento (seg)",
       "max_concurrent_runs": "Máx. ejecuciones concurrentes",
+      "continue_after_max_turn": "Continuar tras parar por límite de pasos",
+      "continuation_attempts": "Intentos de continuación",
+      "continuation_delay_sec": "Retardo de continuación (seg)",
       "model": "Modelo",
       "model_search_placeholder": "Buscar modelos...",
       "model_search_creatable_placeholder": "Buscar modelos... (escriba para crear)",
@@ -273,26 +282,38 @@
       "heartbeat_on_interval": "Heartbeat en intervalo",
       "wake_on_demand": "Despertar a demanda",
       "advanced_run_policy": "Política de ejecución avanzada",
-      "default_environment": "Entorno predeterminado",
-      "default_environment_hint": "Objetivo de ejecución predeterminado a nivel de agente. La configuración del proyecto y la tarea pueden anularlo.",
-      "default_environment_company_local": "Predeterminado de empresa (local)",
-      "continue_after_max_turn": "Continuar tras parar por límite de pasos",
-      "continuation_attempts": "Intentos de continuación",
-      "continuation_delay_sec": "Retardo de continuación (seg)",
       "unit_sec": "seg"
+    },
+    "options": {
+      "auto": "Auto",
+      "minimal": "Mínimo",
+      "low": "Bajo",
+      "medium": "Medio",
+      "high": "Alto",
+      "xhigh": "Muy alto",
+      "plan": "Plan",
+      "ask": "Preguntar",
+      "max": "Máximo"
     },
     "actions": {
       "save": "Guardar",
       "saving": "Guardando...",
+      "test": "Probar",
       "test_environment": "Probar entorno",
       "testing": "Probando...",
       "detect_model": "Detectar modelo",
       "detecting": "Detectando...",
       "re_detect_from_config": "Volver a detectar desde configuración",
       "detect_from_config": "Detectar desde configuración",
-      "test": "Probar",
       "refresh_models": "Actualizar modelos",
       "refreshing": "Actualizando..."
+    },
+    "errors": {
+      "select_company_secrets": "Selecciona una empresa para crear secretos",
+      "select_company_images": "Selecciona una empresa para subir imágenes",
+      "select_company_detect_model": "Selecciona una empresa para detectar el modelo",
+      "select_company_test_environment": "Selecciona una empresa para probar el entorno del adaptador",
+      "failed_refresh_models": "No se pudieron actualizar los modelos del adaptador."
     },
     "status": {
       "passed": "Aprobado",
@@ -303,10 +324,18 @@
       "no_model_detected_hint": "Aún no se detectó ningún modelo. Ingrese manualmente un proveedor/modelo.",
       "no_models_found": "No se encontraron modelos.",
       "failed_load_models": "Error al cargar los modelos del adaptador.",
+      "live_opencode_local_only": "La detección en vivo de modelos OpenCode solo funciona para entornos locales. Se usa una lista curada y entrada manual para {{name}}.",
       "model_badge_current": "actual",
       "model_badge_detected": "detectado",
-      "model_badge_config": "configuración",
-      "live_opencode_local_only": "La detección en vivo de modelos OpenCode solo funciona para entornos locales. Se usa una lista curada y entrada manual para {{name}}."
+      "model_badge_config": "configuración"
+    },
+    "cheap_model": {
+      "label": "Modelo económico",
+      "description": "Se usa cuando una ejecución solicita un perfil económico (p. ej., resúmenes de rutinas). El modelo principal no cambia.",
+      "adapter_default_placeholder": "Predeterminado del adaptador · {{model}}",
+      "no_default_placeholder": "Sin predeterminado del adaptador — elige un modelo más barato",
+      "fallback_note": "No se ha seleccionado explícitamente un modelo económico — el runtime usa <code>{{model}}</code>.",
+      "no_default_warning": "No hay modelo económico seleccionado y el adaptador no tiene valor predeterminado. Las ejecuciones del canal económico continuarán con el modelo principal con nota de fallback."
     },
     "permissions": {
       "enabled_ceo": "Habilitado automáticamente para agentes CEO.",
@@ -326,35 +355,6 @@
     "bootstrap_prompt_warning": "El prompt de bootstrap es heredado y se eliminará en una versión futura. Considere mover este contenido a la plantilla de prompt o al archivo de instrucciones del agente.",
     "adapter_type": {
       "coming_soon": "Próximamente"
-    },
-    "section_execution": "Ejecución",
-    "experimental_badge": "Experimental",
-    "primary_model": "Modelo principal",
-    "options": {
-      "auto": "Auto",
-      "minimal": "Mínimo",
-      "low": "Bajo",
-      "medium": "Medio",
-      "high": "Alto",
-      "xhigh": "Muy alto",
-      "plan": "Plan",
-      "ask": "Preguntar",
-      "max": "Máximo"
-    },
-    "errors": {
-      "select_company_secrets": "Selecciona una empresa para crear secretos",
-      "select_company_images": "Selecciona una empresa para subir imágenes",
-      "select_company_detect_model": "Selecciona una empresa para detectar el modelo",
-      "select_company_test_environment": "Selecciona una empresa para probar el entorno del adaptador",
-      "failed_refresh_models": "No se pudieron actualizar los modelos del adaptador."
-    },
-    "cheap_model": {
-      "label": "Modelo económico",
-      "description": "Se usa cuando una ejecución solicita un perfil económico (p. ej., resúmenes de rutinas). El modelo principal no cambia.",
-      "adapter_default_placeholder": "Predeterminado del adaptador · {{model}}",
-      "no_default_placeholder": "Sin predeterminado del adaptador — elige un modelo más barato",
-      "fallback_note": "No se ha seleccionado explícitamente un modelo económico — el runtime usa <code>{{model}}</code>.",
-      "no_default_warning": "No hay modelo económico seleccionado y el adaptador no tiene valor predeterminado. Las ejecuciones del canal económico continuarán con el modelo principal con nota de fallback."
     }
   },
   "transcript_view": {
@@ -420,6 +420,16 @@
     "stderr_label": "stderr",
     "error_prefix": "Error",
     "adapter_result_json": "JSON de resultado del adaptador",
+    "transcript": "Transcripción",
+    "transcript_mode_nice": "bonito",
+    "transcript_mode_raw": "crudo",
+    "jump_to_live": "Ir a tiempo real",
+    "load_more_log": "Cargar más registros",
+    "no_log_events": "No hay eventos de registro.",
+    "no_persisted_log_lines": "No hay líneas de registro guardadas.",
+    "clearing_session": "limpiando sesión...",
+    "clear_session_text": "limpiar sesión para estos problemas",
+    "failure_details": "Detalles del error",
     "skill_location": "Ubicación",
     "instructions_mode_tooltip": "Gestionado: Paperclip almacena y sirve el paquete de instrucciones. Externo: usted proporciona una ruta en disco donde viven las instrucciones.",
     "instructions_root_path_tooltip": "El directorio absoluto en disco donde vive el paquete de instrucciones. En modo gestionado, Paperclip lo establece automáticamente.",
@@ -470,24 +480,10 @@
     "show_full_log": "Mostrar registro completo",
     "failed_clear_sessions": "Error al limpiar las sesiones",
     "failed_load_run_log": "Error al cargar el registro de ejecución",
+    "failed_load_workspace_log": "No se pudo cargar el registro de operaciones del espacio de trabajo",
     "instructions_placeholder": "# Instrucciones del agente",
     "skill_view_link": "Ver",
-    "approve_agent": "Aprobar agente",
-    "clear_session_text": "limpiar sesión para estos problemas",
-    "clearing_session": "limpiando sesión...",
-    "failed_load_workspace_log": "No se pudo cargar el registro de operaciones del espacio de trabajo",
-    "failure_details": "Detalles del error",
-    "jump_to_live": "Ir a tiempo real",
-    "load_more_log": "Cargar más registros",
-    "no_log_events": "No hay eventos de registro.",
-    "no_persisted_log_lines": "No hay líneas de registro guardadas.",
-    "transcript": "Transcripción",
-    "transcript_mode_nice": "bonito",
-    "transcript_mode_raw": "crudo"
-  },
-  "icon_picker": {
-    "no_match": "Sin coincidencias",
-    "search_placeholder": "Buscar iconos..."
+    "approve_agent": "Aprobar agente"
   },
   "run_errors": {
     "exited_with_code": "Claude salió con el código {{code}}",
@@ -498,5 +494,9 @@
     "run_succeeded": "Ejecución exitosa",
     "adapter_invocation": "Invocación del adaptador",
     "used_skill": "Habilidad utilizada"
+  },
+  "icon_picker": {
+    "search_placeholder": "Buscar iconos...",
+    "no_match": "Sin coincidencias"
   }
 }

@@ -65,6 +65,39 @@
     "api_runs": "{{count}} api",
     "subscription_runs": "{{count}} suscripción"
   },
+  "cards": {
+    "inference_ledger": "Libro mayor de inferencia",
+    "inference_ledger_desc": "Gasto en inferencia de solicitudes para el período seleccionado.",
+    "inference_ledger_points": {
+      "point1": "tokens + dólares pagados",
+      "point2": "proveedor, pagador, modelo",
+      "point3": "contabilidad de suscripción y excesos"
+    },
+    "finance_ledger": "Libro mayor financiero",
+    "finance_ledger_desc": "Cargos a nivel de cuenta que no corresponden a una sola solicitud de inferencia.",
+    "finance_ledger_points": {
+      "point1": "recargas, reembolsos, comisiones",
+      "point2": "cargos de reserva o entrenamiento de Bedrock",
+      "point3": "vencimiento y ajuste de créditos"
+    },
+    "live_quotas": "Cuotas en vivo",
+    "live_quotas_desc": "Ventanas de proveedor o pagador que pueden detener el tráfico en tiempo real.",
+    "live_quotas_points": {
+      "point1": "ventanas de cuota del proveedor",
+      "point2": "sistemas de crédito del pagador",
+      "point3": "los errores se muestran directamente"
+    },
+    "accounting_model_title": "Modelo de contabilidad",
+    "accounting_model_desc": "Paperclip ahora separa el uso de inferencia a nivel de solicitud y los eventos financieros a nivel de cuenta. Esto permite informes honestos del proveedor cuando el pagador es OpenRouter, Cloudflare, Bedrock u otro intermediario.",
+    "by_agent": "Por agente",
+    "by_agent_desc": "Lo que cada agente consumió en el período seleccionado.",
+    "by_project": "Por proyecto",
+    "by_project_desc": "Costos de ejecución atribuidos a través de tareas vinculadas al proyecto.",
+    "by_biller": "Por facturador",
+    "by_biller_desc": "Eventos financieros a nivel de cuenta agrupados por quién los cobró o acreditó.",
+    "budget_control": "Panel de control de presupuesto",
+    "budget_control_desc": "Límites de gasto de parada forzosa para agentes y proyectos. La cuota de suscripción del proveedor aparece en Proveedores."
+  },
   "budgets": {
     "company_policy": "Política mensual de toda la empresa.",
     "agent_policy": "Políticas de gasto mensual recurrente para agentes individuales.",
@@ -75,6 +108,22 @@
     "company_budgets_title": "Presupuestos de la empresa",
     "agent_budgets_title": "Presupuestos de agentes",
     "project_budgets_title": "Presupuestos de proyectos"
+  },
+  "incident_card": {
+    "hard_stop": "parada forzosa",
+    "resolved": "Resuelto",
+    "dismissed": "Rechazado",
+    "escalated": "Escalado",
+    "pending_approval": "Pendiente de aprobación",
+    "open": "Abierto",
+    "spending_reached": "El gasto alcanzó {{observed}} con el límite {{limit}}.",
+    "new_budget_usd": "Nuevo presupuesto (USD)",
+    "project_paused": "La ejecución del proyecto está pausada. El nuevo trabajo no comenzará hasta que se resuelva el incidente de presupuesto.",
+    "scope_paused": "Este ámbito está pausado. Los nuevos heartbeats no comenzarán hasta que se resuelva el incidente de presupuesto.",
+    "applying": "Aplicando...",
+    "raise_budget": "Aumentar presupuesto y reanudar",
+    "keep_paused": "Mantener pausado",
+    "budget_must_exceed": "El nuevo presupuesto debe superar el gasto observado actual."
   },
   "policy_card": {
     "lifetime_budget": "Presupuesto de vida útil",
@@ -100,59 +149,9 @@
     "budget_usd": "Presupuesto (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Pausado por presupuesto",
-    "critical": "Pausado por presupuesto",
     "healthy": "Presupuesto correcto",
-    "warning": "Advertencia de presupuesto"
-  },
-  "cards": {
-    "inference_ledger": "Libro mayor de inferencia",
-    "inference_ledger_desc": "Gasto en inferencia de solicitudes para el período seleccionado.",
-    "finance_ledger": "Libro mayor financiero",
-    "finance_ledger_desc": "Cargos a nivel de cuenta que no corresponden a una sola solicitud de inferencia.",
-    "by_agent": "Por agente",
-    "by_agent_desc": "Lo que cada agente consumió en el período seleccionado.",
-    "by_project": "Por proyecto",
-    "by_project_desc": "Costos de ejecución atribuidos a través de tareas vinculadas al proyecto.",
-    "by_biller": "Por facturador",
-    "by_biller_desc": "Eventos financieros a nivel de cuenta agrupados por quién los cobró o acreditó.",
-    "budget_control": "Panel de control de presupuesto",
-    "budget_control_desc": "Límites de gasto de parada forzosa para agentes y proyectos. La cuota de suscripción del proveedor aparece en Proveedores.",
-    "accounting_model_title": "Modelo de contabilidad",
-    "accounting_model_desc": "Paperclip ahora separa el uso de inferencia a nivel de solicitud y los eventos financieros a nivel de cuenta. Esto permite informes honestos del proveedor cuando el pagador es OpenRouter, Cloudflare, Bedrock u otro intermediario.",
-    "live_quotas": "Cuotas en vivo",
-    "live_quotas_desc": "Ventanas de proveedor o pagador que pueden detener el tráfico en tiempo real.",
-    "finance_ledger_points": {
-      "point1": "recargas, reembolsos, comisiones",
-      "point2": "cargos de reserva o entrenamiento de Bedrock",
-      "point3": "vencimiento y ajuste de créditos"
-    },
-    "inference_ledger_points": {
-      "point1": "tokens + dólares pagados",
-      "point2": "proveedor, pagador, modelo",
-      "point3": "contabilidad de suscripción y excesos"
-    },
-    "live_quotas_points": {
-      "point1": "ventanas de cuota del proveedor",
-      "point2": "sistemas de crédito del pagador",
-      "point3": "los errores se muestran directamente"
-    }
-  },
-  "incident_card": {
-    "project_paused": "La ejecución del proyecto está pausada. El nuevo trabajo no comenzará hasta que se resuelva el incidente de presupuesto.",
-    "scope_paused": "Este ámbito está pausado. Los nuevos heartbeats no comenzarán hasta que se resuelva el incidente de presupuesto.",
-    "applying": "Aplicando...",
-    "raise_budget": "Aumentar presupuesto y reanudar",
-    "keep_paused": "Mantener pausado",
-    "budget_must_exceed": "El nuevo presupuesto debe superar el gasto observado actual.",
-    "dismissed": "Rechazado",
-    "escalated": "Escalado",
-    "hard_stop": "parada forzosa",
-    "new_budget_usd": "Nuevo presupuesto (USD)",
-    "open": "Abierto",
-    "pending_approval": "Pendiente de aprobación",
-    "resolved": "Resuelto",
-    "spending_reached": "El gasto alcanzó {{observed}} con el límite {{limit}}."
+    "warning": "Advertencia de presupuesto",
+    "critical": "Pausado por presupuesto"
   },
   "empty": {
     "select_company": "Seleccione una empresa para ver los costos.",
@@ -203,10 +202,10 @@
     "this_week": "esta semana",
     "billing_types": "Tipos de facturación",
     "upstream_providers": "Proveedores upstream",
-    "model_count_one": "{{count}} modelo",
-    "model_count_other": "{{count}} modelos",
     "provider_count_one": "{{count}} proveedor",
-    "provider_count_other": "{{count}} proveedores"
+    "provider_count_other": "{{count}} proveedores",
+    "model_count_one": "{{count}} modelo",
+    "model_count_other": "{{count}} modelos"
   },
   "finance_kind": {
     "title": "Combinación de eventos financieros",

@@ -262,7 +262,7 @@
   "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Визначення повторюваних робіт, які матеріалізуються в завдання для аудиту виконання.",
   "create_routine": "Створити процедуру",
   "recent_runs": "Останні запуски",
-  "n_routine": "{{count}} процедура(и)",
+  "n_routine": " процедура(и)",
   "new_routine": "Нова процедура",
   "routine_title": "Назва процедури",
   "for": "Для",

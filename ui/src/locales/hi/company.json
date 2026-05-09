@@ -686,7 +686,7 @@
     "new_issues_isolated_desc": "यदि अक्षम, नए कार्य प्रोजेक्ट के प्राथमिक (प्राथमिक) checkout पर रहते हैं जब तक कोई opt in न करे।",
     "hide_advanced": "उन्नत checkout सेटिंग्स छुपाएं",
     "show_advanced": "उन्नत checkout सेटिंग्स दिखाएं",
-    "implementation_label": "होस्ट-प्रबंधित कार्यान्वयन: {{वैल्यू}}",
+    "implementation_label": "होस्ट-प्रबंधित कार्यान्वयन: {{value}}",
     "implementation_prefix": "होस्ट-प्रबंधित कार्यान्वयन:",
     "environment_label": "परिवेश",
     "no_environment_option": "कोई परिवेश नहीं",

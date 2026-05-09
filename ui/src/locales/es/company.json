@@ -33,8 +33,8 @@
       "removing_logo": "Eliminando...",
       "clear_color": "Limpiar",
       "uploading_logo": "Subiendo logo...",
-      "failed_to_save": "No se pudo guardar",
-      "saving": "Guardando..."
+      "saving": "Guardando...",
+      "failed_to_save": "No se pudo guardar"
     },
     "status": {
       "saved": "Guardado",
@@ -53,8 +53,8 @@
       "currently_disabled": "El uso compartido está actualmente deshabilitado.",
       "read_tos": "Leer nuestros términos de servicio",
       "enabled_at_by": "Activado el {{date}} por {{user}}",
-      "sharing_disabled": "Compartir comentarios desactivado",
       "sharing_enabled": "Compartir comentarios activado",
+      "sharing_disabled": "Compartir comentarios desactivado",
       "sharing_update_failed": "No se pudo actualizar la configuración de compartir comentarios",
       "unknown_error": "Error desconocido"
     },
@@ -66,8 +66,8 @@
       "copied": "Copiado",
       "copy_snippet": "Copiar fragmento",
       "copied_snippet": "Fragmento copiado",
-      "failed_to_create": "No se pudo crear la invitación",
-      "generate_snippet_hint": "Genera una invitación temporal de agente OpenClaw y muestra el prompt para copiar."
+      "generate_snippet_hint": "Genera una invitación temporal de agente OpenClaw y muestra el prompt para copiar.",
+      "failed_to_create": "No se pudo crear la invitación"
     },
     "packages": {
       "moved_notice": "La importación y exportación se han movido a páginas dedicadas accesibles desde el",
@@ -79,9 +79,9 @@
     "danger": {
       "archive_notice": "Archive esta empresa para ocultarla de la barra lateral. Esto persiste en la base de datos.",
       "archive_button": "Archivar empresa",
+      "already_archived": "Ya archivado",
       "archiving": "Archivando...",
       "confirm_archive": "Archivar empresa",
-      "already_archived": "Ya archivado",
       "archive_failed": "No se pudo archivar la empresa"
     }
   },
@@ -159,20 +159,20 @@
     "select_company": "Seleccione una empresa para exportar.",
     "company_export_title": "Exportación de {{name}}",
     "binary_not_available": "La vista previa de archivos binarios no está disponible para este tipo.",
-    "export_count_one": "Exportar {{count}} archivo",
-    "export_count_other": "Exportar {{count}} archivos",
     "org_chart_breadcrumb": "Organigrama",
     "selection_count_one": "{{selected}} / {{total}} archivo seleccionado",
     "selection_count_other": "{{selected}} / {{total}} archivos seleccionados",
-    "show_more_issues_count": "Mostrar más tareas ({{visible}} de {{total}})",
-    "toast_downloaded_body_one": "{{count}} archivo exportado como {{path}}.zip",
-    "toast_downloaded_body_other": "{{count}} archivos exportados como {{path}}.zip",
-    "toast_downloaded_title": "Exportación descargada",
-    "toast_failed_build": "No se pudo crear el paquete de exportación.",
-    "toast_failed_load": "No se pudieron cargar los datos de exportación.",
-    "toast_failed_title": "Exportación fallida",
     "warnings_count_one": "{{count}} advertencia",
-    "warnings_count_other": "{{count}} advertencias"
+    "warnings_count_other": "{{count}} advertencias",
+    "export_count_one": "Exportar {{count}} archivo",
+    "export_count_other": "Exportar {{count}} archivos",
+    "show_more_issues_count": "Mostrar más tareas ({{visible}} de {{total}})",
+    "toast_failed_title": "Exportación fallida",
+    "toast_failed_load": "No se pudieron cargar los datos de exportación.",
+    "toast_failed_build": "No se pudo crear el paquete de exportación.",
+    "toast_downloaded_title": "Exportación descargada",
+    "toast_downloaded_body_one": "{{count}} archivo exportado como {{path}}.zip",
+    "toast_downloaded_body_other": "{{count}} archivos exportados como {{path}}.zip"
   },
   "invites": {
     "no_company": "Seleccione una empresa para gestionar invitaciones.",
@@ -266,6 +266,8 @@
       "edit": "Editar",
       "stop_editing": "Dejar de editar",
       "source": "Fuente",
+      "copy_source_path": "Copiar ruta de origen",
+      "copied_path": "Ruta copiada",
       "pin": "Fijar",
       "untracked": "sin rastrear",
       "tracking": "rastreando",
@@ -283,9 +285,7 @@
       "save": "Guardar",
       "saving": "Guardando...",
       "select_file": "Seleccione un archivo para inspeccionarlo.",
-      "bundled_read_only": "Las habilidades integradas de Paperclip son de solo lectura.",
-      "copied_path": "Ruta copiada",
-      "copy_source_path": "Copiar ruta de origen"
+      "bundled_read_only": "Las habilidades integradas de Paperclip son de solo lectura."
     },
     "sources": {
       "managed": "{{source}} gestionado",
@@ -457,8 +457,8 @@
     "open_assigned_issues_other": "{{count}} tareas asignadas abiertas",
     "more_issues_one": "{{count}} tarea más",
     "more_issues_other": "{{count}} tareas más",
-    "agent_option_label": "{{name}} ({{role}})",
-    "member_fallback_name": "este miembro"
+    "member_fallback_name": "este miembro",
+    "agent_option_label": "{{name}} ({{role}})"
   },
   "companies": {
     "breadcrumb": "Empresas",
@@ -597,8 +597,7 @@
     "title": "Idioma",
     "description": "Cambiar el idioma de la interfaz. Surte efecto inmediatamente.",
     "en": "Inglés",
-    "ru": "Русский",
-    "uk": "Українська"
+    "ru": "Русский"
   },
   "new_project_dialog": {
     "header": "Nuevo proyecto",
@@ -718,6 +717,7 @@
     "no_company": "Selecciona una empresa para gestionar los entornos.",
     "disabled_notice": "Activa Entornos en la configuración experimental de la instancia para gestionar destinos de ejecución de empresa.",
     "info_matrix": "Las opciones de entorno usan la misma matriz de soporte de adaptadores que los valores predeterminados del agente. SSH siempre está disponible para adaptadores gestionados remotamente, y los entornos sandbox solo aparecen cuando hay instalado un plugin de proveedor sandbox con capacidad de ejecución.",
+    "table_caption": "Compatibilidad de entorno por adaptador",
     "table_adapter": "Adaptador",
     "table_local": "Local",
     "table_ssh": "SSH",
@@ -777,8 +777,7 @@
     "toast_probe_failed": "Prueba de entorno fallida",
     "toast_probe_failed_body": "Prueba de entorno fallida.",
     "toast_draft_passed": "Prueba de borrador superada",
-    "toast_draft_failed": "Prueba de borrador fallida",
-    "table_caption": "Compatibilidad de entorno por adaptador"
+    "toast_draft_failed": "Prueba de borrador fallida"
   },
   "project": {
     "budget": {
@@ -807,6 +806,41 @@
     }
   },
   "user_profile": {
+    "breadcrumb_users": "Usuarios",
+    "select_company": "Selecciona una empresa para ver los perfiles de usuario.",
+    "not_found": "No se encontró el perfil de usuario para esta empresa.",
+    "last_14_days": "Últimos 14 días",
+    "tokens_total": "tokens en total",
+    "tokens_per_day": "tokens / día",
+    "completions": "completadas",
+    "done": "completado",
+    "stat_touched": "Tocadas",
+    "stat_completed": "Completadas",
+    "stat_comments": "Comentarios",
+    "stat_actions": "Acciones",
+    "stat_tokens": "Tokens",
+    "stat_spend": "Gasto",
+    "stat_created": "Creadas",
+    "stat_open": "Abiertas",
+    "issue_linked_usage": "Uso por tarea",
+    "billed_through": "Facturado a través de {{provider}}",
+    "hero_all_time_tokens": "Tokens de todos los tiempos",
+    "hero_completed": "Completadas",
+    "hero_open_assigned": "Asignadas abiertas",
+    "hero_7day_actions": "Acciones en 7 días",
+    "hero_spent": "Gastado {{amount}}",
+    "hero_rate": "Frecuencia {{rate}}",
+    "hero_created": "Creadas {{n}}",
+    "hero_comments": "{{n}} comentarios",
+    "recent_tasks": "Tareas recientes",
+    "no_recent_tasks": "Todavía no hay tareas involucradas.",
+    "recent_activity": "Actividad reciente",
+    "no_recent_activity": "Todavía no se han registrado acciones directas del usuario.",
+    "agent_attribution": "Atribución de agentes",
+    "no_agent_usage": "Todavía no hay uso de tokens por tarea.",
+    "provider_mix": "Distribución de proveedores",
+    "no_provider_usage": "Todavía no se ha atribuido uso de proveedores.",
+    "joined": "se unió el {{date}}",
     "role": {
       "owner": "propietario",
       "admin": "administrador",
@@ -824,42 +858,7 @@
       "last7": "Últimos 7 días",
       "last30": "Últimos 30 días",
       "all": "Todo el tiempo"
-    },
-    "agent_attribution": "Atribución de agentes",
-    "billed_through": "Facturado a través de {{provider}}",
-    "breadcrumb_users": "Usuarios",
-    "completions": "completadas",
-    "done": "completado",
-    "hero_7day_actions": "Acciones en 7 días",
-    "hero_all_time_tokens": "Tokens de todos los tiempos",
-    "hero_comments": "{{n}} comentarios",
-    "hero_completed": "Completadas",
-    "hero_created": "Creadas {{n}}",
-    "hero_open_assigned": "Asignadas abiertas",
-    "hero_rate": "Frecuencia {{rate}}",
-    "hero_spent": "Gastado {{amount}}",
-    "issue_linked_usage": "Uso por tarea",
-    "joined": "se unió el {{date}}",
-    "last_14_days": "Últimos 14 días",
-    "no_agent_usage": "Todavía no hay uso de tokens por tarea.",
-    "no_provider_usage": "Todavía no se ha atribuido uso de proveedores.",
-    "no_recent_activity": "Todavía no se han registrado acciones directas del usuario.",
-    "no_recent_tasks": "Todavía no hay tareas involucradas.",
-    "not_found": "No se encontró el perfil de usuario para esta empresa.",
-    "provider_mix": "Distribución de proveedores",
-    "recent_activity": "Actividad reciente",
-    "recent_tasks": "Tareas recientes",
-    "select_company": "Selecciona una empresa para ver los perfiles de usuario.",
-    "stat_actions": "Acciones",
-    "stat_comments": "Comentarios",
-    "stat_completed": "Completadas",
-    "stat_created": "Creadas",
-    "stat_open": "Abiertas",
-    "stat_spend": "Gasto",
-    "stat_tokens": "Tokens",
-    "stat_touched": "Tocadas",
-    "tokens_per_day": "tokens / día",
-    "tokens_total": "tokens en total"
+    }
   },
   "no_skills_match_this_filter": "Ninguna habilidad coincide con este filtro.",
   "select_a_skill_to_inspect_its_files": "Seleccione una habilidad para inspeccionar sus archivos.",

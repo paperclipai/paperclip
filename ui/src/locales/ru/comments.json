@@ -20,7 +20,7 @@
     "lease_label": "Лизинг",
     "failure_prefix": "Ошибка: "
   },
-  "queued_comments_header": "Комментарии в очереди ({count})",
+  "queued_comments_header": "Комментарии в очереди ({{count}})",
   "interrupt_action": {
     "interrupting": "Прерывание...",
     "interrupt": "Прервать"
@@ -32,6 +32,9 @@
   "no_assignees_found": "Исполнители не найдены.",
   "comment_button": "Комментарий",
   "posting": "Отправка...",
+  "you": "Вы",
+  "timeline_header": "Хρονολογία ({{count}})",
+  "timeline_empty": "Записей в хронологии пока нет.",
   "copied": "Скопировано!",
   "copy_failed": "Copy failed",
   "copy": "Копировать",
@@ -46,7 +49,7 @@
   "provider": "Provider",
   "lease": "Lease",
   "failure": "Failure:",
-  "queued_comments": "Queued Comments ({count})",
+  "queued_comments": "Queued Comments ({{count}})",
   "interrupting": "Interrupting...",
   "interrupt": "Interrupt",
   "leave_a_comment": "Leave a comment...",

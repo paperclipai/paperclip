@@ -153,6 +153,7 @@
     "file_contents_placeholder": "Περιεχόμενο αρχείου",
     "cancel": "Ακύρωση",
     "delete": "Διαγραφή",
+    "copy_as_markdown": "Αντιγραφή ως markdown",
     "can_assign_tasks_desc": "Μπορεί να αναθέσει εργασίες σε άλλους πράκτορες",
     "save_failed_msg": "Δεν ήταν δυνατή η αποθήκευση πράκτορα",
     "failed_resume": "Αποτυχία συνέχειας εκτέλεσης",
@@ -162,6 +163,7 @@
     "clear_session_confirm": "καθαρισμός συνεδρίας...",
     "clear_session_btn": "καθαρισμός συνεδρίας για αυτά τα ζητήματα",
     "exit_code": "Κωδικός εξόδου",
+    "signal": "σήμα",
     "action_failed": "Η ενέργεια απέτυχε",
     "failed_reset_session": "Αποτυχία επαναφοράς συνεδρίας",
     "failed_update_permissions": "Αποτυχία ενημέρωσης αδειών",
@@ -218,6 +220,7 @@
     "secret_name_prompt": "Όνομα μυστικού",
     "failed_create_secret": "Αποτυχία δημιουργίας μυστικού",
     "key_placeholder": "ΚΛΕΙΔΙ",
+    "value_placeholder": "value",
     "plain": "Απλό",
     "secret": "Μυστικό",
     "select_secret": "Επιλέξτε μυστικό...",
@@ -225,17 +228,19 @@
     "seal_title": "Αποθήκευση τιμής ως μυστικό και αντικατάσταση με αναφορά",
     "new_secret": "Νέο",
     "seal": "Σφραγίδα",
-    "paperclip_vars_note": "Οι μεταβλητές PAPERCLIP_* εγχύονται αυτόματα κατά τον χρόνο εκτέλεσης.",
-    "value_placeholder": "value"
+    "paperclip_vars_note": "Οι μεταβλητές PAPERCLIP_* εγχύονται αυτόματα κατά τον χρόνο εκτέλεσης."
   },
   "config_form": {
     "unsaved_changes": "Αποθήκευτες αλλαγές",
     "section_identity": "Ταυτότητα",
     "section_adapter": "Προσαρμογέας",
+    "section_execution": "Εκτέλεση",
     "section_permissions": "Άδειες & Διαμόρφωση",
     "section_run_policy": "Πολιτική εκτέλεσης",
     "heartbeat_prefix": "Εκτέλεση καρδιακού παλμού κάθε",
     "hint_prefix": "Υπόδειξη",
+    "experimental_badge": "Πειραματικό",
+    "primary_model": "Κύριο μοντέλο",
     "model_default": "Προεπιλογή",
     "model_required": "Επιλέξτε μοντέλο (απαραίτητο)",
     "model_select": "Επιλέξτε μοντέλο",
@@ -252,6 +257,9 @@
       "prompt_template": "Πρότυπο προτροπής",
       "prompt_template_placeholder": "Είστε πράκτορας {{ agent.name }}. Ο ρόλος σας είναι {{ agent.role }}...",
       "adapter_type": "Τύπος προσαρμογέα",
+      "default_environment": "Προεπιλεγμένο περιβάλλον",
+      "default_environment_hint": "Προεπιλεγμένος στόχος εκτέλεσης σε επίπεδο πράκτορα. Οι ρυθμίσεις έργου και εργασίας μπορούν να το παρακάμψουν.",
+      "default_environment_company_local": "Προεπιλογή εταιρίας (τοπικό)",
       "working_dir": "Κατάλογος εργασίας (απαρχαιωμένος)",
       "working_dir_placeholder": "/path/to/project",
       "command": "Εντολή",
@@ -264,6 +272,9 @@
       "grace_sec": "Περίοδος χάριτος διακοπής (δευτερόλεπτα)",
       "cooldown_sec": "Περίοδος ψύξης (δευτερόλεπτα)",
       "max_concurrent_runs": "Μέγιστες ταυτόχρονες εκτελέσεις",
+      "continue_after_max_turn": "Συνέχεια μετά τη διακοπή ορίου βημάτων",
+      "continuation_attempts": "Προσπάθειες συνέχισης",
+      "continuation_delay_sec": "Καθυστέρηση συνέχισης (δευτ.)",
       "model": "Μοντέλο",
       "model_search_placeholder": "Αναζήτηση μοντέλων...",
       "model_search_creatable_placeholder": "Αναζήτηση μοντέλων... (πληκτρολογήστε για δημιουργία)",
@@ -271,26 +282,38 @@
       "heartbeat_on_interval": "Καρδιακός παλμός σε διάστημα",
       "wake_on_demand": "Ξύπνημα κατ' απαίτηση",
       "advanced_run_policy": "Προηγμένη πολιτική εκτέλεσης",
-      "default_environment": "Προεπιλεγμένο περιβάλλον",
-      "default_environment_hint": "Προεπιλεγμένος στόχος εκτέλεσης σε επίπεδο πράκτορα. Οι ρυθμίσεις έργου και εργασίας μπορούν να το παρακάμψουν.",
-      "default_environment_company_local": "Προεπιλογή εταιρίας (τοπικό)",
-      "continue_after_max_turn": "Συνέχεια μετά τη διακοπή ορίου βημάτων",
-      "continuation_attempts": "Προσπάθειες συνέχισης",
-      "continuation_delay_sec": "Καθυστέρηση συνέχισης (δευτ.)",
       "unit_sec": "δευτ."
+    },
+    "options": {
+      "auto": "Αυτόματο",
+      "minimal": "Ελάχιστο",
+      "low": "Χαμηλό",
+      "medium": "Μεσαίο",
+      "high": "Υψηλό",
+      "xhigh": "Πολύ υψηλό",
+      "plan": "Σχέδιο",
+      "ask": "Ρώτηση",
+      "max": "Μέγιστο"
     },
     "actions": {
       "save": "Αποθήκευση",
       "saving": "Αποθήκευση...",
+      "test": "Δοκιμή",
       "test_environment": "Δοκιμή περιβάλλοντος",
       "testing": "Δοκιμή...",
       "detect_model": "Ανίχνευση μοντέλου",
       "detecting": "Ανίχνευση...",
       "re_detect_from_config": "Ανά-ανίχνευση από διαμόρφωση",
       "detect_from_config": "Ανίχνευση από διαμόρφωση",
-      "test": "Δοκιμή",
       "refresh_models": "Ανανέωση μοντέλων",
       "refreshing": "Ανανέωση..."
+    },
+    "errors": {
+      "select_company_secrets": "Επιλέξτε εταιρία για δημιουργία μυστικών",
+      "select_company_images": "Επιλέξτε εταιρία για μεταφόρτωση εικόνων",
+      "select_company_detect_model": "Επιλέξτε εταιρία για ανίχνευση μοντέλου",
+      "select_company_test_environment": "Επιλέξτε εταιρία για δοκιμή περιβάλλοντος προσαρμογέα",
+      "failed_refresh_models": "Αποτυχία ανανέωσης μοντέλων προσαρμογέα."
     },
     "status": {
       "passed": "Περάστηκε",
@@ -301,10 +324,18 @@
       "no_model_detected_hint": "Δεν εντοπίστηκε ακόμη μοντέλο. Εισαγάγετε παρόχο/μοντέλο μανουαλ.",
       "no_models_found": "Δεν βρέθηκαν μοντέλα.",
       "failed_load_models": "Αποτυχία φόρτωσης μοντέλων προσαρμογέα.",
+      "live_opencode_local_only": "Η ζωντανή ανίχνευση μοντέλων OpenCode λειτουργεί μόνο για τοπικά περιβάλλοντα. Χρησιμοποιείται επιμελημένη λίστα και χειροκίνητη εισαγωγή για το {{name}}.",
       "model_badge_current": "τρέχον",
       "model_badge_detected": "ανιχνευμένο",
-      "model_badge_config": "διαμόρφωση",
-      "live_opencode_local_only": "Η ζωντανή ανίχνευση μοντέλων OpenCode λειτουργεί μόνο για τοπικά περιβάλλοντα. Χρησιμοποιείται επιμελημένη λίστα και χειροκίνητη εισαγωγή για το {{name}}."
+      "model_badge_config": "διαμόρφωση"
+    },
+    "cheap_model": {
+      "label": "Οικονομικό μοντέλο",
+      "description": "Χρησιμοποιείται όταν μια εκτέλεση ζητά οικονομικό προφίλ (π.χ. συνοπτικές ρουτίνες). Το κύριο μοντέλο δεν αλλάζει.",
+      "adapter_default_placeholder": "Προεπιλογή προσαρμογέα · {{model}}",
+      "no_default_placeholder": "Δεν υπάρχει προεπιλογή προσαρμογέα — επιλέξτε φθηνότερο μοντέλο",
+      "fallback_note": "Δεν έχει επιλεγεί ρητά οικονομικό μοντέλο — το runtime χρησιμοποιεί <code>{{model}}</code>.",
+      "no_default_warning": "Δεν έχει επιλεγεί οικονομικό μοντέλο και ο προσαρμογέας δεν έχει προεπιλογή. Οι εκτελέσεις οικονομικού καναλιού θα συνεχίσουν με το κύριο μοντέλο με σημείωση fallback."
     },
     "permissions": {
       "enabled_ceo": "Ενεργοποιήθηκε αυτόματα για πράκτορες Διευθύνοντος Συμβούλου.",
@@ -324,35 +355,6 @@
     "bootstrap_prompt_warning": "Η πρόσκληση ξεκίνησης είναι παρωχημένη και θα αφαιρεθεί σε μια μελλοντική έκδοση. Σκεφθείτε να μετακινήσετε αυτό το περιεχόμενο στο πρότυπο προτροπής του πράκτορα ή στο αρχείο οδηγιών.",
     "adapter_type": {
       "coming_soon": "Έρχεται σύντομα"
-    },
-    "section_execution": "Εκτέλεση",
-    "experimental_badge": "Πειραματικό",
-    "primary_model": "Κύριο μοντέλο",
-    "options": {
-      "auto": "Αυτόματο",
-      "minimal": "Ελάχιστο",
-      "low": "Χαμηλό",
-      "medium": "Μεσαίο",
-      "high": "Υψηλό",
-      "xhigh": "Πολύ υψηλό",
-      "plan": "Σχέδιο",
-      "ask": "Ρώτηση",
-      "max": "Μέγιστο"
-    },
-    "errors": {
-      "select_company_secrets": "Επιλέξτε εταιρία για δημιουργία μυστικών",
-      "select_company_images": "Επιλέξτε εταιρία για μεταφόρτωση εικόνων",
-      "select_company_detect_model": "Επιλέξτε εταιρία για ανίχνευση μοντέλου",
-      "select_company_test_environment": "Επιλέξτε εταιρία για δοκιμή περιβάλλοντος προσαρμογέα",
-      "failed_refresh_models": "Αποτυχία ανανέωσης μοντέλων προσαρμογέα."
-    },
-    "cheap_model": {
-      "label": "Οικονομικό μοντέλο",
-      "description": "Χρησιμοποιείται όταν μια εκτέλεση ζητά οικονομικό προφίλ (π.χ. συνοπτικές ρουτίνες). Το κύριο μοντέλο δεν αλλάζει.",
-      "adapter_default_placeholder": "Προεπιλογή προσαρμογέα · {{model}}",
-      "no_default_placeholder": "Δεν υπάρχει προεπιλογή προσαρμογέα — επιλέξτε φθηνότερο μοντέλο",
-      "fallback_note": "Δεν έχει επιλεγεί ρητά οικονομικό μοντέλο — το runtime χρησιμοποιεί <code>{{model}}</code>.",
-      "no_default_warning": "Δεν έχει επιλεγεί οικονομικό μοντέλο και ο προσαρμογέας δεν έχει προεπιλογή. Οι εκτελέσεις οικονομικού καναλιού θα συνεχίσουν με το κύριο μοντέλο με σημείωση fallback."
     }
   },
   "transcript_view": {
@@ -418,6 +420,16 @@
     "stderr_label": "stderr",
     "error_prefix": "Σφάλμα",
     "adapter_result_json": "JSON αποτελέσματος προσαρμογέα",
+    "transcript": "Μεταγραφή",
+    "transcript_mode_nice": "κομψό",
+    "transcript_mode_raw": "ακατέργαστο",
+    "jump_to_live": "Μετάβαση σε ζωντανό",
+    "load_more_log": "Φόρτωση περισσότερων",
+    "no_log_events": "Δεν υπάρχουν γεγονότα καταγραφής.",
+    "no_persisted_log_lines": "Δεν υπάρχουν διατηρημένες γραμμές καταγραφής.",
+    "clearing_session": "καθαρισμός συνεδρίας...",
+    "clear_session_text": "καθαρισμός συνεδρίας για αυτά τα ζητήματα",
+    "failure_details": "Λεπτομέρειες αποτυχίας",
     "skill_location": "Τοποθεσία",
     "instructions_mode_tooltip": "Διαχειριζόμενο: Το Paperclip αποθηκεύει και εξυπηρετεί τις οδηγίες. Εξωτερική: παρέχετε μια διαδρομή στο δίσκο όπου ζουν οι οδηγίες.",
     "instructions_root_path_tooltip": "Ο απόλυτος κατάλογος στο δίσκο όπου ζει η δέσμη οδηγιών. Στη λειτουργία διαχείρισης έχει οριστεί αυτόματα από το Paperclip.",
@@ -468,6 +480,7 @@
     "show_full_log": "Εμφάνιση πλήρους καταγραφής",
     "failed_clear_sessions": "Αποτυχία καθαρισμού συνεδριών",
     "failed_load_run_log": "Αποτυχία φόρτωσης καταγραφής εκτέλεσης",
+    "failed_load_workspace_log": "Αποτυχία φόρτωσης καταγραφής λειτουργίας χώρου εργασίας",
     "instructions_placeholder": "# Οδηγίες πράκτορα",
     "skill_view_link": "Προβολή",
     "approve_agent": "Έγκριση πράκτορα"

@@ -52,8 +52,6 @@
     "estimated_in_range": "estimado no período",
     "debits_credits": "{{debits}} débitos · {{credits}} créditos",
     "events_in_range_one": "{{count}} evento no período",
-    "events_in_range_few": "{{count}} eventos no período",
-    "events_in_range_many": "{{count}} eventos no período",
     "events_in_range_other": "{{count}} eventos no período"
   },
   "budget": {
@@ -151,7 +149,6 @@
     "budget_usd": "Orçamento (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "Pausado por orçamento",
     "healthy": "Orçamento saudável",
     "warning": "Aviso de orçamento",
     "critical": "Pausado por orçamento"

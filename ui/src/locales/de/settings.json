@@ -101,16 +101,17 @@
     }
   },
   "language": {
-    "title": "Sprache",
+    "title": "Anzeigesprache",
     "description": "Wählen Sie die Anzeigesprache für die Paperclip-Oberfläche. Änderungen werden sofort ohne Neustart wirksam.",
-    "en": "English",
-    "ru": "Русский",
+    "en": "Englisch",
+    "ru": "Russisch",
     "uk": "Ukrainisch",
-    "es": "Español",
+    "es": "Spanisch",
     "de": "Deutsch",
-    "pt": "Português",
-    "zh": "中文",
-    "el": "Griechisch"
+    "pt": "Portugiesisch",
+    "zh": "Chinesisch",
+    "el": "Griechisch",
+    "hi": "Hindi"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Laufzeit-Dashboard",

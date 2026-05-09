@@ -262,7 +262,7 @@
   "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Wiederkehrende Arbeitsdefinitionen, die in prüfbare Ausführungsaufgaben umgewandelt werden.",
   "create_routine": "Routine erstellen",
   "recent_runs": "Letzte Ausführungen",
-  "n_routine": "{{count}} Routine(n)",
+  "n_routine": " Routine(n)",
   "new_routine": "Neue Routine",
   "routine_title": "Routinetitel",
   "for": "Für",

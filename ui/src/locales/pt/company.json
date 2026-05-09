@@ -29,12 +29,12 @@
     },
     "actions": {
       "save_changes": "Salvar alterações",
-      "saving": "Salvando...",
-      "failed_to_save": "Falha ao salvar",
       "remove_logo": "Remover logotipo",
       "removing_logo": "Removendo...",
       "clear_color": "Limpar",
-      "uploading_logo": "Carregando logotipo..."
+      "uploading_logo": "Carregando logotipo...",
+      "saving": "Salvando...",
+      "failed_to_save": "Falha ao salvar"
     },
     "status": {
       "saved": "Salvo",
@@ -50,9 +50,9 @@
       "votes_saved_locally": "Os votos são sempre salvos localmente. Esta configuração controla se as saídas de IA votadas também podem ser marcadas para compartilhamento com o Paperclip Labs.",
       "terms_version": "Versão dos termos:",
       "enabled_at": "Habilitado",
-      "enabled_at_by": "Habilitado {{date}} por {{user}}",
       "currently_disabled": "O compartilhamento está atualmente desabilitado.",
       "read_tos": "Leia nossos termos de serviço",
+      "enabled_at_by": "Habilitado {{date}} por {{user}}",
       "sharing_enabled": "Compartilhamento de feedback habilitado",
       "sharing_disabled": "Compartilhamento de feedback desabilitado",
       "sharing_update_failed": "Falha ao atualizar configuração de compartilhamento de feedback",
@@ -172,15 +172,7 @@
     "toast_failed_build": "Falha ao criar pacote de exportação.",
     "toast_downloaded_title": "Exportação baixada",
     "toast_downloaded_body_one": "{{count}} arquivo exportado como {{path}}.zip",
-    "toast_downloaded_body_other": "{{count}} arquivos exportados como {{path}}.zip",
-    "export_count_few": "Exportar {{count}} arquivos",
-    "export_count_many": "Exportar {{count}} arquivos",
-    "selection_count_few": "{{selected}} / {{total}} arquivos selecionados",
-    "selection_count_many": "{{selected}} / {{total}} arquivos selecionados",
-    "toast_downloaded_body_few": "{{count}} arquivos exportados como {{path}}.zip",
-    "toast_downloaded_body_many": "{{count}} arquivos exportados como {{path}}.zip",
-    "warnings_count_few": "{{count}} avisos",
-    "warnings_count_many": "{{count}} avisos"
+    "toast_downloaded_body_other": "{{count}} arquivos exportados como {{path}}.zip"
   },
   "invites": {
     "no_company": "Selecione uma empresa para gerenciar convites.",
@@ -466,13 +458,7 @@
     "more_issues_one": "{{count}} tarefa a mais",
     "more_issues_other": "{{count}} tarefas a mais",
     "member_fallback_name": "este membro",
-    "agent_option_label": "{{name}} ({{role}})",
-    "more_issues_few": "{{count}} tarefas a mais",
-    "more_issues_many": "{{count}} tarefas a mais",
-    "open_assigned_issues_few": "{{count}} tarefas atribuídas abertas",
-    "open_assigned_issues_many": "{{count}} tarefas atribuídas abertas",
-    "remove_member_issues_cleaned_up_few": "{{count}} tarefas atribuídas limpas.",
-    "remove_member_issues_cleaned_up_many": "{{count}} tarefas atribuídas limpas."
+    "agent_option_label": "{{name}} ({{role}})"
   },
   "companies": {
     "breadcrumb": "Empresas",
@@ -611,8 +597,7 @@
     "title": "Idioma",
     "description": "Altere o idioma da interface. Entra em vigor imediatamente.",
     "en": "Inglês",
-    "ru": "Русский",
-    "uk": "Українська"
+    "ru": "Русский"
   },
   "new_project_dialog": {
     "header": "Novo projeto",
@@ -732,6 +717,7 @@
     "no_company": "Selecione uma empresa para gerenciar ambientes.",
     "disabled_notice": "Ative Ambientes nas configurações experimentais da instância para gerenciar destinos de execução da empresa.",
     "info_matrix": "As opções de ambiente usam a mesma matriz de suporte de adaptadores que os padrões do agente. SSH está sempre disponível para adaptadores gerenciados remotamente, e os ambientes sandbox aparecem apenas quando um plugin de provedor sandbox com capacidade de execução está instalado.",
+    "table_caption": "Suporte de ambiente por adaptador",
     "table_adapter": "Adaptador",
     "table_local": "Local",
     "table_ssh": "SSH",
@@ -791,8 +777,7 @@
     "toast_probe_failed": "Teste de ambiente falhou",
     "toast_probe_failed_body": "Teste de ambiente falhou.",
     "toast_draft_passed": "Teste de rascunho passou",
-    "toast_draft_failed": "Teste de rascunho falhou",
-    "table_caption": "Suporte de ambiente por adaptador"
+    "toast_draft_failed": "Teste de rascunho falhou"
   },
   "project": {
     "budget": {

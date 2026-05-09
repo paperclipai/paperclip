@@ -52,8 +52,6 @@
     "estimated_in_range": "оценочно за период",
     "debits_credits": "{{debits}} дебетов · {{credits}} кредитов",
     "events_in_range_one": "{{count}} событие за период",
-    "events_in_range_few": "{{count}} события за период",
-    "events_in_range_many": "{{count}} событий за период",
     "events_in_range_other": "{{count}} событий за период"
   },
   "budget": {

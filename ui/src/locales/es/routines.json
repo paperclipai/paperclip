@@ -31,8 +31,7 @@
     "edit": "Editar",
     "group": "Grupo",
     "sort": "Ordenar",
-    "cancel": "Cancelar",
-    "more_actions": "Más acciones para {{title}}"
+    "cancel": "Cancelar"
   },
   "sort": {
     "updated": "Actualizado",
@@ -76,11 +75,11 @@
     "draft_saved": "Borrador guardado. Añada un agente predeterminado antes de habilitar la automatización.",
     "routine_count_one": "{{count}} rutina",
     "routine_count_other": "{{count}} rutinas",
-    "routine_count_few": "{{count}} rutinas",
-    "routine_count_many": "{{count}} rutinas",
     "routine_created": "Rutina creada",
     "routine_created_body": "Añada el primer disparador para convertirlo en un flujo de trabajo en vivo.",
-    "failed_load": "Error al cargar rutinas"
+    "failed_load": "Error al cargar rutinas",
+    "routine_count_few": "{{count}} rutinas",
+    "routine_count_many": "{{count}} rutinas"
   },
   "trigger_kind": {
     "schedule": "Programación",

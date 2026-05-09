@@ -20,7 +20,7 @@
     "lease_label": "Concessão",
     "failure_prefix": "Falha: "
   },
-  "queued_comments_header": "Comentários na fila ({count})",
+  "queued_comments_header": "Comentários na fila ({{count}})",
   "interrupt_action": {
     "interrupting": "Interrompendo...",
     "interrupt": "Interromper"
@@ -32,6 +32,9 @@
   "no_assignees_found": "Nenhum responsável encontrado.",
   "comment_button": "Comentar",
   "posting": "Publicando...",
+  "you": "Você",
+  "timeline_header": "Linha do tempo ({{count}})",
+  "timeline_empty": "Nenhuma entrada na linha do tempo ainda.",
   "copied": "Copiado",
   "copy_failed": "Falha ao copiar",
   "copy": "Copiar",
@@ -46,7 +49,7 @@
   "provider": "Provedor",
   "lease": "Concessão",
   "failure": "Falha:",
-  "queued_comments": "Comentários na fila ({count})",
+  "queued_comments": "Comentários na fila ({{count}})",
   "interrupting": "Interrompendo...",
   "interrupt": "Interromper",
   "leave_a_comment": "Deixe um comentário...",

@@ -88,15 +88,15 @@
     "max_turns": "Turnos máximos por ejecución"
   },
   "codex_local": {
+    "instructions_file": "Archivo de instrucciones del agente",
+    "instructions_file_hint": "Ruta absoluta a un archivo markdown (p. ej. AGENTS.md) que define el comportamiento del agente. Se inyecta en el prompt del sistema en tiempo de ejecución. Nota: Codex también puede aplicar automáticamente archivos AGENTS.md desde el directorio de trabajo.",
+    "instructions_placeholder": "/ruta/absoluta/a/AGENTS.md",
     "bypass_sandbox": "Omitir sandbox",
     "enable_search": "Activar búsqueda",
     "fast_mode": "Modo rápido",
     "fast_mode_manual": "El modo rápido se pasará para este modelo manual. Si Codex lo rechaza, desactiva el interruptor.",
     "fast_mode_supported": "El modo rápido consume créditos/tokens significativamente más rápido que las ejecuciones normales de Codex.",
-    "fast_mode_unsupported": "El modo rápido actualmente solo funciona en {{models}} o identificadores de modelo manuales. Paperclip ignorará este interruptor hasta que se cambie el modelo.",
-    "instructions_file": "Archivo de instrucciones del agente",
-    "instructions_file_hint": "Ruta absoluta a un archivo markdown (p. ej. AGENTS.md) que define el comportamiento del agente. Se inyecta en el prompt del sistema en tiempo de ejecución. Nota: Codex también puede aplicar automáticamente archivos AGENTS.md desde el directorio de trabajo.",
-    "instructions_placeholder": "/ruta/absoluta/a/AGENTS.md"
+    "fast_mode_unsupported": "El modo rápido actualmente solo funciona en {{models}} o identificadores de modelo manuales. Paperclip ignorará este interruptor hasta que se cambie el modelo."
   },
   "cursor": {
     "instructions_file": "Archivo de instrucciones del agente",
@@ -121,6 +121,9 @@
     "claimed_api_key_path": "Ruta de clave API reclamada",
     "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
     "session_strategy": "Estrategia de sesión",
+    "session_strategy_fixed": "Fija",
+    "session_strategy_issue": "Por tarea",
+    "session_strategy_run": "Por ejecución",
     "session_key": "Clave de sesión",
     "session_key_placeholder": "paperclip",
     "gateway_auth_token": "Token de autenticación de gateway (x-openclaw-token)",
@@ -132,10 +135,7 @@
     "wait_timeout": "Tiempo de espera (ms)",
     "wait_timeout_placeholder": "120000",
     "device_auth": "Autenticación de dispositivo",
-    "device_auth_desc": "Siempre habilitado para agentes de gateway. Paperclip guarda la clave del dispositivo durante el onboarding para que las confirmaciones de emparejamiento sean estables entre ejecuciones.",
-    "session_strategy_fixed": "Fija",
-    "session_strategy_issue": "Por tarea",
-    "session_strategy_run": "Por ejecución"
+    "device_auth_desc": "Siempre habilitado para agentes de gateway. Paperclip guarda la clave del dispositivo durante el onboarding para que las confirmaciones de emparejamiento sean estables entre ejecuciones."
   },
   "opencode_local": {
     "instructions_file": "Archivo de instrucciones del agente",
@@ -143,36 +143,10 @@
     "instructions_placeholder": "/ruta/absoluta/a/AGENTS.md",
     "skip_permissions": "Omitir permisos"
   },
-  "path_instructions": {
-    "title": "Cómo obtener la ruta completa",
-    "choose": "Elegir",
-    "description_prefix": "Pega la ruta absoluta (p. ej.",
-    "description_suffix": ") en el campo de entrada.",
-    "platform_linux": "Linux",
-    "platform_mac": "macOS",
-    "platform_windows": "Windows",
-    "linux_step_1": "Abre una terminal y navega al directorio con cd.",
-    "linux_step_2": "Ejecuta pwd para mostrar la ruta completa.",
-    "linux_step_3": "Copia el resultado y pégalo aquí.",
-    "linux_tip": "En la mayoría de gestores de archivos, Ctrl+L muestra la ruta completa en la barra de direcciones.",
-    "mac_step_1": "Abre Finder y navega hasta la carpeta.",
-    "mac_step_2": "Haz clic derecho (o Ctrl+clic) en la carpeta.",
-    "mac_step_3": "Mantén pulsada la tecla Option (⌥) — «Copiar» cambiará a «Copiar como ruta».",
-    "mac_step_4": "Haz clic en «Copiar como ruta» y pégalo aquí.",
-    "mac_tip": "También puedes abrir Terminal, escribir cd, arrastrar la carpeta a la ventana del terminal y pulsar Enter. Luego escribe pwd para ver la ruta completa.",
-    "windows_step_1": "Abre el Explorador de archivos y navega hasta la carpeta.",
-    "windows_step_2": "Haz clic en la barra de direcciones — aparecerá la ruta completa.",
-    "windows_step_3": "Copia la ruta y pégala aquí.",
-    "windows_tip": "Alternativa: mantén Shift, haz clic derecho en la carpeta y selecciona «Copiar como ruta»."
-  },
   "pi_local": {
     "instructions_file": "Archivo de instrucciones del agente",
     "instructions_file_hint": "Ruta absoluta a un archivo markdown (p. ej. AGENTS.md) que define el comportamiento del agente. Se inyecta en el prompt del sistema en tiempo de ejecución.",
     "instructions_placeholder": "/ruta/absoluta/a/AGENTS.md"
-  },
-  "runtime_json": {
-    "payload_template_json": "JSON de plantilla de carga útil",
-    "runtime_services_json": "JSON de servicios de entorno de ejecución"
   },
   "http": {
     "webhook_url": "URL de webhook",
@@ -183,5 +157,31 @@
     "command_placeholder": "p.ej. node, python",
     "args": "Argumentos (separados por coma)",
     "args_placeholder": "p.ej. script.js, --flag"
+  },
+  "runtime_json": {
+    "runtime_services_json": "JSON de servicios de entorno de ejecución",
+    "payload_template_json": "JSON de plantilla de carga útil"
+  },
+  "path_instructions": {
+    "choose": "Elegir",
+    "title": "Cómo obtener la ruta completa",
+    "description_prefix": "Pega la ruta absoluta (p. ej.",
+    "description_suffix": ") en el campo de entrada.",
+    "platform_mac": "macOS",
+    "platform_windows": "Windows",
+    "platform_linux": "Linux",
+    "mac_step_1": "Abre Finder y navega hasta la carpeta.",
+    "mac_step_2": "Haz clic derecho (o Ctrl+clic) en la carpeta.",
+    "mac_step_3": "Mantén pulsada la tecla Option (⌥) — «Copiar» cambiará a «Copiar como ruta».",
+    "mac_step_4": "Haz clic en «Copiar como ruta» y pégalo aquí.",
+    "mac_tip": "También puedes abrir Terminal, escribir cd, arrastrar la carpeta a la ventana del terminal y pulsar Enter. Luego escribe pwd para ver la ruta completa.",
+    "windows_step_1": "Abre el Explorador de archivos y navega hasta la carpeta.",
+    "windows_step_2": "Haz clic en la barra de direcciones — aparecerá la ruta completa.",
+    "windows_step_3": "Copia la ruta y pégala aquí.",
+    "windows_tip": "Alternativa: mantén Shift, haz clic derecho en la carpeta y selecciona «Copiar como ruta».",
+    "linux_step_1": "Abre una terminal y navega al directorio con cd.",
+    "linux_step_2": "Ejecuta pwd para mostrar la ruta completa.",
+    "linux_step_3": "Copia el resultado y pégalo aquí.",
+    "linux_tip": "En la mayoría de gestores de archivos, Ctrl+L muestra la ruta completa en la barra de direcciones."
   }
 }

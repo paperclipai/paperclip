@@ -21,10 +21,10 @@
   },
   "status": {
     "approved": "Погоджено",
+    "cancelled": "Скасовано",
     "pending": "Очікує",
     "rejected": "Відхилено",
-    "revision_requested": "Потрібне доопрацювання",
-    "cancelled": "Скасовано"
+    "revision_requested": "Потрібне доопрацювання"
   },
   "payload": {
     "type_hire_agent": "Найняти агента",

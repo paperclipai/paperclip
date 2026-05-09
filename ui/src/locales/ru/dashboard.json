@@ -8,8 +8,6 @@
   },
   "budget": {
     "active_incidents_one": "{{count}} активный бюджетный инцидент",
-    "active_incidents_few": "{{count}} активных бюджетных инцидента",
-    "active_incidents_many": "{{count}} активных бюджетных инцидентов",
     "active_incidents_other": "{{count}} активных бюджетных инцидента",
     "paused_summary": "{{agents}} агентов на паузе · {{projects}} проектов на паузе · {{approvals}} ожидают одобрения бюджета",
     "open_budgets": "Открыть бюджеты"
@@ -23,8 +21,6 @@
     "budget_utilization": "{{percent}}% от бюджета {{budget}}",
     "pending_approvals": "Ожидают одобрения",
     "budget_overrides_pending_one": "{{count}} превышение бюджета ожидает решения совета",
-    "budget_overrides_pending_few": "{{count}} превышения бюджета ожидают решения совета",
-    "budget_overrides_pending_many": "{{count}} превышений бюджета ожидают решения совета",
     "budget_overrides_pending_other": "{{count}} превышения бюджета ожидают решения совета",
     "unlimited_budget": "Безлимитный бюджет",
     "awaiting_board": "Ожидает решения совета"

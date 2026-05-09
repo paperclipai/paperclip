@@ -31,8 +31,7 @@
     "edit": "Editar",
     "group": "Agrupar",
     "sort": "Ordenar",
-    "cancel": "Cancelar",
-    "more_actions": "Mais ações para {{title}}"
+    "cancel": "Cancelar"
   },
   "sort": {
     "updated": "Atualizado",
@@ -58,14 +57,6 @@
     "unknown_agent": "Agente desconhecido",
     "no_default_agent": "Sem agente padrão",
     "never": "Nunca",
-    "draft_saved": "Rascunho salvo. Adicione um agente padrão antes de habilitar a automação.",
-    "routine_count_one": "{{count}} rotina",
-    "routine_count_other": "{{count}} rotinas",
-    "routine_created": "Rotina criada",
-    "routine_created_body": "Adicione o primeiro trigger para transformá-la em um fluxo de trabalho ativo.",
-    "failed_load": "Falha ao carregar rotinas",
-    "routine_count_few": "{{count}} rotinas",
-    "routine_count_many": "{{count}} rotinas",
     "running": "Executando...",
     "edit": "Editar",
     "run_routine": "Executar rotina",
@@ -80,7 +71,15 @@
     "configure": "Configurar",
     "managed_by": "Gerenciado por {{name}}",
     "schedule": "Agendamento {{cronExpression}}",
-    "routine_defaults_can_be_repaired": "Os padrões da rotina podem ser reparados."
+    "routine_defaults_can_be_repaired": "Os padrões da rotina podem ser reparados.",
+    "draft_saved": "Rascunho salvo. Adicione um agente padrão antes de habilitar a automação.",
+    "routine_count_one": "{{count}} rotina",
+    "routine_count_other": "{{count}} rotinas",
+    "routine_created": "Rotina criada",
+    "routine_created_body": "Adicione o primeiro trigger para transformá-la em um fluxo de trabalho ativo.",
+    "failed_load": "Falha ao carregar rotinas",
+    "routine_count_few": "{{count}} rotinas",
+    "routine_count_many": "{{count}} rotinas"
   },
   "trigger_kind": {
     "schedule": "Agendamento",
@@ -263,7 +262,7 @@
   "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Definições de trabalho recorrente que se materializam em tarefas de execução auditáveis.",
   "create_routine": "Criar rotina",
   "recent_runs": "Execuções Recentes",
-  "n_routine": "{{count}} rotina(s)",
+  "n_routine": " rotina(s)",
   "new_routine": "Nova rotina",
   "routine_title": "Título da rotina",
   "for": "Para",

@@ -257,5 +257,20 @@
     "default_option_field": "默认选项",
     "default_value_placeholder": "默认值",
     "hint": "在指令中使用 `{{code}}` 占位符，以便在例程运行时提示输入。"
-  }
+  },
+  "routines": "常规任务",
+  "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "可物化为可审计执行任务的循环工作定义。",
+  "create_routine": "创建常规任务",
+  "recent_runs": "最近运行",
+  "n_routine": " 个常规任务",
+  "new_routine": "新常规任务",
+  "routine_title": "常规任务标题",
+  "for": "用于",
+  "in": "在",
+  "add_instructions": "添加指令...",
+  "advanced_delivery_settings": "高级交付设置",
+  "concurrency": "并发",
+  "catch_up": "追赶",
+  "creating": "正在创建...",
+  "no_routines_yet": "暂无常规任务。"
 }

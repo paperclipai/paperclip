@@ -21,10 +21,10 @@
   },
   "status": {
     "approved": "Aprobado",
+    "cancelled": "Cancelado",
     "pending": "Pendiente",
     "rejected": "Rechazado",
-    "revision_requested": "Revisión solicitada",
-    "cancelled": "Cancelado"
+    "revision_requested": "Revisión solicitada"
   },
   "payload": {
     "type_hire_agent": "Contratar agente",

@@ -8,8 +8,6 @@
   },
   "budget": {
     "active_incidents_one": "{{count}} incidente de orçamento ativo",
-    "active_incidents_few": "{{count}} incidentes de orçamento ativos",
-    "active_incidents_many": "{{count}} incidentes de orçamento ativos",
     "active_incidents_other": "{{count}} incidentes de orçamento ativos",
     "paused_summary": "{{agents}} agentes pausados · {{projects}} projetos pausados · {{approvals}} aprovações de orçamento pendentes",
     "open_budgets": "Abrir orçamentos"
@@ -25,9 +23,7 @@
     "budget_overrides_pending_one": "{{count}} substituição de orçamento aguardando revisão do conselho",
     "budget_overrides_pending_other": "{{count}} substituições de orçamento aguardando revisão do conselho",
     "unlimited_budget": "Orçamento ilimitado",
-    "awaiting_board": "Aguardando revisão do conselho",
-    "budget_overrides_pending_few": "{{count}} substituições de orçamento aguardando revisão do conselho",
-    "budget_overrides_pending_many": "{{count}} substituições de orçamento aguardando revisão do conselho"
+    "awaiting_board": "Aguardando revisão do conselho"
   },
   "charts": {
     "run_activity": "Atividade de Execução",

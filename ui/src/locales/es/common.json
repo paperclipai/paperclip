@@ -114,9 +114,7 @@
     "planned": "Planificado",
     "draft": "Borrador",
     "skipped": "Omitido",
-    "blocked": "Bloqueado",
-    "off": "Apagado",
-    "on": "Encendido"
+    "blocked": "Bloqueado"
   },
   "status_labels": {
     "backlog": "Backlog",
@@ -242,10 +240,10 @@
     "select_company": "Seleccionar empresa",
     "switch_workspace": "Cambiar espacio de trabajo",
     "no_workspaces": "Sin espacios de trabajo",
-    "open_switcher": "Abrir selector de espacios de trabajo de {{company}}",
-    "open_switcher_generic": "Abrir selector de espacios de trabajo",
+    "edit_order": "Editar",
     "done_order": "Listo",
-    "edit_order": "Editar"
+    "open_switcher": "Abrir selector de espacios de trabajo de {{company}}",
+    "open_switcher_generic": "Abrir selector de espacios de trabajo"
   },
   "not_found": {
     "breadcrumb": "No encontrado",
@@ -793,6 +791,7 @@
     "no_cap_configured": "Sin límite configurado",
     "disabled": "Deshabilitado",
     "soft_alert_at": "Alerta suave al {{percent}}%",
+    "of_limit": "{{percent}}% del límite",
     "remaining": "Restante",
     "unlimited": "Ilimitado",
     "budget_usd": "Presupuesto (USD)",
@@ -803,26 +802,11 @@
     "warning": "Advertencia",
     "hard_stop": "Parada dura",
     "paused": "En pausa",
+    "project_paused": "Ejecución pausada para este proyecto hasta que se aumente el presupuesto o se rechace el incidente.",
+    "scope_paused": "Ejecuciones Heartbeat pausadas para este ámbito hasta que se aumente el presupuesto o se rechace el incidente.",
     "enter_valid_amount": "Ingrese un monto en dólares válido y no negativo.",
     "scope_type_agent": "Agente",
-    "scope_type_project": "Proyecto",
-    "of_limit": "{{percent}}% del límite",
-    "project_paused": "Ejecución pausada para este proyecto hasta que se aumente el presupuesto o se rechace el incidente.",
-    "scope_paused": "Ejecuciones Heartbeat pausadas para este ámbito hasta que se aumente el presupuesto o se rechace el incidente."
-  },
-  "documents": {
-    "loading_revisions": "Cargando revisiones...",
-    "actor_agent": "agente",
-    "actor_board": "tablero",
-    "actor_system": "sistema",
-    "content_header": "Contenido",
-    "diff_title": "Comparación",
-    "new_label": "Nueva",
-    "old_label": "Antigua",
-    "rev_label": "rev. {{number}}",
-    "same_revision": "Ambos lados son la misma revisión.",
-    "select_revision": "Seleccionar revisión",
-    "select_two_revisions": "Selecciona dos revisiones para comparar."
+    "scope_type_project": "Proyecto"
   },
   "search": {
     "title": "Búsqueda",
@@ -1196,6 +1180,20 @@
     "repo_root": "Raíz del repositorio",
     "workspace_path": "Ruta del espacio de trabajo",
     "last_checked": "Última verificación {{time}}"
+  },
+  "documents": {
+    "loading_revisions": "Cargando revisiones...",
+    "diff_title": "Comparación",
+    "rev_label": "rev. {{number}}",
+    "actor_board": "tablero",
+    "actor_agent": "agente",
+    "actor_system": "sistema",
+    "old_label": "Antigua",
+    "new_label": "Nueva",
+    "select_revision": "Seleccionar revisión",
+    "select_two_revisions": "Selecciona dos revisiones para comparar.",
+    "same_revision": "Ambos lados son la misma revisión.",
+    "content_header": "Contenido"
   },
   "language_switcher": {
     "change_language": "Cambiar idioma"

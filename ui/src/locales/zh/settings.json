@@ -101,16 +101,17 @@
     }
   },
   "language": {
-    "title": "语言",
+    "title": "显示语言",
     "description": "选择 Paperclip 界面的显示语言。更改立即生效，无需重启。",
-    "en": "英语 (English)",
-    "ru": "俄语 (Русский)",
-    "uk": "乌克兰语 (Ukrainian)",
-    "es": "西班牙语 (Español)",
-    "de": "德语 (Deutsch)",
-    "pt": "葡萄牙语 (Português)",
-    "zh": "中文 (Chinese)",
-    "el": "希腊语 (Greek)"
+    "en": "英语",
+    "ru": "俄语",
+    "uk": "乌克兰语",
+    "es": "西班牙语",
+    "de": "德语",
+    "pt": "葡萄牙语",
+    "zh": "中文",
+    "el": "希腊语",
+    "hi": "印地语"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "运行时仪表盘",

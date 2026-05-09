@@ -101,16 +101,17 @@
     }
   },
   "language": {
-    "title": "Language",
+    "title": "Display language",
     "description": "Choose the display language for the Paperclip interface. Changes take effect immediately without a restart.",
     "en": "English",
-    "ru": "Русский",
+    "ru": "Russian",
     "uk": "Ukrainian",
-    "es": "Español",
-    "de": "Deutsch",
-    "pt": "Português",
-    "zh": "中文",
-    "el": "Greek"
+    "es": "Spanish",
+    "de": "German",
+    "pt": "Portuguese",
+    "zh": "Chinese",
+    "el": "Greek",
+    "hi": "Hindi"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Runtime Dashboard",

@@ -12,6 +12,7 @@
   "profile": {
     "title": "Perfil",
     "instance_breadcrumb": "Configuración de instancia",
+    "loading": "Cargando perfil...",
     "error_update_failed": "Error al actualizar el perfil.",
     "error_upload_failed": "Error al subir el avatar.",
     "error_remove_failed": "Error al eliminar el avatar.",
@@ -30,8 +31,7 @@
     "email_label": "Correo electrónico",
     "email_hint": "El correo electrónico es gestionado por su sesión de autenticación y es de solo lectura aquí.",
     "save": "Guardar perfil",
-    "saving": "Guardando...",
-    "loading": "Cargando perfil..."
+    "saving": "Guardando..."
   },
   "instance": {
     "title": "General",
@@ -101,22 +101,17 @@
     }
   },
   "language": {
-    "title": "Idioma",
+    "title": "Idioma de visualización",
     "description": "Elija el idioma de visualización para la interfaz de Paperclip. Los cambios surten efecto inmediatamente sin reinicio.",
     "en": "Inglés",
-    "ru": "Русский",
+    "ru": "Ruso",
     "uk": "Ucraniano",
     "es": "Español",
-    "de": "Deutsch",
-    "pt": "Português",
-    "zh": "中文",
+    "de": "Alemán",
+    "pt": "Portugués",
+    "zh": "Chino",
     "el": "Griego",
-    "ar": "Árabe",
-    "fr": "Francés",
-    "it": "Italiano",
-    "ja": "Japonés",
-    "ko": "Coreano",
-    "tr": "Turco"
+    "hi": "Hindi"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Panel de tiempo de ejecución",

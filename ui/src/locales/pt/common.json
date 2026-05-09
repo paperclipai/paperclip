@@ -114,9 +114,7 @@
     "planned": "Planejado",
     "draft": "Rascunho",
     "skipped": "Ignorado",
-    "blocked": "Bloqueado",
-    "on": "Ativado",
-    "off": "Desativado"
+    "blocked": "Bloqueado"
   },
   "status_labels": {
     "backlog": "Pendências",
@@ -804,9 +802,9 @@
     "warning": "Aviso",
     "hard_stop": "Parada permanente",
     "paused": "Pausado",
-    "enter_valid_amount": "Insira um valor em dólares válido e não negativo.",
     "project_paused": "A execução está pausada para este projeto até que o orçamento seja aumentado ou o incidente seja descartado.",
     "scope_paused": "Os heartbeats estão pausados para este escopo até que o orçamento seja aumentado ou o incidente seja descartado.",
+    "enter_valid_amount": "Insira um valor em dólares válido e não negativo.",
     "scope_type_agent": "Agente",
     "scope_type_project": "Projeto"
   },

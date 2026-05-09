@@ -12,6 +12,7 @@
   "profile": {
     "title": "Perfil",
     "instance_breadcrumb": "Configurações da Instância",
+    "loading": "A carregar perfil...",
     "error_update_failed": "Falha ao atualizar perfil.",
     "error_upload_failed": "Falha ao fazer upload do avatar.",
     "error_remove_failed": "Falha ao remover o avatar.",
@@ -30,8 +31,7 @@
     "email_label": "Email",
     "email_hint": "O email é gerenciado pela sua sessão de autenticação e é somente leitura aqui.",
     "save": "Salvar perfil",
-    "saving": "Salvando...",
-    "loading": "A carregar perfil..."
+    "saving": "Salvando..."
   },
   "instance": {
     "title": "Geral",
@@ -76,13 +76,7 @@
       "weeks_one": "{{count}} semana",
       "weeks_other": "{{count}} semanas",
       "months_one": "{{count}} mês",
-      "months_other": "{{count}} meses",
-      "days_few": "{{count}} dias",
-      "days_many": "{{count}} dias",
-      "months_few": "{{count}} meses",
-      "months_many": "{{count}} meses",
-      "weeks_few": "{{count}} semanas",
-      "weeks_many": "{{count}} semanas"
+      "months_other": "{{count}} meses"
     },
     "feedback": {
       "title": "Compartilhamento de feedback de IA",
@@ -107,22 +101,17 @@
     }
   },
   "language": {
-    "title": "Idioma",
+    "title": "Idioma de exibição",
     "description": "Escolha o idioma de exibição da interface do Paperclip. As alterações entram em vigor imediatamente sem necessidade de reiniciar.",
     "en": "Inglês",
-    "ru": "Русский",
+    "ru": "Russo",
     "uk": "Ucraniano",
-    "es": "Español",
-    "de": "Deutsch",
+    "es": "Espanhol",
+    "de": "Alemão",
     "pt": "Português",
-    "zh": "中文",
+    "zh": "Chinês",
     "el": "Grego",
-    "fr": "Français",
-    "it": "Italiano",
-    "ja": "日本語",
-    "ko": "한국어",
-    "tr": "Türkçe",
-    "ar": "العربية"
+    "hi": "Hindi"
   },
   "plugin_detail": {
     "runtime_dashboard_title": "Dashboard de Runtime",
@@ -220,13 +209,7 @@
     "confirm_cancel": "Cancelar",
     "confirm_enable_only": "Apenas habilitar",
     "confirm_enable_create": "Habilitar e criar {{count}}",
-    "confirm_enable": "Habilitar",
-    "confirm_skipped_few": "{{count}} resultados atuais estão fora da retrospectiva configurada e não serão tocados.",
-    "confirm_skipped_many": "{{count}} resultados atuais estão fora da retrospectiva configurada e não serão tocados.",
-    "confirm_task_count_few": "{{count}} tarefas de recuperação correspondem às últimas {{hours}} horas.",
-    "confirm_task_count_many": "{{count}} tarefas de recuperação correspondem às últimas {{hours}} horas.",
-    "current_window_few": "Janela atual: últimas {{count}} horas.",
-    "current_window_many": "Janela atual: últimas {{count}} horas."
+    "confirm_enable": "Habilitar"
   },
   "access": {
     "breadcrumb_settings": "Configurações da Instância",

@@ -597,8 +597,7 @@
     "title": "语言",
     "description": "切换界面语言。立即生效。",
     "en": "英语 (English)",
-    "ru": "俄语 (Русский)",
-    "zh": "中文 (简体)"
+    "ru": "俄语 (Русский)"
   },
   "new_project_dialog": {
     "header": "新项目",
