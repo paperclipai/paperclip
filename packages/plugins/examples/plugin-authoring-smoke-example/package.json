@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-authoring-smoke-example",
-  "version": "2026.428.1-fork.4",
+  "version": "2026.428.1-fork.5",
   "type": "module",
   "private": true,
   "description": "A Paperclip plugin",
