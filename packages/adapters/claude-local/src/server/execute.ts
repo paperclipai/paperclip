@@ -60,6 +60,7 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import { loadActiveMemories, buildActiveMemorySection } from "./active-memory.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -453,6 +454,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stderr",
         `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
+    }
+  }
+  // Active Memory Enforcement (VOG-5736, Component A):
+  // When ACTIVE_MEMORY_ENFORCEMENT_ENABLED !== 'false', prepend always-check
+  // memories to the system prompt so the agent cannot miss them, even if the
+  // Claude Code harness system-reminder is not injected.
+  if (process.env["ACTIVE_MEMORY_ENFORCEMENT_ENABLED"] !== "false") {
+    try {
+      const memories = await loadActiveMemories(cwd);
+      const section = buildActiveMemorySection(memories);
+      if (section) {
+        combinedInstructionsContents = combinedInstructionsContents
+          ? `${section}\n\n---\n\n${combinedInstructionsContents}`
+          : section;
+        await onLog("stdout", `[paperclip] Active memory enforcement: injected ${memories.length} always-check rule(s).\n`);
+      }
+    } catch (err) {
+      // Non-fatal: memory injection failure must not block agent execution.
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog("stderr", `[paperclip] Warning: active memory enforcement injection failed: ${reason}\n`);
     }
   }
   const promptBundle = await prepareClaudePromptBundle({
