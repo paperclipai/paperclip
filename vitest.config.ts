@@ -12,6 +12,7 @@ export default defineConfig({
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
       "packages/adapters/opencode-local",
+      "packages/adapters/openclaw-gateway",
       "packages/adapters/pi-local",
       "server",
       "ui",
