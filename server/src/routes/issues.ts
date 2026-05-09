@@ -25,6 +25,8 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT,
+  parseIssueExpectedOutputContract,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -104,6 +106,7 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const OUTPUT_CONTRACT_EXECUTION_STATUSES = new Set(["todo", "in_progress", "in_review"]);
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -413,6 +416,56 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+
+function withExpectedOutput<T extends { description?: string | null }>(issue: T) {
+  return {
+    ...issue,
+    expectedOutput: parseIssueExpectedOutputContract(issue.description).expectedOutput,
+  };
+}
+
+function readRequiresOutputContract(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return record.requiresOutputContract === true;
+}
+
+async function assertExpectedOutputContractForIssue(input: {
+  db: Db;
+  companyId: string;
+  projectId: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  description: string | null | undefined;
+  requirePolicyCheck: boolean;
+}) {
+  const parsed = parseIssueExpectedOutputContract(input.description);
+  if (!input.requirePolicyCheck) return;
+
+  const [company, project, assignee] = await Promise.all([
+    companyService(input.db).getById(input.companyId),
+    input.projectId ? projectService(input.db).getById(input.projectId) : Promise.resolve(null),
+    input.assigneeAgentId ? agentService(input.db).getById(input.assigneeAgentId) : Promise.resolve(null),
+  ]);
+  const required =
+    company?.requireOutputContracts === true ||
+    project?.requireOutputContracts === true ||
+    readRequiresOutputContract(assignee?.metadata);
+  if (!required) return;
+
+  if (parsed.rawValue && !parsed.supported) {
+    throw unprocessable(
+      `Unsupported Expected output: ${parsed.rawValue}. Supported values: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
+      { supportedValues: ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT },
+    );
+  }
+
+  if (!parsed.expectedOutput) {
+    throw unprocessable(
+      `Missing Expected output contract. Add \`Expected output: <value>\` using one of: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
+      { supportedValues: ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT },
+    );
+  }
+}
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -1562,6 +1615,7 @@ export function issueRoutes(
         identifier: issue.identifier,
         title: issue.title,
         description: issue.description,
+        expectedOutput: parseIssueExpectedOutputContract(issue.description).expectedOutput,
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
@@ -1669,7 +1723,7 @@ export function issueRoutes(
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
-      ...issue,
+      ...withExpectedOutput(issue),
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -2296,6 +2350,16 @@ export function issueRoutes(
       await assertCanAssignTasks(req, companyId);
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertExpectedOutputContractForIssue({
+      db,
+      companyId,
+      projectId: req.body.projectId ?? null,
+      assigneeAgentId: req.body.assigneeAgentId ?? null,
+      description: req.body.description ?? null,
+      requirePolicyCheck:
+        Boolean(req.body.assigneeAgentId) ||
+        OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(req.body.status ?? "backlog")),
+    });
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
@@ -2372,7 +2436,7 @@ export function issueRoutes(
     });
 
     res.status(201).json({
-      ...issue,
+      ...withExpectedOutput(issue),
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
@@ -2391,6 +2455,16 @@ export function issueRoutes(
       await assertCanAssignTasks(req, parent.companyId);
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertExpectedOutputContractForIssue({
+      db,
+      companyId: parent.companyId,
+      projectId: req.body.projectId ?? parent.projectId ?? null,
+      assigneeAgentId: req.body.assigneeAgentId ?? null,
+      description: req.body.description ?? null,
+      requirePolicyCheck:
+        Boolean(req.body.assigneeAgentId) ||
+        OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(req.body.status ?? "backlog")),
+    });
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
@@ -2461,7 +2535,7 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    res.status(201).json(withExpectedOutput(issue));
   });
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
@@ -2568,6 +2642,22 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const finalStatus = updateFields.status ?? existing.status;
+    const assignmentChanged =
+      normalizedAssigneeAgentId !== undefined && normalizedAssigneeAgentId !== existing.assigneeAgentId;
+    const requiresOutputContractPolicyCheck =
+      (assignmentChanged && Boolean(requestedAssigneeAgentId)) ||
+      (updateFields.status !== undefined && OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(updateFields.status))) ||
+      ((updateFields.description !== undefined || updateFields.projectId !== undefined) &&
+        OUTPUT_CONTRACT_EXECUTION_STATUSES.has(String(finalStatus)));
+    await assertExpectedOutputContractForIssue({
+      db,
+      companyId: existing.companyId,
+      projectId: updateFields.projectId === undefined ? existing.projectId : updateFields.projectId,
+      assigneeAgentId: requestedAssigneeAgentId,
+      description: updateFields.description === undefined ? existing.description : updateFields.description,
+      requirePolicyCheck: requiresOutputContractPolicyCheck,
+    });
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
@@ -3387,7 +3477,7 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    res.json({ ...withExpectedOutput(issueResponse), comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -3465,6 +3555,14 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+    await assertExpectedOutputContractForIssue({
+      db,
+      companyId: issue.companyId,
+      projectId: issue.projectId,
+      assigneeAgentId: req.body.agentId,
+      description: issue.description,
+      requirePolicyCheck: true,
+    });
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
@@ -3501,7 +3599,7 @@ export function issueRoutes(
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }
 
-    res.json(updated);
+    res.json(withExpectedOutput(updated));
   });
 
   router.post("/issues/:id/release", async (req, res) => {

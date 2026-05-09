@@ -13,6 +13,7 @@ import type {
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueExpectedOutput,
   IssueOriginKind,
   IssuePriority,
   IssueWorkMode,
@@ -332,6 +333,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  expectedOutput?: IssueExpectedOutput | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;

@@ -1,0 +1,2 @@
+ALTER TABLE "companies" ADD COLUMN "require_output_contracts" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "projects" ADD COLUMN "require_output_contracts" boolean DEFAULT false NOT NULL;

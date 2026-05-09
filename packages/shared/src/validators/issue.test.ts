@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  parseIssueExpectedOutputContract,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
   updateIssueSchema,
@@ -11,6 +12,26 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("derives a supported Expected output contract from issue markdown", () => {
+    expect(parseIssueExpectedOutputContract("Expected output: github_pr\n\nShip it").expectedOutput)
+      .toBe("github_pr");
+    expect(parseIssueExpectedOutputContract("## Scope\n\nExpected output: `audit_brief`").expectedOutput)
+      .toBe("audit_brief");
+    expect(parseIssueExpectedOutputContract("No contract yet").expectedOutput)
+      .toBeNull();
+  });
+
+  it("rejects unsupported Expected output values with the supported value list", () => {
+    const parsed = updateIssueSchema.safeParse({
+      description: "Expected output: issue_update\n\nUnsupported legacy value",
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain("Unsupported Expected output");
+    expect(parsed.error?.issues[0]?.message).toContain("github_pr");
+    expect(parsed.error?.issues[0]?.message).toContain("project_manifest");
+  });
+
   it("passes real line breaks through unchanged", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",
@@ -104,6 +125,17 @@ describe("issue validators", () => {
     });
 
     expect(parsed.description).toBe("Line 1\n\nLine 2");
+  });
+
+  it("rejects unsupported Expected output values in generated task drafts", () => {
+    const parsed = suggestedTaskDraftSchema.safeParse({
+      clientKey: "task-1",
+      title: "Follow up",
+      description: "Expected output: issue_update\n\nUnsupported legacy value",
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain("Unsupported Expected output");
   });
 
   it("normalizes escaped line breaks in thread summaries and documents", () => {

@@ -12,6 +12,7 @@ import {
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
+  ISSUE_EXPECTED_OUTPUT_VALUES,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
@@ -23,6 +24,43 @@ import {
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+
+export const ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT = ISSUE_EXPECTED_OUTPUT_VALUES.join(", ");
+
+export function parseIssueExpectedOutputContract(description: string | null | undefined) {
+  const match = String(description ?? "").match(/(?:^|\r?\n)\s*Expected output\s*:\s*([^\r\n]*)/i);
+  if (!match) return { expectedOutput: null, rawValue: null, supported: true } as const;
+
+  const rawValue = (match[1] ?? "").trim().replace(/^`+|`+$/g, "").trim();
+  const expectedOutput = ISSUE_EXPECTED_OUTPUT_VALUES.find((value) => value === rawValue) ?? null;
+  return {
+    expectedOutput,
+    rawValue,
+    supported: expectedOutput !== null,
+  } as const;
+}
+
+function validateExpectedOutputDescription(description: string | null | undefined, ctx: z.RefinementCtx) {
+  if (description === undefined || description === null) return;
+  const parsed = parseIssueExpectedOutputContract(description);
+  if (!parsed.rawValue || parsed.supported) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      `Unsupported Expected output: ${parsed.rawValue}. Supported values: ${ISSUE_EXPECTED_OUTPUT_SUPPORTED_VALUES_TEXT}.`,
+  });
+}
+
+const issueDescriptionSchema = multilineTextSchema
+  .optional()
+  .nullable()
+  .superRefine(validateExpectedOutputDescription);
+
+const suggestedTaskDescriptionSchema = multilineTextSchema
+  .pipe(z.string().trim().max(20000))
+  .optional()
+  .nullable()
+  .superRefine(validateExpectedOutputDescription);
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -222,7 +260,7 @@ const createIssueBaseSchema = z.object({
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
-  description: multilineTextSchema.optional().nullable(),
+  description: issueDescriptionSchema,
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
@@ -401,7 +439,7 @@ export const suggestedTaskDraftSchema = z.object({
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
   title: z.string().trim().min(1).max(240),
-  description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
+  description: suggestedTaskDescriptionSchema,
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
   workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),

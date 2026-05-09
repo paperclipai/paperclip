@@ -38,6 +38,7 @@ export const storybookCompanies: Company[] = [
     spentMonthlyCents: 67_500,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: true,
+    requireOutputContracts: false,
     feedbackDataSharingEnabled: true,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
@@ -61,6 +62,7 @@ export const storybookCompanies: Company[] = [
     spentMonthlyCents: 39_500,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: false,
+    requireOutputContracts: false,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
@@ -84,6 +86,7 @@ export const storybookCompanies: Company[] = [
     spentMonthlyCents: 91_200,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: true,
+    requireOutputContracts: false,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
@@ -623,6 +626,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     createdAt: recent(18_000),
     updatedAt: recent(12),
     ...overrides,
+    requireOutputContracts: overrides.requireOutputContracts ?? false,
   };
 }
 
