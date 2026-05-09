@@ -1556,6 +1556,7 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
     wakeReason === "issue_assigned" ||
+    wakeReason === "bookforge_incident_dispatch" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested"
@@ -1630,6 +1631,7 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "bookforge_incident_dispatch") return "wake reason is bookforge_incident_dispatch";
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
@@ -4531,7 +4533,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "satisfied" as const, queuedRun: null };
     }
 
-    if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
+    if (
+      run.status === "timed_out" ||
+      run.errorCode === "timeout" ||
+      readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment"
+    ) {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "retry_exhausted",
         issueCommentSatisfiedByCommentId: null,
@@ -4540,7 +4546,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+        message: run.status === "timed_out" || run.errorCode === "timeout"
+          ? "Run timed out without an issue comment; no automatic comment wake will be queued"
+          : "Run ended without an issue comment after one retry; no further comment wake will be queued",
       });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
@@ -6434,6 +6442,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: run.processPid,
           processGroupId: run.processGroupId,
         });
+      }
+
+      const contextSnapshot = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(contextSnapshot.issueId);
+      if (issueId) {
+        const issue = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (issue?.status === "done" || issue?.status === "cancelled") {
+          const message = `Orphaned run ignored because target issue is already ${issue.status}`;
+          const cancelledRun = await setRunStatus(run.id, "cancelled", {
+            error: message,
+            errorCode: issue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              "cancelled",
+              {
+                resultJson: parseObject(run.resultJson),
+                errorCode: issue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+                errorMessage: message,
+              },
+            ),
+          }) ?? await getRun(run.id);
+          await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+            finishedAt: now,
+            error: message,
+          });
+          if (cancelledRun) {
+            await releaseEnvironmentLeasesForRun({
+              runId: cancelledRun.id,
+              companyId: cancelledRun.companyId,
+              agentId: cancelledRun.agentId,
+              status: cancelledRun.status,
+              failureReason: message,
+            });
+            await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message,
+              payload: {
+                issueId,
+                issueStatus: issue.status,
+                ...(run.processPid ? { processPid: run.processPid } : {}),
+                ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+                ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+              },
+            });
+          }
+          await finalizeAgentStatus(run.agentId, "cancelled");
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
       }
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;

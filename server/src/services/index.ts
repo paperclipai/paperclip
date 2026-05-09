@@ -34,6 +34,20 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export {
+  buildBookforgeRepairAcceptanceGate,
+  buildBookforgeRepairIssueDraft,
+  dispatchBookforgeIncident,
+  planBookforgeIncidentDispatch,
+  validateBookforgeRepairAcceptance,
+  type BookforgeDispatchAgent,
+  type BookforgeIncidentDispatchInput,
+  type BookforgeIncidentDispatchPlan,
+  type BookforgeIncidentDispatchResult,
+  type BookforgeRepairAcceptanceEvidence,
+  type BookforgeRepairAcceptanceGate,
+} from "./bookforge-incident-dispatcher.js";
+export * from "./bookforge-runtime-monitor.js";
+export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
 } from "./productivity-review.js";

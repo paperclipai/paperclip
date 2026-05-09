@@ -299,6 +299,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
   });
 
+  it("resets session context on Bookforge incident dispatch wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "bookforge_incident_dispatch" })).toBe(true);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });

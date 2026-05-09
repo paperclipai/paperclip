@@ -28,6 +28,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { createBookforgeRuntimeMonitor } from "./services/bookforge-runtime-monitor.js";
 import {
   feedbackService,
   heartbeatService,
@@ -785,6 +786,22 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
+  const bookforgeMonitorCompanyId = process.env.PAPERCLIP_BOOKFORGE_COMPANY_ID ?? "2925a47a-961a-4212-8b36-ce711e2f6ec0";
+  if (process.env.PAPERCLIP_BOOKFORGE_MONITOR_ENABLED === "true") {
+    createBookforgeRuntimeMonitor(db as any, {
+      companyId: bookforgeMonitorCompanyId,
+      bookforgeBaseUrl: process.env.PAPERCLIP_BOOKFORGE_BASE_URL ?? "http://127.0.0.1:5012",
+      intervalMs: Number(process.env.PAPERCLIP_BOOKFORGE_MONITOR_INTERVAL_MS ?? 60000),
+      approvedTarget: {
+        yaml: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_YAML ?? null,
+        itemId: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_ITEM_ID ?? null,
+        projectName: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_PROJECT ?? null,
+      },
+      approvedTargetFile: process.env.PAPERCLIP_BOOKFORGE_APPROVED_TARGET_FILE ?? `${process.env.HOME ?? ""}/.paperclip/bookforge-approved-target.json`,
+      logger,
+    }).start();
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 

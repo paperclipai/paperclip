@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const hermesExecuteMock = vi.hoisted(() =>
@@ -321,6 +324,22 @@ describe("server adapter registry", () => {
       "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
     );
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "current operating level is Level 1",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "separate Paperclip agent/token spend from Bookforge generation/model spend",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "changing org chart/permissions/heartbeat/autonomy/model routing",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "Avoid shell patterns that trigger interactive safety prompts",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("curl | python");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("PAPERCLIP_API_KEY with Python urllib.request");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("X-Paperclip-Run-Id from PAPERCLIP_RUN_ID");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("ps ... | python");
   });
 
   it("preserves Hermes command normalization while injecting auth", async () => {
@@ -384,10 +403,88 @@ describe("server adapter registry", () => {
     await adapter.execute(ctx);
 
     expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+    expect(hermesExecuteMock).toHaveBeenCalledWith({
+      ...ctx,
+      runtime: {
+        sessionDisplayId: undefined,
+        sessionId: undefined,
+        sessionParams: null,
+      },
+    });
   });
 
-  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
+  it("does not feed Hermes bad persisted session ids back into resume", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "from",
+        sessionDisplayId: "20260509_143232_",
+        sessionParams: { sessionId: "from", other: "kept" },
+      },
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.runtime).toMatchObject({
+      sessionId: null,
+      sessionDisplayId: null,
+      sessionParams: { other: "kept" },
+    });
+  });
+
+  it("clears bad Hermes session ids returned by the adapter", async () => {
+    hermesExecuteMock.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionId: "from",
+      sessionDisplayId: "20260509_143232_",
+      sessionParams: { sessionId: "from" },
+    });
+    const adapter = requireServerAdapter("hermes_local");
+
+    const result = await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      sessionId: null,
+      sessionDisplayId: null,
+      sessionParams: null,
+      clearSession: true,
+    });
+  });
+
+  it("preserves an explicit Hermes Paperclip API key and injects the active-assignment guard", async () => {
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -417,13 +514,11 @@ describe("server adapter registry", () => {
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
-    // No custom promptTemplate was set — Hermes must use its built-in default.
-    // Setting promptTemplate here would replace the full default with just the auth guard text,
-    // stripping assigned issue / workflow instructions.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Paperclip active assignment rule");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Do not answer only with acknowledgement");
   });
 
-  it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
+  it("injects assigned issue and continuation context into Hermes even when no custom template is configured", async () => {
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -438,6 +533,135 @@ describe("server adapter registry", () => {
       },
       runtime: {},
       config: {},
+      context: {
+        paperclipTaskMarkdown: "Issue: BOO-34\nTitle: Resume Bookforge safely",
+        paperclipWake: {
+          reason: "issue_assigned",
+          issue: { identifier: "BOO-34", title: "Resume Bookforge safely" },
+        },
+        paperclipContinuationSummary: {
+          body: "Fix Chapter 13 quality hold, then resume exact queue item only after verification.",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const prompt = patchedCtx.agent.adapterConfig.promptTemplate;
+    expect(prompt).toContain("Paperclip active assignment rule");
+    expect(prompt).toContain("Issue: BOO-34");
+    expect(prompt).toContain("Resume Bookforge safely");
+    expect(prompt).toContain("Paperclip wake payload JSON");
+    expect(prompt).toContain("Fix Chapter 13 quality hold");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("injects bounded Hermes instruction files and directories into the prompt", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+    const instructionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-instructions-"));
+    const directFile = path.join(instructionRoot, "ceo.md");
+    const directoryFile = path.join(instructionRoot, "bookforge.txt");
+    const ignoredFile = path.join(instructionRoot, "secret.json");
+    await fs.writeFile(directFile, "CEO long instruction: read from file, do not paste giant issue.");
+    await fs.writeFile(directoryFile, "Bookforge instruction directory content.");
+    await fs.writeFile(ignoredFile, "This JSON file should not be injected.");
+
+    try {
+      await adapter.execute({
+        runId: "run-123",
+        agent: {
+          id: "agent-123",
+          companyId: "company-123",
+          name: "Hermes Agent",
+          role: "engineer",
+          adapterType: "hermes_local",
+          adapterConfig: {
+            instructionsFilePath: directFile,
+            instructionsDirectory: instructionRoot,
+          },
+        },
+        runtime: {},
+        config: {},
+        context: {
+          paperclipTaskMarkdown: "Issue: BOO-58\nTitle: General Instructions",
+        },
+        onLog: async () => {},
+        onMeta: async () => {},
+        onSpawn: async () => {},
+        authToken: "agent-run-jwt",
+      });
+
+      const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+      const prompt = patchedCtx.agent.adapterConfig.promptTemplate;
+      expect(prompt).toContain("Paperclip external instruction references");
+      expect(prompt).toContain(`Instruction file: ${directFile}`);
+      expect(prompt).toContain(`Instruction file: ${directoryFile}`);
+      expect(prompt).toContain("CEO long instruction");
+      expect(prompt).toContain("Bookforge instruction directory content");
+      expect(prompt).not.toContain("This JSON file should not be injected");
+    } finally {
+      await fs.rm(instructionRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("gives Bookforge Lab Hermes agents write/test access to the Bookforge repo with yolo command execution", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "2925a47a-961a-4212-8b36-ce711e2f6ec0",
+        name: "Bookforge Forgewright",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {
+        paperclipTaskMarkdown: "Issue: BOO-99\nTitle: Improve Bookforge prompts and tests",
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const adapterConfig = patchedCtx.agent.adapterConfig;
+    expect(adapterConfig.cwd).toBe("/Users/begilhan/Bookforge V2 PublicationForge");
+    expect(adapterConfig.toolsets).toBe("terminal,file,skills,session_search");
+    expect(adapterConfig.timeoutSec).toBe(1800);
+    expect(adapterConfig.maxTurnsPerRun).toBe(40);
+    expect(adapterConfig.extraArgs).toContain("--yolo");
+    expect(adapterConfig.env.HERMES_YOLO_MODE).toBe("1");
+    expect(adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+    expect(adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
+    expect(adapterConfig.promptTemplate).toContain("current operating level is Level 1");
+    expect(adapterConfig.promptTemplate).toContain("you may read, write, and modify code, prompts, tests, detectors");
+    expect(adapterConfig.promptTemplate).toContain("Level 1 does not authorize deleting manuscript work");
+    expect(adapterConfig.promptTemplate).toContain("separate Paperclip agent/token spend from Bookforge generation/model spend");
+  });
+
+  it("allows Bookforge Lab code access to be explicitly disabled per agent", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "2925a47a-961a-4212-8b36-ce711e2f6ec0",
+        name: "Bookforge Checkpoint",
+        role: "checkpoint",
+        adapterType: "hermes_local",
+        adapterConfig: { bookforgeCodeAccess: false },
+      },
+      runtime: {},
+      config: {},
       context: {},
       onLog: async () => {},
       onMeta: async () => {},
@@ -446,9 +670,38 @@ describe("server adapter registry", () => {
     });
 
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
-    // Auth token is still injected.
+    expect(patchedCtx.agent.adapterConfig.cwd).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.env.HERMES_YOLO_MODE).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("does not grant Bookforge code-access defaults based only on an agent name", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Bookforge Helper Outside Lab",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.cwd).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.env.HERMES_YOLO_MODE).toBeUndefined();
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 });

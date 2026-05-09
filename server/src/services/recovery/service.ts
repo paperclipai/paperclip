@@ -64,6 +64,23 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const BOOKFORGE_INCIDENT_ORIGIN_KIND = "bookforge_incident";
+
+function isBookforgeRepairGateIssue(issue: Pick<typeof issues.$inferSelect, "originKind" | "title">) {
+  const title = issue.title.toLowerCase();
+  return (
+    issue.originKind === BOOKFORGE_INCIDENT_ORIGIN_KIND ||
+    issue.originKind === "bookforge_runtime_control" ||
+    title.startsWith("bookforge repair gate") ||
+    (title.includes("bookforge") && title.includes("runtime governor")) ||
+    (title.includes("bookforge") && title.includes("resume gate"))
+  );
+}
+
+function isSuccessfulBookforgeDiagnosticIssue(issue: Pick<typeof issues.$inferSelect, "title">) {
+  const title = issue.title.toLowerCase();
+  return title.includes("bookforge") && (title.includes("smoke") || title.includes("diagnostic"));
+}
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -83,7 +100,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -267,6 +284,53 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function extractBookforgeEvidencePathsFromText(text: string | null) {
+  if (!text) return [];
+  const matches = text.match(/\/Users\/begilhan\/Bookforge V2 PublicationForge\/reports\/[^\s`'"<>]+/g) ?? [];
+  return matches.map((path) => path.replace(/[),.;:]+$/, ""));
+}
+
+function readBookforgeCapturedEvidence(latestRun: LatestIssueRun) {
+  if (!latestRun || !isUnsuccessfulTerminalIssueRun(latestRun)) return null;
+  if (!isProductiveContinuationRun({ ...latestRun, status: "succeeded" })) return null;
+
+  const result = parseObject(latestRun.resultJson);
+  const stdout = readNonEmptyString(result.stdout);
+  const stderr = readNonEmptyString(result.stderr);
+  const summary = readNonEmptyString(result.summary) ??
+    readNonEmptyString(result.result) ??
+    readNonEmptyString(result.message) ??
+    (asBoolean(result.partial, false) ? stdout ?? stderr : null);
+  const paths: string[] = [];
+  const workProducts = Array.isArray(result.workProducts) ? result.workProducts : [];
+  for (const item of workProducts) {
+    const product = parseObject(item);
+    const path = readNonEmptyString(product.path) ?? readNonEmptyString(product.filePath) ?? readNonEmptyString(product.url);
+    if (path) paths.push(path);
+  }
+  const artifactPaths = Array.isArray(result.artifacts) ? result.artifacts : [];
+  for (const item of artifactPaths) {
+    const artifact = parseObject(item);
+    const path = typeof item === "string"
+      ? item
+      : readNonEmptyString(artifact.path) ?? readNonEmptyString(artifact.filePath) ?? readNonEmptyString(artifact.url);
+    if (path) paths.push(path);
+  }
+  paths.push(...extractBookforgeEvidencePathsFromText(stdout));
+  paths.push(...extractBookforgeEvidencePathsFromText(stderr));
+
+  if (!summary && paths.length === 0) return null;
+  return {
+    summary,
+    paths: [...new Set(paths)].slice(0, 5),
+  };
+}
+
+function formatBookforgeEvidencePaths(paths: string[]) {
+  if (paths.length === 0) return "- Captured evidence: run result summary only";
+  return paths.map((path) => `- Captured evidence: \`${path}\``).join("\n");
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -379,6 +443,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
       .where(
@@ -1383,7 +1448,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Latest handoff run status: \`${input.latestRun?.status ?? "unknown"}\``,
         `- Normalized cause: \`${SUCCESSFUL_RUN_MISSING_STATE_REASON}\``,
         `- Missing disposition: \`${missingDisposition}\``,
-        "- Suggested manager action: choose and record a valid issue disposition without copying transcript content.",
+        "- Suggested manager action: leave this recovery issue in manual Steward/board review until someone records a valid issue disposition without copying transcript content.",
         "",
         "## Required Action",
         "",
@@ -1433,12 +1498,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
-    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
-    if (!ownerAgentId) return null;
+    const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const usesManualReviewRecovery = recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON;
+    const ownerAgentId = usesManualReviewRecovery
+      ? null
+      : await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+    if (!usesManualReviewRecovery && !ownerAgentId) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
-    const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     let recovery: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       recovery = await issuesSvc.create(input.issue.companyId, {
@@ -1454,7 +1522,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
           sourceAssignee,
         }),
-        status: "todo",
+        status: usesManualReviewRecovery ? "in_review" : "todo",
         priority: input.issue.priority,
         parentId: input.issue.id,
         projectId: input.issue.projectId,
@@ -1481,28 +1549,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return raced;
     }
 
-    await deps.enqueueWakeup(ownerAgentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: withRecoveryModelProfileHint({
-        issueId: recovery.id,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-        recoveryCause,
-      }),
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: withRecoveryModelProfileHint({
-        issueId: recovery.id,
-        taskId: recovery.id,
-        wakeReason: "issue_assigned",
-        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-        recoveryCause,
-      }),
-    });
+    if (ownerAgentId) {
+      await deps.enqueueWakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint({
+          issueId: recovery.id,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+          recoveryCause,
+        }),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: recovery.id,
+          taskId: recovery.id,
+          wakeReason: "issue_assigned",
+          source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+          recoveryCause,
+        }),
+      });
+    }
 
     return recovery;
   }
@@ -1769,6 +1839,82 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (isBookforgeRepairGateIssue(issue)) {
+        const capturedEvidence = readBookforgeCapturedEvidence(latestRun);
+        if (capturedEvidence && latestRun) {
+          const updated = await issuesSvc.update(issue.id, { status: "in_review" });
+          if (updated) {
+            const prefix = await getCompanyIssuePrefix(issue.companyId);
+            await issuesSvc.addComment(
+              issue.id,
+              [
+                "Paperclip captured Bookforge evidence before the assigned agent ended unsuccessfully.",
+                "",
+                `- Issue: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+                `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
+                `- Latest run status: \`${latestRun.status}\``,
+                capturedEvidence.summary ? `- Summary: ${capturedEvidence.summary}` : null,
+                formatBookforgeEvidencePaths(capturedEvidence.paths),
+                "- Guard: Bookforge evidence-bearing terminal runs move to review instead of generic stranded recovery loops.",
+                "- Next action: validate the captured Bookforge evidence; do not resume generation unless Runtime Governor/user gates are green.",
+              ].filter((line): line is string => typeof line === "string").join("\n"),
+              {},
+            );
+            result.productiveContinuationObserved += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
+      if (isBookforgeRepairGateIssue(issue) && latestRun?.status === "succeeded") {
+        const updated = await issuesSvc.update(issue.id, { status: "in_review" });
+        if (updated) {
+          const prefix = await getCompanyIssuePrefix(issue.companyId);
+          await issuesSvc.addComment(
+            issue.id,
+            [
+              "Paperclip received successful Bookforge repair-gate output from the assigned agent.",
+              "",
+              `- Issue: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+              `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
+              "- Guard: Bookforge repair gates do not use generic stranded-issue continuation loops after evidence is produced.",
+              "- Next action: validate the Bookforge repair acceptance evidence, then let Runtime Governor clear/resume only if the gate passes.",
+            ].join("\n"),
+            {},
+          );
+          result.productiveContinuationObserved += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (isSuccessfulBookforgeDiagnosticIssue(issue) && latestRun?.status === "succeeded") {
+        const updated = await issuesSvc.update(issue.id, { status: "in_review" });
+        if (updated) {
+          const prefix = await getCompanyIssuePrefix(issue.companyId);
+          await issuesSvc.addComment(
+            issue.id,
+            [
+              "Paperclip received successful Bookforge diagnostic output from the assigned agent.",
+              "",
+              `- Issue: ${issueUiLink({ identifier: issue.identifier, id: issue.id }, prefix)}`,
+              `- Latest run: ${runUiLink({ id: latestRun.id, agentId: latestRun.agentId }, prefix)}`,
+              `- Latest run liveness: \`${latestRun.livenessState ?? "unknown"}\``,
+              "- Guard: successful Bookforge smoke/diagnostic issues move to review instead of spawning generic stranded-work recovery.",
+              "- Next action: validate the diagnostic evidence and close the issue if acceptance criteria are met; do not start Bookforge generation.",
+            ].join("\n"),
+            {},
+          );
+          result.productiveContinuationObserved += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -1937,6 +2083,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      if ((isBookforgeRepairGateIssue(issue) || issue.title.toLowerCase().includes("general instructions")) && isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip found this assigned `in_progress` issue had ended in an unsuccessful terminal run " +
+            `and had no live execution path.${failureSummary ?? ""} ` +
+            "It will not be automatically continued; moving it to `blocked` for human/supervisor intervention.",
         });
         if (updated) {
           result.escalated += 1;
