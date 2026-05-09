@@ -570,23 +570,69 @@ const piLocalAdapter: ServerAdapterModule = {
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
+function isInvalidHermesSessionId(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  // Hermes prints "Use a session ID from a previous CLI run" when resume
+  // fails; legacy adapter parsing could persist the word "from".
+  if (/^from$/i.test(trimmed)) return true;
+  // A failed resume can also leave a truncated Hermes timestamp id.
+  return /^\d{8}_\d{6}_$/.test(trimmed);
+}
+
+function sanitizeHermesSessionParams(value: Record<string, unknown> | null | undefined) {
+  if (!value || typeof value !== "object") return value ?? null;
+  if (!isInvalidHermesSessionId(value.sessionId)) return value;
+  const next = { ...value };
+  delete next.sessionId;
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function sanitizeHermesRuntime(runtime: Parameters<ServerAdapterModule["execute"]>[0]["runtime"]) {
+  return {
+    ...runtime,
+    sessionId: isInvalidHermesSessionId(runtime?.sessionId) ? null : runtime?.sessionId,
+    sessionDisplayId: isInvalidHermesSessionId(runtime?.sessionDisplayId) ? null : runtime?.sessionDisplayId,
+    sessionParams: sanitizeHermesSessionParams(runtime?.sessionParams),
+  };
+}
+
+function sanitizeHermesExecutionResult(result: Awaited<ReturnType<ServerAdapterModule["execute"]>>) {
+  const invalidSessionId = isInvalidHermesSessionId(result.sessionId);
+  const invalidSessionParams = Boolean(result.sessionParams && isInvalidHermesSessionId(result.sessionParams.sessionId));
+  const invalidDisplayId = isInvalidHermesSessionId(result.sessionDisplayId);
+  if (!invalidSessionId && !invalidSessionParams && !invalidDisplayId) return result;
+  return {
+    ...result,
+    sessionId: invalidSessionId ? null : result.sessionId,
+    sessionDisplayId: invalidDisplayId ? null : result.sessionDisplayId,
+    sessionParams: invalidSessionParams ? sanitizeHermesSessionParams(result.sessionParams) : result.sessionParams,
+    clearSession: true,
+  };
+}
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
-    const normalizedCtx = normalizeHermesConfig(ctx);
+    const normalizedBase = normalizeHermesConfig(ctx);
+    const normalizedCtx = {
+      ...normalizedBase,
+      runtime: sanitizeHermesRuntime(normalizedBase.runtime),
+    };
     const baseConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingConfig = isBookforgeLabHermesRun(normalizedCtx)
       ? applyBookforgeCodeAccessDefaults(baseConfig)
       : baseConfig;
 
     if (!normalizedCtx.authToken) {
-      return executeHermesLocal({
+      return sanitizeHermesExecutionResult(await executeHermesLocal({
         ...normalizedCtx,
         agent: {
           ...normalizedCtx.agent,
           adapterConfig: existingConfig,
         },
-      });
+      }));
     }
 
     const existingEnv =
@@ -633,7 +679,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    return executeHermesLocal(patchedCtx);
+    return sanitizeHermesExecutionResult(await executeHermesLocal(patchedCtx));
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,

@@ -403,7 +403,85 @@ describe("server adapter registry", () => {
     await adapter.execute(ctx);
 
     expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+    expect(hermesExecuteMock).toHaveBeenCalledWith({
+      ...ctx,
+      runtime: {
+        sessionDisplayId: undefined,
+        sessionId: undefined,
+        sessionParams: null,
+      },
+    });
+  });
+
+  it("does not feed Hermes bad persisted session ids back into resume", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "from",
+        sessionDisplayId: "20260509_143232_",
+        sessionParams: { sessionId: "from", other: "kept" },
+      },
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.runtime).toMatchObject({
+      sessionId: null,
+      sessionDisplayId: null,
+      sessionParams: { other: "kept" },
+    });
+  });
+
+  it("clears bad Hermes session ids returned by the adapter", async () => {
+    hermesExecuteMock.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionId: "from",
+      sessionDisplayId: "20260509_143232_",
+      sessionParams: { sessionId: "from" },
+    });
+    const adapter = requireServerAdapter("hermes_local");
+
+    const result = await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      sessionId: null,
+      sessionDisplayId: null,
+      sessionParams: null,
+      clearSession: true,
+    });
   });
 
   it("preserves an explicit Hermes Paperclip API key and injects the active-assignment guard", async () => {
