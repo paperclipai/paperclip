@@ -67,21 +67,19 @@
       "openclaw_unsupported": "Paperclip 无法在此管理 OpenClaw 技能。请访问您的 OpenClaw 实例来管理此智能体的技能。",
       "adapter_unsupported": "Paperclip 暂不支持管理此适配器的技能，请直接在适配器中管理。",
       "acpx_unsupported": "Paperclip 暂不支持管理自定义 ACP 命令的技能。",
-      "kept_in_workspace": "保留在工作空间中",
+      "kept_in_workspace": "保留在工作区中",
       "applied_when_runs": "智能体运行时应用",
       "tracked_only": "仅跟踪"
     },
     "workspace": {
       "created_by_run": "由本次运行创建",
-      "reused_existing": "复用了现有工作空间"
+      "reused_existing": "复用了现有工作区"
     },
     "save_failed": "保存失败",
     "save_config": "保存",
     "saving_config": "保存中…",
     "assign_task": "分配任务",
     "copy_agent_id": "复制智能体 ID",
-    "copy_as_markdown": "复制为 Markdown",
-    "signal": "信号",
     "reset_sessions": "重置会话",
     "terminate": "终止",
     "view_details": "查看详情 →",
@@ -106,9 +104,9 @@
     "input": "输入",
     "output": "输出",
     "cost": "费用",
-    "input_tokens": "输入 token",
-    "output_tokens": "输出 token",
-    "cached_tokens": "缓存 token",
+    "input_tokens": "输入 Token",
+    "output_tokens": "输出 Token",
+    "cached_tokens": "缓存 Token",
     "total_cost": "总费用",
     "skills_library_link": "查看公司技能库",
     "required_by_paperclip": "Paperclip 必需",
@@ -155,6 +153,7 @@
     "file_contents_placeholder": "文件内容",
     "cancel": "取消",
     "delete": "删除",
+    "copy_as_markdown": "复制为 Markdown",
     "can_assign_tasks_desc": "可向其他智能体分配任务",
     "save_failed_msg": "无法保存智能体",
     "failed_resume": "恢复运行失败",
@@ -164,15 +163,16 @@
     "clear_session_confirm": "正在清除会话...",
     "clear_session_btn": "清除这些任务的会话",
     "exit_code": "退出码",
+    "signal": "信号",
     "action_failed": "操作失败",
     "failed_reset_session": "重置会话失败",
     "failed_update_permissions": "更新权限失败",
-    "live_now": "直播中",
+    "live_now": "实时运行中",
     "more_active_runs": "另外 {{count}} 次运行",
     "more_active_runs_plural": "另外 {{count}} 次运行",
     "run_source": {
       "timer": "定时器",
-      "assignment": "任务",
+      "assignment": "任务分配",
       "on_demand": "按需",
       "automation": "自动化"
     }
@@ -219,7 +219,8 @@
   "env_var_editor": {
     "secret_name_prompt": "密钥名称",
     "failed_create_secret": "创建密钥失败",
-    "key_placeholder": "KEY",
+    "key_placeholder": "键 (KEY)",
+    "value_placeholder": "值 (value)",
     "plain": "明文",
     "secret": "密钥",
     "select_secret": "选择密钥...",
@@ -227,17 +228,19 @@
     "seal_title": "将值存为密钥并以引用替换",
     "new_secret": "新建",
     "seal": "封存",
-    "paperclip_vars_note": "PAPERCLIP_* 变量在运行时自动注入。",
-    "value_placeholder": "value"
+    "paperclip_vars_note": "PAPERCLIP_* 变量在运行时自动注入。"
   },
   "config_form": {
     "unsaved_changes": "未保存的更改",
     "section_identity": "身份",
     "section_adapter": "适配器",
+    "section_execution": "执行",
     "section_permissions": "权限与配置",
     "section_run_policy": "运行策略",
     "heartbeat_prefix": "每隔多久运行心跳检测",
     "hint_prefix": "提示",
+    "experimental_badge": "实验性",
+    "primary_model": "主模型",
     "model_default": "默认",
     "model_required": "请选择模型（必选）",
     "model_select": "选择模型",
@@ -254,6 +257,9 @@
       "prompt_template": "提示模板",
       "prompt_template_placeholder": "您是智能体 {{ agent.name }}，您的角色是 {{ agent.role }}...",
       "adapter_type": "适配器类型",
+      "default_environment": "默认环境",
+      "default_environment_hint": "智能体级别的默认执行目标。项目和任务设置可以覆盖它。",
+      "default_environment_company_local": "公司默认（本地）",
       "working_dir": "工作目录（已弃用）",
       "working_dir_placeholder": "/path/to/project",
       "command": "命令",
@@ -266,6 +272,9 @@
       "grace_sec": "中断宽限期（秒）",
       "cooldown_sec": "冷却时间（秒）",
       "max_concurrent_runs": "最大并发运行数",
+      "continue_after_max_turn": "超过步骤限制后继续",
+      "continuation_attempts": "继续尝试次数",
+      "continuation_delay_sec": "继续延迟（秒）",
       "model": "模型",
       "model_search_placeholder": "搜索模型...",
       "model_search_creatable_placeholder": "搜索模型...（可输入创建）",
@@ -273,26 +282,38 @@
       "heartbeat_on_interval": "按间隔触发心跳检测",
       "wake_on_demand": "按需唤醒",
       "advanced_run_policy": "高级运行策略",
-      "default_environment": "默认环境",
-      "default_environment_hint": "智能体级别的默认执行目标。项目和任务设置可以覆盖它。",
-      "default_environment_company_local": "公司默认（本地）",
-      "continue_after_max_turn": "超过步骤限制后继续",
-      "continuation_attempts": "继续尝试次数",
-      "continuation_delay_sec": "继续延迟（秒）",
       "unit_sec": "秒"
+    },
+    "options": {
+      "auto": "自动",
+      "minimal": "最小",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "极高",
+      "plan": "规划",
+      "ask": "询问",
+      "max": "最大"
     },
     "actions": {
       "save": "保存",
       "saving": "保存中...",
+      "test": "测试",
       "test_environment": "测试环境",
       "testing": "测试中...",
       "detect_model": "检测模型",
       "detecting": "检测中...",
       "re_detect_from_config": "从配置重新检测",
       "detect_from_config": "从配置检测",
-      "test": "测试",
       "refresh_models": "刷新模型",
       "refreshing": "刷新中..."
+    },
+    "errors": {
+      "select_company_secrets": "选择公司以创建密钥",
+      "select_company_images": "选择公司以上传图片",
+      "select_company_detect_model": "选择公司以检测模型",
+      "select_company_test_environment": "选择公司以测试适配器环境",
+      "failed_refresh_models": "刷新适配器模型失败。"
     },
     "status": {
       "passed": "通过",
@@ -303,10 +324,18 @@
       "no_model_detected_hint": "尚未检测到模型，请手动输入提供商/模型。",
       "no_models_found": "未找到模型。",
       "failed_load_models": "加载适配器模型失败。",
+      "live_opencode_local_only": "OpenCode 模型实时检测仅适用于本地环境。对于 {{name}} 使用精选列表和手动输入。",
       "model_badge_current": "当前",
       "model_badge_detected": "已检测",
-      "model_badge_config": "配置",
-      "live_opencode_local_only": "OpenCode 模型实时检测仅适用于本地环境。对于 {{name}} 使用精选列表和手动输入。"
+      "model_badge_config": "配置"
+    },
+    "cheap_model": {
+      "label": "经济模型",
+      "description": "当运行请求经济配置文件时使用（例如例程摘要）。主模型不会更改。",
+      "adapter_default_placeholder": "适配器默认 · {{model}}",
+      "no_default_placeholder": "无适配器默认值 — 请选择更便宜的模型",
+      "fallback_note": "未明确选择经济模型 — runtime 使用 <code>{{model}}</code>。",
+      "no_default_warning": "未选择经济模型且适配器没有默认值。经济通道运行将继续使用主模型并带有 fallback 注释。"
     },
     "permissions": {
       "enabled_ceo": "CEO 智能体自动启用。",
@@ -320,41 +349,12 @@
       "file_contents_placeholder": "文件内容",
       "language_file": "{{language}} 文件"
     },
-    "prompt_template_warning": "提示模板在每次心跳检测时重放。请保持简洁和动态，以避免重复的 token 费用和缓存失效。",
+    "prompt_template_warning": "提示模板在每次心跳检测时重放。请保持简洁和动态，以避免重复的 Token 费用和缓存失效。",
     "prompt_template_warning_create": "提示模板在每次心跳检测时重放。建议使用简短的任务框架和 {{context}} 或 {{run}} 等变量，避免在此重复稳定的指令。",
     "codex_minimal_warning": "启用搜索时，Codex 可能拒绝 `minimal` 思考模式。",
     "bootstrap_prompt_warning": "初始化提示为旧版功能，将在未来版本中移除。建议将内容迁移至智能体提示模板或指令文件。",
     "adapter_type": {
       "coming_soon": "即将推出"
-    },
-    "section_execution": "执行",
-    "experimental_badge": "实验性",
-    "primary_model": "主模型",
-    "options": {
-      "auto": "自动",
-      "minimal": "最小",
-      "low": "低",
-      "medium": "中",
-      "high": "高",
-      "xhigh": "极高",
-      "plan": "规划",
-      "ask": "询问",
-      "max": "最大"
-    },
-    "errors": {
-      "select_company_secrets": "选择公司以创建密钥",
-      "select_company_images": "选择公司以上传图片",
-      "select_company_detect_model": "选择公司以检测模型",
-      "select_company_test_environment": "选择公司以测试适配器环境",
-      "failed_refresh_models": "刷新适配器模型失败。"
-    },
-    "cheap_model": {
-      "label": "经济模型",
-      "description": "当运行请求经济配置文件时使用（例如例程摘要）。主模型不会更改。",
-      "adapter_default_placeholder": "适配器默认 · {{model}}",
-      "no_default_placeholder": "无适配器默认值 — 请选择更便宜的模型",
-      "fallback_note": "未明确选择经济模型 — runtime 使用 <code>{{model}}</code>。",
-      "no_default_warning": "未选择经济模型且适配器没有默认值。经济通道运行将继续使用主模型并带有 fallback 注释。"
     }
   },
   "transcript_view": {
@@ -387,17 +387,17 @@
     "stdout_label": "标准输出",
     "collapse_stdout": "收起标准输出",
     "expand_stdout": "展开标准输出",
-    "inspect_input": "Inspect {{name}} input",
-    "no_input": "No {{name}} input",
-    "key_payload": "{{key}} payload",
-    "paths_summary": "{{count}} path, starting with {{path}}",
-    "paths_summary_plural": "{{count}} paths, starting with {{path}}",
-    "fields_summary": "{{count}} field: {{keys}}",
-    "fields_summary_plural": "{{count}} fields: {{keys}}",
-    "log_lines": "{{count}} log line",
-    "log_lines_plural": "{{count}} log lines",
-    "system_messages": "{{count}} system message",
-    "system_messages_plural": "{{count}} system messages"
+    "inspect_input": "检查 {{name}} 输入",
+    "no_input": "无 {{name}} 输入",
+    "key_payload": "{{key}} 负载",
+    "paths_summary": "{{count}} 个路径，起始于 {{path}}",
+    "paths_summary_plural": "{{count}} 个路径，起始于 {{path}}",
+    "fields_summary": "{{count}} 个字段：{{keys}}",
+    "fields_summary_plural": "{{count}} 个字段：{{keys}}",
+    "log_lines": "{{count}} 条日志",
+    "log_lines_plural": "{{count}} 条日志",
+    "system_messages": "{{count}} 条系统消息",
+    "system_messages_plural": "{{count}} 条系统消息"
   },
   "detail_view": {
     "invocation": "调用",
@@ -420,13 +420,23 @@
     "stderr_label": "标准错误",
     "error_prefix": "错误",
     "adapter_result_json": "适配器结果 JSON",
+    "transcript": "运行记录",
+    "transcript_mode_nice": "简洁",
+    "transcript_mode_raw": "原始",
+    "jump_to_live": "跳转到实时",
+    "load_more_log": "加载更多日志",
+    "no_log_events": "暂无日志事件。",
+    "no_persisted_log_lines": "暂无持久化日志行。",
+    "clearing_session": "正在清除会话...",
+    "clear_session_text": "清除这些任务的会话",
+    "failure_details": "失败详情",
     "skill_location": "位置",
     "instructions_mode_tooltip": "托管模式：Paperclip 存储并提供指令包。外部模式：由您提供磁盘上指令所在的路径。",
     "instructions_root_path_tooltip": "指令包在磁盘上的绝对目录。托管模式下由 Paperclip 自动设置。",
     "virtual_file_badge": "虚拟文件",
     "virtual_file_tooltip": "旧版内联提示——此已弃用的虚拟文件保留了旧版 promptTemplate 内容",
     "entry_file_badge": "入口",
-    "workspace_ops": "工作空间",
+    "workspace_ops": "工作区",
     "pending_approval": "此智能体正等待审批，尚不能调用。",
     "restore": "恢复",
     "changed_keys": "已更改",
@@ -470,24 +480,10 @@
     "show_full_log": "显示完整日志",
     "failed_clear_sessions": "清除会话失败",
     "failed_load_run_log": "加载运行日志失败",
-    "failed_load_workspace_log": "加载工作空间日志失败",
-    "failure_details": "失败详情",
-    "clear_session_text": "清除与这些任务关联的会话状态？",
-    "clearing_session": "清除中...",
-    "jump_to_live": "跳转到实时",
-    "load_more_log": "加载更多日志",
-    "no_log_events": "暂无日志事件。",
-    "no_persisted_log_lines": "暂无持久化日志行。",
-    "transcript": "运行记录",
-    "transcript_mode_nice": "简洁",
-    "transcript_mode_raw": "原始",
+    "failed_load_workspace_log": "加载工作区日志失败",
     "instructions_placeholder": "# 智能体指令",
     "skill_view_link": "查看",
-    "approve_agent": "批准代理"
-  },
-  "icon_picker": {
-    "no_match": "未找到匹配的图标。",
-    "search_placeholder": "搜索图标..."
+    "approve_agent": "批准智能体"
   },
   "run_errors": {
     "exited_with_code": "Claude 以退出码 {{code}} 退出",
@@ -498,5 +494,9 @@
     "run_succeeded": "运行成功",
     "adapter_invocation": "适配器调用",
     "used_skill": "使用的技能"
+  },
+  "icon_picker": {
+    "search_placeholder": "搜索图标...",
+    "no_match": "未找到匹配的图标。"
   }
 }

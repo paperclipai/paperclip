@@ -77,11 +77,11 @@
     "removing_btn": "正在移除...",
     "path_example": "/mnt/e/Projects/my-adapter  或  E:\\Projects\\my-adapter",
     "package_name_example": "my-paperclip-adapter",
-    "version_example": "最新"
+    "version_example": "latest"
   },
   "claude_local": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md",
     "enable_chrome": "启用 Chrome",
     "skip_permissions": "跳过权限检查",
@@ -89,28 +89,28 @@
   },
   "codex_local": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。注意：Codex 也可能自动应用工作目录中的 AGENTS.md 文件。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。注意：Codex 也可能自动应用工作目录中的 AGENTS.md 文件。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md",
-    "bypass_sandbox": "绕过沙箱",
+    "bypass_sandbox": "绕过沙盒",
     "enable_search": "启用搜索",
     "fast_mode": "快速模式",
     "fast_mode_manual": "快速模式将传递给此手动模型。如果 Codex 拒绝，请关闭此开关。",
-    "fast_mode_supported": "快速模式消耗积分/token 的速度远快于普通 Codex 运行。",
+    "fast_mode_supported": "快速模式消耗 Token 的速度远快于普通 Codex 运行。",
     "fast_mode_unsupported": "快速模式目前仅适用于 {{models}} 或手动模型 ID。在切换模型之前，Paperclip 将忽略此开关。"
   },
   "cursor": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入提示。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入提示。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
   },
   "gemini_local": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将插入 Gemini 提示开头。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将插入 Gemini 提示开头。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
   },
   "hermes_local": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
   },
   "openclaw": {
@@ -121,6 +121,9 @@
     "claimed_api_key_path": "已认领 API 密钥路径",
     "claimed_api_key_placeholder": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
     "session_strategy": "会话策略",
+    "session_strategy_fixed": "固定",
+    "session_strategy_issue": "按任务",
+    "session_strategy_run": "按运行",
     "session_key": "会话密钥",
     "session_key_placeholder": "paperclip",
     "gateway_auth_token": "网关认证令牌 (x-openclaw-token)",
@@ -129,23 +132,20 @@
     "role_placeholder": "operator",
     "scopes": "权限范围（逗号分隔）",
     "scopes_placeholder": "operator.admin",
-    "wait_timeout": "等待超时（毫秒）",
+    "wait_timeout": "等待超时 (ms)",
     "wait_timeout_placeholder": "120000",
     "device_auth": "设备认证",
-    "device_auth_desc": "网关智能体始终启用。Paperclip 在引导期间保存设备密钥，以使配对确认在运行之间保持稳定。",
-    "session_strategy_fixed": "固定",
-    "session_strategy_issue": "按任务",
-    "session_strategy_run": "按运行"
+    "device_auth_desc": "网关智能体始终启用。Paperclip 在引导期间保存设备密钥，以使配对确认在运行之间保持稳定。"
   },
   "opencode_local": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md",
     "skip_permissions": "跳过权限检查"
   },
   "pi_local": {
     "instructions_file": "智能体指令文件",
-    "instructions_file_hint": "指向 markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
+    "instructions_file_hint": "指向 Markdown 文件（如 AGENTS.md）的绝对路径，该文件定义此智能体的行为，运行时将注入系统提示。",
     "instructions_placeholder": "/绝对/路径/至/AGENTS.md"
   },
   "http": {

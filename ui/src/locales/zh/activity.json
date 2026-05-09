@@ -29,7 +29,7 @@
   },
   "actor": {
     "system": "系统",
-    "board": "委员会",
+    "board": "看板",
     "you": "您",
     "unknown": "未知",
     "agent_fallback": "智能体",
@@ -144,6 +144,7 @@
     "unassigned": "未分配",
     "status_label": "状态",
     "assignee_label": "负责人",
+    "workspace_label": "工作区",
     "updated_task": "已更新此任务",
     "requested_follow_up": "已请求跟进",
     "system": "系统",
@@ -154,9 +155,9 @@
     "none": "无",
     "provider_label": "提供商",
     "run_label": "运行",
-    "workspace_label": "工作空间"
+    "workspace_label": "工作区"
   },
-  "system": "System",
-  "board": "Board",
-  "unknown": "Unknown"
+  "system": "系统",
+  "board": "看板",
+  "unknown": "未知"
 }

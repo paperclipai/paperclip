@@ -39,7 +39,7 @@
     "unlimited_budget": "无限预算"
   },
   "subtitles": {
-    "tokens_across_events": "个 token，跨请求范围事件",
+    "tokens_across_events": "个 Token，跨请求范围事件",
     "agents_paused_projects_paused": "{{agentCount}} 个智能体已暂停 · {{projectCount}} 个项目已暂停",
     "monthly_utilized": "此范围内已消耗月度预算的 {{percent}}%。",
     "refunds_offsets": "退款、抵扣和信用返还",
@@ -60,16 +60,35 @@
   },
   "labels": {
     "usage": "用量",
-    "tok": "tok",
+    "tok": "Token",
     "in_out_tokens": "输入 {{inTokens}} · 输出 {{outTokens}}",
     "api_runs": "{{count}} 次 API",
     "subscription_runs": "{{count}} 次订阅"
   },
   "cards": {
-    "inference_ledger": "推理账本",
-    "inference_ledger_desc": "所选时段的请求范围推理消耗。",
-    "finance_ledger": "财务账本",
-    "finance_ledger_desc": "不映射到单个推理请求的账户级费用。",
+    "inference_ledger": "推理账目",
+    "inference_ledger_desc": "请求范围的用量和来自 cost_events 的计费运行。",
+    "inference_ledger_points": {
+      "point1": "Token + 计费金额",
+      "point2": "提供商、计费方、模型",
+      "point3": "支持订阅和超额识别"
+    },
+    "finance_ledger": "财务账目",
+    "finance_ledger_desc": "非单次提示-响应对的账户级费用。",
+    "finance_ledger_points": {
+      "point1": "充值、退款、手续费",
+      "point2": "Bedrock 预留或训练费用",
+      "point3": "积分过期和调整"
+    },
+    "live_quotas": "实时配额",
+    "live_quotas_desc": "可实时停止流量的提供商或计费方窗口。",
+    "live_quotas_points": {
+      "point1": "提供商配额窗口",
+      "point2": "计费方积分系统",
+      "point3": "直接显示的错误"
+    },
+    "accounting_model_title": "计费模式",
+    "accounting_model_desc": "Paperclip 现在将请求级推理用量与账户级财务事件分开。这可以确保在计费方为 OpenRouter、Cloudflare、Bedrock 或其他中介时，提供商报告的真实性。",
     "by_agent": "按智能体",
     "by_agent_desc": "每个智能体在所选时段的消耗。",
     "by_project": "按项目",
@@ -77,26 +96,7 @@
     "by_biller": "按计费方",
     "by_biller_desc": "按收费或贷记方分组的账户级财务事件。",
     "budget_control": "预算控制平面",
-    "budget_control_desc": "智能体和项目的硬性消耗限制。提供商订阅配额单独保留，显示在提供商下。",
-    "accounting_model_desc": "此时段的账本记录模式。",
-    "accounting_model_title": "记账模式",
-    "finance_ledger_points": {
-      "point1": "账户级非推理费用",
-      "point2": "发票、信用和调整",
-      "point3": "与订阅及财务事件对账"
-    },
-    "inference_ledger_points": {
-      "point1": "按请求范围的推理消耗",
-      "point2": "按智能体、项目和提供商分组",
-      "point3": "实时累积，无需等待发票"
-    },
-    "live_quotas": "实时配额",
-    "live_quotas_desc": "提供商订阅窗口中的实时 token 消耗。",
-    "live_quotas_points": {
-      "point1": "Anthropic 订阅滚动窗口",
-      "point2": "本周 token 使用与配额对比",
-      "point3": "按输入/输出和计费类型细分"
-    }
+    "budget_control_desc": "智能体和项目的硬性消耗限制。提供商订阅配额单独保留，显示在提供商下。"
   },
   "budgets": {
     "company_policy": "全公司月度策略。",
@@ -110,20 +110,20 @@
     "project_budgets_title": "项目预算"
   },
   "incident_card": {
+    "hard_stop": "硬性停止",
+    "resolved": "已解决",
+    "dismissed": "已忽略",
+    "escalated": "已上报",
+    "pending_approval": "待审批",
+    "open": "开放",
+    "spending_reached": "支出达到 {{observed}}，限额为 {{limit}}。",
+    "new_budget_usd": "新预算 (USD)",
     "project_paused": "项目执行已暂停。在您解决预算事件之前，此项目中的新工作将不会开始。",
     "scope_paused": "此范围已暂停。在您解决预算事件之前，新的心跳检测将不会开始。",
     "applying": "应用中...",
     "raise_budget": "提高预算并恢复",
     "keep_paused": "保持暂停",
-    "budget_must_exceed": "新预算必须超过当前已观测的消耗。",
-    "dismissed": "已忽略",
-    "escalated": "已上报",
-    "hard_stop": "硬性停止",
-    "new_budget_usd": "新预算（USD）",
-    "open": "开放",
-    "pending_approval": "待审批",
-    "resolved": "已解决",
-    "spending_reached": "已达到支出限额 {{amount}}"
+    "budget_must_exceed": "新预算必须超过当前已观测的消耗。"
   },
   "policy_card": {
     "lifetime_budget": "终身预算",
@@ -146,13 +146,12 @@
     "soft_alert": "软性警报在 {{percent}}%",
     "soft_alert_with_pause": "软性警报在 {{percent}}% · {{reason}} 暂停",
     "remaining": "剩余",
-    "budget_usd": "预算（USD）"
+    "budget_usd": "预算 (USD)"
   },
   "budget_sidebar_marker": {
-    "paused_by_budget": "因预算暂停",
-    "critical": "严重",
-    "healthy": "健康",
-    "warning": "警告"
+    "healthy": "预算健康",
+    "warning": "预算警告",
+    "critical": "因预算暂停"
   },
   "empty": {
     "select_company": "请选择公司以查看费用。",
@@ -182,18 +181,18 @@
     "rolling_windows": "滚动窗口",
     "subscription": "订阅",
     "subscription_quota": "订阅配额",
-    "subscription_share": "{{percent}}% 的 token 使用通过订阅",
+    "subscription_share": "{{percent}}% 的 Token 使用通过订阅",
     "in_label": "输入",
     "out_label": "输出",
     "api_sub_runs": "约 {{apiRuns}} 次 API / 约 {{subRuns}} 次订阅运行",
     "api_runs_only": "约 {{apiRuns}} 次 API 运行",
     "sub_runs_only": "约 {{subRuns}} 次订阅运行",
     "percent_used": "已使用 {{percent}}%",
-    "resets": "{{date}} 重置",
-    "of_provider_cost": "提供商费用的 {{percent}}%",
-    "of_provider_tokens": "提供商 token 的 {{percent}}%",
-    "runs_label": "次运行",
-    "total_label": "总计"
+    "resets": "将在 {{date}} 重置",
+    "runs_label": "运行次数",
+    "total_label": "总计",
+    "of_provider_tokens": "{{percent}}% 的提供商 Token",
+    "of_provider_cost": "{{percent}}% 的提供商费用"
   },
   "biller_spend": {
     "metered_runs_one": "{{count}} 次按量计费运行",
@@ -203,10 +202,10 @@
     "this_week": "本周",
     "billing_types": "计费类型",
     "upstream_providers": "上游提供商",
-    "model_count_one": "{{count}} 个模型",
-    "model_count_other": "{{count}} 个模型",
     "provider_count_one": "{{count}} 个提供商",
-    "provider_count_other": "{{count}} 个提供商"
+    "provider_count_other": "{{count}} 个提供商",
+    "model_count_one": "{{count}} 个模型",
+    "model_count_other": "{{count}} 个模型"
   },
   "finance_kind": {
     "title": "财务事件构成",
@@ -221,13 +220,13 @@
   "subscription_panel": {
     "title": "Anthropic 订阅",
     "subtitle": "实时 Claude 配额窗口。",
-    "runs": "次运行",
+    "runs": "运行次数",
     "total": "总计",
     "in_label": "输入",
     "out_label": "输出",
-    "sub_share": "{{percent}}% 的 token 使用通过订阅",
+    "sub_share": "{{percent}}% 的 Token 使用通过订阅",
     "subscription": "订阅",
-    "resets": "{{date}} 重置",
+    "resets": "将在 {{date}} 重置",
     "percent_used": "已使用 {{percent}}%"
   },
   "finance_event_kind": {

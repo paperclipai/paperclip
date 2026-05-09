@@ -1,6 +1,6 @@
 {
   "title": "例程",
-  "description": "可重复的工作定义，会生成可审计的执行任务。",
+  "description": "周期性的工作定义，可生成可审计的执行任务。",
   "tabs": {
     "routines": "例程",
     "recent_runs": "最近运行"
@@ -17,7 +17,7 @@
     "skipped": "已跳过",
     "issue_created": "任务已创建",
     "completed": "已完成",
-    "failed": "已失败"
+    "failed": "失败"
   },
   "actions": {
     "create": "创建例程",
@@ -31,8 +31,7 @@
     "edit": "编辑",
     "group": "分组",
     "sort": "排序",
-    "cancel": "取消",
-    "more_actions": "{{title}} 的更多操作"
+    "cancel": "取消"
   },
   "sort": {
     "updated": "已更新",
@@ -43,12 +42,12 @@
     "desc": "降序"
   },
   "concurrency_policy": {
-    "coalesce_if_active": "如果某次运行已活跃，则仅保留一次后续运行排队。",
-    "always_enqueue": "将每次触发的执行排队，即使例程已在运行。",
-    "skip_if_active": "当某次运行仍在活跃时，丢弃新的触发执行。"
+    "coalesce_if_active": "如果已有运行处于活跃状态，则仅保留一个后续排队运行。",
+    "always_enqueue": "排队每次触发的运行，即使例程已在运行。",
+    "skip_if_active": "当某次运行仍在活跃时，丢弃新的触发。"
   },
   "catch_up_policy": {
-    "skip_missed": "忽略调度器或例程暂停期间错过的时间窗口。",
+    "skip_missed": "忽略在调度器或例程暂停期间错过的窗口。",
     "enqueue_missed_with_cap": "恢复后以限定批次追赶错过的调度窗口。"
   },
   "misc": {
@@ -57,13 +56,30 @@
     "unknown_project": "未知项目",
     "unknown_agent": "未知智能体",
     "no_default_agent": "无默认智能体",
-    "never": "从未",
-    "draft_saved": "草稿已保存。启用自动化前请先添加默认智能体。",
+    "never": "从不",
+    "running": "运行中...",
+    "edit": "编辑",
+    "run_routine": "运行例程",
+    "routine_changed": "例程已更改",
+    "routine_changed_body": "其他人更新了此例程。请重新加载以查看最新版本。",
+    "webhook_restored": "Webhook 触发器已恢复",
+    "trigger_restored_with_secrets": "触发器启用状态已从快照恢复。新的 Webhook 密钥已在上方横幅中提供。",
+    "trigger_restored": "触发器启用状态已从快照恢复。",
+    "failed_restore_revision": "恢复版本失败",
+    "failed_restore_revision_body": "Paperclip 无法恢复该版本。",
+    "no_managed_routines": "暂无托管例程。",
+    "configure": "配置",
+    "managed_by": "由 {{name}} 管理",
+    "schedule": "计划 {{cronExpression}}",
+    "routine_defaults_can_be_repaired": "例程默认值可以修复。",
+    "draft_saved": "草稿已保存。在启用自动化之前请添加默认智能体。",
     "routine_count_one": "{{count}} 个例程",
     "routine_count_other": "{{count}} 个例程",
     "routine_created": "例程已创建",
     "routine_created_body": "添加第一个触发器以将其转变为实时工作流。",
-    "failed_load": "加载例程失败"
+    "failed_load": "加载例程失败",
+    "routine_count_few": "{{count}} 个例程",
+    "routine_count_many": "{{count}} 个例程"
   },
   "trigger_kind": {
     "schedule": "计划",
@@ -89,8 +105,8 @@
     "skip_if_active": "活跃时跳过"
   },
   "catch_up_policy_label": {
-    "skip_missed": "跳过错过的",
-    "enqueue_missed_with_cap": "有限追赶错过的"
+    "skip_missed": "跳过错过项",
+    "enqueue_missed_with_cap": "带上限排队错过项"
   },
   "empty": {
     "select_company": "请选择公司以查看例程。",
@@ -98,11 +114,11 @@
   },
   "composer": {
     "new_routine": "新建例程",
-    "subtitle": "先定义周期性工作。默认项目和智能体对于草稿例程是可选的。",
+    "subtitle": "首先定义周期性工作。默认项目和智能体对于草稿例程是可选的。",
     "title_placeholder": "例程标题",
     "instructions_placeholder": "添加指令...",
-    "for": "用于",
-    "in": "在",
+    "for": "负责人",
+    "in": "在项目",
     "assignee_placeholder": "负责人",
     "no_assignee": "无负责人",
     "search_assignees": "搜索负责人...",
@@ -112,10 +128,10 @@
     "search_projects": "搜索项目...",
     "no_projects_found": "未找到项目。",
     "advanced_delivery_settings": "高级投递设置",
-    "advanced_delivery_subtitle": "将策略控制保持在工作定义之后。",
+    "advanced_delivery_subtitle": "将策略控制置于工作定义之后。",
     "concurrency_label": "并发",
     "catchup_label": "追赶",
-    "after_creation_hint": "创建后，Paperclip 将直接带您进行触发器设置。草稿例程在您添加默认智能体之前保持暂停。",
+    "after_creation_hint": "创建后，Paperclip 将直接带您进入触发器设置。在添加默认智能体之前，草稿例程将保持暂停状态。",
     "failed_create": "创建例程失败",
     "group_project": "项目",
     "group_agent": "智能体",
@@ -155,21 +171,21 @@
     "failed_add_trigger": "添加触发器失败",
     "failed_add_trigger_body": "Paperclip 无法创建触发器。",
     "trigger_saved": "触发器已保存",
-    "trigger_saved_body": "例程节奏更新已保存。",
+    "trigger_saved_body": "例程频率更新已保存。",
     "failed_update_trigger": "更新触发器失败",
     "failed_update_trigger_body": "Paperclip 无法更新触发器。",
     "trigger_deleted": "触发器已删除",
     "failed_delete_trigger": "删除触发器失败",
     "failed_delete_trigger_body": "Paperclip 无法删除触发器。",
     "webhook_secret_rotated": "Webhook 密钥已轮换",
-    "failed_rotate_secret": "轮换 webhook 密钥失败",
-    "failed_rotate_secret_body": "Paperclip 无法轮换 webhook 密钥。",
+    "failed_rotate_secret": "轮换 Webhook 密钥失败",
+    "failed_rotate_secret_body": "Paperclip 无法轮换 Webhook 密钥。",
     "default_agent_required": "需要默认智能体",
-    "default_agent_required_body": "在启用例程自动化之前请设置默认智能体。",
+    "default_agent_required_body": "在启用例程自动化之前，请设置默认智能体。",
     "pause_triggers_aria": "暂停自动触发器",
     "enable_triggers_aria": "启用自动触发器",
     "save_secret_now": "请立即保存。Paperclip 不会再次显示密钥值。",
-    "draft_no_agent": "需要默认智能体。此例程可以保持草稿状态并仍可手动运行，但在您分配默认智能体之前自动化保持暂停。",
+    "draft_no_agent": "需要默认智能体。此例程可以保持草稿状态并仍可手动运行，但在分配默认智能体之前，自动化将保持暂停状态。",
     "trigger_label_field": "标签",
     "trigger_schedule_label": "计划",
     "trigger_signing_mode_label": "签名模式",
@@ -190,10 +206,10 @@
     "clipboard_denied": "剪贴板访问被拒绝。"
   },
   "signing_modes": {
-    "bearer_desc": "在 Authorization 头中使用共享 bearer 令牌。",
-    "hmac_sha256_desc": "使用共享密钥对请求进行 HMAC SHA-256 签名。",
+    "bearer_desc": "期望在 Authorization 头中包含共享的 Bearer 令牌。",
+    "hmac_sha256_desc": "期望使用共享密钥对请求进行 HMAC SHA-256 签名。",
     "github_hmac_desc": "接受 GitHub 风格的 X-Hub-Signature-256 头（对原始正文进行 HMAC，无时间戳）。",
-    "none_desc": "无认证——webhook URL 本身充当共享密钥。"
+    "none_desc": "无需认证——Webhook URL 本身即充当共享密钥。"
   },
   "activity": {
     "actions": {
@@ -222,14 +238,14 @@
       "signingMode": "签名模式",
       "kind": "类型",
       "label": "标签",
-      "concurrencyPolicy": "并发",
-      "catchUpPolicy": "追赶"
+      "concurrencyPolicy": "并发策略",
+      "catchUpPolicy": "追赶策略"
     }
   },
   "variables": {
     "heading": "变量",
     "detected_hint": "从例程标题和指令中的 `{{code}}` 占位符检测。",
-    "prompt_hint": "每次手动运行前提示用户输入此值。",
+    "prompt_hint": "在每次手动运行前提示用户输入此值。",
     "label_field": "标签",
     "type_field": "类型",
     "default_value_field": "默认值",
@@ -241,20 +257,5 @@
     "default_option_field": "默认选项",
     "default_value_placeholder": "默认值",
     "hint": "在指令中使用 `{{code}}` 占位符，以便在例程运行时提示输入。"
-  },
-  "routines": "Routines",
-  "recurring_work_definitions_that_materialize_into_auditable_execution_issues": "Recurring work definitions that materialize into auditable execution issues.",
-  "create_routine": "Create routine",
-  "recent_runs": "Recent Runs",
-  "n_routine": "N routine(s)",
-  "new_routine": "New routine",
-  "routine_title": "Routine title",
-  "for": "For",
-  "in": "in",
-  "add_instructions": "Add instructions...",
-  "advanced_delivery_settings": "Advanced delivery settings",
-  "concurrency": "Concurrency",
-  "catch_up": "Catch-up",
-  "creating": "Creating...",
-  "no_routines_yet": "No routines yet."
+  }
 }

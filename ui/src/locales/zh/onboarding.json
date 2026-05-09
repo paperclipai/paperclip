@@ -1,4 +1,4 @@
-﻿{
+{
   "tabs": {
     "company": "公司",
     "agent": "智能体",
@@ -9,8 +9,8 @@
     "title": "为您的公司命名",
     "subtitle": "这是您的智能体将为之工作的组织。",
     "company_name": "公司名称",
-    "company_name_placeholder": "示例公司",
-    "mission": "使命 / 目标（可选）",
+    "company_name_placeholder": "示例公司 (Acme Corp)",
+    "mission": "使命 / 目标 (可选)",
     "mission_placeholder": "这家公司想要实现什么？"
   },
   "step2": {
@@ -23,7 +23,7 @@
     "model": "模型",
     "model_default": "默认",
     "model_search": "搜索模型...",
-    "model_required": "请选择模型（必选）",
+    "model_required": "请选择模型 (必选)",
     "no_models": "未发现模型。",
     "recommended": "推荐",
     "coming_soon": "即将推出",
@@ -36,7 +36,7 @@
     "failed": "失败",
     "hint_prefix": "提示：",
     "manual_debug": "手动调试",
-    "prompt_label": "提示：",
+    "prompt_label": "提示词：",
     "prompt_value": "请以 hello 回应。",
     "anthropic_key_warning": "Claude 失败，同时 {{key}} 已设置。您可以在此 CEO 适配器配置中清除它并重试探测。",
     "unset_anthropic": "取消设置 ANTHROPIC_API_KEY",
@@ -44,44 +44,44 @@
     "gateway_url": "网关 URL",
     "webhook_url": "Webhook URL",
     "login_required_prefix": "如果需要登录，请运行",
-    "login_required_suffix": "然后重试。"
+    "login_required_suffix": "并重试。"
   },
   "step3": {
     "title": "给它一些工作做",
-    "subtitle": "给您的智能体一个小任务开始——一个 bug 修复、研究问题或编写脚本。",
+    "subtitle": "给您的智能体一个小任务开始 —— 一个 bug 修复、一个研究问题或编写一段脚本。",
     "task_title": "任务标题",
-    "task_title_placeholder": "例如：研究竞争对手定价",
-    "description": "描述（可选）",
+    "task_title_placeholder": "例如：研究竞争对手的定价",
+    "description": "描述 (可选)",
     "description_placeholder": "添加更多关于智能体应该做什么的细节..."
   },
   "step4": {
     "title": "准备启动",
-    "subtitle": "一切就绪。立即启动将创建入门任务、唤醒智能体并打开任务。",
+    "subtitle": "一切已设置就绪。立即启动将创建入门任务、唤醒智能体并打开该任务。",
     "company": "公司",
     "task": "任务"
   },
   "actions": {
     "back": "返回",
     "next": "下一步",
-    "creating": "创建中...",
+    "creating": "正在创建...",
     "create_and_open": "创建并打开任务"
   },
   "errors": {
     "create_company": "创建公司失败",
     "create_agent": "创建智能体失败",
     "create_task": "创建任务失败",
-    "test_env_no_company": "测试适配器环境前请先创建或选择公司。",
+    "test_env_no_company": "在测试适配器环境之前，请先创建或选择一个公司。",
     "test_env_failed": "适配器环境测试失败",
-    "opencode_model_required": "OpenCode 需要以 提供商/模型 格式明确指定模型。",
+    "opencode_model_required": "OpenCode 需要以 provider/model 格式明确指定模型。",
     "anthropic_key_unset_failed": "已在适配器配置中取消设置 ANTHROPIC_API_KEY 并重试，但环境测试仍然失败。",
-    "anthropic_key_unset_error": "无法取消设置 ANTHROPIC_API_KEY 并重试。"
+    "anthropic_key_unset_error": "取消设置 ANTHROPIC_API_KEY 并重试失败。"
   },
   "language": {
     "label": "语言"
   },
   "defaults": {
     "project_name": "入门",
-    "task_title": "招聘你的第一位工程师并制定招聘计划",
-    "task_description": "你是CEO。你为公司设定方向。\n\n- 招募一位创始工程师\n- 制定招聘计划\n- 将路线图分解为具体任务并开始委派工作"
+    "task_title": "招聘您的第一位工程师并制定招聘计划",
+    "task_description": "您是 CEO。您为公司设定方向。\n\n- 招募一位创始工程师\n- 制定招聘计划\n- 将路线图分解为具体的任务并开始委派工作"
   }
 }
