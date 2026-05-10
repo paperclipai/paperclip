@@ -462,35 +462,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let run: Run | null = null;
   let streamError: string | null = null;
   try {
-    run = canReuseSession
+    const attachedRun = canReuseSession
       ? await getAttachedRun({ apiKey, session })
       : null;
 
-    if (run) {
-      await emitStatus(onLog, "running", `Reattached to existing Cursor run ${run.id}.`);
+    if (attachedRun) {
+      await emitStatus(onLog, "running", `Reattached to existing Cursor run ${attachedRun.id}.`);
       await onLog("stdout", eventLine({
         type: "cursor_cloud.init",
-        sessionId: run.agentId,
-        agentId: run.agentId,
-        runId: run.id,
+        sessionId: attachedRun.agentId,
+        agentId: attachedRun.agentId,
+        runId: attachedRun.id,
         ...(model?.id ? { model: model.id } : {}),
       }));
-    } else {
-      sdkAgent = canReuseSession && session
-        ? await Agent.resume(session.cursorAgentId, agentOptions)
-        : await Agent.create(agentOptions);
-      run = await sdkAgent.send(finalPrompt, {
-        ...(model ? { model } : {}),
+      const priorStreamPromise = streamRun(attachedRun, onLog).catch((err) => {
+        streamError = formatRunError(err);
       });
-      await onLog("stdout", eventLine({
-        type: "cursor_cloud.init",
-        sessionId: sdkAgent.agentId,
-        agentId: sdkAgent.agentId,
-        runId: run.id,
-        ...(model?.id ? { model: model.id } : {}),
-      }));
-      await emitStatus(onLog, "running", `Started Cursor run ${run.id}.`);
+      if (attachedRun.supports("wait")) await attachedRun.wait();
+      await priorStreamPromise;
+      streamError = null;
+      await emitStatus(
+        onLog,
+        "running",
+        `Prior Cursor run ${attachedRun.id} finished; sending heartbeat follow-up so this wake's context is not dropped.`,
+      );
     }
+
+    sdkAgent = canReuseSession && session
+      ? await Agent.resume(session.cursorAgentId, agentOptions)
+      : await Agent.create(agentOptions);
+    run = await sdkAgent.send(finalPrompt, {
+      ...(model ? { model } : {}),
+    });
+    await onLog("stdout", eventLine({
+      type: "cursor_cloud.init",
+      sessionId: sdkAgent.agentId,
+      agentId: sdkAgent.agentId,
+      runId: run.id,
+      ...(model?.id ? { model: model.id } : {}),
+    }));
+    await emitStatus(onLog, "running", `Started Cursor run ${run.id}.`);
 
     const streamPromise = streamRun(run, onLog).catch((err) => {
       streamError = formatRunError(err);

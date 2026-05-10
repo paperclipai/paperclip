@@ -237,7 +237,7 @@ describe("cursor_cloud execute", () => {
     expect(result.sessionId).toBe("agent-resumed");
   });
 
-  it("reattaches to an active run instead of creating or resuming a new agent", async () => {
+  it("reattaches to an active run, drains it, then sends the heartbeat as a follow-up", async () => {
     const attachedRun = createMockRun({
       id: "run-attached",
       agentId: "agent-attached",
@@ -245,7 +245,7 @@ describe("cursor_cloud execute", () => {
       waitResult: {
         id: "run-attached",
         status: "finished",
-        result: "Attached result",
+        result: "Prior result",
         model: { id: "gpt-5.4" },
       },
       streamMessages: [
@@ -257,6 +257,18 @@ describe("cursor_cloud execute", () => {
       ],
     });
     getRunMock.mockResolvedValue(attachedRun);
+    const followUpRun = createMockRun({
+      id: "run-followup",
+      agentId: "agent-attached",
+      waitResult: {
+        id: "run-followup",
+        status: "finished",
+        result: "Follow-up result",
+        model: { id: "gpt-5.4" },
+      },
+    });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-attached", sendRun: followUpRun });
+    resumeMock.mockResolvedValue(sdkAgent);
     const ctx = createContext({
       runtime: {
         sessionId: null,
@@ -276,16 +288,24 @@ describe("cursor_cloud execute", () => {
 
     expect(getRunMock).toHaveBeenCalledTimes(1);
     expect(createMock).not.toHaveBeenCalled();
-    expect(resumeMock).not.toHaveBeenCalled();
+    expect(resumeMock).toHaveBeenCalledTimes(1);
+    expect(sdkAgent.send).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       exitCode: 0,
       sessionId: "agent-attached",
-      summary: "Attached result",
+      summary: "Follow-up result",
+      resultJson: {
+        cursorRunId: "run-followup",
+      },
     });
-    expect(ctx.logs.map((entry) => entry.chunk)).toEqual(
+    const logChunks = ctx.logs.map((entry) => entry.chunk);
+    expect(logChunks).toEqual(
       expect.arrayContaining([
         expect.stringContaining("Reattached to existing Cursor run run-attached."),
+        expect.stringContaining("Prior Cursor run run-attached finished"),
+        expect.stringContaining("Started Cursor run run-followup."),
         expect.stringContaining('"runId":"run-attached"'),
+        expect.stringContaining('"runId":"run-followup"'),
       ]),
     );
     expect(ctx.meta[0]?.context).toMatchObject({
