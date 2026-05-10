@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, agentWakeupRequests, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -22,6 +22,7 @@ import {
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
+  selfWakeSchema,
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
 } from "@paperclipai/shared";
@@ -1596,6 +1597,62 @@ export function agentRoutes(
     });
 
     res.json(rows);
+  });
+
+  router.post("/agents/me/self-wake", validate(selfWakeSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    const agentId = req.actor.agentId;
+    const companyId = req.actor.companyId;
+    const { delaySeconds, reason, issueId, payload, idempotencyKey } = req.body;
+
+    if (idempotencyKey) {
+      const existing = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (existing) {
+        res.status(200).json({ wakeId: existing.id });
+        return;
+      }
+    }
+
+    const scheduledAt = new Date(Date.now() + delaySeconds * 1000);
+    const wakePayload: Record<string, unknown> = { ...(payload ?? {}), selfWake: true };
+    if (issueId) wakePayload.issueId = issueId;
+
+    const runId = req.actor.runId ?? null;
+    const [inserted] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId,
+        source: "self_trigger",
+        triggerDetail: "callback",
+        reason,
+        payload: wakePayload,
+        status: "queued",
+        idempotencyKey: idempotencyKey ?? null,
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+        wakeKind: "self_trigger",
+        sourceRunId: runId,
+        requestedAt: scheduledAt,
+      })
+      .returning({ id: agentWakeupRequests.id });
+
+    res.status(201).json({ wakeId: inserted.id });
   });
 
   router.get("/agents/:id", async (req, res) => {

@@ -1,6 +1,9 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+
+export type WakeKind = "cron" | "manual" | "event" | "self_trigger";
 
 export const agentWakeupRequests = pgTable(
   "agent_wakeup_requests",
@@ -18,6 +21,8 @@ export const agentWakeupRequests = pgTable(
     requestedByActorId: text("requested_by_actor_id"),
     idempotencyKey: text("idempotency_key"),
     runId: uuid("run_id"),
+    wakeKind: varchar("wake_kind", { length: 20 }).notNull().default("cron"),
+    sourceRunId: uuid("source_run_id"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -36,5 +41,13 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    agentKindRequestedIdx: index("agent_wakeup_requests_agent_kind_requested_idx").on(
+      table.agentId,
+      table.wakeKind,
+      table.requestedAt,
+    ),
+    idempotencyKeyUniqueIdx: uniqueIndex("agent_wakeup_requests_idempotency_key_unique").on(
+      table.idempotencyKey,
+    ).where(sql`idempotency_key IS NOT NULL`),
   }),
 );

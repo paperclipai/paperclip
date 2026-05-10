@@ -136,6 +136,16 @@ export const wakeAgentSchema = z.object({
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
 
+export const selfWakeSchema = z.object({
+  delaySeconds: z.number().int().min(60).max(7200),
+  reason: z.string().min(1).max(500),
+  issueId: z.string().uuid().optional().nullable(),
+  payload: z.record(z.unknown()).optional().nullable(),
+  idempotencyKey: z.string().min(1).max(200).optional().nullable(),
+});
+
+export type SelfWake = z.infer<typeof selfWakeSchema>;
+
 export const resetAgentSessionSchema = z.object({
   taskKey: z.string().min(1).optional().nullable(),
 });

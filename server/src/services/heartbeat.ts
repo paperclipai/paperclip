@@ -35,6 +35,7 @@ import {
   projects,
   projectWorkspaces,
   workspaceOperations,
+  type WakeKind,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -1675,6 +1676,8 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   return merged;
 }
 
+import { WAKE_KIND_PRIORITY, mapSourceToWakeKind } from "./heartbeat-wake-kind-helpers.js";
+
 function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
@@ -1720,6 +1723,9 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
+  }
+  if (!readNonEmptyString(contextSnapshot["wakeKind"])) {
+    contextSnapshot.wakeKind = mapSourceToWakeKind(source);
   }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
 
@@ -4864,6 +4870,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
         const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
         if (leftRank !== rightRank) return leftRank - rightRank;
+        // wakeKind priority: manual(0) > event(1) > self_trigger(2) > cron(3)
+        const leftWakeKind = readNonEmptyString(parseObject(left.contextSnapshot).wakeKind) as WakeKind | null;
+        const rightWakeKind = readNonEmptyString(parseObject(right.contextSnapshot).wakeKind) as WakeKind | null;
+        const leftKindPriority = WAKE_KIND_PRIORITY[leftWakeKind ?? "cron"] ?? WAKE_KIND_PRIORITY.cron;
+        const rightKindPriority = WAKE_KIND_PRIORITY[rightWakeKind ?? "cron"] ?? WAKE_KIND_PRIORITY.cron;
+        if (leftKindPriority !== rightKindPriority) return leftKindPriority - rightKindPriority;
         const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
         const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
         if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
@@ -7136,6 +7148,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
+            wakeKind: mapSourceToWakeKind(source),
           })
           .returning()
           .then((rows) => rows[0]);
@@ -7265,6 +7278,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
+        wakeKind: mapSourceToWakeKind(source),
       })
       .returning()
       .then((rows) => rows[0]);
