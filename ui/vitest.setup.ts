@@ -30,3 +30,12 @@ if (
 if (typeof window !== "undefined" && window.localStorage !== globalThis.localStorage) {
   installStorageMock(window as unknown as Record<string, unknown>);
 }
+
+// ── @testing-library/jest-dom matchers ─────────────────────────────────────
+import "@testing-library/jest-dom/vitest";
+import { afterEach } from "vitest";
+import { cleanup } from "@testing-library/react";
+
+afterEach(() => {
+  cleanup();
+});
