@@ -3710,6 +3710,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  async function clearIssueLocksForTerminalRun(runId: string) {
+    // Invariant: when a heartbeat run reaches a terminal status, no issue should
+    // continue to hold checkout_run_id / execution_run_id pointing at it. Without
+    // this, abnormally-terminated runs leave stale locks that block later
+    // heartbeats from the same assignee with 409 conflicts (CLAAA-47/48/50).
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        or(eq(issues.checkoutRunId, runId), eq(issues.executionRunId, runId)),
+      );
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -3721,6 +3740,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (updated && HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+      updated.status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+    )) {
+      await clearIssueLocksForTerminalRun(updated.id);
+    }
 
     if (updated) {
       publishLiveEvent({
