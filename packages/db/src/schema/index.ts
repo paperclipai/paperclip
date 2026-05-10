@@ -75,3 +75,18 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { anthropicAccounts } from "./anthropic_accounts.js";
+export { anthropicActiveAccount } from "./anthropic_active_account.js";
+export { anthropicAccountSwitches } from "./anthropic_account_switches.js";
+export type {
+  AnthropicAccount,
+  NewAnthropicAccount,
+} from "./anthropic_accounts.js";
+export type {
+  AnthropicActiveAccount,
+  NewAnthropicActiveAccount,
+} from "./anthropic_active_account.js";
+export type {
+  AnthropicAccountSwitch,
+  NewAnthropicAccountSwitch,
+} from "./anthropic_account_switches.js";
