@@ -31,7 +31,7 @@ Full rationale + conflict-risk matrix: [`docs/bba-memory-merge-runbook.md`](bba-
 | **7** | [#5636](https://github.com/paperclipai/paperclip/pull/5636) Phase F — idempotency + UI hardening | After split (Step 0) + #5602 + #5606; adds server-side idempotency, safeParseMetaJson, 5 UI follow-ups | ⚠️ Manual | 30 min |
 | **8** | Codex PR #1 (`feat/bba-memory-phase-f-backend-plus`) | After #5636; must retarget to master first — rate limiter + metrics + DELETE + 31 tests | ⚠️ Manual | 45 min |
 | **9** | [#5641](https://github.com/paperclipai/paperclip/pull/5641) Phase F+ UI — auto-retry + replay banner | After #5636; retarget from cross-fork base to master; diff shrinks to 2 commits | ✅ Yes | 20 min |
-| **10** | Docs PRs: [#5642](https://github.com/paperclipai/paperclip/pull/5642), [#5643](https://github.com/paperclipai/paperclip/pull/5643), [this PR](https://github.com/paperclipai/paperclip/pull/5644) | Docs-only; can merge at any point, no code dependency | ✅ Yes | 5 min total |
+| **10** | Docs PRs: [#5642](https://github.com/paperclipai/paperclip/pull/5642), [#5643](https://github.com/paperclipai/paperclip/pull/5643), [this PR](https://github.com/paperclipai/paperclip/pull/5645) | Docs-only; can merge at any point, no code dependency | ✅ Yes | 5 min total |
 
 **Total merge session**: ~3h for Steps 0–7 in one sitting. Steps 8–9 after 24h soak on #5602.
 
@@ -45,18 +45,18 @@ Steps 3 (#5606) and 4 (#5601) can be reviewed simultaneously — they touch diff
 
 | PR | Branch | Status | Blockers | Author | LOC (approx) | Est. review | ARM |
 |----|--------|--------|----------|--------|--------------|-------------|-----|
-| [#5583](https://github.com/paperclipai/paperclip/pull/5583) | `feat/bba-memory-phase-a` | ✅ Ready | 0 | Costel | +400/-0 | 30 min | ✅ Yes |
-| [#5595](https://github.com/paperclipai/paperclip/pull/5595) | `feat/bba-memory-phase-d-2-e2e-route` | ✅ Ready | 0 | Costel | +500/-50 | 45 min | ✅ Yes |
-| [#5601](https://github.com/paperclipai/paperclip/pull/5601) | `feat/bba-memory-ui-component-1` | ✅ Ready | 0 | Costel | +200/-0 | 20 min | ✅ Yes |
-| [#5602](https://github.com/paperclipai/paperclip/pull/5602) | `feat/bba-memory-ui-component-2` | ✅ Ready | 0 | Costel | +350/-50 | 45 min | ⚠️ Manual |
-| [#5604](https://github.com/paperclipai/paperclip/pull/5604) | `feat/bba-memory-ui-operator-playground` | ✅ Ready | 0 | Costel | +150/-0 | 20 min | ✅ Yes |
-| [#5606](https://github.com/paperclipai/paperclip/pull/5606) | `feat/bba-memory-ui-tests-infra` | ✅ Ready | 0 | Costel | +600/-0 | 30 min | ✅ Yes |
-| [#5636](https://github.com/paperclipai/paperclip/pull/5636) | `feat/bba-memory-phase-f-hardening` | ⛔ Needs split | Scope-creep split (Step 0) | Costel | +200/-0 after split | 30 min | ⚠️ Manual |
-| [#5641](https://github.com/paperclipai/paperclip/pull/5641) | `feat/bba-memory-phase-f-ui-plus` | 🟡 Draft / cross-fork stacking | Retarget after #5636 merges | Costel | +150/-50 | 20 min | ✅ Yes |
-| PR #1 (fork) | `feat/bba-memory-phase-f-backend-plus` | 🟡 Draft / retarget needed | Retarget after #5636 merges | Codex | +934/-98 | 45 min | ⚠️ Manual |
+| [#5583](https://github.com/paperclipai/paperclip/pull/5583) | `feat/bba-memory-phase-a` | ✅ CI green | 0 | Costel | +400/-0 | 30 min | ✅ Yes |
+| [#5595](https://github.com/paperclipai/paperclip/pull/5595) | `feat/bba-memory-phase-d-2-e2e-route` | ✅ CI green | 0 | Costel | +500/-50 | 45 min | ✅ Yes |
+| [#5601](https://github.com/paperclipai/paperclip/pull/5601) | `feat/bba-memory-ui-component-1` | ✅ CI green | 0 | Costel | +200/-0 | 20 min | ✅ Yes |
+| [#5602](https://github.com/paperclipai/paperclip/pull/5602) | `feat/bba-memory-ui-component-2` | ✅ CI green | 0 | Costel | +350/-50 | 45 min | ⚠️ Manual |
+| [#5604](https://github.com/paperclipai/paperclip/pull/5604) | `feat/bba-memory-ui-operator-playground` | ✅ CI green | 0 | Costel | +150/-0 | 20 min | ✅ Yes |
+| [#5606](https://github.com/paperclipai/paperclip/pull/5606) | `feat/bba-memory-ui-tests-infra` | ⚠️ CI failing — `policy` | `policy` check failing (others skipped) | Costel | +600/-0 | 30 min | ⚠️ Fix CI first |
+| [#5636](https://github.com/paperclipai/paperclip/pull/5636) | `feat/bba-memory-phase-f-hardening` | ⛔ Needs split + CI failing | Scope-creep split (Step 0); `Canary Dry Run` + `verify` failing | Costel | +200/-0 after split | 30 min | ⚠️ Manual |
+| [#5641](https://github.com/paperclipai/paperclip/pull/5641) | `feat/bba-memory-phase-f-ui-plus` | 🟡 CI failing (`Canary Dry Run`, `verify` — inherits #5636) | Retarget after #5636 merges; CI will rerun on retarget | Costel | +150/-50 | 20 min | ✅ Yes |
+| PR #1 (fork) | `feat/bba-memory-phase-f-backend-plus` | 🟡 No CI on fork (draft) | Retarget after #5636 merges; CI will run on upstream after retarget | Codex | +934/-98 | 45 min | ⚠️ Manual |
 | [#5642](https://github.com/paperclipai/paperclip/pull/5642) | `docs/bba-memory-phase-f-closure` | ✅ Ready (docs only) | 0 | Claude | +605/-0 | 5 min | ✅ Yes |
 | [#5643](https://github.com/paperclipai/paperclip/pull/5643) | `docs/review-codex-phase-f-backend` | ✅ Ready (docs only) | 0 | Claude | +318/-0 | 5 min | ✅ Yes |
-| [#5644](https://github.com/paperclipai/paperclip/pull/5644) | `docs/maintainer-handoff` | ✅ Ready (docs only) | 0 | Claude | +250/-0 | 2 min | ✅ Yes |
+| [#5645](https://github.com/paperclipai/paperclip/pull/5645) | `docs/maintainer-handoff` | ✅ Ready (docs only) | 0 | Claude | +250/-0 | 2 min | ✅ Yes |
 
 ---
 
@@ -69,7 +69,7 @@ All code PRs come from the `theproject1-glitch` fork into `paperclipai/paperclip
 
 Two stacked PRs (#5641, Codex PR #1) currently have `feat/bba-memory-phase-f-hardening` as their base, but that branch does not exist on `paperclipai/paperclip` — it only exists on the fork. After #5636 merges to `paperclipai/paperclip:master`, you (the upstream maintainer) must retarget both PRs to `master` via `gh pr edit <number> --base master --repo paperclipai/paperclip`. Once retargeted, ARM is eligible.
 
-This is a one-time action per PR. The closure docs PRs (#5642, #5643, #5644) are already based on `master` and need no retarget.
+This is a one-time action per PR. The closure docs PRs (#5642, #5643, #5645) are already based on `master` and need no retarget.
 
 ---
 
@@ -121,7 +121,7 @@ One thing needed from you before anything else: execute the scope-creep split fo
 After that, Steps 1–7 can flow in one session. Steps 8–9 after 24h soak.
 
 Can we find a 3h window this week? I've written a 5-min handoff doc with the exact merge order,
-ARM eligibility per PR, and risk callouts: https://github.com/paperclipai/paperclip/pull/5644
+ARM eligibility per PR, and risk callouts: https://github.com/paperclipai/paperclip/pull/5645
 
 Happy to pair on the session or stand by async. Thanks for the time.
 ```
@@ -131,7 +131,7 @@ Happy to pair on the session or stand by async. Thanks for the time.
 ```
 @cryppadotta @devinfoley — BBA Memory is ready for merge. One pre-merge action required:
 execute the scope-creep split for #5636 (20 min, full commands in `docs/bba-memory-pr-5636-split-plan.md`).
-Full merge order, ARM eligibility, and risk callouts: https://github.com/paperclipai/paperclip/pull/5644
+Full merge order, ARM eligibility, and risk callouts: https://github.com/paperclipai/paperclip/pull/5645
 ```
 
 ---
@@ -160,7 +160,7 @@ gh pr edit 5641 --base master --repo paperclipai/paperclip
 
 1. **By EOD this week**: Execute the scope-creep split for #5636 per [`docs/bba-memory-pr-5636-split-plan.md`](bba-memory-pr-5636-split-plan.md). Takes 20 min. Full git commands included — no judgment calls needed. This is the single gate blocking the Phase F merge sequence.
 
-2. **This week, merge session**: ARM-enable the following PRs after initial review + CI green: #5583, #5595, #5606, #5601, #5604, #5641, and the three docs PRs (#5642, #5643, #5644). These are low-risk and do not need back-and-forth; one pass is sufficient.
+2. **This week, merge session**: ARM-enable the following PRs after initial review + CI green: #5583, #5595, #5606, #5601, #5604, #5641, and the three docs PRs (#5642, #5643, #5645). These are low-risk and do not need back-and-forth; one pass is sufficient.
 
 3. **Manual sign-off on 3 PRs**: #5602 (bet execution — HIGH RISK, check risk controls before merging), #5636 (backend idempotency route after split), and Codex PR #1 (rate-limiter middleware + new endpoints). Please confirm with Costel before clicking merge on each of these three.
 
