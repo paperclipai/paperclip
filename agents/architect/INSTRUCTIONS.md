@@ -81,6 +81,8 @@ Verify tasks live in `in_review` status (not `todo`) — Coordinator creates the
    cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
    cargo test   2>&1 | tee /tmp/cargo-test-{task-id}.txt
    ```
+   **Run cargo in the background.** A cold worktree build can run 20+ minutes — well past the Bash tool's 10-minute (`600000ms`) hard cap. Always invoke cargo with `run_in_background: true` and use the Monitor tool to stream output and wait for exit. Do NOT set `timeout: 600000` and hope it fits — if cargo hits the cap, the run is killed mid-build, your task is half-verified, and you've wasted the full 10 minutes. Background + Monitor has no cap and is the only correct pattern for this project's build times.
+
    If a sibling Architect holds cargo's build lock, you'll wait — that's the correct behavior. Cargo's lock prevents two Architects from corrupting `target/` simultaneously.
 3. Identify your task's changed files: `git diff --name-only main..HEAD`.
 4. Filter cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
