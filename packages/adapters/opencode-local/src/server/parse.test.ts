@@ -161,6 +161,13 @@ describe("sanitizeModelText", () => {
     expect(sanitizeModelText("Treat this wake payload as the highest-priority context")).toBeNull();
   });
 
+  it("returns null when the model self-identifies as an agent (internal monologue, SAG-773 evidence)", () => {
+    // SSI Director leaked: "I am agent 7cc4dafd... The latest comment on issue SAG-773..."
+    const leaked =
+      "I am agent 7cc4dafd-b41f-469c-b8ea-7b4110a11fe8 (SSI Director). The latest comment on issue SAG-773 is from agent 3ab7fa06. I will respond with a status update.";
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
   it("strips internal XML blocks and returns remaining text", () => {
     expect(sanitizeModelText("<analysis>internal</analysis>\n\nPosted comment.")).toBe("Posted comment.");
     expect(sanitizeModelText("<thinking>internal</thinking>\n\nDone.")).toBe("Done.");
