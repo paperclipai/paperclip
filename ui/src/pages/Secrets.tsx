@@ -1224,7 +1224,7 @@ export function Secrets() {
                       setCreateForm((current) => ({ ...current, value: event.target.value }))
                     }
                     rows={3}
-                    className="font-mono text-xs"
+                    className="max-h-48 overflow-y-auto break-all font-mono text-xs"
                     placeholder="Stored once, never re-displayed"
                   />
                 </div>
@@ -1459,7 +1459,7 @@ export function Secrets() {
                 value={rotateValue}
                 onChange={(event) => setRotateValue(event.target.value)}
                 rows={3}
-                className="font-mono text-xs"
+                className="max-h-48 overflow-y-auto break-all font-mono text-xs"
                 placeholder="Paste the new value"
               />
             </div>
