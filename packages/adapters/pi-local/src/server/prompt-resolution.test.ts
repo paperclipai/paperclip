@@ -44,7 +44,6 @@ describe("buildSystemPromptExtension", () => {
       resolvedInstructionsFilePath: INSTRUCTIONS_PATH,
       instructionsFileDir: INSTRUCTIONS_DIR,
       instructionsContents: AGENTS_MD,
-      instructionsReadFailed: false,
       explicitPromptTemplate: null,
     });
     expect(out).toContain(AGENTS_MD);
@@ -58,7 +57,6 @@ describe("buildSystemPromptExtension", () => {
       resolvedInstructionsFilePath: INSTRUCTIONS_PATH,
       instructionsFileDir: INSTRUCTIONS_DIR,
       instructionsContents: AGENTS_MD,
-      instructionsReadFailed: false,
       explicitPromptTemplate: explicit,
       fallbackPromptTemplate: explicit,
     });
@@ -72,18 +70,18 @@ describe("buildSystemPromptExtension", () => {
       resolvedInstructionsFilePath: "",
       instructionsFileDir: "",
       instructionsContents: null,
-      instructionsReadFailed: false,
       explicitPromptTemplate: null,
     });
     expect(out).toBe(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
   });
 
   it("AGENTS.md read failed → returns fallback template (today's behavior)", () => {
+    // instructionsContents is null on read failure; behaves the same as
+    // "not configured" for prompt-extension purposes.
     const out = buildSystemPromptExtension({
       resolvedInstructionsFilePath: INSTRUCTIONS_PATH,
       instructionsFileDir: INSTRUCTIONS_DIR,
       instructionsContents: null,
-      instructionsReadFailed: true,
       explicitPromptTemplate: null,
     });
     expect(out).toBe(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -95,22 +93,7 @@ describe("buildSystemPromptExtension", () => {
       resolvedInstructionsFilePath: "",
       instructionsFileDir: "",
       instructionsContents: null,
-      instructionsReadFailed: false,
       explicitPromptTemplate: explicit,
-    });
-    expect(out).toBe(explicit);
-  });
-
-  it("AGENTS.md read failed + explicit template → still returns fallback (matches existing behavior on read failure)", () => {
-    const explicit = "Custom system rules.";
-    const out = buildSystemPromptExtension({
-      resolvedInstructionsFilePath: INSTRUCTIONS_PATH,
-      instructionsFileDir: INSTRUCTIONS_DIR,
-      instructionsContents: null,
-      instructionsReadFailed: true,
-      explicitPromptTemplate: explicit,
-      // fallback would be the explicit value when caller passes promptTemplate
-      fallbackPromptTemplate: explicit,
     });
     expect(out).toBe(explicit);
   });
@@ -120,8 +103,7 @@ describe("shouldRenderDefaultHeartbeatPrompt", () => {
   it("AGENTS.md loaded + unset → suppresses heartbeat (false)", () => {
     expect(
       shouldRenderDefaultHeartbeatPrompt({
-        resolvedInstructionsFilePath: "/repo/AGENTS.md",
-        instructionsReadFailed: false,
+        instructionsLoaded: true,
         explicitPromptTemplate: null,
       }),
     ).toBe(false);
@@ -130,8 +112,7 @@ describe("shouldRenderDefaultHeartbeatPrompt", () => {
   it("AGENTS.md loaded + explicit template → renders heartbeat (true)", () => {
     expect(
       shouldRenderDefaultHeartbeatPrompt({
-        resolvedInstructionsFilePath: "/repo/AGENTS.md",
-        instructionsReadFailed: false,
+        instructionsLoaded: true,
         explicitPromptTemplate: "custom",
       }),
     ).toBe(true);
@@ -140,30 +121,27 @@ describe("shouldRenderDefaultHeartbeatPrompt", () => {
   it("AGENTS.md not configured → renders heartbeat (true) — regression for legacy agents", () => {
     expect(
       shouldRenderDefaultHeartbeatPrompt({
-        resolvedInstructionsFilePath: "",
-        instructionsReadFailed: false,
+        instructionsLoaded: false,
         explicitPromptTemplate: null,
       }),
     ).toBe(true);
   });
 
   it("AGENTS.md read failed → renders heartbeat (true) — regression on fallback path", () => {
+    // Read failure surfaces as instructionsLoaded=false to the gate.
     expect(
       shouldRenderDefaultHeartbeatPrompt({
-        resolvedInstructionsFilePath: "/repo/AGENTS.md",
-        instructionsReadFailed: true,
+        instructionsLoaded: false,
         explicitPromptTemplate: null,
       }),
     ).toBe(true);
   });
 
   it("treats whitespace-only template as 'unset' via detectExplicitPromptTemplate (regression)", () => {
-    // Caller passes the result of detectExplicitPromptTemplate; whitespace is null.
     expect(detectExplicitPromptTemplate("   ")).toBeNull();
     expect(
       shouldRenderDefaultHeartbeatPrompt({
-        resolvedInstructionsFilePath: "/repo/AGENTS.md",
-        instructionsReadFailed: false,
+        instructionsLoaded: true,
         explicitPromptTemplate: detectExplicitPromptTemplate("   "),
       }),
     ).toBe(false);

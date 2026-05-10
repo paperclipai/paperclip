@@ -25,8 +25,6 @@ export interface SystemPromptInputs {
   instructionsFileDir: string;
   /** Contents of the AGENTS.md file, or null if not configured / read failed. */
   instructionsContents: string | null;
-  /** True when an instructionsFilePath was configured but reading failed. */
-  instructionsReadFailed: boolean;
   /** Result of detectExplicitPromptTemplate(). */
   explicitPromptTemplate: string | null;
   /** Template to use when no AGENTS.md is loaded; defaults to the project default. */
@@ -41,17 +39,12 @@ export interface SystemPromptInputs {
  *   - AGENTS.md loads + no explicit template → AGENTS.md + path directive only.
  *     (Default template is suppressed because AGENTS.md owns the contract.)
  *   - AGENTS.md loads + explicit template    → AGENTS.md + path directive + explicit template.
- *   - AGENTS.md not configured               → fallback template.
- *   - AGENTS.md read failed                  → fallback template.
+ *   - AGENTS.md not configured / read failed → fallback template.
  */
 export function buildSystemPromptExtension(inputs: SystemPromptInputs): string {
   const fallback = inputs.fallbackPromptTemplate ?? DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
 
-  if (
-    inputs.resolvedInstructionsFilePath &&
-    inputs.instructionsContents !== null &&
-    !inputs.instructionsReadFailed
-  ) {
+  if (inputs.resolvedInstructionsFilePath && inputs.instructionsContents !== null) {
     const trailingTemplate =
       inputs.explicitPromptTemplate !== null ? `\n\n${inputs.explicitPromptTemplate}` : "";
     return (
@@ -70,10 +63,8 @@ export function buildSystemPromptExtension(inputs: SystemPromptInputs): string {
 }
 
 export interface HeartbeatGateInputs {
-  /** True when an instructionsFilePath was configured (regardless of read success). */
-  resolvedInstructionsFilePath: string;
-  /** True when the configured instructionsFilePath was configured but reading failed. */
-  instructionsReadFailed: boolean;
+  /** True when AGENTS.md was configured and read successfully. */
+  instructionsLoaded: boolean;
   /** Result of detectExplicitPromptTemplate(). */
   explicitPromptTemplate: string | null;
 }
@@ -88,8 +79,7 @@ export interface HeartbeatGateInputs {
  * duplicating it as a user-message echo.
  */
 export function shouldRenderDefaultHeartbeatPrompt(inputs: HeartbeatGateInputs): boolean {
-  if (!inputs.resolvedInstructionsFilePath) return true;
-  if (inputs.instructionsReadFailed) return true;
+  if (!inputs.instructionsLoaded) return true;
   if (inputs.explicitPromptTemplate !== null) return true;
   return false;
 }

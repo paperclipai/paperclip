@@ -224,7 +224,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
-  // See prompt-resolution.ts for the gating rules.
   const explicitPromptTemplate = detectExplicitPromptTemplate(config.promptTemplate);
   const promptTemplate = explicitPromptTemplate ?? DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
   const command = asString(config.command, "pi");
@@ -554,11 +553,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  const instructionsLoaded = Boolean(resolvedInstructionsFilePath) && instructionsContents !== null;
   const systemPromptExtension = buildSystemPromptExtension({
     resolvedInstructionsFilePath,
     instructionsFileDir,
     instructionsContents,
-    instructionsReadFailed,
     explicitPromptTemplate,
     fallbackPromptTemplate: promptTemplate,
   });
@@ -581,8 +580,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
   const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
   const useDefaultHeartbeat = shouldRenderDefaultHeartbeatPrompt({
-    resolvedInstructionsFilePath,
-    instructionsReadFailed,
+    instructionsLoaded,
     explicitPromptTemplate,
   });
   const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt
