@@ -442,6 +442,7 @@ describe("betting browser automation helpers", () => {
   // TODO(phase-d-3): match normalization tightened in Bug 6 (anti-detection); fixtures
   // were built against the old token-length threshold. Re-evaluate expected selection
   // against current scoring logic before un-skipping. Original expected: "Zverev A.1.28"; current: "Blockx A.4.00".
+  // To un-skip: read normalizeTextForSelectionMatch in services/betting-browser-automation.ts; verify whether selecting "Blockx A.4.00" instead of "Zverev A.1.28" is a regression or intended (Bug 6 token threshold tightening). If intended, update expected value to "Blockx A.4.00".
   it.skip("does not match a tennis player from surrounding event text", async () => {
     const page = createFakePage({
       ".odds-button": {
@@ -581,6 +582,7 @@ describe("betting browser automation helpers", () => {
   // TODO(phase-d-3): match normalization tightened in Bug 6 (anti-detection); fixtures
   // were built against the old token-length threshold. Re-evaluate expected selection
   // against current scoring logic before un-skipping. Original expected: "2.85"; current: "1.42".
+  // To un-skip: same as above. If the new candidate "1.42" is a better match given the test fixtures, update expected from "2.85" to "1.42". Otherwise file a service-side regression bug.
   it.skip("matches generic odds buttons against the requested selection text", async () => {
     const request = buildRequest({
       bookmakerConfig: {
@@ -2053,6 +2055,7 @@ describe("betting browser automation helpers", () => {
   // service patch; the service no longer navigates to account.casapariurilor.ro/betslips.
   // This test depended on that probe to trigger re-login. Rewrite against the new flow
   // (inline Utilizatorul selector on the event page) before un-skipping.
+  // To un-skip: rewrite the test against the inline-Utilizatorul selector flow on the event page (the secondary probe URL was deliberately bypassed in services/betting-browser-automation.ts via getSecondarySessionProbeUrl returning null).
   it.skip("re-logs Casa when the shell is authenticated but the account/betslip domain is not", async () => {
     const closeContext = vi.fn(async () => undefined);
     const fillUsername = vi.fn(async () => undefined);
