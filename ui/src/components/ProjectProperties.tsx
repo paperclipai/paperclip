@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
-import { ChoosePathButton } from "./PathInstructionsModal";
+import { FolderPickerButton } from "./FolderPicker";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
@@ -833,7 +833,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   onChange={(e) => setWorkspaceCwd(e.target.value)}
                   placeholder="/absolute/path/to/workspace"
                 />
-                <ChoosePathButton />
+                <FolderPickerButton
+                  value={workspaceCwd}
+                  onSelect={(path) => {
+                    setWorkspaceCwd(path);
+                    setWorkspaceError(null);
+                  }}
+                />
               </div>
               <div className="flex items-center gap-2">
                 <Button
