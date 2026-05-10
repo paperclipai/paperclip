@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -10,8 +13,13 @@ import {
   anthropicAccounts,
   anthropicActiveAccount,
   companies,
+  companySecrets,
   createDb,
 } from "@paperclipai/db";
+import {
+  accountDir,
+  provisionOauthAccount,
+} from "@paperclipai/adapter-claude-local/server";
 import { errorHandler } from "../middleware/error-handler.js";
 import { anthropicAccountsRoutes } from "../routes/anthropic-accounts.js";
 import { anthropicAccountsService } from "../services/anthropic-accounts.js";
@@ -32,23 +40,36 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("anthropic-accounts", () => {
   let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
+  let paperclipHomeDir!: string;
+  let previousPaperclipHome: string | undefined;
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("anthropic-accounts");
     stopDb = started.cleanup;
     db = createDb(started.connectionString);
+    paperclipHomeDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-anthropic-accounts-test-"),
+    );
+    previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = paperclipHomeDir;
   });
 
   afterEach(async () => {
     await db.delete(anthropicAccountSwitches);
     await db.delete(anthropicActiveAccount);
     await db.delete(anthropicAccounts);
+    await db.delete(companySecrets);
     await db.delete(agents);
     await db.delete(activityLog);
     await db.delete(companies);
   });
 
   afterAll(async () => {
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    if (paperclipHomeDir) {
+      await fs.rm(paperclipHomeDir, { recursive: true, force: true });
+    }
     await stopDb?.();
   });
 
@@ -446,6 +467,126 @@ describeEmbeddedPostgres("anthropic-accounts", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]!.fromAccountId).toBeNull();
       expect(rows[0]!.runId).toBeNull();
+    });
+  });
+
+  describe("deleteAccount cleanup (MAS-285)", () => {
+    async function dirExists(dir: string): Promise<boolean> {
+      try {
+        await fs.access(dir);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    it("removes the on-disk credential directory created by provisionOauthAccount", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+      const account = await svc.createAccount({
+        companyId,
+        label: "OAuth",
+        mode: "oauth",
+      });
+      await provisionOauthAccount(account.id);
+      const dir = accountDir(account.id);
+      // Drop a fake credentials file so we know rm actually removed contents.
+      await fs.writeFile(
+        path.join(dir, ".credentials.json"),
+        JSON.stringify({ access_token: "fake" }),
+        { mode: 0o600 },
+      );
+      expect(await dirExists(dir)).toBe(true);
+
+      await svc.deleteAccount(account.id);
+
+      expect(await dirExists(dir)).toBe(false);
+      const remaining = await db
+        .select()
+        .from(anthropicAccounts)
+        .where(eq(anthropicAccounts.id, account.id));
+      expect(remaining).toHaveLength(0);
+    });
+
+    it("does not throw when no on-disk directory exists for the account", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+      const account = await svc.createAccount({
+        companyId,
+        label: "Bedrock",
+        mode: "bedrock",
+      });
+      // No provisionOauthAccount → no directory on disk; delete must still succeed.
+      await expect(svc.deleteAccount(account.id)).resolves.toBeUndefined();
+    });
+
+    it("deletes the linked company_secrets row when apiKeySecretId is set", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+
+      const [secret] = await db
+        .insert(companySecrets)
+        .values({
+          companyId,
+          key: "anthropic-api-key",
+          name: "Anthropic API Key",
+          provider: "local_encrypted",
+          managedMode: "paperclip_managed",
+          latestVersion: 1,
+        })
+        .returning();
+      expect(secret).toBeDefined();
+
+      const account = await svc.createAccount({
+        companyId,
+        label: "API Key",
+        mode: "api_key",
+        apiKeySecretId: secret!.id,
+      });
+
+      await svc.deleteAccount(account.id);
+
+      const secretRows = await db
+        .select()
+        .from(companySecrets)
+        .where(eq(companySecrets.id, secret!.id));
+      expect(secretRows).toHaveLength(0);
+      const accountRows = await db
+        .select()
+        .from(anthropicAccounts)
+        .where(eq(anthropicAccounts.id, account.id));
+      expect(accountRows).toHaveLength(0);
+    });
+
+    it("leaves company_secrets untouched when apiKeySecretId is null (oauth account)", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+
+      const [unrelatedSecret] = await db
+        .insert(companySecrets)
+        .values({
+          companyId,
+          key: "unrelated",
+          name: "Unrelated Secret",
+          provider: "local_encrypted",
+          managedMode: "paperclip_managed",
+          latestVersion: 1,
+        })
+        .returning();
+
+      const account = await svc.createAccount({
+        companyId,
+        label: "OAuth",
+        mode: "oauth",
+      });
+
+      await svc.deleteAccount(account.id);
+
+      const remaining = await db
+        .select()
+        .from(companySecrets)
+        .where(eq(companySecrets.id, unrelatedSecret!.id));
+      expect(remaining).toHaveLength(1);
     });
   });
 

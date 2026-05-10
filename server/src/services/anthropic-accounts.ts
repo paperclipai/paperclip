@@ -5,8 +5,10 @@ import {
   anthropicAccounts,
   anthropicAccountSwitches,
   anthropicActiveAccount,
+  companySecrets,
   type AnthropicAccount,
 } from "@paperclipai/db";
+import { deleteAccountFiles } from "@paperclipai/adapter-claude-local/server";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 export type AnthropicAccountMode = "oauth" | "api_key" | "bedrock";
@@ -120,7 +122,23 @@ export function anthropicAccountsService(db: Db) {
         "Cannot delete the currently active Anthropic account; switch to another first",
       );
     }
-    await db.delete(anthropicAccounts).where(eq(anthropicAccounts.id, accountId));
+
+    // Filesystem cleanup must run before the DB delete so a failure here leaves
+    // the account row in place for retry rather than orphaning the on-disk
+    // .credentials.json. fs.rm is idempotent (force: true) so retrying after a
+    // partial failure is safe.
+    await deleteAccountFiles(accountId);
+
+    await db.transaction(async (tx) => {
+      if (existing.apiKeySecretId) {
+        await tx
+          .delete(companySecrets)
+          .where(eq(companySecrets.id, existing.apiKeySecretId));
+      }
+      await tx
+        .delete(anthropicAccounts)
+        .where(eq(anthropicAccounts.id, accountId));
+    });
   }
 
   async function setActiveAccount(
