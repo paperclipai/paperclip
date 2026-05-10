@@ -535,4 +535,100 @@ describe("claude-local auto-failover on transient rate limit", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     expect(result.errorCode).toBe("claude_transient_upstream");
   });
+
+  // Cross-cutting QA guard (MAS-259 D1): the api-key plaintext must never appear
+  // in any meta.env value on any attempt, including after auto-failover swaps the
+  // primary oauth account for an api_key fallback. The plaintext is the canary
+  // string set up below; if any loggedEnv value contains it, we have a leak in
+  // either buildInvocationEnvForLogs redaction or the failover env rebuild path.
+  it("after failover from oauth to api_key, no meta.env value leaks the api-key plaintext", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-10T20:00:00.000Z"));
+
+    const workspaceDir = await makeWorkspace();
+    const apiKeyValue = "sk-ant-leak-canary-mas-259-do-not-log";
+
+    const accounts = new Map<string, ActiveAnthropicAccount>([
+      [
+        "company-1",
+        {
+          id: "acc-primary",
+          label: "Primary OAuth",
+          mode: "oauth",
+          apiKeySecretId: null,
+        },
+      ],
+    ]);
+
+    setActiveAccountResolver(async (companyId) => {
+      const account = accounts.get(companyId);
+      if (!account) throw new Error(`no account for ${companyId}`);
+      return account;
+    });
+    setApiKeyResolver(async () => apiKeyValue);
+
+    setAutoFailoverHook({
+      listHealthyCandidates: async () => [
+        {
+          id: "acc-api",
+          label: "Backup API",
+          mode: "api_key",
+          apiKeySecretId: "secret-leak-canary",
+          lastUtilizationFiveHour: 5,
+        },
+      ],
+      setActiveAccount: async ({ companyId, accountId }) => {
+        accounts.set(companyId, {
+          id: accountId,
+          label: "Backup API",
+          mode: "api_key",
+          apiKeySecretId: "secret-leak-canary",
+        });
+      },
+      logSwitch: async () => undefined,
+    });
+
+    runChildProcess
+      .mockImplementationOnce(async () => makeRateLimitedRunResult())
+      .mockImplementationOnce(async () => makeOkRunResult("retry-no-leak"));
+
+    const metaCalls: AdapterInvocationMeta[] = [];
+
+    await execute({
+      runId: "run-leak-canary",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "claude", cwd: workspaceDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async (meta) => {
+        metaCalls.push(meta);
+      },
+    });
+
+    // The first attempt (oauth) and the retry (api_key) both produce a meta.
+    expect(metaCalls.length).toBeGreaterThanOrEqual(2);
+    for (const [index, meta] of metaCalls.entries()) {
+      for (const [key, value] of Object.entries(meta.env ?? {})) {
+        expect(
+          value,
+          `meta.env[${key}] on attempt #${index + 1} leaked api-key plaintext`,
+        ).not.toContain(apiKeyValue);
+      }
+    }
+
+    // The retry's metadata reports the api_key fallback for operator visibility,
+    // but ANTHROPIC_API_KEY in the logged env (if present) must be redacted.
+    const retryMeta = metaCalls.at(-1)!;
+    expect(retryMeta.env?.paperclipAnthropicAccountMode).toBe("api_key");
+    if (retryMeta.env?.ANTHROPIC_API_KEY !== undefined) {
+      expect(retryMeta.env.ANTHROPIC_API_KEY).not.toBe(apiKeyValue);
+    }
+  });
 });
