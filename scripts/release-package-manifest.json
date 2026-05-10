@@ -22,7 +22,7 @@
   {
     "dir": "packages/adapters/cursor-cloud",
     "name": "@paperclipai/adapter-cursor-cloud",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/cursor-local",
