@@ -1,5 +1,3 @@
-import "./src/locales/i18n";
-
 const storageEntries = new Map<string, string>();
 
 function installStorageMock(target: Record<string, unknown>) {
