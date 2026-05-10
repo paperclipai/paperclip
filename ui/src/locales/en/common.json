@@ -1093,7 +1093,12 @@
     "create_first_company": "Create your first company",
     "add_agent": "Add Agent",
     "start_onboarding": "Start Onboarding",
-    "new_company": "New Company"
+    "new_company": "New Company",
+    "add_agent_to_company": "Add another agent to {{name}}",
+    "onboarding_desc_add_agent": "Run onboarding again to add an agent and a starter task for this company.",
+    "onboarding_desc_create_company": "Run onboarding again to create another company and seed its first agent.",
+    "onboarding_desc_get_started": "Get started by creating a company and your first agent.",
+    "onboarding_desc_no_companies": "Get started by creating a company."
   },
   "keyboard_shortcuts": {
     "search_or_quick": "Search current page or quick search",

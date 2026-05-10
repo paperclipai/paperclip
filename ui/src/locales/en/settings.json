@@ -87,7 +87,7 @@
       "always_allow_desc": "Share voted AI outputs automatically.",
       "dont_allow_label": "Don't allow",
       "dont_allow_desc": "Keep voted AI outputs local only.",
-      "retest_hint": "To retest the first-use prompt in local dev, remove the <code>feedbackDataSharingPreference</code> key from the <code>instance_settings.general</code> JSON row for this instance, or set it back to <code>\"prompt\"</code>. Unset and <code>\"prompt\"</code> both mean no default has been chosen yet."
+      "retest_hint_plain": "To clear your choice and see the prompt again, run 'paperclip feedback reset-preference' in your CLI."
     },
     "language": {
       "title": "Display language",

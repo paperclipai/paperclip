@@ -322,10 +322,9 @@ export function InstanceGeneralSettings() {
               );
             })}
           </div>
-          <p
-            className="text-xs text-muted-foreground"
-            dangerouslySetInnerHTML={{ __html: t("instance.feedback.retest_hint", "To clear your choice and see the prompt again, run <code>paperclip feedback reset-preference</code> in your CLI.") }}
-          />
+          <p className="text-xs text-muted-foreground">
+            {t("instance.feedback.retest_hint_plain", "To clear your choice and see the prompt again, run 'paperclip feedback reset-preference' in your CLI.")}
+          </p>
         </div>
       </section>
 

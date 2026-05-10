@@ -27,6 +27,14 @@ type SupportedLanguage = typeof SUPPORTED_LANGUAGES[number];
 
 /** Returns the persisted language or browser default, falling back to English. */
 function getInitialLanguage(): SupportedLanguage {
+  try {
+    const saved = localStorage.getItem(LANGUAGE_KEY);
+    if (saved && (SUPPORTED_LANGUAGES as readonly string[]).includes(saved)) {
+      return saved as SupportedLanguage;
+    }
+  } catch {
+    // ignore
+  }
   return "en";
 }
 

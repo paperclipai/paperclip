@@ -160,15 +160,15 @@ function OnboardingRoutePage() {
     : null;
 
   const title = matchedCompany
-    ? `Add another agent to ${matchedCompany.name}`
+    ? t("app_shell.add_agent_to_company", { name: matchedCompany.name, defaultValue: `Add another agent to ${matchedCompany.name}` })
     : companies.length > 0
       ? t("app_shell.create_another_company")
       : t("app_shell.create_first_company");
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this company."
+    ? t("app_shell.onboarding_desc_add_agent", "Run onboarding again to add an agent and a starter task for this company.")
     : companies.length > 0
-      ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      ? t("app_shell.onboarding_desc_create_company", "Run onboarding again to create another company and seed its first agent.")
+      : t("app_shell.onboarding_desc_get_started", "Get started by creating a company and your first agent.");
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -255,7 +255,7 @@ function NoCompaniesStartPage() {
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">{t("app_shell.create_first_company")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Get started by creating a company.
+          {t("app_shell.onboarding_desc_no_companies", "Get started by creating a company.")}
         </p>
         <div className="mt-4">
           <Button onClick={() => openOnboarding()}>{t("app_shell.new_company")}</Button>
