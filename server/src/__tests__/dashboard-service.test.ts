@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, approvals, companies, createDb, heartbeatRuns, issues, issueThreadInteractions } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,8 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(approvals);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -235,5 +237,152 @@ describeEmbeddedPostgres("dashboard service", () => {
       blocked: 1,
       done: 1,
     });
+  });
+
+  it("surfaces pending approvals and issue interactions for board attention", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const hiddenIssueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Choose launch path",
+        status: "in_review",
+        originKind: "manual",
+        identifier: "PAP-101",
+      },
+      {
+        id: hiddenIssueId,
+        companyId,
+        title: "Hidden question",
+        status: "in_review",
+        originKind: "manual",
+        hiddenAt: new Date(),
+      },
+    ]);
+
+    await db.insert(approvals).values([
+      {
+        companyId,
+        type: "request_board_approval",
+        requestedByAgentId: agentId,
+        status: "pending",
+        payload: {
+          title: "Approve customer reply",
+          summary: "Agent wants approval before sending the note.",
+          recommendedAction: "Approve if the tone is right.",
+        },
+      },
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Already handled" },
+      },
+      {
+        companyId: otherCompanyId,
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Other company" },
+      },
+    ]);
+
+    await db.insert(issueThreadInteractions).values([
+      {
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Pick the launch scope",
+        summary: "Needs board input before continuing.",
+        createdByAgentId: agentId,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which launch scope should we use?",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "small", label: "Small" }],
+          }],
+        },
+      },
+      {
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        payload: { version: 1, prompt: "Already answered" },
+      },
+      {
+        companyId,
+        issueId: hiddenIssueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "hidden",
+            prompt: "Hidden?",
+            selectionMode: "single",
+            options: [{ id: "yes", label: "Yes" }],
+          }],
+        },
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.pendingApprovals).toBe(1);
+    expect(summary.attention.total).toBe(2);
+    expect(summary.attention.approvals).toEqual([
+      expect.objectContaining({
+        type: "request_board_approval",
+        title: "Approve customer reply",
+        summary: "Agent wants approval before sending the note.",
+        requestedByAgentId: agentId,
+      }),
+    ]);
+    expect(summary.attention.interactions).toEqual([
+      expect.objectContaining({
+        interactionKind: "ask_user_questions",
+        title: "Pick the launch scope",
+        summary: "Needs board input before continuing.",
+        issueIdentifier: "PAP-101",
+        issueTitle: "Choose launch path",
+        createdByAgentId: agentId,
+      }),
+    ]);
   });
 });

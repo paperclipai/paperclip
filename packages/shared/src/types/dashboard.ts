@@ -6,6 +6,33 @@ export interface DashboardRunActivityDay {
   total: number;
 }
 
+export interface DashboardAttentionApproval {
+  kind: "approval";
+  id: string;
+  type: string;
+  status: string;
+  title: string;
+  summary: string | null;
+  requestedByAgentId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface DashboardAttentionInteraction {
+  kind: "interaction";
+  id: string;
+  interactionKind: string;
+  status: string;
+  title: string;
+  summary: string | null;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  createdByAgentId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -31,6 +58,11 @@ export interface DashboardSummary {
     pendingApprovals: number;
     pausedAgents: number;
     pausedProjects: number;
+  };
+  attention: {
+    approvals: DashboardAttentionApproval[];
+    interactions: DashboardAttentionInteraction[];
+    total: number;
   };
   runActivity: DashboardRunActivityDay[];
 }
