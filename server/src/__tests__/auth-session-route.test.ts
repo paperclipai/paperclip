@@ -133,4 +133,58 @@ describe("actorMiddleware authenticated session profile", () => {
       emailVerified: true,
     });
   });
+
+  it("ignores invalid run-id header values on session actor resolution", async () => {
+    const app = express();
+    app.use(
+      actorMiddleware(createDb(), {
+        deploymentMode: "authenticated",
+        resolveSession: async () => ({
+          session: { id: "session-1", userId: "user-1" },
+          user: {
+            id: "user-1",
+            name: "User One",
+            email: "user@example.com",
+          },
+        }),
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-run-id", "not-a-uuid");
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("accepts valid UUID run-id header values on session actor resolution", async () => {
+    const app = express();
+    app.use(
+      actorMiddleware(createDb(), {
+        deploymentMode: "authenticated",
+        resolveSession: async () => ({
+          session: { id: "session-1", userId: "user-1" },
+          user: {
+            id: "user-1",
+            name: "User One",
+            email: "user@example.com",
+          },
+        }),
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-run-id", "11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBe("11111111-1111-4111-8111-111111111111");
+  });
 });

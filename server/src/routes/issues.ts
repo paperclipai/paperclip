@@ -68,6 +68,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { normalizeHeartbeatRunId } from "../heartbeat-run-id.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -983,7 +984,7 @@ export function issueRoutes(
 
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
-    const runId = req.actor.runId?.trim();
+    const runId = normalizeHeartbeatRunId(req.actor.runId);
     if (runId) return runId;
     res.status(401).json({ error: "Agent run id required" });
     return null;
