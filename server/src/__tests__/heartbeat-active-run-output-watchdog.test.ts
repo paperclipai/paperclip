@@ -94,15 +94,25 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(opts: {
+    now: Date;
+    ageMs: number;
+    withOutput?: boolean;
+    lastOutputAgeMs?: number;
+    finishedAt?: Date | null;
+    logChunk?: string;
+  }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
+    const infraId = randomUUID();
     const coderId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
     const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const startedAt = new Date(opts.now.getTime() - opts.ageMs);
-    const lastOutputAt = opts.withOutput ? new Date(opts.now.getTime() - 5 * 60 * 1000) : null;
+    const lastOutputAt = opts.withOutput || opts.lastOutputAgeMs !== undefined
+      ? new Date(opts.now.getTime() - (opts.lastOutputAgeMs ?? 5 * 60 * 1000))
+      : null;
 
     await db.insert(companies).values({
       id: companyId,
@@ -134,6 +144,18 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         runtimeConfig: {},
         permissions: {},
       },
+      {
+        id: infraId,
+        companyId,
+        name: "Infrastructure Engineer",
+        role: "engineer",
+        title: "Infrastructure & Release Engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
     ]);
     await db.insert(issues).values({
       id: issueId,
@@ -155,10 +177,11 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       invocationSource: "assignment",
       triggerDetail: "system",
       startedAt,
+      finishedAt: opts.finishedAt ?? null,
       processStartedAt: startedAt,
       lastOutputAt,
-      lastOutputSeq: opts.withOutput ? 3 : 0,
-      lastOutputStream: opts.withOutput ? "stdout" : null,
+      lastOutputSeq: lastOutputAt ? 3 : 0,
+      lastOutputStream: lastOutputAt ? "stdout" : null,
       contextSnapshot: { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
@@ -181,7 +204,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         .where(eq(heartbeatRuns.id, runId));
     }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
-    return { companyId, managerId, coderId, issueId, runId, issuePrefix };
+    return { companyId, managerId, infraId, coderId, issueId, runId, issuePrefix };
   }
 
   it("creates one medium-priority evaluation issue for a suspicious silent run", async () => {
@@ -295,6 +318,167 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(staleResult).toMatchObject({ created: 0, snoozed: 1 });
     expect(noisyResult).toMatchObject({ scanned: 0, created: 0 });
+  });
+
+  it("creates one hourly infra alert for agents with stale heartbeat runs", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, infraId, coderId } = await seedRunningRun({
+      now,
+      ageMs: 35 * 60_000,
+    });
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(now.getTime() - 35 * 60_000) })
+      .where(eq(agents.id, coderId));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanStaleHeartbeatRunAgents({
+      now,
+      companyId,
+      thresholdMs: 30 * 60_000,
+    });
+    const second = await heartbeat.scanStaleHeartbeatRunAgents({
+      now: new Date(now.getTime() + 10 * 60_000),
+      companyId,
+      thresholdMs: 30 * 60_000,
+    });
+
+    expect(first).toMatchObject({
+      scannedAgents: 1,
+      created: 1,
+      existing: 0,
+      thresholdMs: 30 * 60_000,
+    });
+    expect(second).toMatchObject({
+      created: 0,
+      existing: 1,
+    });
+    expect(first.staleAgents[0]).toMatchObject({
+      agentId: coderId,
+      staleRunCount: 1,
+    });
+
+    const alerts = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_heartbeat_run_agent")));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      priority: "high",
+      assigneeAgentId: infraId,
+      originId: coderId,
+    });
+    expect(alerts[0]?.originFingerprint).toContain(`stale_heartbeat_run_agent:${companyId}:${coderId}:`);
+    expect(alerts[0]?.description).toContain("Stale active run count: 1");
+  });
+
+  it("does not alert when a newly active run is fresher than the stale heartbeat threshold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId } = await seedRunningRun({
+      now,
+      ageMs: 60_000,
+    });
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(now.getTime() - 35 * 60_000) })
+      .where(eq(agents.id, coderId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanStaleHeartbeatRunAgents({
+      now,
+      companyId,
+      thresholdMs: 30 * 60_000,
+    });
+
+    expect(result).toMatchObject({
+      scannedAgents: 0,
+      created: 0,
+      existing: 0,
+    });
+
+    const alerts = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_heartbeat_run_agent")));
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not alert when an older active run has recent output within the stale heartbeat threshold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId } = await seedRunningRun({
+      now,
+      ageMs: 35 * 60_000,
+      lastOutputAgeMs: 5 * 60_000,
+    });
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(now.getTime() - 35 * 60_000) })
+      .where(eq(agents.id, coderId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanStaleHeartbeatRunAgents({
+      now,
+      companyId,
+      thresholdMs: 30 * 60_000,
+    });
+
+    expect(result).toMatchObject({
+      scannedAgents: 0,
+      created: 0,
+      existing: 0,
+    });
+  });
+
+  it("does not alert when an active run already has finishedAt set", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId } = await seedRunningRun({
+      now,
+      ageMs: 35 * 60_000,
+      finishedAt: new Date(now.getTime() - 60_000),
+    });
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(now.getTime() - 35 * 60_000) })
+      .where(eq(agents.id, coderId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanStaleHeartbeatRunAgents({
+      now,
+      companyId,
+      thresholdMs: 30 * 60_000,
+    });
+
+    expect(result).toMatchObject({
+      scannedAgents: 0,
+      created: 0,
+      existing: 0,
+    });
+  });
+
+  it("still alerts when an older active run has stale output and no finishedAt", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId } = await seedRunningRun({
+      now,
+      ageMs: 35 * 60_000,
+      lastOutputAgeMs: 31 * 60_000,
+    });
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(now.getTime() - 35 * 60_000) })
+      .where(eq(agents.id, coderId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanStaleHeartbeatRunAgents({
+      now,
+      companyId,
+      thresholdMs: 30 * 60_000,
+    });
+
+    expect(result).toMatchObject({
+      scannedAgents: 1,
+      created: 1,
+      existing: 0,
+    });
   });
 
   it("records watchdog decisions through recovery owner authorization", async () => {
