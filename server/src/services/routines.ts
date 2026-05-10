@@ -937,6 +937,42 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  // Used by coalesce/skip concurrency paths. Unlike findLiveExecutionIssue,
+  // this resolves any open (non-terminal) routine_execution issue regardless
+  // of heartbeat-run liveness, so a stale `in_progress` issue whose heartbeat
+  // run already completed/failed/cancelled still suppresses or coalesces a
+  // new dispatch instead of being orphaned. Terminal issues (`done`/`cancelled`)
+  // are excluded by OPEN_ISSUE_STATUSES.
+  async function findCoalesceTargetIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const live = await findLiveExecutionIssue(routine, executor, dispatchFingerprint, origin);
+    if (live) return live;
+
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1192,7 +1228,7 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const activeIssue = await findCoalesceTargetIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
@@ -1256,7 +1292,7 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const existingIssue = await findCoalesceTargetIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
           });
