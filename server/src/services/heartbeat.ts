@@ -70,6 +70,45 @@ const HEARTBEAT_RUN_HARD_TIMEOUT_MS = Math.max(
   60_000,
   Number(process.env.HEARTBEAT_RUN_HARD_TIMEOUT_MS) || 60 * 60 * 1000,
 );
+
+export interface RunWatchdog {
+  promise: Promise<never>;
+  abort: (reason: string) => void;
+  cleanup: () => void;
+}
+
+/**
+ * Build a watchdog that races `adapter.execute`. The returned `promise` rejects
+ * when either the timeout fires or `abort()` is called externally (e.g. by the
+ * reaper after detecting a dead child PID). `cleanup()` clears the timer; call
+ * it in `finally` regardless of which side of the race won. Exported for unit
+ * tests — production callers go through `executeRun`.
+ */
+export function createRunWatchdog(opts: {
+  timeoutMs: number;
+  onAbort?: (reason: string) => void;
+}): RunWatchdog {
+  let watchdogReject: ((err: Error) => void) | null = null;
+  const promise = new Promise<never>((_resolve, reject) => {
+    watchdogReject = reject;
+  });
+  const abort = (reason: string) => {
+    if (!watchdogReject) return;
+    const reject = watchdogReject;
+    watchdogReject = null;
+    opts.onAbort?.(reason);
+    reject(Object.assign(new Error(reason), { code: "watchdog_aborted" }));
+  };
+  const timer = setTimeout(
+    () => abort(`adapter execute exceeded hard timeout (${opts.timeoutMs}ms)`),
+    opts.timeoutMs,
+  );
+  return {
+    promise,
+    abort,
+    cleanup: () => clearTimeout(timer),
+  };
+}
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1651,12 +1690,18 @@ export function heartbeatService(db: Db) {
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const runHardTimeoutSec = asNumber(heartbeat.runHardTimeoutSec, 0);
+    const runHardTimeoutMs =
+      runHardTimeoutSec > 0
+        ? Math.max(60_000, Math.floor(runHardTimeoutSec * 1000))
+        : HEARTBEAT_RUN_HARD_TIMEOUT_MS;
 
     return {
       enabled: asBoolean(heartbeat.enabled, true),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      runHardTimeoutMs,
     };
   }
 
@@ -2704,25 +2749,21 @@ export function heartbeatService(db: Db) {
         );
       }
       // Race adapter.execute against a per-run watchdog. The watchdog rejects on:
-      //   (a) hard timeout (HEARTBEAT_RUN_HARD_TIMEOUT_MS), or
+      //   (a) hard timeout (policy.runHardTimeoutMs, per-agent override or global default), or
       //   (b) the reaper aborting it after detecting the child PID is dead.
       // Without this, an adapter that never resolves its execute promise (hung child,
       // missing close event) wedges executeRun and the agent's start-lock chain.
-      let watchdogReject: ((err: Error) => void) | null = null;
-      const watchdogPromise = new Promise<never>((_resolve, reject) => {
-        watchdogReject = reject;
+      const policy = parseHeartbeatPolicy(agent);
+      const watchdog = createRunWatchdog({
+        timeoutMs: policy.runHardTimeoutMs,
+        onAbort: (reason) => {
+          logger.warn(
+            { runId: run.id, agentId: agent.id, agentName: agent.name, reason },
+            "watchdog aborted heartbeat run — adapter.execute did not settle in time",
+          );
+        },
       });
-      const abortWatchdog = (reason: string) => {
-        if (!watchdogReject) return;
-        const reject = watchdogReject;
-        watchdogReject = null;
-        reject(Object.assign(new Error(reason), { code: "watchdog_aborted" }));
-      };
-      runWatchdogs.set(run.id, abortWatchdog);
-      const watchdogTimer = setTimeout(
-        () => abortWatchdog(`adapter execute exceeded hard timeout (${HEARTBEAT_RUN_HARD_TIMEOUT_MS}ms)`),
-        HEARTBEAT_RUN_HARD_TIMEOUT_MS,
-      );
+      runWatchdogs.set(run.id, watchdog.abort);
       let adapterResult: AdapterExecutionResult;
       try {
         adapterResult = await Promise.race([
@@ -2739,10 +2780,10 @@ export function heartbeatService(db: Db) {
             },
             authToken: authToken ?? undefined,
           }),
-          watchdogPromise,
+          watchdog.promise,
         ]);
       } finally {
-        clearTimeout(watchdogTimer);
+        watchdog.cleanup();
         runWatchdogs.delete(run.id);
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
@@ -3000,7 +3041,14 @@ export function heartbeatService(db: Db) {
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
-      logger.error({ err, runId }, "heartbeat execution failed");
+      // Preserve watchdog_aborted as a distinct errorCode so dashboards/alerts can
+      // distinguish "adapter actually crashed" from "adapter never settled, server
+      // had to abort the awaiter".
+      const errorCode =
+        err && typeof err === "object" && (err as { code?: unknown }).code === "watchdog_aborted"
+          ? "watchdog_aborted"
+          : "adapter_failed";
+      logger.error({ err, runId, errorCode }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -3013,7 +3061,7 @@ export function heartbeatService(db: Db) {
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode,
         finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,

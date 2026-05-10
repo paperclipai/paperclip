@@ -1,6 +1,6 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -33,6 +33,37 @@ export function dashboardService(db: Db) {
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
+
+      // Per-agent queue depth — surfaces the "agent appears idle but has stuck queued
+      // runs" failure mode that bit us on the AA-676 incident. An agent with queued > 0
+      // and running == 0 means wakes are accumulating but never claiming; treat as stuck.
+      const agentRunCounts = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        )
+        .groupBy(heartbeatRuns.agentId, heartbeatRuns.status);
+      const queuedByAgent = new Map<string, number>();
+      const runningByAgent = new Map<string, number>();
+      for (const row of agentRunCounts) {
+        const count = Number(row.count);
+        if (row.status === "queued") queuedByAgent.set(row.agentId, count);
+        else if (row.status === "running") runningByAgent.set(row.agentId, count);
+      }
+      let totalQueued = 0;
+      let stuckAgents = 0;
+      for (const [agentId, queued] of queuedByAgent) {
+        totalQueued += queued;
+        if ((runningByAgent.get(agentId) ?? 0) === 0) stuckAgents += 1;
+      }
 
       const agentCounts: Record<string, number> = {
         active: 0,
@@ -89,6 +120,8 @@ export function dashboardService(db: Db) {
           running: agentCounts.running,
           paused: agentCounts.paused,
           error: agentCounts.error,
+          queued: totalQueued,
+          stuck: stuckAgents,
         },
         tasks: taskCounts,
         costs: {
