@@ -21,24 +21,24 @@ export function asFiniteNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function formatCents(cents: number, lng = "en-US"): string {
+  return `$${(cents / 100).toLocaleString(lng, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
+export function formatNumber(n: number, lng = "en-US"): string {
+  return n.toLocaleString(lng);
 }
 
-export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+export function formatDate(date: Date | string, lng = "en-US"): string {
+  return new Date(date).toLocaleDateString(lng, {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
 }
 
-export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatDateTime(date: Date | string, lng = "en-US"): string {
+  return new Date(date).toLocaleString(lng, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -47,14 +47,14 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
-export function formatShortDate(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatShortDate(date: Date | string, lng = "en-US"): string {
+  return new Date(date).toLocaleString(lng, {
     month: "short",
     day: "numeric",
   });
 }
 
-export function relativeTime(date: Date | string): string {
+export function relativeTime(date: Date | string, lng = "en-US"): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
@@ -65,7 +65,7 @@ export function relativeTime(date: Date | string): string {
   if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.round(diffHr / 24);
   if (diffDay < 30) return `${diffDay}d ago`;
-  return formatDate(date);
+  return formatDate(date, lng);
 }
 
 export function formatTokens(n: number): string {

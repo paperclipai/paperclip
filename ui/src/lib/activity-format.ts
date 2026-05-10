@@ -19,6 +19,8 @@ interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
   userProfileMap?: Map<string, CompanyUserProfile>;
   currentUserId?: string | null;
+  t?: (key: string, options?: Record<string, unknown> | string) => string;
+  i18n?: { language: string };
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
