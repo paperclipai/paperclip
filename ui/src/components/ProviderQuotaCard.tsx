@@ -16,6 +16,55 @@ import {
 // ordered display labels for rolling-window rows
 const ROLLING_WINDOWS = ["5h", "24h", "7d"] as const;
 
+export interface ProviderTotals {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  totalCostCents: number;
+  totalApiRuns: number;
+  totalSubRuns: number;
+  totalSubInputTokens: number;
+  totalSubOutputTokens: number;
+  totalSubTokens: number;
+  /** share of total token usage attributable to subscription billing, 0..100 */
+  subSharePct: number;
+}
+
+/**
+ * sums per-(provider,biller,billingType,model) rows into the aggregates the
+ * card renders. each input row is single-billing-type (server groups by it),
+ * so r.inputTokens is the *full* row total and r.subscriptionInputTokens is
+ * a subset that equals r.inputTokens for subscription rows and 0 otherwise.
+ * → totalTokens already includes subscription tokens; do not re-add them.
+ */
+export function aggregateProviderTotals(rows: CostByProviderModel[]): ProviderTotals {
+  let inputTokens = 0, outputTokens = 0, costCents = 0;
+  let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+  for (const r of rows) {
+    inputTokens += r.inputTokens;
+    outputTokens += r.outputTokens;
+    costCents += r.costCents;
+    apiRunCount += r.apiRunCount;
+    subRunCount += r.subscriptionRunCount;
+    subInputTokens += r.subscriptionInputTokens;
+    subOutputTokens += r.subscriptionOutputTokens;
+  }
+  const totalTokens = inputTokens + outputTokens;
+  const subTokens = subInputTokens + subOutputTokens;
+  return {
+    totalInputTokens: inputTokens,
+    totalOutputTokens: outputTokens,
+    totalTokens,
+    totalCostCents: costCents,
+    totalApiRuns: apiRunCount,
+    totalSubRuns: subRunCount,
+    totalSubInputTokens: subInputTokens,
+    totalSubOutputTokens: subOutputTokens,
+    totalSubTokens: subTokens,
+    subSharePct: totalTokens > 0 ? (subTokens / totalTokens) * 100 : 0,
+  };
+}
+
 interface ProviderQuotaCardProps {
   provider: string;
   rows: CostByProviderModel[];
@@ -48,38 +97,10 @@ export function ProviderQuotaCard({
   quotaSource = null,
   quotaLoading = false,
 }: ProviderQuotaCardProps) {
-  // single-pass aggregation over rows — memoized so the 8 derived values are not
-  // recomputed on every parent render tick (providers tab polls every 30s, and each
-  // card is mounted twice: once in the "all" tab grid and once in its per-provider tab).
-  const totals = useMemo(() => {
-    let inputTokens = 0, outputTokens = 0, costCents = 0;
-    let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
-    for (const r of rows) {
-      inputTokens += r.inputTokens;
-      outputTokens += r.outputTokens;
-      costCents += r.costCents;
-      apiRunCount += r.apiRunCount;
-      subRunCount += r.subscriptionRunCount;
-      subInputTokens += r.subscriptionInputTokens;
-      subOutputTokens += r.subscriptionOutputTokens;
-    }
-    const totalTokens = inputTokens + outputTokens;
-    const subTokens = subInputTokens + subOutputTokens;
-    // denominator: api-billed tokens (from cost_events) + subscription tokens (from heartbeat_runs)
-    const allTokens = totalTokens + subTokens;
-    return {
-      totalInputTokens: inputTokens,
-      totalOutputTokens: outputTokens,
-      totalTokens,
-      totalCostCents: costCents,
-      totalApiRuns: apiRunCount,
-      totalSubRuns: subRunCount,
-      totalSubInputTokens: subInputTokens,
-      totalSubOutputTokens: subOutputTokens,
-      totalSubTokens: subTokens,
-      subSharePct: allTokens > 0 ? (subTokens / allTokens) * 100 : 0,
-    };
-  }, [rows]);
+  // memoized so the derived values are not recomputed on every parent render tick
+  // (providers tab polls every 30s, and each card is mounted twice: once in the
+  // "all" tab grid and once in its per-provider tab).
+  const totals = useMemo(() => aggregateProviderTotals(rows), [rows]);
 
   const {
     totalInputTokens,
