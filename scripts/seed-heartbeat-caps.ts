@@ -1,10 +1,10 @@
 import { agents, createDb } from "../packages/db/src/index.js";
-import { eq } from "drizzle-orm";
+import { eq, ilike } from "drizzle-orm";
 import { loadConfig } from "../server/src/config.js";
 import { budgetService } from "../server/src/services/budgets.js";
 
 interface CapInput {
-  agentId: string;
+  selector: string;
   amount: number;
   label: string;
 }
@@ -14,6 +14,23 @@ function parseFlag(name: string): string | null {
   if (index < 0) return null;
   const value = process.argv[index + 1];
   return value && !value.startsWith("--") ? value : null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function resolveAgent(db: ReturnType<typeof createDb>, selector: string) {
+  if (UUID_RE.test(selector)) {
+    return db
+      .select({ id: agents.id, companyId: agents.companyId, name: agents.name })
+      .from(agents)
+      .where(eq(agents.id, selector))
+      .then((rows) => rows[0] ?? null);
+  }
+  return db
+    .select({ id: agents.id, companyId: agents.companyId, name: agents.name })
+    .from(agents)
+    .where(ilike(agents.name, selector))
+    .then((rows) => rows[0] ?? null);
 }
 
 async function main() {
@@ -27,26 +44,21 @@ async function main() {
   const budgets = budgetService(db);
 
   const caps: CapInput[] = [
-    { agentId: "43451930-0000-0000-0000-000000000000", amount: 200, label: "CRM-1" },
-    { agentId: "58952822-0000-0000-0000-000000000000", amount: 20, label: "Compliance-1" },
+    { selector: "CRM-1", amount: 200, label: "CRM-1" },
+    { selector: "Compliance-1", amount: 20, label: "Compliance-1" },
   ];
 
   const overrideAgent = parseFlag("--agent");
   const overrideAmount = parseFlag("--amount");
   if (overrideAgent && overrideAmount) {
     caps.length = 0;
-    caps.push({ agentId: overrideAgent, amount: Number(overrideAmount), label: overrideAgent });
+    caps.push({ selector: overrideAgent, amount: Number(overrideAmount), label: overrideAgent });
   }
 
   for (const cap of caps) {
-    const agent = await db
-      .select({ id: agents.id, companyId: agents.companyId, name: agents.name })
-      .from(agents)
-      .where(eq(agents.id, cap.agentId))
-      .then((rows) => rows[0] ?? null);
-
+    const agent = await resolveAgent(db, cap.selector);
     if (!agent) {
-      console.warn(`- ${cap.label} (${cap.agentId}): agent not found, skipping`);
+      console.warn(`- ${cap.label}: agent not found by selector "${cap.selector}", skipping`);
       continue;
     }
 
