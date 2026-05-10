@@ -9,6 +9,8 @@
  *   5. Result shown inline until user dismisses.
  *   6. Escape key closes modal; Tab/Shift+Tab are focus-trapped inside.
  *   7. Auto-polls recent-runs every 5s when result is "partial" (max 60s).
+ *   8. Auto-retries 5xx up to 3 attempts (1s/2s backoff) with same idempotency key.
+ *   9. Shows "Cached replay" banner when server returns X-Idempotent-Replay: true.
  */
 // TODO(tests): Add unit tests in ui/src/components/bba-memory/__tests__/ when
 // @testing-library/react is in ui/package.json devDependencies.
@@ -63,6 +65,7 @@ export function BbaMemoryExecuteBetPanel({
   const [modalOpen, setModalOpen] = useState(false);
   const [confirmText, setConfirmText] = useState("");
   const [result, setResult] = useState<ExecuteBetResponse | null>(null);
+  const [wasReplay, setWasReplay] = useState(false);
   const [resultError, setResultError] = useState<string | null>(null);
 
   // Keyed by companyId so switching companies resets the window correctly.
@@ -75,9 +78,10 @@ export function BbaMemoryExecuteBetPanel({
 
   const { mutate, isPending } = useMutation({
     mutationFn: ({ req, iKey }: { req: ExecuteBetRequest; iKey: string }) =>
-      executeBbaBet(companyId, req, iKey),
+      executeBbaBet(companyId, req, { idempotencyKey: iKey }),
     onSuccess: (res) => {
       setResult(res);
+      setWasReplay(res.wasReplay);
       setResultError(null);
       queryClient.invalidateQueries({ queryKey: ["bba-memory", "recent-runs", companyId] });
       onSuccess?.(res);
@@ -142,6 +146,7 @@ export function BbaMemoryExecuteBetPanel({
     if (isWithinIdempotencyWindow) return;
     setConfirmText("");
     setResult(null);
+    setWasReplay(false);
     setResultError(null);
     setModalOpen(true);
   }, [isWithinIdempotencyWindow]);
@@ -221,6 +226,11 @@ export function BbaMemoryExecuteBetPanel({
                 <span className="ml-2 text-xs">Reason: {result.failureReason}</span>
               )}
             </>
+          )}
+          {wasReplay && (
+            <div className="text-xs text-gray-500 italic mt-1" data-testid="replay-banner">
+              ↻ Cached replay (60s window)
+            </div>
           )}
         </div>
       )}

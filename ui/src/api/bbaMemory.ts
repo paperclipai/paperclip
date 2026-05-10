@@ -100,24 +100,54 @@ export interface ExecuteBetResponse {
   logPath?: string;
 }
 
+export interface ExecuteBetOptions {
+  idempotencyKey?: string;
+  signal?: AbortSignal;
+  /** Retry on HTTP 5xx. Default: true. Same Idempotency-Key reused across retries. */
+  retryOn5xx?: boolean;
+  /** Called before each retry with the attempt number (1-based) and last status code. */
+  onRetry?: (attempt: number, status: number) => void;
+}
+
+const RETRY_DELAYS_MS = [1000, 2000] as const; // attempt 2 waits 1s, attempt 3 waits 2s
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
+}
+
 export async function executeBbaBet(
   companyId: string,
   payload: ExecuteBetRequest,
-  idempotencyKey?: string,
-  signal?: AbortSignal,
-): Promise<ExecuteBetResponse> {
+  options: ExecuteBetOptions = {},
+): Promise<ExecuteBetResponse & { wasReplay: boolean }> {
+  const { idempotencyKey, signal, retryOn5xx = true, onRetry } = options;
+  const url = `/api/companies/${encodeURIComponent(companyId)}/betting-browser-automation/execute`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
-  const res = await fetch(
-    `/api/companies/${encodeURIComponent(companyId)}/betting-browser-automation/execute`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers,
-      body: JSON.stringify(payload),
-      signal,
-    },
-  );
-  if (!res.ok) throw new Error(`executeBbaBet failed: ${res.status} ${res.statusText}`);
-  return res.json() as Promise<ExecuteBetResponse>;
+  const body = JSON.stringify(payload);
+
+  let lastRes: Response | null = null;
+  const maxAttempts = retryOn5xx ? 3 : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+
+    lastRes = await fetch(url, { method: "POST", credentials: "include", headers, body, signal });
+
+    if (lastRes.ok) {
+      const data = (await lastRes.json()) as ExecuteBetResponse;
+      return { ...data, wasReplay: lastRes.headers.get("X-Idempotent-Replay") === "true" };
+    }
+
+    const is5xx = lastRes.status >= 500 && lastRes.status < 600;
+    if (!is5xx || !retryOn5xx || attempt === maxAttempts) break;
+
+    onRetry?.(attempt, lastRes.status);
+    await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 2000, signal);
+  }
+
+  throw new Error(`executeBbaBet failed: ${lastRes!.status} ${lastRes!.statusText}`);
 }
