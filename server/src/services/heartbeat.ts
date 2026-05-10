@@ -63,6 +63,13 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// Hard ceiling on `adapter.execute` so a hung adapter (child process never exits, never emits close)
+// can't wedge the awaiting promise indefinitely. The watchdog rejects the awaited promise; the
+// adapter's child process is terminated separately by the reaper. Tunable via env.
+const HEARTBEAT_RUN_HARD_TIMEOUT_MS = Math.max(
+  60_000,
+  Number(process.env.HEARTBEAT_RUN_HARD_TIMEOUT_MS) || 60 * 60 * 1000,
+);
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -778,6 +785,10 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // Per-run abort hooks. When the reaper detects a child process is gone, or the hard
+  // timeout fires, we call the hook to reject the `adapter.execute` race in `executeRun`,
+  // unblocking the awaiter even if the adapter doesn't observe cancellation itself.
+  const runWatchdogs = new Map<string, (reason: string) => void>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -1872,6 +1883,11 @@ export function heartbeatService(db: Db) {
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
+      // Unblock any awaiter inside `executeRun` that was racing this child. If the adapter
+      // already resolved on its own this is a no-op (watchdog already cleared in finally);
+      // if it wedged, rejecting the race lets executeRun's catch fire and the agent's
+      // queue drain instead of stalling forever.
+      runWatchdogs.get(run.id)?.(`process_lost: ${baseMessage}`);
       reaped.push(run.id);
     }
 
@@ -2687,19 +2703,48 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, meta);
-        },
-        authToken: authToken ?? undefined,
+      // Race adapter.execute against a per-run watchdog. The watchdog rejects on:
+      //   (a) hard timeout (HEARTBEAT_RUN_HARD_TIMEOUT_MS), or
+      //   (b) the reaper aborting it after detecting the child PID is dead.
+      // Without this, an adapter that never resolves its execute promise (hung child,
+      // missing close event) wedges executeRun and the agent's start-lock chain.
+      let watchdogReject: ((err: Error) => void) | null = null;
+      const watchdogPromise = new Promise<never>((_resolve, reject) => {
+        watchdogReject = reject;
       });
+      const abortWatchdog = (reason: string) => {
+        if (!watchdogReject) return;
+        const reject = watchdogReject;
+        watchdogReject = null;
+        reject(Object.assign(new Error(reason), { code: "watchdog_aborted" }));
+      };
+      runWatchdogs.set(run.id, abortWatchdog);
+      const watchdogTimer = setTimeout(
+        () => abortWatchdog(`adapter execute exceeded hard timeout (${HEARTBEAT_RUN_HARD_TIMEOUT_MS}ms)`),
+        HEARTBEAT_RUN_HARD_TIMEOUT_MS,
+      );
+      let adapterResult: AdapterExecutionResult;
+      try {
+        adapterResult = await Promise.race([
+          adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, meta);
+            },
+            authToken: authToken ?? undefined,
+          }),
+          watchdogPromise,
+        ]);
+      } finally {
+        clearTimeout(watchdogTimer);
+        runWatchdogs.delete(run.id);
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
