@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { logger } from "../../middleware/logger.js";
 import { SEED_SELECTORS } from "./seeds.js";
 
-const MEMORY_DIR = path.join(os.homedir(), ".paperclip", "bba-memory");
+const MEMORY_DIR = process.env.BBA_MEMORY_DIR ?? path.join(os.homedir(), ".paperclip", "bba-memory");
 const DB_PATH = path.join(MEMORY_DIR, "bba-memory.db");
 export const TRACES_DIR = path.join(MEMORY_DIR, "traces");
 export const SCREENSHOTS_DIR = path.join(MEMORY_DIR, "screenshots");

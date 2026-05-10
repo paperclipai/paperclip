@@ -4,22 +4,24 @@
  * Verifies that a POST to the execute endpoint journals a `runs` row with the
  * correct outcome and failure_class for each result status.
  *
- * DI strategy: mock `bettingBrowserAutomationService` at the module level so
- * playwright/chromium never launches; let `instrumentBettingService` run for
- * real so the journaling path is exercised end-to-end.
- *
- * TODO (DI plumbing): the `initBbaMemory` singleton writes to
- * ~/.paperclip/bba-memory/bba-memory.db. Isolate to a temp path by either:
- *   (a) adding an optional `dbPath` param to initBbaMemory, or
- *   (b) vi.mock the DB_PATH constant before initBbaMemory is called.
- * For now the scaffold uses the real path and cleans up rows in afterEach.
+ * DI strategy: mock `bettingBrowserAutomationService` so playwright never
+ * launches; let `instrumentBettingService` run for real so the journaling
+ * path is exercised end-to-end. BBA_MEMORY_DIR is set to a temp directory
+ * before any bba-memory module loads so the singleton never touches ~/.paperclip.
  */
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+
+// Set before any bba-memory module import — module-level constants capture this at load time.
+const TMP_MEMORY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "bba-memory-e2e-"));
+process.env.BBA_MEMORY_DIR = TMP_MEMORY_DIR;
+
 import express from "express";
 import request from "supertest";
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 // ── mock bettingBrowserAutomationService ─────────────────────────────────────
-// Must be vi.hoisted so the mock is in place before any module imports resolve.
 const mockExecute = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/betting-browser-automation.js", () => ({
@@ -34,7 +36,7 @@ vi.mock("../services/secrets.js", () => ({
   }),
 }));
 
-// ── imports after mocks ───────────────────────────────────────────────────────
+// ── bba-memory imports AFTER env var is set ───────────────────────────────────
 import { initBbaMemory, closeBbaMemory, getDb } from "../services/bba-memory/db.js";
 import { listRecentRuns } from "../services/bba-memory/index.js";
 
@@ -57,7 +59,7 @@ async function createApp() {
     };
     next();
   });
-  // Pass a stub db — postgres is not used because bettingBrowserAutomationService is mocked.
+  // Stub db — postgres is not used because bettingBrowserAutomationService is mocked.
   app.use("/api", bettingBrowserAutomationRoutes({} as any));
   app.use(errorHandler);
   return app;
@@ -109,6 +111,8 @@ describe("BBA route → bba-memory e2e (Phase D-2)", () => {
 
   afterAll(() => {
     closeBbaMemory();
+    fs.rmSync(TMP_MEMORY_DIR, { recursive: true, force: true });
+    delete process.env.BBA_MEMORY_DIR;
   });
 
   it("completed execute() → runs row with outcome=success, failure_class=NULL", async () => {
@@ -121,15 +125,15 @@ describe("BBA route → bba-memory e2e (Phase D-2)", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("completed");
 
-    // TODO: assert DB row once DI plumbing is wired end-to-end.
-    // const [run] = listRecentRuns(1);
-    // expect(run).toBeDefined();
-    // expect(run.outcome).toBe("success");
-    // expect(run.failure_class).toBeNull();
-    // expect(JSON.parse(run.meta_json ?? "{}").placedBetId).toBe("B1");
+    const [run] = listRecentRuns(1);
+    expect(run).toBeDefined();
+    expect(run.outcome).toBe("success");
+    expect(run.failure_class).toBeNull();
+    const meta = JSON.parse(run.meta_json ?? "{}");
+    expect(meta.placedBetId).toBe("B1");
   });
 
-  it("failed execute() → runs row with outcome=failure, failure_class set", async () => {
+  it("failed execute() → runs row with outcome=failure, failure_class=UNKNOWN", async () => {
     mockExecute.mockResolvedValue({ status: "failed", failureReason: "timeout" });
 
     const res = await request(app)
@@ -139,13 +143,13 @@ describe("BBA route → bba-memory e2e (Phase D-2)", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("failed");
 
-    // TODO: assert DB row
-    // const [run] = listRecentRuns(1);
-    // expect(run.outcome).toBe("failure");
-    // expect(run.failure_class).not.toBeNull();
+    const [run] = listRecentRuns(1);
+    expect(run).toBeDefined();
+    expect(run.outcome).toBe("failure");
+    expect(run.failure_class).toBe("UNKNOWN");
   });
 
-  it("session_expired execute() → runs row with outcome=failure, failure_class=session_expired", async () => {
+  it("session_expired execute() → runs row with outcome=failure, failure_class=SESSION_NOT_DETECTED", async () => {
     mockExecute.mockResolvedValue({ status: "session_expired" });
 
     const res = await request(app)
@@ -155,9 +159,9 @@ describe("BBA route → bba-memory e2e (Phase D-2)", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("session_expired");
 
-    // TODO: assert DB row
-    // const [run] = listRecentRuns(1);
-    // expect(run.outcome).toBe("failure");
-    // expect(run.failure_class).toBe("session_expired");
+    const [run] = listRecentRuns(1);
+    expect(run).toBeDefined();
+    expect(run.outcome).toBe("failure");
+    expect(run.failure_class).toBe("SESSION_NOT_DETECTED");
   });
 });
