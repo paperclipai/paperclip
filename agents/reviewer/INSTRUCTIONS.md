@@ -20,17 +20,28 @@ exit — do NOT edit, do NOT commit, do NOT push.
 2. **`cd` into the worktree path.** Doesn't exist → comment and exit.
 3. **Verify branch.** `git branch --show-current` must equal
    `task/{task-id}`. Mismatch → comment and exit.
-4. **Verify Worker actually committed.** `git log main..HEAD --oneline`
-   must list at least one Worker commit. Empty → comment `"No Worker
-   commits on this branch — nothing to review."` and exit.
+4. **Sync to current main.** `git fetch origin main && git rebase
+   origin/main`. A stale branch makes "this file changed" checks
+   hallucinate — main moving forward looks like Worker reverting things.
+   Rebase conflicts → comment `"Branch conflicts with current main;
+   rebase failed at <commit>. Operator must resolve."` and
+   `git rebase --abort` then exit.
+5. **Verify Worker actually committed.** After the rebase, `git log
+   origin/main..HEAD --oneline` must list at least one Worker commit.
+   Empty → comment `"No Worker commits on this branch after rebase onto
+   main — nothing to review."` and exit.
 
-Only after all four checks pass, proceed to the procedure below.
+Only after all five checks pass, proceed to the procedure below.
 
 ## Procedure
 
 Review tasks live in `in_review` status (not `todo`). Coordinator creates them with that status; wake fires on assignment so `PAPERCLIP_TASK_ID` is injected — no inbox polling needed. On completion, PATCH straight to `done`.
 
-1. Read task — file list + implementation context.
+1. Read task — file list + implementation context. **Determine in-scope
+   files via `git diff origin/main..HEAD --name-only`** (post-rebase,
+   so this is exactly Worker's diff). Files not in this list are
+   out of scope — do NOT touch them, do NOT "restore" them. If the
+   task description's file list disagrees with `git diff`, trust git.
 2. Review each file deeply. Ask: "can this be improved further?"
 
    **Quality**:

@@ -27,8 +27,7 @@ merges to main (human only).
 refactors, or evaluate IP compliance — that is Reviewer's job. Your output
 is "compiles cleanly, tests pass, here's the PR." If a task title or body
 asks you to review, audit, or evaluate, refuse it (see §Step 0 check 5).
-Doing review work as a side effect of "Verify+Review" tasks is how the
-pipeline routed around Reviewer entirely on AA-676 — don't do that.
+"Verify+Review" combo tasks route around Reviewer — do not accept them.
 
 ## Step 0: Precondition gate (before anything else)
 
@@ -62,7 +61,14 @@ the same five checks; only step 4's expected base differs.
    Re-route review portion to Reviewer; keep this task limited to cargo
    verify."` and exit. "Verify" alone is fine; "Review" alone or paired
    is not. The pipeline must not route around Reviewer.
-Only after all five checks pass, proceed to "Verification" below.
+6. **Sync to current main.** `git fetch origin main && git rebase
+   origin/main`. A stale branch makes cargo flag already-fixed errors
+   or pass on state that conflicts with main on push. Rebase conflicts
+   → comment `"Branch conflicts with current main; rebase failed at
+   <commit>. Operator must resolve before verify can proceed."` and
+   `git rebase --abort` then exit. (`ci-failure` flavor: skip — the
+   worktree is already branched from current `origin/main`.)
+Only after all six checks pass, proceed to "Verification" below.
 
 ## Verification
 

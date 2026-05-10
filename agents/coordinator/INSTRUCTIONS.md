@@ -123,13 +123,11 @@ its Architect immediately:
 - **Title contract**: Architect subtasks must start with `Verify:` or
   `ci-fix:`. Never `Review:`, `Verify+Review:`, `Review and verify:`,
   or anything that asks Architect to evaluate code quality, IP, or
-  patterns. Architect refuses these via its precondition gate (see
-  `agents/architect/INSTRUCTIONS.md` §Step 0 check 5). If Reviewer is
-  unavailable (stuck queue, missing worktree, etc.), do NOT bundle the
-  review work into the Architect task — surface the blocker (comment on
-  the parent, escalate to Facilitator) and leave the task in
-  `in_review` until Reviewer can run. Bypassing Reviewer is how AA-676
-  shipped without review.
+  patterns. Architect refuses these via its precondition gate. If
+  Reviewer is unavailable (stuck queue, missing worktree, etc.), do
+  NOT bundle the review work into the Architect task — surface the
+  blocker (comment on the parent, escalate to Facilitator) and leave
+  the task in `in_review` until Reviewer can run.
 - Assignment-wake fires the Architect within seconds.
 - Coordinator moves on. Cargo runtime is the Architect's problem.
 
