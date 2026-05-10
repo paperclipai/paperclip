@@ -14,6 +14,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import { pickAssistantChunk } from "./assistant-stream.js";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
 
@@ -1217,12 +1218,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       if (stream === "assistant") {
-        const delta = nonEmpty(data.delta);
-        const text = nonEmpty(data.text);
-        if (delta) {
-          assistantChunks.push(delta);
-        } else if (text) {
-          assistantChunks.push(text);
+        // BPE tokenizers (qwen3, gpt, llama family) emit word-tokens with a
+        // leading space. `nonEmpty()` would `.trim()` and collapse those
+        // inter-word spaces; pick the chunk with type-only checks instead.
+        const chunk = pickAssistantChunk(data);
+        if (chunk !== null) {
+          assistantChunks.push(chunk);
         }
         return;
       }
