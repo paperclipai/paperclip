@@ -1,8 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
-import type { BillingType } from "@paperclipai/shared";
-import i18n from "../locales/i18n";
+import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -30,16 +29,16 @@ export function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-export function formatDate(date: Date | string, locale?: string): string {
-  return new Date(date).toLocaleDateString(locale ?? i18n.language, {
+export function formatDate(date: Date | string): string {
+  return new Date(date).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
 }
 
-export function formatDateTime(date: Date | string, locale?: string): string {
-  return new Date(date).toLocaleString(locale ?? i18n.language, {
+export function formatDateTime(date: Date | string): string {
+  return new Date(date).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -48,27 +47,25 @@ export function formatDateTime(date: Date | string, locale?: string): string {
   });
 }
 
-export function formatShortDate(date: Date | string, locale?: string): string {
-  return new Date(date).toLocaleString(locale ?? i18n.language, {
+export function formatShortDate(date: Date | string): string {
+  return new Date(date).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
   });
 }
 
-export function relativeTime(date: Date | string, locale?: string): string {
+export function relativeTime(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  const effectiveLocale = locale ?? i18n.language;
-  const rtf = new Intl.RelativeTimeFormat(effectiveLocale, { numeric: "auto" });
-  if (diffSec < 60) return rtf.format(-diffSec, "second");
+  if (diffSec < 60) return "just now";
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return rtf.format(-diffMin, "minute");
+  if (diffMin < 60) return `${diffMin}m ago`;
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return rtf.format(-diffHr, "hour");
+  if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return rtf.format(-diffDay, "day");
-  return formatDate(date, effectiveLocale);
+  if (diffDay < 30) return `${diffDay}d ago`;
+  return formatDate(date);
 }
 
 export function formatTokens(n: number): string {
@@ -109,6 +106,18 @@ export function providerDisplayName(provider: string): string {
     jetbrains: "JetBrains AI",
   };
   return map[provider.toLowerCase()] ?? provider;
+}
+
+export function billingTypeDisplayName(billingType: BillingType): string {
+  const map: Record<BillingType, string> = {
+    metered_api: "Metered API",
+    subscription_included: "Subscription",
+    subscription_overage: "Subscription overage",
+    credits: "Credits",
+    fixed: "Fixed",
+    unknown: "Unknown",
+  };
+  return map[billingType];
 }
 
 export function quotaSourceDisplayName(source: string): string {
@@ -154,6 +163,29 @@ export function visibleRunCostUsd(
   return readRunCostUsd(usage) || readRunCostUsd(result);
 }
 
+export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
+  const map: Record<FinanceEventKind, string> = {
+    inference_charge: "Inference charge",
+    platform_fee: "Platform fee",
+    credit_purchase: "Credit purchase",
+    credit_refund: "Credit refund",
+    credit_expiry: "Credit expiry",
+    byok_fee: "BYOK fee",
+    gateway_overhead: "Gateway overhead",
+    log_storage_charge: "Log storage",
+    logpush_charge: "Logpush",
+    provisioned_capacity_charge: "Provisioned capacity",
+    training_charge: "Training",
+    custom_model_import_charge: "Custom model import",
+    custom_model_storage_charge: "Custom model storage",
+    manual_adjustment: "Manual adjustment",
+  };
+  return map[eventKind];
+}
+
+export function financeDirectionDisplayName(direction: FinanceDirection): string {
+  return direction === "credit" ? "Credit" : "Debit";
+}
 
 /** Build an issue URL using the human-readable identifier when available. */
 export function issueUrl(issue: { id: string; identifier?: string | null }): string {

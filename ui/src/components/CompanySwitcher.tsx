@@ -1,5 +1,4 @@
 import { ChevronsUpDown, Plus, Settings } from "lucide-react";
-import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import {
@@ -32,7 +31,6 @@ interface CompanySwitcherProps {
 }
 
 export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanySwitcherProps = {}) {
-  const { t } = useTranslation("common");
   const [internalOpen, setInternalOpen] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
@@ -51,14 +49,14 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
               <span className={`h-2 w-2 rounded-full shrink-0 ${statusDotColor(selectedCompany.status)}`} />
             )}
             <span className="text-sm font-medium truncate">
-              {selectedCompany?.name ?? t("company_switcher.select_company")}
+              {selectedCompany?.name ?? "Select company"}
             </span>
           </div>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-[220px]">
-        <DropdownMenuLabel>{t("company_switcher.companies")}</DropdownMenuLabel>
+        <DropdownMenuLabel>Companies</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sidebarCompanies.map((company) => (
           <DropdownMenuItem
@@ -71,19 +69,19 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (
-          <DropdownMenuItem disabled>{t("company_switcher.no_companies")}</DropdownMenuItem>
+          <DropdownMenuItem disabled>No companies</DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/company/settings" className="no-underline text-inherit">
             <Settings className="h-4 w-4 mr-2" />
-            {t("company_switcher.company_settings")}
+            Company Settings
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/companies" className="no-underline text-inherit">
             <Plus className="h-4 w-4 mr-2" />
-            {t("company_switcher.manage_companies")}
+            Manage Companies
           </Link>
         </DropdownMenuItem>
       </DropdownMenuContent>

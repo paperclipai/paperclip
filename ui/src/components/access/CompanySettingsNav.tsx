@@ -1,4 +1,3 @@
-import { useTranslation } from "react-i18next";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useLocation, useNavigate } from "@/lib/router";
@@ -29,7 +28,6 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 }
 
 export function CompanySettingsNav() {
-  const { t } = useTranslation("company");
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getCompanySettingsTab(location.pathname);
@@ -43,7 +41,7 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={items.map(({ value }) => ({ value, label: value === "general" ? t("settings.sections.general") : value === "environments" ? t("environments.breadcrumb_page") : value === "access" ? t("access.title_short") : t("settings.sections.invites") }))}
+        items={items.map(({ value, label }) => ({ value, label }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

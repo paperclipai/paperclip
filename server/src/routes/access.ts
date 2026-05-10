@@ -1090,28 +1090,28 @@ async function getProtectedMemberReason(
     operation?: "archive" | "update";
   },
 ): Promise<string | null> {
-  if (member.principalType !== "user") return "non_human_member";
-  if (req.actor.type !== "board") return "board_access_required";
-  if (member.principalId === req.actor.userId) return "cannot_remove_self";
+  if (member.principalType !== "user") return "Only human company members can be removed.";
+  if (req.actor.type !== "board") return "Board access is required to remove members.";
+  if (member.principalId === req.actor.userId) return "You cannot remove yourself.";
   const isTargetInstanceAdmin = opts?.instanceAdminUserIds
     ? opts.instanceAdminUserIds.has(member.principalId)
     : await access.isInstanceAdmin(member.principalId);
   if (isTargetInstanceAdmin) {
-    return "instance_admin_protected";
+    return "Instance admins cannot be removed from company access.";
   }
 
   const targetRole = member.membershipRole
     ? normalizeHumanRole(member.membershipRole, "operator")
     : "operator";
   if (opts?.operation === "archive") {
-    if (targetRole === "owner") return "owner_protected";
-    if (targetRole === "admin") return "admin_protected";
+    if (targetRole === "owner") return "Board owners cannot be removed from company access.";
+    if (targetRole === "admin") return "Company admins cannot be removed from company access.";
   }
 
   const actorRole = opts?.actorRole ?? await resolveActorHumanRole(req, access, companyId);
-  if (!actorRole) return "actor_not_member";
+  if (!actorRole) return "Only active company members can remove users.";
   if (humanRoleRank[targetRole] >= humanRoleRank[actorRole]) {
-    return "target_role_too_high";
+    return "You can only remove users below your company role.";
   }
 
   return null;

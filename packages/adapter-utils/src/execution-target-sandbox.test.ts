@@ -136,7 +136,7 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "sh",
-      args: ["-lc", 'printf %s "$HOME"'],
+      args: ["-c", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
     }));
@@ -284,7 +284,7 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "bash",
-      args: ["-lc", 'printf %s "$HOME"'],
+      args: ["-c", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
     }));

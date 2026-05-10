@@ -1,4 +1,3 @@
-import { useTranslation } from "react-i18next";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
@@ -42,7 +41,6 @@ function NoBoardAccessPage() {
 }
 
 export function CloudAccessGate() {
-  const { t } = useTranslation("common");
   const location = useLocation();
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -79,7 +77,7 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{t("cloud_access_gate.loading")}</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
   if (healthQuery.error || boardAccessQuery.error) {

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 interface CopyTextProps {
@@ -10,7 +9,7 @@ interface CopyTextProps {
   className?: string;
   ariaLabel?: string;
   title?: string;
-  /** Tooltip message shown after copying. Default: translated "Copied!" */
+  /** Tooltip message shown after copying. Default: "Copied!" */
   copiedLabel?: string;
 }
 
@@ -21,12 +20,10 @@ export function CopyText({
   className,
   ariaLabel,
   title,
-  copiedLabel,
+  copiedLabel = "Copied!",
 }: CopyTextProps) {
-  const { t } = useTranslation("common");
-  const defaultCopiedLabel = copiedLabel ?? t("actions.copied");
   const [visible, setVisible] = useState(false);
-  const [label, setLabel] = useState(defaultCopiedLabel);
+  const [label, setLabel] = useState(copiedLabel);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -51,14 +48,14 @@ export function CopyText({
           document.body.removeChild(textarea);
         }
       }
-      setLabel(defaultCopiedLabel);
+      setLabel(copiedLabel);
     } catch {
-      setLabel(t("actions.copy_failed"));
+      setLabel("Copy failed");
     }
     clearTimeout(timerRef.current);
     setVisible(true);
     timerRef.current = setTimeout(() => setVisible(false), 1500);
-  }, [defaultCopiedLabel, text, t]);
+  }, [copiedLabel, text]);
 
   return (
     <span className={cn("relative inline-flex", containerClassName)}>

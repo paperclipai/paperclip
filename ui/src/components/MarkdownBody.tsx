@@ -1,5 +1,4 @@
 import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
@@ -363,7 +362,6 @@ function CodeBlock({
   children: ReactNode;
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
-  const { t } = useTranslation("common");
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
@@ -417,7 +415,7 @@ function CodeBlock({
       <button
         type="button"
         onClick={handleCopy}
-        aria-label={t("actions.copy_code")}
+        aria-label="Copy code"
         title={label}
         className="paperclip-markdown-codeblock-copy"
         data-copied={copied || undefined}

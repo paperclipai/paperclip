@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { useTranslation } from "react-i18next";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
@@ -48,7 +47,6 @@ export function GoalPropertiesToggleButton({
 }
 
 export function GoalDetail() {
-  const { t } = useTranslation("goals");
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
@@ -120,10 +118,10 @@ export function GoalDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: t("title"), href: "/goals" },
-      { label: goal?.title ?? goalId ?? t("title") }
+      { label: "Goals", href: "/goals" },
+      { label: goal?.title ?? goalId ?? "Goal" }
     ]);
-  }, [setBreadcrumbs, goal, goalId, t]);
+  }, [setBreadcrumbs, goal, goalId]);
 
   useEffect(() => {
     if (goal) {
@@ -181,10 +179,10 @@ export function GoalDetail() {
       <Tabs defaultValue="children">
         <TabsList>
           <TabsTrigger value="children">
-            {t("detail.tab_sub_goals", { count: childGoals.length })}
+            Sub-Goals ({childGoals.length})
           </TabsTrigger>
           <TabsTrigger value="projects">
-            {t("detail.tab_projects", { count: linkedProjects.length })}
+            Projects ({linkedProjects.length})
           </TabsTrigger>
         </TabsList>
 
@@ -196,11 +194,11 @@ export function GoalDetail() {
               onClick={() => openNewGoal({ parentId: goalId })}
             >
               <Plus className="h-3.5 w-3.5 mr-1.5" />
-              {t("detail.add_sub_goal")}
+              Sub Goal
             </Button>
           </div>
           {childGoals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t("detail.no_sub_goals")}</p>
+            <p className="text-sm text-muted-foreground">No sub-goals.</p>
           ) : (
             <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}

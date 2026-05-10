@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState, type SVGProps } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -147,32 +146,26 @@ function buildTree(entries: CompanySkillFileInventoryEntry[]) {
   return root.children;
 }
 
-function sourceMeta(
-  sourceBadge: CompanySkillSourceBadge,
-  sourceLabel: string | null,
-  t: (key: string, options?: Record<string, unknown>) => string,
-) {
+function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | null) {
   const normalizedLabel = sourceLabel?.toLowerCase() ?? "";
   const isSkillsShManaged =
     normalizedLabel.includes("skills.sh") || normalizedLabel.includes("vercel-labs/skills");
 
-  const managed = (src: string) => t("skills.sources.managed", { source: src });
-
   switch (sourceBadge) {
     case "skills_sh":
-      return { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: managed("skills.sh") };
+      return { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" };
     case "github":
       return isSkillsShManaged
-        ? { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: managed("skills.sh") }
-        : { icon: Github, label: sourceLabel ?? t("skills.sources.github"), managedLabel: managed(t("skills.sources.github")) };
+        ? { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" }
+        : { icon: Github, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
     case "url":
-      return { icon: Link2, label: sourceLabel ?? t("skills.sources.url"), managedLabel: managed(t("skills.sources.url")) };
+      return { icon: Link2, label: sourceLabel ?? "URL", managedLabel: "URL managed" };
     case "local":
-      return { icon: Folder, label: sourceLabel ?? t("skills.sources.local"), managedLabel: managed(t("skills.sources.local")) };
+      return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? t("skills.sources.paperclip"), managedLabel: managed(t("skills.sources.paperclip")) };
+      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: "Paperclip managed" };
     default:
-      return { icon: Boxes, label: sourceLabel ?? t("skills.sources.catalog"), managedLabel: managed(t("skills.sources.catalog")) };
+      return { icon: Boxes, label: sourceLabel ?? "Catalog", managedLabel: "Catalog managed" };
   }
 }
 
@@ -187,31 +180,15 @@ function middleTruncate(value: string, maxLength = 72) {
   return `${value.slice(0, edgeLength)}...${value.slice(value.length - edgeLength)}`;
 }
 
-function formatProjectScanSummary(
-  result: CompanySkillProjectScanResult,
-  t: (key: string, options?: Record<string, unknown>) => string,
-) {
-  const ws = result.scannedWorkspaces;
-  const base = ws === 1
-    ? t("skills.toast.scan_summary", {
-        found: result.discovered,
-        imported: result.imported.length,
-        updated: result.updated.length,
-        workspaces: ws,
-      })
-    : t("skills.toast.scan_summary_plural", {
-        found: result.discovered,
-        imported: result.imported.length,
-        updated: result.updated.length,
-        workspaces: ws,
-      });
-  const conflicts = result.conflicts.length > 0
-    ? t("skills.toast.scan_summary_conflicts", { conflicts: result.conflicts.length })
-    : "";
-  const skipped = result.skipped.length > 0
-    ? t("skills.toast.scan_summary_skipped", { skipped: result.skipped.length })
-    : "";
-  return `${base}${conflicts}${skipped}`;
+function formatProjectScanSummary(result: CompanySkillProjectScanResult) {
+  const parts = [
+    `${result.discovered} found`,
+    `${result.imported.length} imported`,
+    `${result.updated.length} updated`,
+  ];
+  if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} conflicts`);
+  if (result.skipped.length > 0) parts.push(`${result.skipped.length} skipped`);
+  return `${parts.join(", ")} across ${result.scannedWorkspaces} workspace${result.scannedWorkspaces === 1 ? "" : "s"}.`;
 }
 
 function fileIcon(kind: CompanySkillFileInventoryEntry["kind"]) {
@@ -282,7 +259,6 @@ function NewSkillForm({
   isPending: boolean;
   onCancel: () => void;
 }) {
-  const { t } = useTranslation('company');
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
@@ -293,31 +269,31 @@ function NewSkillForm({
         <Input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          placeholder={t('skills.create.name_placeholder')}
+          placeholder="Skill name"
           className="h-9 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <Input
           value={slug}
           onChange={(event) => setSlug(event.target.value)}
-          placeholder={t('skills.create.slug_placeholder')}
+          placeholder="optional-shortname"
           className="h-9 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <Textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder={t('skills.create.description_placeholder')}
+          placeholder="Short description"
           className="min-h-20 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onCancel} disabled={isPending}>
-            {t('skills.create.cancel')}
+            Cancel
           </Button>
           <Button
             size="sm"
             onClick={() => onCreate({ name, slug: slug || null, description: description || null })}
             disabled={isPending || name.trim().length === 0}
           >
-            {isPending ? t('skills.create.creating') : t('skills.create.create')}
+            {isPending ? "Creating..." : "Create skill"}
           </Button>
         </div>
       </div>
@@ -436,7 +412,6 @@ function SkillList({
   onSelectSkill: (skillId: string) => void;
   onSelectPath: (skillId: string, path: string) => void;
 }) {
-  const { t } = useTranslation('company');
   const filteredSkills = skills.filter((skill) => {
     const haystack = `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""}`.toLowerCase();
     return haystack.includes(skillFilter.toLowerCase());
@@ -445,7 +420,7 @@ function SkillList({
   if (filteredSkills.length === 0) {
     return (
       <div className="px-4 py-6 text-sm text-muted-foreground">
-        {t('skills.empty.no_match')}
+        No skills match this filter.
       </div>
     );
   }
@@ -455,7 +430,7 @@ function SkillList({
       {filteredSkills.map((skill) => {
         const expanded = expandedSkillId === skill.id;
         const tree = buildTree(skill.fileInventory);
-        const source = sourceMeta(skill.sourceBadge, skill.sourceLabel, t);
+        const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
         const SourceIcon = source.icon;
 
         return (
@@ -490,7 +465,7 @@ function SkillList({
                 type="button"
                 className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
                 onClick={() => onToggleSkill(skill.id)}
-                aria-label={expanded ? t('skills.aria.collapse', { name: skill.name }) : t('skills.aria.expand', { name: skill.name })}
+                aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
               >
                 {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               </button>
@@ -564,9 +539,6 @@ function SkillPane({
   onSave: () => void;
   savePending: boolean;
 }) {
-  const { pushToast } = useToastActions();
-  const { t } = useTranslation('company');
-
   if (!detail) {
     if (loading) {
       return <PageSkeleton variant="detail" />;
@@ -574,12 +546,12 @@ function SkillPane({
     return (
       <EmptyState
         icon={Boxes}
-        message={t('skills.empty.no_skills')}
+        message="Select a skill to inspect its files."
       />
     );
   }
 
-  const source = sourceMeta(detail.sourceBadge, detail.sourceLabel, t);
+  const source = sourceMeta(detail.sourceBadge, detail.sourceLabel);
   const SourceIcon = source.icon;
   const usedBy = detail.usedByAgents;
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
@@ -588,7 +560,7 @@ function SkillPane({
   const displaySourcePath = detail.sourcePath ? middleTruncate(detail.sourcePath) : null;
   const removeBlocked = usedBy.length > 0;
   const removeDisabledReason = removeBlocked
-    ? t('skills.dialogs.detach_to_remove')
+    ? "Detach this skill from all agents before removing it."
     : null;
 
   return (
@@ -613,7 +585,7 @@ function SkillPane({
               title={removeDisabledReason ?? undefined}
             >
               <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-              {deletePending ? t('skills.detail.removing') : t('skills.detail.remove')}
+              {deletePending ? "Removing..." : "Remove"}
             </Button>
             {detail.editable ? (
               <button
@@ -621,7 +593,7 @@ function SkillPane({
                 onClick={() => setEditMode(!editMode)}
               >
                 <Pencil className="h-3.5 w-3.5" />
-                {editMode ? t('skills.detail.stop_editing') : t('skills.detail.edit')}
+                {editMode ? "Stop editing" : "Edit"}
               </button>
             ) : (
               <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
@@ -632,7 +604,7 @@ function SkillPane({
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t('skills.detail.source')}</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
               <span className="flex min-w-0 items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {detail.sourcePath && displaySourcePath ? (
@@ -645,9 +617,9 @@ function SkillPane({
                     </span>
                     <CopyText
                       text={detail.sourcePath}
-                      copiedLabel={t('skills.detail.copied_path')}
-                      ariaLabel={t('skills.detail.copy_source_path')}
-                      title={t('skills.detail.copy_source_path')}
+                      copiedLabel="Copied path"
+                      ariaLabel="Copy source path"
+                      title="Copy source path"
                       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     >
                       <Copy className="h-3.5 w-3.5" />
@@ -660,10 +632,10 @@ function SkillPane({
             </div>
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t('skills.detail.pin')}</span>
-                <span className="font-mono text-xs">{currentPin ?? t('skills.detail.untracked')}</span>
+                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
+                <span className="font-mono text-xs">{currentPin ?? "untracked"}</span>
                 {updateStatus?.trackingRef && (
-                  <span className="text-xs text-muted-foreground">{t('skills.detail.tracking')} {updateStatus.trackingRef}</span>
+                  <span className="text-xs text-muted-foreground">tracking {updateStatus.trackingRef}</span>
                 )}
                 <Button
                   variant="ghost"
@@ -672,7 +644,7 @@ function SkillPane({
                   disabled={checkUpdatesPending || updateStatusLoading}
                 >
                   <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", (checkUpdatesPending || updateStatusLoading) && "animate-spin")} />
-                  {t('skills.detail.check_updates')}
+                  Check for updates
                 </Button>
                 {updateStatus?.supported && updateStatus.hasUpdate && (
                   <Button
@@ -681,11 +653,11 @@ function SkillPane({
                     disabled={installUpdatePending}
                   >
                     <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", installUpdatePending && "animate-spin")} />
-                    {t('skills.detail.install_update')}{latestPin ? ` ${latestPin}` : ""}
+                    Install update{latestPin ? ` ${latestPin}` : ""}
                   </Button>
                 )}
                 {updateStatus?.supported && !updateStatus.hasUpdate && !updateStatusLoading && (
-                  <span className="text-xs text-muted-foreground">{t('skills.detail.up_to_date')}</span>
+                  <span className="text-xs text-muted-foreground">Up to date</span>
                 )}
                 {!updateStatus?.supported && updateStatus?.reason && (
                   <span className="text-xs text-muted-foreground">{updateStatus.reason}</span>
@@ -693,18 +665,18 @@ function SkillPane({
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t('skills.detail.key')}</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Key</span>
               <span className="font-mono text-xs">{detail.key}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t('skills.detail.mode')}</span>
-              <span>{detail.editable ? t('skills.detail.editable') : t('skills.detail.read_only')}</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</span>
+              <span>{detail.editable ? "Editable" : "Read only"}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t('skills.detail.used_by')}</span>
+            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
             {usedBy.length === 0 ? (
-              <span className="text-muted-foreground">{t('skills.detail.no_agents')}</span>
+              <span className="text-muted-foreground">No agents attached</span>
             ) : (
               <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {usedBy.map((agent) => (
@@ -736,7 +708,7 @@ function SkillPane({
                 >
                   <span className="flex items-center gap-1.5">
                     <Eye className="h-3.5 w-3.5" />
-                    {t('skills.detail.view')}
+                    View
                   </span>
                 </button>
                 <button
@@ -745,7 +717,7 @@ function SkillPane({
                 >
                   <span className="flex items-center gap-1.5">
                     <Code2 className="h-3.5 w-3.5" />
-                    {t('skills.detail.code')}
+                    Code
                   </span>
                 </button>
               </div>
@@ -753,11 +725,11 @@ function SkillPane({
             {editMode && file?.editable && (
               <>
                 <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>
-                  {t('skills.detail.cancel')}
+                  Cancel
                 </Button>
                 <Button size="sm" onClick={onSave} disabled={savePending}>
                   <Save className="mr-1.5 h-3.5 w-3.5" />
-                  {savePending ? t('skills.detail.saving') : t('skills.detail.save')}
+                  {savePending ? "Saving..." : "Save"}
                 </Button>
               </>
             )}
@@ -769,7 +741,7 @@ function SkillPane({
         {fileLoading ? (
           <PageSkeleton variant="detail" />
         ) : !file ? (
-          <div className="text-sm text-muted-foreground">{t('skills.detail.select_file')}</div>
+          <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
         ) : editMode && file.editable ? (
           file.markdown ? (
             <MarkdownEditor
@@ -804,7 +776,6 @@ export function CompanySkills() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
-  const { t } = useTranslation('company');
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -826,10 +797,10 @@ export function CompanySkills() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: t('skills.title'), href: "/skills" },
-      ...(routeSkillId ? [{ label: t('skills.detail_breadcrumb') }] : []),
+      { label: "Skills", href: "/skills" },
+      ...(routeSkillId ? [{ label: "Detail" }] : []),
     ]);
-  }, [routeSkillId, setBreadcrumbs, t]);
+  }, [routeSkillId, setBreadcrumbs]);
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
@@ -938,21 +909,19 @@ export function CompanySkills() {
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
       pushToast({
         tone: "success",
-        title: t('skills.toast.imported'),
-        body: result.imported.length === 1
-          ? t('skills.toast.imported_body_one', { count: result.imported.length })
-          : t('skills.toast.imported_body_other', { count: result.imported.length }),
+        title: "Skills imported",
+        body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
       });
       if (result.warnings[0]) {
-        pushToast({ tone: "warn", title: t('skills.toast.import_warnings'), body: result.warnings[0] });
+        pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
       }
       setSource("");
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: t('skills.toast.import_failed'),
-        body: error instanceof Error ? error.message : t('skills.toast.import_failed_body'),
+        title: "Skill import failed",
+        body: error instanceof Error ? error.message : "Failed to import skill source.",
       });
     },
   });
@@ -965,15 +934,15 @@ export function CompanySkills() {
       setCreateOpen(false);
       pushToast({
         tone: "success",
-        title: t('skills.toast.created'),
-        body: t('skills.toast.created_body', { name: skill.name }),
+        title: "Skill created",
+        body: `${skill.name} is now editable in the Paperclip workspace.`,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: t('skills.toast.create_failed'),
-        body: error instanceof Error ? error.message : t('skills.toast.create_failed_body'),
+        title: "Skill creation failed",
+        body: error instanceof Error ? error.message : "Failed to create skill.",
       });
     },
   });
@@ -981,28 +950,28 @@ export function CompanySkills() {
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
-      setScanStatusMessage(t('skills.toast.scan_started'));
+      setScanStatusMessage("Scanning project workspaces for skills...");
     },
     onSuccess: async (result) => {
-      setScanStatusMessage(t('skills.toast.scan_refreshing'));
+      setScanStatusMessage("Refreshing skills list...");
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
-      const summary = formatProjectScanSummary(result, t);
+      const summary = formatProjectScanSummary(result);
       setScanStatusMessage(summary);
       pushToast({
         tone: "success",
-        title: t('skills.toast.scan_complete'),
+        title: "Project skill scan complete",
         body: summary,
       });
       if (result.conflicts[0]) {
         pushToast({
           tone: "warn",
-          title: t('skills.toast.scan_conflicts'),
+          title: "Skill conflicts found",
           body: result.conflicts[0].reason,
         });
       } else if (result.warnings[0]) {
         pushToast({
           tone: "warn",
-          title: t('skills.toast.scan_warnings'),
+          title: "Scan warnings",
           body: result.warnings[0],
         });
       }
@@ -1011,8 +980,8 @@ export function CompanySkills() {
       setScanStatusMessage(null);
       pushToast({
         tone: "error",
-        title: t('skills.toast.scan_failed'),
-        body: error instanceof Error ? error.message : t('skills.toast.scan_failed_body'),
+        title: "Project skill scan failed",
+        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
       });
     },
   });
@@ -1034,15 +1003,15 @@ export function CompanySkills() {
       setEditMode(false);
       pushToast({
         tone: "success",
-        title: t('skills.toast.saved'),
+        title: "Skill saved",
         body: result.path,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: t('skills.toast.save_failed'),
-        body: error instanceof Error ? error.message : t('skills.toast.save_failed_body'),
+        title: "Save failed",
+        body: error instanceof Error ? error.message : "Failed to save skill file.",
       });
     },
   });
@@ -1059,15 +1028,15 @@ export function CompanySkills() {
       navigate(skillRoute(skill.id, selectedPath));
       pushToast({
         tone: "success",
-        title: t('skills.toast.updated'),
-        body: skill.sourceRef ? t('skills.toast.pinned_to', { ref: shortRef(skill.sourceRef) }) : skill.name,
+        title: "Skill updated",
+        body: skill.sourceRef ? `Pinned to ${shortRef(skill.sourceRef)}` : skill.name,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: t('skills.toast.update_failed'),
-        body: error instanceof Error ? error.message : t('skills.toast.update_failed_body'),
+        title: "Update failed",
+        body: error instanceof Error ? error.message : "Failed to install skill update.",
       });
     },
   });
@@ -1097,21 +1066,21 @@ export function CompanySkills() {
       navigate("/skills", { replace: true });
       pushToast({
         tone: "success",
-        title: t('skills.toast.removed'),
-        body: t('skills.toast.removed_body', { name: skill.name }),
+        title: "Skill removed",
+        body: `${skill.name} was removed from the company skill library.`,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: t('skills.toast.remove_failed'),
-        body: error instanceof Error ? error.message : t('skills.toast.remove_failed_body'),
+        title: "Remove failed",
+        body: error instanceof Error ? error.message : "Failed to remove skill.",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message={t('skills.empty.select_company')} />;
+    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
   }
 
   function handleAddSkillSource() {
@@ -1128,44 +1097,44 @@ export function CompanySkills() {
       <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t('skills.dialogs.remove_title')}</DialogTitle>
+            <DialogTitle>Remove skill</DialogTitle>
             <DialogDescription>
-              {t('skills.dialogs.remove_desc')}
+              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <p>
               {deleteTargetDetail
-                ? t('skills.dialogs.remove_confirm_named', { name: deleteTargetDetail.name })
-                : t('skills.dialogs.remove_confirm')}
+                ? `You are about to remove ${deleteTargetDetail.name}.`
+                : "You are about to remove this skill."}
             </p>
             {deleteTargetDetail?.usedByAgents?.length ? (
               <div className="rounded-md border border-border px-3 py-3 text-muted-foreground">
-                {t('skills.dialogs.currently_used_by', { agents: deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ") })}
+                Currently used by {deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ")}.
               </div>
             ) : null}
             {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
               <p className="text-muted-foreground">
-                {t('skills.dialogs.detach_to_remove')}
+                Detach this skill from all agents to enable removal.
               </p>
             ) : null}
           </div>
           <DialogFooter>
             {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
               <Button variant="ghost" onClick={() => closeDeleteDialog(false)}>
-                {t('skills.dialogs.close')}
+                Close
               </Button>
             ) : (
               <>
                 <Button variant="ghost" onClick={() => closeDeleteDialog(false)} disabled={deleteSkill.isPending}>
-                  {t('skills.dialogs.cancel')}
+                  Cancel
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={() => deleteSkill.mutate()}
                   disabled={deleteSkill.isPending || !deleteTargetSkillId}
                 >
-                  {deleteSkill.isPending ? t('skills.detail.removing') : t('skills.dialogs.remove_skill_btn')}
+                  {deleteSkill.isPending ? "Removing..." : "Remove skill"}
                 </Button>
               </>
             )}
@@ -1176,9 +1145,9 @@ export function CompanySkills() {
       <Dialog open={emptySourceHelpOpen} onOpenChange={setEmptySourceHelpOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t('skills.dialogs.add_source_title')}</DialogTitle>
+            <DialogTitle>Add a skill source</DialogTitle>
             <DialogDescription>
-              {t('skills.dialogs.add_source_desc')}
+              Paste a local path, GitHub URL, or `skills.sh` command into the field first.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1189,9 +1158,9 @@ export function CompanySkills() {
               className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
             >
               <span>
-                <span className="block font-medium">{t('skills.dialogs.browse_skills_sh')}</span>
+                <span className="block font-medium">Browse skills.sh</span>
                 <span className="mt-1 block text-muted-foreground">
-                  {t('skills.dialogs.browse_desc')}
+                  Find install commands and paste one here.
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1203,9 +1172,9 @@ export function CompanySkills() {
               className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
             >
               <span>
-                <span className="block font-medium">{t('skills.dialogs.search_github')}</span>
+                <span className="block font-medium">Search GitHub</span>
                 <span className="mt-1 block text-muted-foreground">
-                  {t('skills.dialogs.search_desc')}
+                  Look for repositories with `SKILL.md`, then paste the repo URL here.
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1220,9 +1189,9 @@ export function CompanySkills() {
           <div className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-base font-semibold">{t('skills.title')}</h1>
+                <h1 className="text-base font-semibold">Skills</h1>
                 <p className="text-xs text-muted-foreground">
-                  {skillsQuery.data?.length ?? 0} {t('skills.available')}
+                  {skillsQuery.data?.length ?? 0} available
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -1231,7 +1200,7 @@ export function CompanySkills() {
                   size="icon-sm"
                   onClick={() => scanProjects.mutate()}
                   disabled={scanProjects.isPending}
-                  title={t('skills.scan_title')}
+                  title="Scan project workspaces for skills"
                 >
                   <RefreshCw className={cn("h-4 w-4", scanProjects.isPending && "animate-spin")} />
                 </Button>
@@ -1246,7 +1215,7 @@ export function CompanySkills() {
               <input
                 value={skillFilter}
                 onChange={(event) => setSkillFilter(event.target.value)}
-                placeholder={t('skills.filter_placeholder')}
+                placeholder="Filter skills"
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>
@@ -1255,7 +1224,7 @@ export function CompanySkills() {
               <input
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
-                placeholder={t('skills.source_placeholder')}
+                placeholder="Paste path, GitHub URL, or skills.sh command"
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
               <Button
@@ -1264,7 +1233,7 @@ export function CompanySkills() {
                 onClick={handleAddSkillSource}
                 disabled={importSkill.isPending}
               >
-                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : t('skills.add')}
+                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
               </Button>
             </div>
             {scanStatusMessage && (

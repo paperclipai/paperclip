@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "@/lib/router";
 import { AlertTriangle, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,25 +13,24 @@ interface NotFoundPageProps {
 }
 
 export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPageProps) {
-  const { t } = useTranslation("common");
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companies, selectedCompany } = useCompany();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("not_found.breadcrumb") }]);
-  }, [setBreadcrumbs, t]);
+    setBreadcrumbs([{ label: "Not Found" }]);
+  }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
   const dashboardHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/dashboard` : "/";
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
-  const title = scope === "invalid_company_prefix" ? t("not_found.company_not_found") : t("not_found.page_not_found");
+  const title = scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
   const description =
     scope === "invalid_company_prefix"
-      ? t("not_found.no_company_prefix", { prefix: normalizedPrefix ?? "unknown" })
-      : t("not_found.route_not_found");
+      ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`
+      : "This route does not exist.";
 
   return (
     <div className="mx-auto max-w-2xl py-10">
@@ -48,18 +46,18 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
         </div>
 
         <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          {t("not_found.requested_path")}: <code className="font-mono">{currentPath}</code>
+          Requested path: <code className="font-mono">{currentPath}</code>
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">
           <Button asChild>
             <Link to={dashboardHref}>
               <Compass className="mr-1.5 h-4 w-4" />
-              {t("not_found.open_dashboard")}
+              Open dashboard
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link to="/">{t("not_found.go_home")}</Link>
+            <Link to="/">Go home</Link>
           </Button>
         </div>
       </div>

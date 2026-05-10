@@ -1,5 +1,4 @@
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
-import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -42,10 +41,9 @@ export function ApprovalCard({
   isPending?: boolean;
   pendingAction?: "approve" | "reject" | null;
 }) {
-  const { t } = useTranslation("approvals");
   const payload = approval.payload as Record<string, unknown> | null;
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const kindLabel = t(`payload.type_${approval.type}`, { defaultValue: typeLabel[approval.type] ?? approval.type });
+  const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalSubject(payload);
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
@@ -71,7 +69,7 @@ export function ApprovalCard({
                 </Badge>
                 {requesterAgent && (
                   <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span>{t("card.requested_by")}</span>
+                    <span>Requested by</span>
                     <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
                   </div>
                 )}
@@ -81,7 +79,7 @@ export function ApprovalCard({
                   {subject ?? kindLabel}
                 </h3>
                 <p className="text-xs leading-5 text-muted-foreground">
-                  {t("card.created_ago", { time: timeAgo(approval.createdAt) })}
+                  Approval request created {timeAgo(approval.createdAt)}
                 </p>
               </div>
             </div>
@@ -90,7 +88,7 @@ export function ApprovalCard({
         <div className="shrink-0">
           <div className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
             {statusIcon(approval.status)}
-            <span className="capitalize">{t(`status.${approval.status}`, { defaultValue: approval.status.replace(/_/g, " ") })}</span>
+            <span className="capitalize">{approval.status.replace(/_/g, " ")}</span>
           </div>
         </div>
       </div>
@@ -105,7 +103,7 @@ export function ApprovalCard({
 
       {approval.decisionNote && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">{t("card.decision_note")}</span> {approval.decisionNote}
+          <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
         </div>
       )}
 
@@ -120,7 +118,7 @@ export function ApprovalCard({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  {pendingAction === "approve" ? t("card.approving") : t("card.approve")}
+                  {pendingAction === "approve" ? "Approving..." : "Approve"}
                 </Button>
                 <Button
                   variant="destructive"
@@ -128,7 +126,7 @@ export function ApprovalCard({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  {pendingAction === "reject" ? t("card.rejecting") : t("card.reject")}
+                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
                 </Button>
               </>
             )}
@@ -139,11 +137,11 @@ export function ApprovalCard({
                 to={detailLink}
                 className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
               >
-                {t("card.view_details")}
+                View details
               </Link>
             ) : (
               <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
-                {t("card.view_details")}
+                View details
               </Button>
             )
           ) : null}

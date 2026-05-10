@@ -395,6 +395,54 @@ export const SECRET_PROVIDERS = [
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
+export const SECRET_PROVIDER_CONFIG_STATUSES = [
+  "ready",
+  "warning",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigStatus = (typeof SECRET_PROVIDER_CONFIG_STATUSES)[number];
+
+export const SECRET_PROVIDER_CONFIG_HEALTH_STATUSES = [
+  "ready",
+  "warning",
+  "error",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigHealthStatus =
+  (typeof SECRET_PROVIDER_CONFIG_HEALTH_STATUSES)[number];
+
+export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
+export type SecretStatus = (typeof SECRET_STATUSES)[number];
+
+export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
+export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
+
+export const SECRET_VERSION_STATUSES = [
+  "current",
+  "previous",
+  "disabled",
+  "destroyed",
+  "failed",
+] as const;
+export type SecretVersionStatus = (typeof SECRET_VERSION_STATUSES)[number];
+
+export const SECRET_BINDING_TARGET_TYPES = [
+  "agent",
+  "project",
+  "environment",
+  "routine",
+  "plugin",
+  "issue",
+  "run",
+  "system",
+] as const;
+export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
+
+export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
+export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 

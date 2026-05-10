@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -57,7 +56,6 @@ function createValuesForAdapterType(
 }
 
 export function NewAgent() {
-  const { t } = useTranslation("agents");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -100,10 +98,10 @@ export function NewAgent() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: t("nav.agents", { ns: "common" }), href: "/agents" },
-      { label: t("new_agent.title") },
+      { label: "Agents", href: "/agents" },
+      { label: "New Agent" },
     ]);
-  }, [setBreadcrumbs, t]);
+  }, [setBreadcrumbs]);
 
   useEffect(() => {
     if (isFirstAgent) {

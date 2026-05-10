@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
 import type {
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityFileEntry,
@@ -652,7 +651,6 @@ export function CompanyImport() {
     setSelectedCompanyId,
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { t } = useTranslation("company");
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const packageInputRef = useRef<HTMLInputElement | null>(null);
@@ -705,12 +703,15 @@ export function CompanyImport() {
     return ceo?.adapterType ?? "claude_local";
   }, [companyAgents]);
 
+  const localZipHelpText =
+    "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
+
   useEffect(() => {
     setBreadcrumbs([
-      { label: t("import.org_chart_breadcrumb"), href: "/org" },
-      { label: t("import.title") },
+      { label: "Org Chart", href: "/org" },
+      { label: "Import" },
     ]);
-  }, [setBreadcrumbs, t]);
+  }, [setBreadcrumbs]);
 
   function buildSource(): CompanyPortabilitySource | null {
     if (sourceMode === "local") {
@@ -1155,7 +1156,7 @@ export function CompanyImport() {
             </div>
             {!localPackage && (
               <p className="mt-2 text-xs text-muted-foreground">
-                {t("import.form.zip_help")}
+                {localZipHelpText}
               </p>
             )}
           </div>

@@ -20,6 +20,11 @@ import {
   storybookIssues,
   storybookLiveRuns,
   storybookProjects,
+  storybookSecretAccessEvents,
+  storybookSecretBindings,
+  storybookSecretProviderHealth,
+  storybookSecretProviders,
+  storybookSecrets,
   storybookSidebarBadges,
 } from "../fixtures/paperclipData";
 import "@mdxeditor/editor/style.css";
@@ -164,6 +169,39 @@ function installStorybookApiFixtures() {
       if (schema) return Response.json(schema);
     }
 
+    const secretsListMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secrets$/);
+    if (secretsListMatch) {
+      const [, companyId] = secretsListMatch;
+      return Response.json(companyId === "company-storybook" ? storybookSecrets : []);
+    }
+
+    const secretProvidersMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secret-providers$/);
+    if (secretProvidersMatch) {
+      return Response.json(storybookSecretProviders);
+    }
+
+    const secretProviderHealthMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-providers\/health$/,
+    );
+    if (secretProviderHealthMatch) {
+      return Response.json(storybookSecretProviderHealth);
+    }
+
+    const secretUsageMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/usage$/);
+    if (secretUsageMatch) {
+      const [, secretId] = secretUsageMatch;
+      return Response.json({
+        secretId,
+        bindings: storybookSecretBindings.filter((binding) => binding.secretId === secretId),
+      });
+    }
+
+    const secretEventsMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/access-events$/);
+    if (secretEventsMatch) {
+      const [, secretId] = secretEventsMatch;
+      return Response.json(storybookSecretAccessEvents.filter((event) => event.secretId === secretId));
+    }
+
     const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
     if (companyResourceMatch) {
       const [, companyId, resource] = companyResourceMatch;
@@ -222,6 +260,11 @@ function installStorybookApiFixtures() {
   };
 }
 
+// Install fetch fixtures at module load so React Query never sees a real network failure.
+if (typeof window !== "undefined") {
+  installStorybookApiFixtures();
+}
+
 function applyStorybookTheme(theme: "light" | "dark") {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
@@ -246,6 +289,10 @@ function StorybookProviders({
         },
       }),
   );
+
+  if (typeof window !== "undefined") {
+    installStorybookApiFixtures();
+  }
 
   useEffect(() => {
     applyStorybookTheme(theme);

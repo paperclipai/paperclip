@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -175,7 +174,6 @@ export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
-  const { t } = useTranslation("org");
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -196,8 +194,8 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("breadcrumb") }]);
-  }, [setBreadcrumbs, t]);
+    setBreadcrumbs([{ label: "Org Chart" }]);
+  }, [setBreadcrumbs]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -431,7 +429,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message={t("empty.select_company")} />;
+    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
   }
 
   if (isLoading) {
@@ -439,7 +437,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message={t("empty.no_org_hierarchy")} />;
+    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
   }
 
   return (
@@ -448,13 +446,13 @@ export function OrgChart() {
         <Link to="/company/import">
           <Button variant="outline" size="sm">
             <Upload className="mr-1.5 h-3.5 w-3.5" />
-            {t("actions.import_company")}
+            Import company
           </Button>
         </Link>
         <Link to="/company/export">
           <Button variant="outline" size="sm">
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            {t("actions.export_company")}
+            Export company
           </Button>
         </Link>
       </div>
@@ -490,8 +488,8 @@ export function OrgChart() {
                 });
               }
             }}
-            title={t("actions.zoom_in")}
-            aria-label={t("actions.zoom_in")}
+            title="Zoom in"
+            aria-label="Zoom in"
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -506,16 +504,16 @@ export function OrgChart() {
                 });
               }
             }}
-            title={t("actions.zoom_out")}
-            aria-label={t("actions.zoom_out")}
+            title="Zoom out"
+            aria-label="Zoom out"
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-[10px] transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title={t("actions.fit_to_screen_title")}
-            aria-label={t("actions.fit_to_screen_title")}
+            title="Fit to screen"
+            aria-label="Fit chart to screen"
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

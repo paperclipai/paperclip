@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History as HistoryIcon, RotateCcw, Search } from "lucide-react";
 import type {
@@ -63,7 +62,6 @@ export function RoutineHistoryTab({
   onRestoreSecretMaterials,
   onRestored,
 }: Props) {
-  const { t } = useTranslation("routines");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
@@ -115,8 +113,8 @@ export function RoutineHistoryTab({
       pushToast({
         title: `Restored revision ${restoredFromNumber} as revision ${newNumber}`,
         body: data.secretMaterials.length > 0
-          ? t("misc.trigger_restored_with_secrets")
-          : t("misc.trigger_restored"),
+          ? "Trigger enabled state was restored from the snapshot. New webhook secrets are available in the banner above."
+          : "Trigger enabled state was restored from the snapshot.",
         tone: "success",
       });
       onRestoreSecretMaterials(data);
@@ -142,8 +140,8 @@ export function RoutineHistoryTab({
     },
     onError: (error) => {
       pushToast({
-        title: t("misc.failed_restore_revision"),
-        body: error instanceof Error ? error.message : t("misc.failed_restore_revision_body"),
+        title: "Failed to restore revision",
+        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
         tone: "error",
       });
     },

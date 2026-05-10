@@ -1,4 +1,3 @@
-import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   RoutineListRow,
@@ -87,7 +86,6 @@ export function ManagedRoutinesList({
   onReconcile,
   onReset,
 }: ManagedRoutinesListProps) {
-  const { t } = useTranslation("routines");
   const agentById = new Map<string, RoutineListAgentSummary>(
     agents.map((agent) => [agent.id, { name: agent.name, icon: agent.icon }]),
   );
@@ -122,8 +120,8 @@ export function ManagedRoutinesList({
               runningRoutineId={runningRoutineKey}
               statusMutationRoutineId={statusMutationRoutineKey}
               href={href}
-              configureLabel={t("misc.configure")}
-              managedByLabel={managedBy ? t("misc.managed_by", { name: managedBy }) : null}
+              configureLabel="Configure"
+              managedByLabel={managedBy ? `Managed by ${managedBy}` : null}
               runNowButton
               hideArchiveAction
               disableRunNow={!canUseRoutine}
@@ -131,7 +129,7 @@ export function ManagedRoutinesList({
               secondaryDetails={
                 <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   {routine.resourceKey ? <span>{routine.resourceKey}</span> : null}
-                  {routine.cronExpression ? <span>{t("misc.schedule", { cronExpression: routine.cronExpression })}</span> : null}
+                  {routine.cronExpression ? <span>Schedule {routine.cronExpression}</span> : null}
                 </span>
               }
               onRunNow={() => onRunNow?.(routine)}
@@ -148,7 +146,7 @@ export function ManagedRoutinesList({
                 <span>
                   {missingRefs.length
                     ? `Missing ${missingRefs.map((ref) => `${ref.resourceKind}:${ref.resourceKey}`).join(", ")}`
-                    : t("misc.routine_defaults_can_be_repaired")}
+                    : "Routine defaults can be repaired."}
                 </span>
                 <span className="flex items-center gap-2">
                   {onReconcile ? (

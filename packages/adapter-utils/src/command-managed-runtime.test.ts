@@ -61,7 +61,7 @@ describe("command managed runtime", () => {
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
-          args[0] === "-lc" &&
+          (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
           env.PAPERCLIP_TEST_STDIN = input.stdin;

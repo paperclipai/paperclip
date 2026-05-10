@@ -1,5 +1,4 @@
 import { useEffect, useMemo } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
@@ -24,7 +23,6 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
-  const { t } = useTranslation("common");
   const params = useParams<{
     companyPrefix?: string;
     pluginId?: string;
@@ -121,10 +119,10 @@ export function PluginPage() {
       return;
     }
     setBreadcrumbs([
-      { label: t("plugins.breadcrumb_plugins"), href: "/instance/settings/plugins" },
+      { label: "Plugins", href: "/instance/settings/plugins" },
       { label: pageSlot.pluginDisplayName },
     ]);
-  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive, t]);
+  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {
@@ -138,7 +136,7 @@ export function PluginPage() {
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">{t("actions.loading")}</div>;
+    return <div className="text-sm text-muted-foreground">Loading…</div>;
   }
 
   if (!pluginId && pluginRoutePath) {

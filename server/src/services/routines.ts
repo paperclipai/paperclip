@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql }
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companySecretBindings,
   companySecretVersions,
   companySecrets,
   executionWorkspaces,
@@ -49,6 +50,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -79,6 +81,10 @@ type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
 interface RoutineTriggerSecretRestoreMaterial extends RoutineTriggerSecretMaterial {
   triggerId: string;
+}
+
+function routineWebhookSecretConfigPath(secretId: string) {
+  return `webhookSecret:${secretId}`;
 }
 
 function assertTimeZone(timeZone: string) {
@@ -816,38 +822,6 @@ export function routineService(
       }
     }
 
-    // Fallback: any routine still missing an active issue may have an open issue
-    // whose heartbeat run has already completed. Include those so the UI reflects
-    // the real open-issue state rather than showing nothing.
-    const stillMissingRoutineIds = routineIds.filter((routineId) => !rowsByOriginId.has(routineId));
-    if (stillMissingRoutineIds.length > 0) {
-      const openRows = await db
-        .selectDistinctOn([issues.originId], {
-          originId: issues.originId,
-          id: issues.id,
-          identifier: issues.identifier,
-          title: issues.title,
-          status: issues.status,
-          priority: issues.priority,
-          updatedAt: issues.updatedAt,
-        })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.originKind, "routine_execution"),
-            inArray(issues.originId, stillMissingRoutineIds),
-            inArray(issues.status, OPEN_ISSUE_STATUSES),
-            isNull(issues.hiddenAt),
-          ),
-        )
-        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
-      for (const row of openRows) {
-        if (!row.originId) continue;
-        rowsByOriginId.set(row.originId, row);
-      }
-    }
-
     const map = new Map<string, RoutineListItem["activeIssue"]>();
     for (const row of rowsByOriginId.values()) {
       if (!row.originId) continue;
@@ -961,25 +935,6 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
-
-    // Fallback: find any open routine execution issue even when no heartbeat run is
-    // currently active. This handles the case where a heartbeat completed without
-    // closing the issue, leaving it open between heartbeat intervals.
-    const openIssueCondition = and(
-      eq(issues.companyId, routine.companyId),
-      eq(issues.originKind, originKind),
-      eq(issues.originId, originId),
-      inArray(issues.status, OPEN_ISSUE_STATUSES),
-      isNull(issues.hiddenAt),
-      fingerprintCondition ?? undefined,
-    );
-    return executor
-      .select()
-      .from(issues)
-      .where(openIssueCondition)
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
@@ -1001,16 +956,23 @@ export function routineService(
     executor?: Db,
   ) {
     const secretValue = crypto.randomBytes(24).toString("hex");
+    const providerId = getConfiguredSecretProvider();
     const input = {
       name: `routine-${routineId}-${crypto.randomBytes(6).toString("hex")}`,
-      provider: "local_encrypted" as const,
+      provider: providerId,
       value: secretValue,
       description: `Webhook auth for routine ${routineId}`,
     };
     const provider = getSecretProvider(input.provider);
-    const prepared = await provider.createVersion({
+    const prepared = await provider.createSecret({
       value: input.value,
       externalRef: null,
+      context: {
+        companyId,
+        secretKey: input.name,
+        secretName: input.name,
+        version: 1,
+      },
     });
 
     const insertSecret = async (secretDb: Db) => {
@@ -1018,11 +980,16 @@ export function routineService(
         .insert(companySecrets)
         .values({
           companyId,
+          key: input.name,
           name: input.name,
           provider: input.provider,
+          status: "active",
+          managedMode: "paperclip_managed",
           externalRef: prepared.externalRef,
+          providerMetadata: null,
           latestVersion: 1,
           description: input.description,
+          lastRotatedAt: new Date(),
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
         })
@@ -1034,8 +1001,19 @@ export function routineService(
         version: 1,
         material: prepared.material,
         valueSha256: prepared.valueSha256,
+        fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+        providerVersionRef: prepared.providerVersionRef ?? null,
+        status: "current",
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
+      });
+
+      await secretDb.insert(companySecretBindings).values({
+        companyId,
+        secretId: secret.id,
+        targetType: "routine",
+        targetId: routineId,
+        configPath: routineWebhookSecretConfigPath(secret.id),
       });
 
       return secret;
@@ -1055,7 +1033,13 @@ export function routineService(
       .where(eq(companySecrets.id, trigger.secretId))
       .then((rows) => rows[0] ?? null);
     if (!secret || secret.companyId !== companyId) throw notFound("Routine trigger secret not found");
-    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest");
+    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", {
+      consumerType: "routine",
+      consumerId: trigger.routineId,
+      actorType: "system",
+      actorId: null,
+      configPath: routineWebhookSecretConfigPath(trigger.secretId),
+    });
     return value;
   }
 

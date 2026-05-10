@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -57,7 +56,6 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
 }
 
 export function Issues() {
-  const { t } = useTranslation("issues");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
@@ -118,8 +116,8 @@ export function Issues() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("title") }]);
-  }, [setBreadcrumbs, t]);
+    setBreadcrumbs([{ label: "Issues" }]);
+  }, [setBreadcrumbs]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
@@ -175,7 +173,7 @@ export function Issues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message={t("empty.select_company")} />;
+    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
   }
 
   return (

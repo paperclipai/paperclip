@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
@@ -61,7 +60,6 @@ import {
  * @see doc/plugins/PLUGIN_SPEC.md §19.8 — Plugin Settings UI.
  */
 export function PluginSettings() {
-  const { t } = useTranslation("common");
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
@@ -119,18 +117,18 @@ export function PluginSettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: t("nav.settings"), href: "/instance/settings/heartbeats" },
-      { label: t("plugins.breadcrumb_plugins"), href: "/instance/settings/plugins" },
-      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? t("plugins.breadcrumb_plugins") },
+      { label: "Settings", href: "/instance/settings/heartbeats" },
+      { label: "Plugins", href: "/instance/settings/plugins" },
+      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin, t]);
+  }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
 
   useEffect(() => {
     setActiveTab("configuration");
   }, [pluginId]);
 
   if (pluginLoading) {
-    return <div className="p-4 text-sm text-muted-foreground">{t("plugins.loading_details")}</div>;
+    return <div className="p-4 text-sm text-muted-foreground">Loading plugin details...</div>;
   }
 
   if (!plugin) {

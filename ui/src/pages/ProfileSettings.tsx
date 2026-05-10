@@ -1,6 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
@@ -20,7 +19,6 @@ function deriveInitials(name: string) {
 }
 
 export function ProfileSettings() {
-  const { t } = useTranslation("settings");
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -37,10 +35,10 @@ export function ProfileSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: t("sidebar.title") },
-      { label: t("sidebar.profile") },
+      { label: "Instance Settings" },
+      { label: "Profile" },
     ]);
-  }, [setBreadcrumbs, t]);
+  }, [setBreadcrumbs]);
 
   useEffect(() => {
     const session = sessionQuery.data;
@@ -80,7 +78,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : t("profile.error_update_failed"));
+      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
     },
   });
 
@@ -103,7 +101,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : t("profile.error_upload_failed"));
+      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
     },
   });
 
@@ -115,39 +113,39 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : t("profile.error_remove_failed"));
+      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
     },
   });
 
   if (sessionQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">{t("profile.loading")}</div>;
+    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
   }
 
   if (sessionQuery.error || !sessionQuery.data) {
     return (
       <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : t("profile.error_load_failed")}
+        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
       </div>
     );
   }
 
-  const currentName = name.trim() || sessionQuery.data.user.name || t("profile.name_placeholder");
+  const currentName = name.trim() || sessionQuery.data.user.name || "Board";
   const currentImage = image.trim() || null;
   const initials = deriveInitials(currentName);
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
-    ? t("profile.stored_in", { company: selectedCompany.name })
-    : t("profile.select_company_avatar");
+    ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
+    : "Select a company to upload an avatar into Paperclip storage.";
 
   return (
     <div className="max-w-4xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">{t("profile.title")}</h1>
+          <h1 className="text-lg font-semibold">Profile</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          {t("profile.description")}
+          Control how your account appears in the sidebar and other board surfaces.
         </p>
       </div>
 
@@ -199,7 +197,7 @@ export function ProfileSettings() {
                     disabled={!selectedCompanyId || isSavingProfile}
                   >
                     {uploadAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Camera className="size-4" />}
-                    {currentImage ? t("profile.change_photo") : t("profile.upload_photo")}
+                    {currentImage ? "Change photo" : "Upload photo"}
                   </Button>
                   {currentImage ? (
                     <Button
@@ -209,7 +207,7 @@ export function ProfileSettings() {
                       disabled={isSavingProfile}
                     >
                       {removeAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                      {t("profile.remove_photo")}
+                      Remove
                     </Button>
                   ) : null}
                 </div>
@@ -218,10 +216,10 @@ export function ProfileSettings() {
               <div className="min-w-0 flex-1 space-y-2 pb-1">
                 <div>
                   <h2 className="truncate text-2xl font-semibold text-foreground">{currentName}</h2>
-                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? t("profile.no_email")}</p>
+                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
                 </div>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                  {t("profile.click_to_upload")} {uploadHint}
+                  Click the avatar to upload a new image. {uploadHint}
                 </p>
               </div>
             </div>
@@ -236,21 +234,21 @@ export function ProfileSettings() {
           }}
         >
           <div className="space-y-2">
-            <Label htmlFor="profile-name">{t("profile.name_label")}</Label>
+            <Label htmlFor="profile-name">Display name</Label>
             <Input
               id="profile-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
-              placeholder={t("profile.name_placeholder")}
+              placeholder="Board"
             />
             <p className="text-xs text-muted-foreground">
-              {t("profile.name_hint")}
+              Shown in the sidebar account footer and comment author surfaces.
             </p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="profile-email">{t("profile.email_label")}</Label>
+            <Label htmlFor="profile-email">Email</Label>
             <Input
               id="profile-email"
               value={sessionQuery.data.user.email ?? ""}
@@ -258,14 +256,14 @@ export function ProfileSettings() {
               disabled
             />
             <p className="text-xs text-muted-foreground">
-              {t("profile.email_hint")}
+              Email is managed by your auth session and is read-only here.
             </p>
           </div>
 
           <div className="md:col-span-2 flex justify-end">
             <Button type="submit" disabled={isSavingProfile || !name.trim()}>
               {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {updateMutation.isPending ? t("profile.saving") : t("profile.save")}
+              {updateMutation.isPending ? "Saving..." : "Save profile"}
             </Button>
           </div>
         </form>

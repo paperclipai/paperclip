@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -130,7 +129,6 @@ function SortableCompanyItem({
 }
 
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
-  const { t } = useTranslation("common");
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const queryClient = useQueryClient();
@@ -227,12 +225,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         <Button
           variant="ghost"
           className="h-9 flex-1 justify-start gap-2 px-2 text-left"
-          aria-label={selectedCompany ? t("sidebar_company.open_switcher", { company: selectedCompany.name }) : t("sidebar_company.open_switcher_generic")}
+          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             <span className="truncate text-sm font-bold text-foreground">
-              {selectedCompany?.name ?? t("sidebar_company.select_company")}
+              {selectedCompany?.name ?? "Select workspace"}
             </span>
           </span>
           <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -241,7 +239,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <DropdownMenuLabel className="p-0 text-[11px] font-semibold uppercase text-muted-foreground">
-            {t("sidebar_company.switch_workspace")}
+            Switch workspace
           </DropdownMenuLabel>
           <button
             type="button"
@@ -252,7 +250,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             }}
             className="rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            {isEditingOrder ? t("sidebar_company.done_order") : t("sidebar_company.edit_order")}
+            {isEditingOrder ? "Done" : "Edit"}
           </button>
         </div>
         <div className="max-h-96 overflow-y-auto">
@@ -277,7 +275,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             </SortableContext>
           </DndContext>
           {orderedCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>{t("sidebar_company.no_workspaces")}</DropdownMenuItem>
+            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
           ) : null}
         </div>
         <DropdownMenuSeparator />
@@ -287,7 +285,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>{t("company_rail.add_company")}</span>
+          <span>Add company...</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>
@@ -303,7 +301,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           >
             <UserPlus className="size-4" />
             <span className="truncate">
-              {selectedCompany ? t("sidebar_company.invite_people", { company: selectedCompany.name }) : t("sidebar_company.invite_people_generic")}
+              {selectedCompany ? `Invite people to ${selectedCompany.name}` : "Invite people"}
             </span>
           </Link>
         </DropdownMenuItem>
@@ -319,7 +317,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             }}
           >
             <Settings className="size-4" />
-            <span>{t("sidebar_company.company_settings")}</span>
+            <span>Company settings</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (
@@ -331,7 +329,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder || signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? t("sidebar_company.signing_out") : t("sidebar_company.sign_out")}</span>
+              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
             </DropdownMenuItem>
           </>
         ) : null}

@@ -314,7 +314,23 @@ else
     verify_args+=(--package "$pkg_name")
   done <<< "$VERSIONED_PACKAGE_INFO"
 
-  node "$REPO_ROOT/scripts/verify-release-registry-state.mjs" "${verify_args[@]}"
+  VERIFY_REGISTRY_STATE_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-$VERIFY_ATTEMPTS}"
+  VERIFY_REGISTRY_STATE_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-$VERIFY_DELAY_SECONDS}"
+  verify_registry_state_attempt=1
+
+  while true; do
+    if node "$REPO_ROOT/scripts/verify-release-registry-state.mjs" "${verify_args[@]}"; then
+      break
+    fi
+
+    if [ "$verify_registry_state_attempt" -ge "$VERIFY_REGISTRY_STATE_ATTEMPTS" ]; then
+      release_fail "npm registry dist-tag verification never converged after ${VERIFY_REGISTRY_STATE_ATTEMPTS} attempt(s)."
+    fi
+
+    release_warn "npm registry metadata is not fully propagated yet; retrying dist-tag verification in ${VERIFY_REGISTRY_STATE_DELAY_SECONDS}s (attempt ${verify_registry_state_attempt}/${VERIFY_REGISTRY_STATE_ATTEMPTS})..."
+    sleep "$VERIFY_REGISTRY_STATE_DELAY_SECONDS"
+    verify_registry_state_attempt=$((verify_registry_state_attempt + 1))
+  done
 fi
 
 release_info ""

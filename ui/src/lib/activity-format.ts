@@ -19,7 +19,6 @@ interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
   userProfileMap?: Map<string, CompanyUserProfile>;
   currentUserId?: string | null;
-  t?: (key: string, options?: Record<string, unknown>) => string;
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
@@ -72,9 +71,6 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.updated": "updated company",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
-  "environment.lease_acquired": "acquired environment",
-  "environment.lease_released": "released environment",
-  "issue.read_marked": "marked as read",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -112,9 +108,6 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
-  "issue.read_marked": "marked issue as read",
-  "environment.lease_acquired": "acquired an environment",
-  "environment.lease_released": "released an environment",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -125,13 +118,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function humanizeValue(value: unknown): string {
   if (typeof value !== "string") return String(value ?? "none");
   return value.replace(/_/g, " ");
-}
-
-function localizeStatus(value: unknown, t?: (key: string, opts?: Record<string, unknown>) => string): string {
-  if (!t || typeof value !== "string") return humanizeValue(value);
-  const key = `common:status_labels.${value}`;
-  const result = t(key);
-  return result !== key ? result : humanizeValue(value);
 }
 
 function isActivityParticipant(value: unknown): value is ActivityParticipant {
@@ -157,11 +143,11 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
 }
 
 function formatUserLabel(userId: string | null | undefined, options: ActivityFormatOptions = {}): string {
-  if (!userId || userId === "local-board") return options.t ? options.t("actor.board") : "Board";
-  if (options.currentUserId && userId === options.currentUserId) return options.t ? options.t("actor.you") : "You";
+  if (!userId || userId === "local-board") return "Board";
+  if (options.currentUserId && userId === options.currentUserId) return "You";
   const profile = options.userProfileMap?.get(userId);
   if (profile) return profile.label;
-  return options.t ? options.t("actor.user_short", { id: userId.slice(0, 5) }) : `user ${userId.slice(0, 5)}`;
+  return `user ${userId.slice(0, 5)}`;
 }
 
 function formatParticipantLabel(participant: ActivityParticipant, options: ActivityFormatOptions): string {
@@ -189,27 +175,17 @@ function formatChangedEntityLabel(
   return `${labels.length} ${plural}`;
 }
 
-function formatIssueUpdatedVerb(details: ActivityDetails, options: ActivityFormatOptions = {}): string | null {
+function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
   if (!details) return null;
   const previous = asRecord(details._previous) ?? {};
   if (details.status !== undefined) {
     const from = previous.status;
-    if (options.t) {
-      return from
-        ? options.t("changes.changed_status_from", { from: localizeStatus(from, options.t), to: localizeStatus(details.status, options.t) })
-        : options.t("changes.changed_status_to", { to: localizeStatus(details.status, options.t) });
-    }
     return from
       ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
       : `changed status to ${humanizeValue(details.status)} on`;
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
-    if (options.t) {
-      return from
-        ? options.t("changes.changed_priority_from", { from: humanizeValue(from), to: humanizeValue(details.priority) })
-        : options.t("changes.changed_priority_to", { to: humanizeValue(details.priority) });
-    }
     return from
       ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`
       : `changed priority to ${humanizeValue(details.priority)} on`;
@@ -237,50 +213,26 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
 
   if (details.status !== undefined) {
     const from = previous.status;
-    if (options.t) {
-      parts.push(
-        from
-          ? options.t("changes.changed_status_from_detail", { from: localizeStatus(from, options.t), to: localizeStatus(details.status, options.t) })
-          : options.t("changes.changed_status_to_detail", { to: localizeStatus(details.status, options.t) }),
-      );
-    } else {
-      parts.push(
-        from
-          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-          : `changed the status to ${humanizeValue(details.status)}`,
-      );
-    }
+    parts.push(
+      from
+        ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+        : `changed the status to ${humanizeValue(details.status)}`,
+    );
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
-    if (options.t) {
-      parts.push(
-        from
-          ? options.t("changes.changed_priority_from_detail", { from: humanizeValue(from), to: humanizeValue(details.priority) })
-          : options.t("changes.changed_priority_to_detail", { to: humanizeValue(details.priority) }),
-      );
-    } else {
-      parts.push(
-        from
-          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-          : `changed the priority to ${humanizeValue(details.priority)}`,
-      );
-    }
+    parts.push(
+      from
+        ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+        : `changed the priority to ${humanizeValue(details.priority)}`,
+    );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
     const assigneeName = formatAssigneeName(details, options);
-    if (options.t) {
-      parts.push(assigneeName ? options.t("changes.assigned_to", { name: assigneeName }) : options.t("changes.unassigned"));
-    } else {
-      parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
-    }
+    parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
   }
-  if (details.title !== undefined) {
-    parts.push(options.t ? options.t("changes.updated_title") : "updated the title");
-  }
-  if (details.description !== undefined) {
-    parts.push(options.t ? options.t("changes.updated_description") : "updated the description");
-  }
+  if (details.title !== undefined) parts.push("updated the title");
+  if (details.description !== undefined) parts.push("updated the description");
 
   return parts.length > 0 ? parts.join(", ") : null;
 }
@@ -333,7 +285,7 @@ export function formatActivityVerb(
   options: ActivityFormatOptions = {},
 ): string {
   if (action === "issue.updated") {
-    const issueUpdatedVerb = formatIssueUpdatedVerb(details, options);
+    const issueUpdatedVerb = formatIssueUpdatedVerb(details);
     if (issueUpdatedVerb) return issueUpdatedVerb;
   }
 
@@ -345,11 +297,6 @@ export function formatActivityVerb(
   });
   if (structuredChange) return structuredChange;
 
-  if (options.t) {
-    const localeKey = `verbs.${action.replace(/\./g, "_")}`;
-    const localized = options.t(localeKey);
-    if (localized !== localeKey) return localized;
-  }
   return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
 }
 
@@ -386,12 +333,6 @@ export function formatIssueActivityAction(
     const key = typeof details.key === "string" ? details.key : "document";
     const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
     return `${ISSUE_ACTIVITY_LABELS[action] ?? action} ${key}${title}`;
-  }
-
-  if (options.t) {
-    const localeKey = `issue_labels.${action.replace(/\./g, "_")}`;
-    const localized = options.t(localeKey);
-    if (localized !== localeKey) return localized;
   }
 
   return ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");

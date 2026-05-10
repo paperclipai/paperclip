@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -91,13 +90,12 @@ function OrgTreeNode({
 }
 
 export function Org() {
-  const { t } = useTranslation('org');
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t('breadcrumb') }]);
-  }, [setBreadcrumbs, t]);
+    setBreadcrumbs([{ label: "Org Chart" }]);
+  }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -106,7 +104,7 @@ export function Org() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message={t('empty.select_company')} />;
+    return <EmptyState icon={GitBranch} message="Select a company to view org chart." />;
   }
 
   if (isLoading) {
@@ -120,7 +118,7 @@ export function Org() {
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          message={t('empty.no_agents')}
+          message="No agents in the organization. Create agents to build your org chart."
         />
       )}
 

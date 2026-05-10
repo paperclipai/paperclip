@@ -10,7 +10,6 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
-import i18n from "../locales/i18n";
 import {
   buildIssueThreadInteractionSummary,
   type IssueThreadInteraction,
@@ -348,10 +347,10 @@ function authorNameForComment(
     return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
   }
   const authorUserId = comment.authorUserId ?? null;
-  if (!authorUserId) return i18n.t("chat.you", { ns: "issues" });
+  if (!authorUserId) return "You";
   const userLabel = userLabelMap?.get(authorUserId)?.trim();
   if (userLabel) return userLabel;
-  return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? i18n.t("chat.you", { ns: "issues" });
+  return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";
 }
 
 function formatStatusLabel(status: string) {
@@ -436,8 +435,8 @@ function createTimelineEventMessage(args: {
   const actorName = event.actorType === "agent"
     ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
     : event.actorType === "system"
-      ? i18n.t("chat.system", { ns: "issues" })
-      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? i18n.t("chat.board", { ns: "issues" }));
+      ? "System"
+      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
 
   const lines: string[] = [
     event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
@@ -450,10 +449,10 @@ function createTimelineEventMessage(args: {
   if (event.assigneeChange) {
     const from = event.assigneeChange.from.agentId
       ? (agentMap?.get(event.assigneeChange.from.agentId)?.name ?? event.assigneeChange.from.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? i18n.t("chat.unassigned", { ns: "issues" }));
+      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? "Unassigned");
     const to = event.assigneeChange.to.agentId
       ? (agentMap?.get(event.assigneeChange.to.agentId)?.name ?? event.assigneeChange.to.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? i18n.t("chat.unassigned", { ns: "issues" }));
+      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? "Unassigned");
     lines.push(`Assignee: ${from} -> ${to}`);
   }
   if (event.workspaceChange) {
@@ -550,21 +549,19 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
 export function formatDurationWords(ms: number | null) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
-  const t = (key: string, opts: Record<string, unknown>) =>
-    i18n.t(`chat.duration.${key}`, { ns: "issues", ...opts });
   if (totalSeconds < 60) {
-    return t("seconds", { count: totalSeconds });
+    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
   }
   const totalMinutes = Math.round(totalSeconds / 60);
   if (totalMinutes < 60) {
-    return t("minutes", { count: totalMinutes });
+    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (minutes === 0) {
-    return t("hours", { count: hours });
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
   }
-  return `${t("hours", { count: hours })} ${t("minutes", { count: minutes })}`;
+  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 function runDurationLabel(run: {
@@ -579,25 +576,23 @@ function runDurationLabel(run: {
   const durationMs = end ? Math.max(0, toTimestamp(end) - toTimestamp(start)) : null;
   const durationText = formatDurationWords(durationMs);
   const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
-  const t = (key: string, opts?: Record<string, unknown>) =>
-    i18n.t(`run_duration.${key}`, { ns: "issues", ...opts });
   switch (run.status) {
     case "succeeded":
-      return durationText ? t("worked_for", { duration: durationText }) : t("finished_work");
+      return durationText ? `Worked for ${durationText}` : "Finished work";
     case "failed":
     case "error":
-      return durationText ? t("failed_after", { duration: durationText }) : t("run_failed");
+      return durationText ? `Failed after ${durationText}` : "Run failed";
     case "timed_out":
-      return durationText ? t("timed_out_after", { duration: durationText }) : t("run_timed_out");
+      return durationText ? `Timed out after ${durationText}` : "Run timed out";
     case "cancelled":
       if (stopReason === "paused") {
-        return durationText ? t("paused_by_board_after", { duration: durationText }) : t("paused_by_board");
+        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
       }
-      return durationText ? t("cancelled_after", { duration: durationText }) : t("run_cancelled");
+      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
     case "queued":
-      return t("queued");
+      return "Queued";
     case "running":
-      return t("working");
+      return "Working...";
     default:
       return formatStatusLabel(run.status);
   }
@@ -634,7 +629,7 @@ function createHistoricalTranscriptMessage(args: {
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
-  const waitingText = hasOutput ? "" : i18n.t("run_duration.run_finished", { ns: "issues" });
+  const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
     ? parts
     : waitingText
@@ -831,10 +826,10 @@ function createLiveRunMessage(args: {
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
-      ? i18n.t("run_duration.queued_ellipsis", { ns: "issues" })
+      ? "Queued..."
       : parts.length > 0
         ? ""
-        : i18n.t("run_duration.working", { ns: "issues" });
+        : "Working...";
 
   const content = parts;
 

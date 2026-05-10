@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import type { DocumentRevision } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
@@ -20,13 +19,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-function getRevisionLabel(revision: DocumentRevision, t: (key: string, options?: any) => string) {
-  const actorKey = revision.createdByUserId
-    ? "documents.actor_board"
+function getRevisionLabel(revision: DocumentRevision) {
+  const actor = revision.createdByUserId
+    ? "board"
     : revision.createdByAgentId
-      ? "documents.actor_agent"
-      : "documents.actor_system";
-  return `${t("documents.rev_label", { number: revision.revisionNumber })} — ${relativeTime(revision.createdAt)} • ${t(actorKey)}`;
+      ? "agent"
+      : "system";
+  return `rev ${revision.revisionNumber} — ${relativeTime(revision.createdAt)} • ${actor}`;
 }
 
 export function DocumentDiffModal({
@@ -42,7 +41,6 @@ export function DocumentDiffModal({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { t } = useTranslation("common");
   const { data: revisions } = useQuery({
     queryKey: queryKeys.issues.documentRevisions(issueId, documentKey),
     queryFn: () => issuesApi.listDocumentRevisions(issueId, documentKey),
@@ -91,42 +89,42 @@ export function DocumentDiffModal({
         <div className="flex items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>
-              {t("documents.diff_title")} — <span className="font-mono text-sm">{documentKey}</span>
+              Diff — <span className="font-mono text-sm">{documentKey}</span>
             </DialogTitle>
           </DialogHeader>
 
           <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">{t("documents.old_label")}</span>
+              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">Old</span>
               <Select
                 value={effectiveLeftId ?? ""}
                 onValueChange={(value) => setLeftRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder={t("documents.select_revision")} />
+                  <SelectValue placeholder="Select revision" />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
                     <SelectItem key={revision.id} value={revision.id} className="text-xs">
-                      {getRevisionLabel(revision, t)}
+                      {getRevisionLabel(revision)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">{t("documents.new_label")}</span>
+              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">New</span>
               <Select
                 value={effectiveRightId ?? ""}
                 onValueChange={(value) => setRightRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder={t("documents.select_revision")} />
+                  <SelectValue placeholder="Select revision" />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
                     <SelectItem key={revision.id} value={revision.id} className="text-xs">
-                      {getRevisionLabel(revision, t)}
+                      {getRevisionLabel(revision)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -137,18 +135,18 @@ export function DocumentDiffModal({
 
         <div className="overflow-auto flex-1 rounded-md border border-border text-xs">
           {!revisions ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">{t("documents.loading_revisions")}</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">Loading revisions...</div>
           ) : !leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">{t("documents.select_two_revisions")}</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">Select two revisions to compare.</div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">{t("documents.same_revision")}</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">Both sides are the same revision.</div>
           ) : (
             <div className="font-mono text-[12px] leading-6">
               <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <span>{t("documents.old_label")}</span>
-                <span>{t("documents.new_label")}</span>
+                <span>Old</span>
+                <span>New</span>
                 <span />
-                <span>{t("documents.content_header")}</span>
+                <span>Content</span>
               </div>
               {diffRows.map((row, index) => (
                 <div

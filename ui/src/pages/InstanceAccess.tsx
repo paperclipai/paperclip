@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Shield, ShieldCheck } from "lucide-react";
 import { accessApi } from "@/api/access";
@@ -12,7 +11,6 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccess() {
-  const { t, i18n } = useTranslation("settings");
   const { companies } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -23,10 +21,10 @@ export function InstanceAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: t("access.breadcrumb_settings"), href: "/instance/settings/general" },
-      { label: t("access.breadcrumb") },
+      { label: "Instance Settings", href: "/instance/settings/general" },
+      { label: "Access" },
     ]);
-  }, [setBreadcrumbs, t]);
+  }, [setBreadcrumbs]);
 
   const usersQuery = useQuery({
     queryKey: queryKeys.access.adminUsers(search),
@@ -66,7 +64,7 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
-      pushToast({ title: t("access.toast_company_access_updated"), tone: "success" });
+      pushToast({ title: "Company access updated", tone: "success" });
     },
   });
 
@@ -81,21 +79,21 @@ export function InstanceAccess() {
       if (selectedUserId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId) });
       }
-      pushToast({ title: t("access.toast_role_updated"), tone: "success" });
+      pushToast({ title: "Instance role updated", tone: "success" });
     },
   });
 
   if (usersQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">{t("access.loading_users")}</div>;
+    return <div className="text-sm text-muted-foreground">Loading instance users…</div>;
   }
 
   if (usersQuery.error) {
     const message =
       usersQuery.error instanceof ApiError && usersQuery.error.status === 403
-        ? t("access.admin_required")
+        ? "Instance admin access is required to manage users."
         : usersQuery.error instanceof Error
           ? usersQuery.error.message
-          : t("access.failed_load_users");
+          : "Failed to load users.";
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -104,22 +102,22 @@ export function InstanceAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">{t("access.title")}</h1>
+          <h1 className="text-lg font-semibold">Instance Access</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          {t("access.description")}
+          Search users, manage instance-admin status, and control which companies they can access.
         </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <section className="space-y-4 rounded-xl border border-border bg-card p-4">
           <label className="block space-y-2 text-sm">
-            <span className="font-medium">{t("access.search_users_label")}</span>
+            <span className="font-medium">Search users</span>
             <input
               className="w-full rounded-md border border-border bg-background px-3 py-2"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder={t("access.search_placeholder")}
+              placeholder="Search by name or email"
             />
           </label>
           <div className="space-y-2">
@@ -144,7 +142,7 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} {t("access.active_memberships")}
+                  {user.activeCompanyMembershipCount} active company memberships
                 </div>
               </button>
             ))}
@@ -153,12 +151,12 @@ export function InstanceAccess() {
 
         <section className="space-y-4 rounded-xl border border-border bg-card p-5">
           {!selectedUserId ? (
-            <div className="text-sm text-muted-foreground">{t("access.select_user")}</div>
+            <div className="text-sm text-muted-foreground">Select a user to inspect instance access.</div>
           ) : userAccessQuery.isLoading ? (
-            <div className="text-sm text-muted-foreground">{t("access.loading_user_access")}</div>
+            <div className="text-sm text-muted-foreground">Loading user access…</div>
           ) : userAccessQuery.error ? (
             <div className="text-sm text-destructive">
-              {userAccessQuery.error instanceof Error ? userAccessQuery.error.message : t("access.failed_load_user_access")}
+              {userAccessQuery.error instanceof Error ? userAccessQuery.error.message : "Failed to load user access."}
             </div>
           ) : (
             <>
@@ -176,15 +174,15 @@ export function InstanceAccess() {
                   onClick={() => setAdminMutation.mutate(!(selectedUser?.isInstanceAdmin ?? false))}
                   disabled={setAdminMutation.isPending}
                 >
-                  {selectedUser?.isInstanceAdmin ? t("access.remove_instance_admin") : t("access.promote_instance_admin")}
+                  {selectedUser?.isInstanceAdmin ? "Remove instance admin" : "Promote to instance admin"}
                 </Button>
               </div>
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">{t("access.company_access_title")}</h2>
+                  <h2 className="text-sm font-semibold">Company access</h2>
                   <p className="text-sm text-muted-foreground">
-                    {t("access.company_access_desc")}
+                    Toggle company membership for this user. New access defaults to an active operator membership.
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -216,13 +214,13 @@ export function InstanceAccess() {
                     onClick={() => updateCompanyAccessMutation.mutate()}
                     disabled={updateCompanyAccessMutation.isPending}
                   >
-                    {updateCompanyAccessMutation.isPending ? t("access.saving_company_access") : t("access.save_company_access")}
+                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save company access"}
                   </Button>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <h2 className="text-sm font-semibold">{t("access.current_memberships")}</h2>
+                <h2 className="text-sm font-semibold">Current memberships</h2>
                 <div className="space-y-2">
                   {(userAccessQuery.data?.companyAccess ?? []).map((membership) => (
                     <div
@@ -232,11 +230,11 @@ export function InstanceAccess() {
                       <div>
                         <div className="font-medium">{membership.companyName || membership.companyId}</div>
                         <div className="text-muted-foreground">
-                          {t(`access.role_${membership.membershipRole || "unset"}`)} • {t(`access.status_${membership.status}`)}
+                          {membership.membershipRole || "unset"} • {membership.status}
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {new Date(membership.updatedAt).toLocaleDateString(i18n.language)}
+                        {new Date(membership.updatedAt).toLocaleDateString()}
                       </div>
                     </div>
                   ))}

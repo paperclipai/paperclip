@@ -1,5 +1,4 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -21,7 +20,6 @@ import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import i18n from "../locales/i18n";
 import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
@@ -169,10 +167,8 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
-function humanizeValue(value: string | null, t?: (key: string, opts?: Record<string, unknown>) => string): string {
-  if (!value) return t ? t("timeline.none") : "None";
-  const localized = i18n.t(`status_labels.${value}`, { ns: "common" });
-  if (localized !== `status_labels.${value}`) return localized;
+function humanizeValue(value: string | null): string {
+  if (!value) return "None";
   return value.replace(/_/g, " ");
 }
 
@@ -180,15 +176,14 @@ function formatTimelineAssigneeLabel(
   assignee: IssueTimelineAssignee,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
-  tFallback?: (key: string) => string,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? (tFallback ? tFallback("timeline.unassigned") : "Unassigned");
+    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
   }
-  return tFallback ? tFallback("timeline.unassigned") : "Unassigned";
+  return "Unassigned";
 }
 
 function formatTimelineActorName(
@@ -196,15 +191,14 @@ function formatTimelineActorName(
   actorId: string,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
-  tFallback?: (key: string) => string,
 ) {
   if (actorType === "agent") {
     return agentMap?.get(actorId)?.name ?? actorId.slice(0, 8);
   }
   if (actorType === "system") {
-    return tFallback ? tFallback("timeline.system") : "System";
+    return "System";
   }
-  return formatAssigneeUserLabel(actorId, currentUserId) ?? (tFallback ? tFallback("actor.board") : "Board");
+  return formatAssigneeUserLabel(actorId, currentUserId) ?? "Board";
 }
 
 function initialsForName(name: string) {
@@ -215,6 +209,14 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+function formatRunStatusLabel(status: string) {
+  switch (status) {
+    case "timed_out":
+      return "timed out";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
 
 function runTimestamp(run: LinkedRunItem) {
   return run.finishedAt ?? run.startedAt ?? run.createdAt;
@@ -263,7 +265,6 @@ async function copyTextWithFallback(text: string) {
 }
 
 function CopyMarkdownButton({ text }: { text: string }) {
-  const { t } = useTranslation("comments");
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -273,7 +274,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
     }
   }, []);
 
-  const label = status === "copied" ? t("copy_action.copied") : status === "failed" ? t("copy_action.copy_failed") : t("copy_action.copy");
+  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
 
   return (
     <button
@@ -287,7 +288,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
       )}
       title={label}
-      aria-label={t("copy_action.copy_as_markdown")}
+      aria-label="Copy comment as markdown"
       onClick={() => {
         void copyTextWithFallback(text)
           .then(() => setStatus("copied"))
@@ -339,7 +340,6 @@ function CommentCard({
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
-  const { t } = useTranslation("comments");
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
@@ -371,12 +371,12 @@ function CommentCard({
         <span className="flex items-center gap-1.5">
           {isQueued ? (
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-              {t("queued")}
+              Queued
             </span>
           ) : null}
           {followUpRequested ? (
             <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-              {t("follow_up")}
+              Follow-up
             </Badge>
           ) : null}
           {companyId && !isPending ? (
@@ -396,7 +396,7 @@ function CommentCard({
             />
           ) : null}
           {isPending ? (
-            <span className="text-xs text-muted-foreground">{isQueued ? t("queueing") : t("sending")}</span>
+            <span className="text-xs text-muted-foreground">{isQueued ? "Queueing..." : "Sending..."}</span>
           ) : (
             <a
               href={`#comment-${comment.id}`}
@@ -485,9 +485,8 @@ function TimelineEventCard({
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
 }) {
-  const { t, i18n } = useTranslation("activity");
-  const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId, t);
-  const actionLabel = event.followUpRequested ? t("timeline.requested_follow_up") : t("timeline.updated_task");
+  const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
+  const actionLabel = event.followUpRequested ? "requested follow-up" : "updated this task";
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
@@ -503,21 +502,21 @@ function TimelineEventCard({
             href={`#activity-${event.id}`}
             className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
           >
-            {timeAgo(event.createdAt, i18n.language)}
+            {timeAgo(event.createdAt)}
           </a>
         </div>
 
         {event.statusChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              {t("timeline.status_label")}
+              Status
             </span>
             <span className="text-muted-foreground">
-              {humanizeValue(event.statusChange.from, t)}
+              {humanizeValue(event.statusChange.from)}
             </span>
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {humanizeValue(event.statusChange.to, t)}
+              {humanizeValue(event.statusChange.to)}
             </span>
           </div>
         ) : null}
@@ -525,14 +524,14 @@ function TimelineEventCard({
         {event.assigneeChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              {t("timeline.assignee_label")}
+              Assignee
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(event.assigneeChange.from, agentMap, currentUserId, t)}
+              {formatTimelineAssigneeLabel(event.assigneeChange.from, agentMap, currentUserId)}
             </span>
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId, t)}
+              {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId)}
             </span>
           </div>
         ) : null}
@@ -540,7 +539,7 @@ function TimelineEventCard({
         {event.workspaceChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              {t("timeline.workspace_label")}
+              Workspace
             </span>
             <span className="text-muted-foreground">
               {formatTimelineWorkspaceLabel(event.workspaceChange.from)}
@@ -594,9 +593,8 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
-  const { t } = useTranslation("activity");
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">{t("timeline.no_entries")}</p>;
+    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
 
   return (
@@ -645,7 +643,7 @@ const TimelineList = memo(function TimelineList({
                   <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
                     {actorName}
                   </Link>
-                  <span className="text-muted-foreground">{t("timeline.run_label")}</span>
+                  <span className="text-muted-foreground">run</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -653,7 +651,7 @@ const TimelineList = memo(function TimelineList({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span className={cn("font-medium", runStatusClass(run.status))}>
-                    {humanizeValue(run.status, t)}
+                    {formatRunStatusLabel(run.status)}
                   </span>
                   <a
                     href={`#run-${run.runId}`}
@@ -667,22 +665,22 @@ const TimelineList = memo(function TimelineList({
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                   {run.environment ? (
                     <span>
-                      {t("timeline.environment_label")} <span className="text-foreground">{run.environment.name}</span>
+                      Environment <span className="text-foreground">{run.environment.name}</span>
                       <span> · {run.environment.driver}</span>
                     </span>
                   ) : null}
                   {run.environmentLease?.provider ? (
                     <span>
-                      {t("timeline.provider_label")} <span className="text-foreground">{run.environmentLease.provider}</span>
+                      Provider <span className="text-foreground">{run.environmentLease.provider}</span>
                     </span>
                   ) : null}
                   {run.environmentLease ? (
                     <span>
-                      {t("timeline.lease_label")}{" "}
+                      Lease{" "}
                       <span className="font-mono text-foreground">
                         {run.environmentLease.id.slice(0, 8)}
                       </span>
-                      <span> · {humanizeValue(run.environmentLease.status, t)}</span>
+                      <span> · {run.environmentLease.status}</span>
                     </span>
                   ) : null}
                   {run.environmentLease?.workspacePath ? (
@@ -692,7 +690,7 @@ const TimelineList = memo(function TimelineList({
                   ) : null}
                   {run.environmentLease?.failureReason ? (
                     <span className="text-destructive">
-                      {t("timeline.failure_label")}: {run.environmentLease.failureReason}
+                      Failure: {run.environmentLease.failureReason}
                     </span>
                   ) : null}
                 </div>
@@ -754,7 +752,6 @@ export function CommentThread({
   interruptingQueuedRunId = null,
   composerDisabledReason = null,
 }: CommentThreadProps) {
-  const { t } = useTranslation("comments");
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -1077,7 +1074,7 @@ export function CommentThread({
               />
             )}
             <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-              {submitting ? t("posting") : t("comment")}
+              {submitting ? "Posting..." : "Comment"}
             </Button>
           </div>
         </div>

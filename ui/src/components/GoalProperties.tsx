@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Goal } from "@paperclipai/shared";
@@ -72,7 +71,6 @@ function PickerButton({
 }
 
 export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
-  const { t } = useTranslation("goals");
   const { selectedCompanyId } = useCompany();
 
   const { data: agents } = useQuery({
@@ -98,7 +96,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label={t("properties.label_status")}>
+        <PropertyRow label="Status">
           {onUpdate ? (
             <PickerButton
               current={goal.status}
@@ -112,7 +110,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        <PropertyRow label={t("properties.label_level")}>
+        <PropertyRow label="Level">
           {onUpdate ? (
             <PickerButton
               current={goal.level}
@@ -126,7 +124,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        <PropertyRow label={t("properties.label_owner")}>
+        <PropertyRow label="Owner">
           {ownerAgent ? (
             <Link
               to={agentUrl(ownerAgent)}
@@ -154,10 +152,10 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
       <Separator />
 
       <div className="space-y-1">
-        <PropertyRow label={t("properties.label_created")}>
+        <PropertyRow label="Created">
           <span className="text-sm">{formatDate(goal.createdAt)}</span>
         </PropertyRow>
-        <PropertyRow label={t("properties.label_updated")}>
+        <PropertyRow label="Updated">
           <span className="text-sm">{formatDate(goal.updatedAt)}</span>
         </PropertyRow>
       </div>

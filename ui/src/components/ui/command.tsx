@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import { SearchIcon, XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
@@ -32,8 +31,8 @@ function Command({
 }
 
 function CommandDialog({
-  title,
-  description,
+  title = "Command Palette",
+  description = "Search for a command to run...",
   children,
   className,
   showCloseButton = true,
@@ -44,14 +43,11 @@ function CommandDialog({
   className?: string
   showCloseButton?: boolean
 }) {
-  const { t } = useTranslation("common")
-  const resolvedTitle = title ?? t("command_palette.title")
-  const resolvedDescription = description ?? t("command_palette.command_dialog_description")
   return (
     <Dialog {...props}>
       <DialogHeader className="sr-only">
-        <DialogTitle>{resolvedTitle}</DialogTitle>
-        <DialogDescription>{resolvedDescription}</DialogDescription>
+        <DialogTitle>{title}</DialogTitle>
+        <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       <DialogContent
         className={cn("overflow-hidden p-0", className)}

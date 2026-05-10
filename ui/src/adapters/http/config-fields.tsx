@@ -1,4 +1,3 @@
-import { useTranslation } from "react-i18next";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -17,9 +16,8 @@ export function HttpConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
-  const { t } = useTranslation("adapters");
   return (
-    <Field label={t("http.webhook_url")} hint={help.webhookUrl}>
+    <Field label="Webhook URL" hint={help.webhookUrl}>
       <DraftInput
         value={
           isCreate
@@ -33,7 +31,7 @@ export function HttpConfigFields({
         }
         immediate
         className={inputClass}
-        placeholder={t("http.webhook_url_placeholder")}
+        placeholder="https://..."
       />
     </Field>
   );

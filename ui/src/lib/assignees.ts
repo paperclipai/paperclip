@@ -1,5 +1,3 @@
-import i18n from "../locales/i18n";
-
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -77,17 +75,15 @@ export function formatAssigneeUserLabel(
   userId: string | null | undefined,
   currentUserId: string | null | undefined,
   userLabels?: ReadonlyMap<string, string> | Record<string, string> | null,
-  youLabel?: string,
-  boardLabel?: string,
 ): string | null {
   if (!userId) return null;
-  if (currentUserId && userId === currentUserId) return youLabel ?? i18n.t("chat.you", { ns: "issues" });
+  if (currentUserId && userId === currentUserId) return "You";
   if (userLabels) {
     const label = userLabels instanceof Map
       ? userLabels.get(userId)
       : (userLabels as Record<string, string>)[userId];
     if (typeof label === "string" && label.trim()) return label;
   }
-  if (userId === "local-board") return boardLabel ?? i18n.t("filters.board", { ns: "issues" });
+  if (userId === "local-board") return "Board";
   return userId.slice(0, 5);
 }

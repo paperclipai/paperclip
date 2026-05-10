@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
 import { AlertCircle, UserRound } from "lucide-react";
 import type { UserProfileDailyPoint, UserProfileWindowStats } from "@paperclipai/shared";
 import { Link, useParams } from "@/lib/router";
@@ -52,30 +51,29 @@ function HeroStat({ label, value, hint }: { label: string; value: string; hint?:
 }
 
 function WindowColumn({ stats }: { stats: UserProfileWindowStats }) {
-  const { t } = useTranslation("company");
   const tokens = totalTokens(stats);
   return (
     <div className="flex min-w-0 flex-col gap-4 border-l border-border pl-5 first:border-l-0 first:pl-0">
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t(`user_profile.window.${stats.key}`)}</h2>
-        <span className="text-[11px] text-muted-foreground tabular-nums">{completionRate(stats)} {t("user_profile.done")}</span>
+        <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{stats.label}</h2>
+        <span className="text-[11px] text-muted-foreground tabular-nums">{completionRate(stats)} done</span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-3">
-        <Metric value={formatNumber(stats.touchedIssues)} label={t("user_profile.stat_touched")} />
-        <Metric value={formatNumber(stats.completedIssues)} label={t("user_profile.stat_completed")} />
-        <Metric value={formatNumber(stats.commentCount)} label={t("user_profile.stat_comments")} />
-        <Metric value={formatNumber(stats.activityCount)} label={t("user_profile.stat_actions")} />
+        <Metric value={formatNumber(stats.touchedIssues)} label="Touched" />
+        <Metric value={formatNumber(stats.completedIssues)} label="Completed" />
+        <Metric value={formatNumber(stats.commentCount)} label="Comments" />
+        <Metric value={formatNumber(stats.activityCount)} label="Actions" />
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-1.5 pt-3 text-xs tabular-nums text-muted-foreground">
-        <span>{t("user_profile.stat_tokens")}</span>
+        <span>Tokens</span>
         <span className="text-right text-foreground">{formatTokens(tokens)}</span>
-        <span>{t("user_profile.stat_spend")}</span>
+        <span>Spend</span>
         <span className="text-right text-foreground">{formatCents(stats.costCents)}</span>
-        <span>{t("user_profile.stat_created")}</span>
+        <span>Created</span>
         <span className="text-right text-foreground">{formatNumber(stats.createdIssues)}</span>
-        <span>{t("user_profile.stat_open")}</span>
+        <span>Open</span>
         <span className="text-right text-foreground">{formatNumber(stats.assignedOpenIssues)}</span>
       </div>
     </div>
@@ -92,7 +90,6 @@ function Metric({ value, label }: { value: string; label: string }) {
 }
 
 function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
-  const { t } = useTranslation("company");
   const totals = points.map((point) => totalTokens(point));
   const maxTokens = Math.max(1, ...totals);
   const maxCompleted = Math.max(1, ...points.map((point) => point.completedIssues));
@@ -101,10 +98,10 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
   return (
     <section>
       <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-border pb-3">
-        <h2 className="text-sm font-semibold">{t("user_profile.last_14_days")}</h2>
+        <h2 className="text-sm font-semibold">Last 14 days</h2>
         <div className="flex items-baseline gap-4 text-xs text-muted-foreground">
           <span className="tabular-nums text-foreground">{formatTokens(totalTokensSum)}</span>
-          <span>{t("user_profile.tokens_total")}</span>
+          <span>tokens total</span>
         </div>
       </div>
       <div className="mt-6 grid grid-cols-[repeat(14,minmax(0,1fr))] items-end gap-1.5 sm:gap-2">
@@ -140,10 +137,10 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-wide text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 bg-foreground/80" /> {t("user_profile.tokens_per_day")}
+          <span className="h-2 w-2 bg-foreground/80" /> tokens / day
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="h-[3px] w-4 rounded-full bg-emerald-500/80" /> {t("user_profile.completions")}
+          <span className="h-[3px] w-4 rounded-full bg-emerald-500/80" /> completions
         </span>
       </div>
     </section>
@@ -198,8 +195,6 @@ function UsageList({
 }
 
 export function UserProfile() {
-  const { t } = useTranslation("company");
-  const { t: tActivity } = useTranslation("activity");
   const { userSlug = "" } = useParams<{ userSlug: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -212,8 +207,8 @@ export function UserProfile() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("user_profile.breadcrumb_users") }, { label: data?.user.name ?? userSlug }]);
-  }, [data?.user.name, setBreadcrumbs, t, userSlug]);
+    setBreadcrumbs([{ label: "Users" }, { label: data?.user.name ?? userSlug }]);
+  }, [data?.user.name, setBreadcrumbs, userSlug]);
 
   const allTime = data?.stats.find((entry) => entry.key === "all");
   const last7 = data?.stats.find((entry) => entry.key === "last7");
@@ -224,7 +219,7 @@ export function UserProfile() {
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
         label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
-        sublabel: t("user_profile.issue_linked_usage"),
+        sublabel: "Issue-linked usage",
         costCents: row.costCents,
         inputTokens: row.inputTokens,
         cachedInputTokens: row.cachedInputTokens,
@@ -238,7 +233,7 @@ export function UserProfile() {
       (data?.topProviders ?? []).map((row) => ({
         key: `${row.provider}:${row.biller}:${row.model}`,
         label: `${providerDisplayName(row.provider)} / ${row.model}`,
-        sublabel: t("user_profile.billed_through", { provider: providerDisplayName(row.biller) }),
+        sublabel: `Billed through ${providerDisplayName(row.biller)}`,
         costCents: row.costCents,
         inputTokens: row.inputTokens,
         cachedInputTokens: row.cachedInputTokens,
@@ -248,7 +243,7 @@ export function UserProfile() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={UserRound} message={t("user_profile.select_company")} />;
+    return <EmptyState icon={UserRound} message="Select a company to view user profiles." />;
   }
 
   if (isLoading) {
@@ -256,14 +251,14 @@ export function UserProfile() {
   }
 
   if (error || !data) {
-    return <EmptyState icon={AlertCircle} message={t("user_profile.not_found")} />;
+    return <EmptyState icon={AlertCircle} message="User profile not found for this company." />;
   }
 
   const allTimeTokens = allTime ? totalTokens(allTime) : 0;
   const metaParts = [
-    t(`user_profile.role.${data.user.membershipRole ?? "member"}`),
-    t(`user_profile.status.${data.user.membershipStatus}`),
-    t("user_profile.joined", { date: formatDate(data.user.joinedAt) }),
+    data.user.membershipRole ?? "member",
+    data.user.membershipStatus,
+    `joined ${formatDate(data.user.joinedAt)}`,
   ];
 
   return (
@@ -288,10 +283,10 @@ export function UserProfile() {
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          <HeroStat label={t("user_profile.hero_all_time_tokens")} value={formatTokens(allTimeTokens)} hint={t("user_profile.hero_spent", { amount: formatCents(allTime?.costCents ?? 0) })} />
-          <HeroStat label={t("user_profile.hero_completed")} value={formatNumber(allTime?.completedIssues ?? 0)} hint={allTime ? t("user_profile.hero_rate", { rate: completionRate(allTime) }) : undefined} />
-          <HeroStat label={t("user_profile.hero_open_assigned")} value={formatNumber(allTime?.assignedOpenIssues ?? 0)} hint={t("user_profile.hero_created", { n: formatNumber(allTime?.createdIssues ?? 0) })} />
-          <HeroStat label={t("user_profile.hero_7day_actions")} value={formatNumber(last7?.activityCount ?? 0)} hint={t("user_profile.hero_comments", { n: formatNumber(last7?.commentCount ?? 0) })} />
+          <HeroStat label="All-time tokens" value={formatTokens(allTimeTokens)} hint={formatCents(allTime?.costCents ?? 0) + " spent"} />
+          <HeroStat label="Completed" value={formatNumber(allTime?.completedIssues ?? 0)} hint={allTime ? `${completionRate(allTime)} rate` : undefined} />
+          <HeroStat label="Open assigned" value={formatNumber(allTime?.assignedOpenIssues ?? 0)} hint={`${formatNumber(allTime?.createdIssues ?? 0)} created`} />
+          <HeroStat label="7-day actions" value={formatNumber(last7?.activityCount ?? 0)} hint={`${formatNumber(last7?.commentCount ?? 0)} comments`} />
         </div>
       </section>
 
@@ -304,11 +299,11 @@ export function UserProfile() {
       <div className="grid gap-10 pt-2 xl:grid-cols-2">
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-border pb-3">
-            <h2 className="text-sm font-semibold">{t("user_profile.recent_tasks")}</h2>
+            <h2 className="text-sm font-semibold">Recent tasks</h2>
             <span className="text-xs text-muted-foreground tabular-nums">{data.recentIssues.length}</span>
           </div>
           {data.recentIssues.length === 0 ? (
-            <div className="pt-4 text-sm text-muted-foreground">{t("user_profile.no_recent_tasks")}</div>
+            <div className="pt-4 text-sm text-muted-foreground">No touched tasks yet.</div>
           ) : (
             <ul className="divide-y divide-border">
               {data.recentIssues.map((issue) => (
@@ -332,21 +327,19 @@ export function UserProfile() {
 
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-border pb-3">
-            <h2 className="text-sm font-semibold">{t("user_profile.recent_activity")}</h2>
+            <h2 className="text-sm font-semibold">Recent activity</h2>
             <span className="text-xs text-muted-foreground tabular-nums">{data.recentActivity.length}</span>
           </div>
           {data.recentActivity.length === 0 ? (
-            <div className="pt-4 text-sm text-muted-foreground">{t("user_profile.no_recent_activity")}</div>
+            <div className="pt-4 text-sm text-muted-foreground">No direct user actions recorded yet.</div>
           ) : (
             <ul className="divide-y divide-border">
               {data.recentActivity.map((event) => (
                 <li key={event.id} className="grid gap-2 py-2.5 sm:grid-cols-[1fr_auto] sm:items-center">
                   <div className="min-w-0">
-                    <div className="truncate text-sm">
-                      {tActivity(`verbs.${event.action.replace(".", "_")}`, { defaultValue: event.action.replaceAll("_", " ") })}
-                    </div>
+                    <div className="truncate text-sm">{event.action.replaceAll("_", " ")}</div>
                     <div className="truncate text-xs text-muted-foreground">
-                      {tActivity(`filter.entity_types.${event.entityType}`, { defaultValue: event.entityType })} · {event.entityId.slice(0, 12)}
+                      {event.entityType} · {event.entityId.slice(0, 12)}
                     </div>
                   </div>
                   <span className="text-xs tabular-nums text-muted-foreground sm:justify-self-end">{relativeTime(event.createdAt)}</span>
@@ -358,8 +351,8 @@ export function UserProfile() {
       </div>
 
       <div className="grid gap-10 xl:grid-cols-2">
-        <UsageList title={t("user_profile.agent_attribution")} empty={t("user_profile.no_agent_usage")} rows={agentUsageRows} />
-        <UsageList title={t("user_profile.provider_mix")} empty={t("user_profile.no_provider_usage")} rows={providerUsageRows} />
+        <UsageList title="Agent attribution" empty="No issue-linked token usage yet." rows={agentUsageRows} />
+        <UsageList title="Provider mix" empty="No provider usage attributed yet." rows={providerUsageRows} />
       </div>
     </div>
   );
