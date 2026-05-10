@@ -11,10 +11,11 @@
 | PR | Check | Category | Root Cause | Action | Owner |
 |----|-------|----------|------------|--------|-------|
 | #5606 | `policy` | **CONFIG** | `pnpm-lock.yaml` committed | Remove lockfile from PR diff | #5606 author |
-| #5636 | `verify` | **REAL BUG** | TS2345 in CDP code at `betting-browser-automation.ts:2074` | Fix type or add assertion in extraction PR | #5636 author |
-| #5636 | `Canary Dry Run` | **REAL BUG** | Same TS2345 — same file/line | Same fix as `verify` | #5636 author |
+| #5636 | `verify` | **REAL BUG** | TS2345 in CDP code at `betting-browser-automation.ts:2074` | ✅ Fixed in 86644f7e | Resolved |
+| #5636 | `Canary Dry Run` | **REAL BUG** | Same TS2345 — same file/line | ✅ Fixed in 86644f7e | Resolved |
 | #5641 | `verify` | **CASCADE** | Inherits #5636 TS error via stacking | Auto-resolves when #5636 CI is fixed | #5641 author |
 | #5641 | `Canary Dry Run` | **CASCADE** | Same cascade from #5636 | Auto-resolves when #5636 CI is fixed | #5641 author |
+| #5636 | `Verify serialized (3/4)` | **FLAKE** | DB state contamination: timeout → FK violation in teardown | Re-run; no code fix needed | Maintainer |
 
 ---
 
@@ -75,8 +76,39 @@ No independent fix is needed on #5641. Once #5636's TS2345 is resolved and its C
 
 ---
 
+## Failure 4 — PR #5636 `Verify serialized server suites (3/4)` [FLAKE]
+
+**Check**: `Verify serialized server suites (3/4)`  
+**Run**: `25634074357` / Job: `75242782414`
+
+```
+FAIL @paperclipai/server src/__tests__/heartbeat-dependency-scheduling.test.ts
+> heartbeat dependency-aware queued run selection
+  > cancels stale queued runs when issue blockers are still unresolved
+
+Error: Failed query: delete from "issues"
+Caused by: PostgresError: update or delete on table "issues" violates foreign key
+constraint "issue_comments_issue_id_issues_id_fk" on table "issue_comments"
+```
+
+The teardown deletes `issueComments` before `issues` (correct order, lines 127 → 133). The FK violation occurs because a **timeout in the same suite** (test at compiled line 152) aborts mid-execution, leaving `issue_comments` rows in the shared DB. The next test's `afterEach` then fails to delete `issues` because those orphaned rows still reference it.
+
+**Baseline comparison**:
+- Same test on prior #5636 run `25629711149` (same base code `b8eaf441`): **PASS** — all 4 shards green
+- Same test on PR #5583: **PASS** — all 4 shards green
+- Our fix commit `86644f7e` is a zero-JS type assertion: cannot affect test execution, DB state, or timing
+
+**Category**: FLAKE — timing-sensitive integration test; cross-test DB contamination triggered intermittently by vitest test timeout.
+
+**Recommended action**: Maintainer re-runs the failed check via GitHub UI (`Re-run failed jobs`). No code change needed. Underlying fragility (test timeout + missing isolation) is a pre-existing test quality issue in `heartbeat-dependency-scheduling.test.ts`, tracked separately.
+
+**Owner**: Maintainer (re-run); test author for underlying timeout fragility.
+
+---
+
 ## Human Actions Required
 
 1. **#5606 author**: `git checkout master -- pnpm-lock.yaml && git commit -m "chore: remove lockfile from PR (policy fix)"` → push
-2. **#5636 author**: Fix TS2345 at `betting-browser-automation.ts:2074` (in extraction PR or via type assertion) → push
-3. **Maintainer** (post-#5636 merge): `gh pr edit 5641 --base master --repo paperclipai/paperclip`
+2. ~~**#5636 author**: Fix TS2345 at `betting-browser-automation.ts:2074`~~ — ✅ Resolved in commit `86644f7e` (`verify` + `Canary Dry Run` now pass)
+3. **Maintainer**: Re-run `Verify serialized server suites (3/4)` on #5636 (FLAKE — no code fix needed)
+4. **Maintainer** (post-#5636 merge): `gh pr edit 5641 --base master --repo paperclipai/paperclip`
