@@ -1,5 +1,38 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
+// Streaming `message_update` events whose `assistantMessageEvent.type` matches
+// one of these are accumulated-state deltas. In pi-coding-agent's `--mode json`,
+// each carries the full prior content, producing O(n²) NDJSON growth.
+// Used by execute.ts's bufferedOnLog filter and ui/parse-stdout.ts's transcript
+// renderer; keep this object as the single source of truth.
+export const PI_DELTA = {
+  thinking: "thinking_delta",
+  text: "text_delta",
+  toolcall: "toolcall_delta",
+} as const;
+export type PiDeltaEventType = (typeof PI_DELTA)[keyof typeof PI_DELTA];
+export const PI_DELTA_EVENT_TYPES: readonly PiDeltaEventType[] = Object.values(PI_DELTA);
+const DROPPABLE_DELTA_TYPES: ReadonlySet<string> = new Set(PI_DELTA_EVENT_TYPES);
+
+// Returns true when `line` is an NDJSON `message_update` event whose
+// assistantMessageEvent.type is one of the accumulated-state delta types
+// (see PI_DELTA). Used by execute.ts's bufferedOnLog filter to keep these
+// O(n²) lines out of the persisted run log. On any JSON.parse failure or
+// shape mismatch, returns false (passthrough).
+export function isDroppableDeltaLine(line: string): boolean {
+  // Cheap prefilter: avoid JSON.parse for lines that obviously don't match.
+  if (!line.includes("_delta")) return false;
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event?.type !== "message_update") return false;
+    const msg = event.assistantMessageEvent as Record<string, unknown> | undefined;
+    const msgType = typeof msg?.type === "string" ? msg.type : "";
+    return DROPPABLE_DELTA_TYPES.has(msgType);
+  } catch {
+    return false;
+  }
+}
+
 interface ParsedPiOutput {
   sessionId: string | null;
   messages: string[];
@@ -139,7 +172,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       const assistantEvent = asRecord(event.assistantMessageEvent);
       if (assistantEvent) {
         const msgType = asString(assistantEvent.type, "");
-        if (msgType === "text_delta") {
+        if (msgType === PI_DELTA.text) {
           const delta = asString(assistantEvent.delta, "");
           if (delta) {
             // Append to last message or create new

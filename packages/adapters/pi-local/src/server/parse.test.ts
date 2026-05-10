@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
+import {
+  PI_DELTA,
+  PI_DELTA_EVENT_TYPES,
+  isDroppableDeltaLine,
+  isPiUnknownSessionError,
+  parsePiJsonl,
+} from "./parse.js";
 
 describe("parsePiJsonl", () => {
   it("parses agent lifecycle and messages", () => {
@@ -269,5 +275,93 @@ describe("isPiUnknownSessionError", () => {
     expect(isPiUnknownSessionError("", "no session available")).toBe(true);
     expect(isPiUnknownSessionError("all good", "")).toBe(false);
     expect(isPiUnknownSessionError("working fine", "no errors")).toBe(false);
+  });
+});
+
+describe("PI_DELTA_EVENT_TYPES", () => {
+  it("matches the three known accumulated-state delta event types", () => {
+    expect([...PI_DELTA_EVENT_TYPES].sort()).toEqual(
+      ["text_delta", "thinking_delta", "toolcall_delta"].sort(),
+    );
+  });
+
+  it("exposes per-name accessors via PI_DELTA", () => {
+    expect(PI_DELTA.thinking).toBe("thinking_delta");
+    expect(PI_DELTA.text).toBe("text_delta");
+    expect(PI_DELTA.toolcall).toBe("toolcall_delta");
+  });
+});
+
+describe("isDroppableDeltaLine", () => {
+  it("drops message_update events for each delta type", () => {
+    for (const deltaType of PI_DELTA_EVENT_TYPES) {
+      const line = JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: { type: deltaType, delta: "x" },
+      });
+      expect(isDroppableDeltaLine(line)).toBe(true);
+    }
+  });
+
+  it("keeps message_update events for *_end variants", () => {
+    for (const endType of ["thinking_end", "text_end", "message_end"]) {
+      const line = JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: { type: endType, content: "consolidated" },
+      });
+      expect(isDroppableDeltaLine(line)).toBe(false);
+    }
+  });
+
+  it("keeps structural lifecycle events", () => {
+    const events = [
+      { type: "agent_start" },
+      { type: "agent_end", messages: [] },
+      { type: "turn_start" },
+      { type: "turn_end", message: { role: "assistant", content: "hi" } },
+      { type: "tool_execution_start", toolCallId: "t1", toolName: "read" },
+      { type: "tool_execution_end", toolCallId: "t1", result: "ok" },
+      { type: "error", message: "boom" },
+    ];
+    for (const event of events) {
+      expect(isDroppableDeltaLine(JSON.stringify(event))).toBe(false);
+    }
+  });
+
+  it("passes through non-JSON lines", () => {
+    expect(isDroppableDeltaLine("not json")).toBe(false);
+    expect(isDroppableDeltaLine("[paperclip] Warning: skipping")).toBe(false);
+    expect(isDroppableDeltaLine("")).toBe(false);
+  });
+
+  it("keeps lines that mention _delta in an unrelated string field", () => {
+    const line = JSON.stringify({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: "we discussed thinking_delta" }],
+    });
+    expect(isDroppableDeltaLine(line)).toBe(false);
+  });
+
+  it("keeps message_update with an unknown msgType", () => {
+    const line = JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { type: "future_delta_we_have_not_seen" },
+    });
+    // Conservative: only drop types we explicitly know about.
+    expect(isDroppableDeltaLine(line)).toBe(false);
+  });
+
+  it("drops a 50KB synthetic thinking_delta line", () => {
+    const huge = "x".repeat(50_000);
+    const line = JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { type: PI_DELTA.thinking, delta: huge },
+    });
+    expect(line.length).toBeGreaterThan(50_000);
+    expect(isDroppableDeltaLine(line)).toBe(true);
+  });
+
+  it("passes through malformed JSON that contains _delta substring", () => {
+    expect(isDroppableDeltaLine('{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta"')).toBe(false);
   });
 });

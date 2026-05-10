@@ -46,6 +46,12 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
+import { createBufferedOnLog } from "./buffered-on-log.js";
+import {
+  buildSystemPromptExtension,
+  detectExplicitPromptTemplate,
+  shouldRenderDefaultHeartbeatPrompt,
+} from "./prompt-resolution.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -218,10 +224,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
-  const promptTemplate = asString(
-    config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  );
+  // See prompt-resolution.ts for the gating rules.
+  const explicitPromptTemplate = detectExplicitPromptTemplate(config.promptTemplate);
+  const promptTemplate = explicitPromptTemplate ?? DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
@@ -535,16 +540,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : "";
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
 
-  let systemPromptExtension = "";
+  let instructionsContents: string | null = null;
   let instructionsReadFailed = false;
   if (resolvedInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
-      systemPromptExtension =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-        DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+      instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
     } catch (err) {
       instructionsReadFailed = true;
       const reason = err instanceof Error ? err.message : String(err);
@@ -552,12 +552,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
       );
-      // Fall back to base prompt template
-      systemPromptExtension = promptTemplate;
     }
-  } else {
-    systemPromptExtension = promptTemplate;
   }
+  const systemPromptExtension = buildSystemPromptExtension({
+    resolvedInstructionsFilePath,
+    instructionsFileDir,
+    instructionsContents,
+    instructionsReadFailed,
+    explicitPromptTemplate,
+    fallbackPromptTemplate: promptTemplate,
+  });
 
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
@@ -576,7 +580,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
   const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
-  const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+  const useDefaultHeartbeat = shouldRenderDefaultHeartbeatPrompt({
+    resolvedInstructionsFilePath,
+    instructionsReadFailed,
+    explicitPromptTemplate,
+  });
+  const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt
+    ? ""
+    : useDefaultHeartbeat
+      ? renderTemplate(promptTemplate, templateData)
+      : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
@@ -648,28 +661,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    // Buffer stdout by lines to handle partial JSON chunks
-    let stdoutBuffer = "";
-    const bufferedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
-      if (stream === "stderr") {
-        // Pass stderr through immediately (not JSONL)
-        await onLog(stream, chunk);
-        return;
-      }
-
-      // Buffer stdout and emit only complete lines
-      stdoutBuffer += chunk;
-      const lines = stdoutBuffer.split("\n");
-      // Keep the last (potentially incomplete) line in the buffer
-      stdoutBuffer = lines.pop() || "";
-
-      // Emit complete lines
-      for (const line of lines) {
-        if (line) {
-          await onLog(stream, line + "\n");
-        }
-      }
-    };
+    // Buffer stdout by lines to handle partial JSON chunks, and drop
+    // accumulated-state delta events from the persisted log.
+    //
+    // pi-coding-agent (@mariozechner) emits one NDJSON line per streaming
+    // token in --mode json, and each line carries the FULL accumulated
+    // partial state — APE-213 run 0dd56765 produced a 46MB log for one turn.
+    // We filter at the wrapper because the npm package is not vendored here,
+    // so we cannot fix it upstream from this repo.
+    // TODO(pi-fork): once a forked pi-coding-agent ships a non-accumulating
+    // JSON mode, delete the buffered-on-log filter and use a passthrough.
+    // Upstream issue: https://github.com/mariozechner/pi-coding-agent/issues
+    const buffered = createBufferedOnLog(onLog);
 
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
@@ -677,13 +680,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
-      onLog: bufferedOnLog,
+      onLog: buffered.handle,
     });
 
     // Flush any remaining buffer content
-    if (stdoutBuffer) {
-      await onLog("stdout", stdoutBuffer);
-    }
+    await buffered.flush();
 
     return {
       proc,
