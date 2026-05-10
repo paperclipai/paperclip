@@ -41,6 +41,7 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_COPILOT_LOCAL_MODEL } from "@paperclipai/adapter-copilot-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
@@ -223,6 +224,7 @@ export function OnboardingWizard() {
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
+    copilot_local: "copilot",
     gemini_local: "gemini",
     pi_local: "pi",
     cursor: "agent",
@@ -324,6 +326,8 @@ export function OnboardingWizard() {
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
+          : adapterType === "copilot_local"
+            ? model || DEFAULT_COPILOT_LOCAL_MODEL
           : adapterType === "gemini_local"
             ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "cursor"
@@ -759,6 +763,12 @@ export function OnboardingWizard() {
                               }
                               return;
                             }
+                            if (nextType === "copilot_local") {
+                              if (!model) {
+                                setModel(DEFAULT_COPILOT_LOCAL_MODEL);
+                              }
+                              return;
+                            }
                             if (nextType === "opencode_local") {
                               setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                               return;
@@ -813,6 +823,10 @@ export function OnboardingWizard() {
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "copilot_local" && !model) {
+                                setModel(DEFAULT_COPILOT_LOCAL_MODEL);
                                 return;
                               }
                               if (nextType === "cursor" && !model) {
@@ -1011,6 +1025,8 @@ export function OnboardingWizard() {
                           <p className="text-muted-foreground font-mono break-all">
                             {adapterType === "cursor"
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
+                              : adapterType === "copilot_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format=json --no-ask-user --allow-tool=read`
                               : adapterType === "codex_local"
                               ? `${effectiveAdapterCommand} exec --json -`
                               : adapterType === "gemini_local"
@@ -1024,6 +1040,7 @@ export function OnboardingWizard() {
                             <span className="font-mono">Respond with hello.</span>
                           </p>
                           {adapterType === "cursor" ||
+                          adapterType === "copilot_local" ||
                           adapterType === "codex_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
@@ -1032,6 +1049,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "CURSOR_API_KEY"
+                                  : adapterType === "copilot_local"
+                                    ? "COPILOT_GITHUB_TOKEN"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
@@ -1040,6 +1059,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
+                                  : adapterType === "copilot_local"
+                                    ? "copilot login"
                                   : adapterType === "codex_local"
                                     ? "codex login"
                                     : adapterType === "gemini_local"
