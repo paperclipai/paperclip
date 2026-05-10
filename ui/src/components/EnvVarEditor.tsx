@@ -2,29 +2,48 @@ import { useEffect, useRef, useState } from "react";
 import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
 import { AlertCircle, X } from "lucide-react";
 import { cn } from "../lib/utils";
+import type { ConnectionSummary } from "../pages/settings/connections/api";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
 type Row = {
   key: string;
-  source: "plain" | "secret";
+  source: "plain" | "secret" | "oauth_token";
   plainValue: string;
   secretId: string;
   version: SecretVersionSelector;
+  // oauth_token specific. `field` is implicitly always "access" today
+  // (the EnvOAuthTokenBinding shape leaves room for "refresh" / "account_id"
+  // in the future, but the resolver only handles "access").
+  connectionId: string;
 };
 
 function emptyRow(): Row {
-  return { key: "", source: "plain", plainValue: "", secretId: "", version: "latest" };
+  return {
+    key: "",
+    source: "plain",
+    plainValue: "",
+    secretId: "",
+    version: "latest",
+    connectionId: "",
+  };
 }
 
 function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
   if (!rec || typeof rec !== "object") {
     return [emptyRow()];
   }
-  const entries = Object.entries(rec).map(([key, binding]) => {
+  const entries: Row[] = Object.entries(rec).map(([key, binding]) => {
     if (typeof binding === "string") {
-      return { key, source: "plain" as const, plainValue: binding, secretId: "", version: "latest" as const };
+      return {
+        key,
+        source: "plain" as const,
+        plainValue: binding,
+        secretId: "",
+        version: "latest" as const,
+        connectionId: "",
+      };
     }
     if (
       typeof binding === "object" &&
@@ -42,6 +61,23 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
         plainValue: "",
         secretId: typeof record.secretId === "string" ? record.secretId : "",
         version,
+        connectionId: "",
+      };
+    }
+    if (
+      typeof binding === "object" &&
+      binding !== null &&
+      "type" in binding &&
+      (binding as { type?: unknown }).type === "oauth_token"
+    ) {
+      const record = binding as { connectionId?: unknown };
+      return {
+        key,
+        source: "oauth_token" as const,
+        plainValue: "",
+        secretId: "",
+        version: "latest" as const,
+        connectionId: typeof record.connectionId === "string" ? record.connectionId : "",
       };
     }
     if (
@@ -57,9 +93,17 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
         plainValue: typeof record.value === "string" ? record.value : "",
         secretId: "",
         version: "latest" as const,
+        connectionId: "",
       };
     }
-    return { key, source: "plain" as const, plainValue: "", secretId: "", version: "latest" as const };
+    return {
+      key,
+      source: "plain" as const,
+      plainValue: "",
+      secretId: "",
+      version: "latest" as const,
+      connectionId: "",
+    };
   });
   return [...entries, emptyRow()];
 }
@@ -67,11 +111,13 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
 export function EnvVarEditor({
   value,
   secrets,
+  oauthConnections = [],
   onCreateSecret,
   onChange,
 }: {
   value: Record<string, EnvBinding>;
   secrets: CompanySecret[];
+  oauthConnections?: ConnectionSummary[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (env: Record<string, EnvBinding> | undefined) => void;
 }) {
@@ -103,6 +149,19 @@ export function EnvVarEditor({
         } else {
           rec[key] = { type: "plain", value: row.plainValue };
         }
+      } else if (row.source === "oauth_token") {
+        if (row.connectionId) {
+          rec[key] = {
+            type: "oauth_token",
+            connectionId: row.connectionId,
+            field: "access",
+          };
+        } else {
+          // Hold the row open without emitting an invalid binding; emit nothing
+          // for this key so we don't accidentally clear the existing value on
+          // the server with a malformed entry.
+          continue;
+        }
       } else {
         rec[key] = { type: "plain", value: row.plainValue };
       }
@@ -111,15 +170,15 @@ export function EnvVarEditor({
     onChange(Object.keys(rec).length > 0 ? rec : undefined);
   }
 
+  function rowHasContent(row: Row): boolean {
+    return Boolean(row.key || row.plainValue || row.secretId || row.connectionId);
+  }
+
   function updateRow(index: number, patch: Partial<Row>) {
     const withPatch: Row[] = rows.map((row, rowIndex) =>
       rowIndex === index ? { ...row, ...patch, version: patch.version ?? row.version } : row,
     );
-    if (
-      withPatch[withPatch.length - 1].key ||
-      withPatch[withPatch.length - 1].plainValue ||
-      withPatch[withPatch.length - 1].secretId
-    ) {
+    if (rowHasContent(withPatch[withPatch.length - 1])) {
       withPatch.push(emptyRow());
     }
     setRows(withPatch);
@@ -128,12 +187,7 @@ export function EnvVarEditor({
 
   function removeRow(index: number) {
     const next = rows.filter((_, rowIndex) => rowIndex !== index);
-    if (
-      next.length === 0 ||
-      next[next.length - 1].key ||
-      next[next.length - 1].plainValue ||
-      next[next.length - 1].secretId
-    ) {
+    if (next.length === 0 || rowHasContent(next[next.length - 1])) {
       next.push(emptyRow());
     }
     setRows(next);
@@ -172,11 +226,7 @@ export function EnvVarEditor({
   return (
     <div className="space-y-1.5">
       {rows.map((row, index) => {
-        const isTrailing =
-          index === rows.length - 1 &&
-          !row.key &&
-          !row.plainValue &&
-          !row.secretId;
+        const isTrailing = index === rows.length - 1 && !rowHasContent(row);
         return (
           <div key={index} className="flex items-center gap-1.5">
             <input
@@ -188,17 +238,83 @@ export function EnvVarEditor({
             <select
               className={cn(inputClass, "flex-[1] bg-background")}
               value={row.source}
-              onChange={(event) =>
-                updateRow(index, {
-                  source: event.target.value === "secret" ? "secret" : "plain",
-                  ...(event.target.value === "plain" ? { secretId: "" } : {}),
-                })
-              }
+              onChange={(event) => {
+                const nextSource = event.target.value;
+                const patch: Partial<Row> = {
+                  source:
+                    nextSource === "secret"
+                      ? "secret"
+                      : nextSource === "oauth_token"
+                        ? "oauth_token"
+                        : "plain",
+                };
+                if (patch.source === "plain") {
+                  patch.secretId = "";
+                  patch.connectionId = "";
+                } else if (patch.source === "secret") {
+                  patch.connectionId = "";
+                } else if (patch.source === "oauth_token") {
+                  patch.secretId = "";
+                  patch.plainValue = "";
+                }
+                updateRow(index, patch);
+              }}
             >
               <option value="plain">Plain</option>
               <option value="secret">Secret</option>
+              <option value="oauth_token">OAuth token</option>
             </select>
-            {row.source === "secret" ? (
+            {row.source === "oauth_token" ? (
+              <>
+                {(() => {
+                  const activeConnections = oauthConnections.filter(
+                    (conn) => conn.status === "active",
+                  );
+                  if (activeConnections.length === 0) {
+                    return (
+                      <div
+                        className={cn(
+                          inputClass,
+                          "flex-[4] !bg-muted/30 !text-muted-foreground !text-[11px] !font-sans !whitespace-normal !py-1 leading-tight",
+                        )}
+                      >
+                        No active connections — connect a provider in
+                        Settings → Connections.
+                      </div>
+                    );
+                  }
+                  return (
+                    <select
+                      aria-label="OAuth connection"
+                      className={cn(
+                        inputClass,
+                        "flex-[4] bg-background",
+                        row.connectionId &&
+                          !activeConnections.some((c) => c.id === row.connectionId) &&
+                          "border-destructive text-destructive",
+                      )}
+                      value={row.connectionId}
+                      onChange={(event) =>
+                        updateRow(index, { connectionId: event.target.value })
+                      }
+                    >
+                      <option value="">Select connection...</option>
+                      {row.connectionId &&
+                      !activeConnections.some((c) => c.id === row.connectionId) ? (
+                        <option value={row.connectionId}>
+                          Missing ({row.connectionId.slice(0, 8)}…)
+                        </option>
+                      ) : null}
+                      {activeConnections.map((conn) => (
+                        <option key={conn.id} value={conn.id}>
+                          {`${conn.providerId} · ${conn.accountLabel ?? conn.accountId ?? conn.id.slice(0, 8)}`}
+                        </option>
+                      ))}
+                    </select>
+                  );
+                })()}
+              </>
+            ) : row.source === "secret" ? (
               <>
                 <select
                   className={cn(inputClass, "flex-[3] bg-background", row.secretId && !secrets.some((s) => s.id === row.secretId) && "border-destructive text-destructive")}
