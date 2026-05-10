@@ -44,6 +44,7 @@ import {
   resolveSelectionButton,
   resolveStakeInput,
   resolveUserDataDir,
+  shouldUseCdpPersistentProfile,
   validateStakeGuards,
   type BettingAutomationRequest,
   waitForLoginOutcome,
@@ -346,6 +347,23 @@ describe("betting browser automation helpers", () => {
         userDataDir: "C:\\tmp\\wrong-profile",
       }),
     ).toBe(DEFAULT_BBA_CHROMIUM_PROFILE);
+  });
+
+  it("uses CDP launch mode for Casa pre-authenticated chromium sessions", () => {
+    const request = buildRequest({
+      bookmakerConfig: {
+        ...buildRequest().bookmakerConfig,
+        bookmaker: "Casa Pariurilor",
+      },
+      execution: {
+        skipLogin: true,
+        browserName: "chromium",
+        userDataDir: "C:\\Users\\thepr\\.paperclip\\bba-playwright-profile",
+      },
+    });
+
+    expect(shouldUseCdpPersistentProfile(request)).toBe(true);
+    expect(shouldUseCdpPersistentProfile(buildRequest())).toBe(false);
   });
 
   it("rejects stake above per-bet limit", () => {

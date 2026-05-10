@@ -541,4 +541,68 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "completes a partially applied migration 0084 by adding only the missing statements",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const sleepyPuppetMasterHash = await migrationHash("0084_sleepy_puppet_master.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${sleepyPuppetMasterHash}'`,
+        );
+        await sql.unsafe(`DROP INDEX IF EXISTS "betting_bankroll_snapshots_company_snapshot_at_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "betting_matches_company_starts_at_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "betting_placed_bets_company_placed_at_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "betting_predictions_company_created_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "betting_predictions_match_idx"`);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0084_sleepy_puppet_master.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const indexes = await verifySql.unsafe<{ indexname: string }[]>(`
+          SELECT indexname
+          FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND indexname IN (
+              'betting_bankroll_snapshots_company_snapshot_at_idx',
+              'betting_matches_company_starts_at_idx',
+              'betting_placed_bets_company_placed_at_idx',
+              'betting_predictions_company_created_idx',
+              'betting_predictions_match_idx'
+            )
+          ORDER BY indexname
+        `);
+        expect(indexes.map((row) => row.indexname)).toEqual([
+          "betting_bankroll_snapshots_company_snapshot_at_idx",
+          "betting_matches_company_starts_at_idx",
+          "betting_placed_bets_company_placed_at_idx",
+          "betting_predictions_company_created_idx",
+          "betting_predictions_match_idx",
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });

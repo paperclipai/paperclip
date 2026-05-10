@@ -103,14 +103,17 @@ export interface ExecuteBetResponse {
 export async function executeBbaBet(
   companyId: string,
   payload: ExecuteBetRequest,
+  idempotencyKey?: string,
   signal?: AbortSignal,
 ): Promise<ExecuteBetResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   const res = await fetch(
     `/api/companies/${encodeURIComponent(companyId)}/betting-browser-automation/execute`,
     {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
       signal,
     },

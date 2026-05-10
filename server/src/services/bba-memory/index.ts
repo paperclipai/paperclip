@@ -40,6 +40,11 @@ export {
   listFailuresForRun,
   // stats
   getSuccessStats,
+  // idempotency
+  getIdempotencyKey,
+  putIdempotencyKey,
+  // helpers
+  safeParseMetaJson,
 } from "./repository.js";
 
 export type {
@@ -64,4 +69,4 @@ export type {
   SuccessStats,
 } from "./types.js";
 
-export type { CompanyStatsSummary } from "./repository.js";
+export type { CompanyStatsSummary, IdempotencyRow } from "./repository.js";

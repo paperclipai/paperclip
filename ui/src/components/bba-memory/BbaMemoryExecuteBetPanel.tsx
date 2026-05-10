@@ -5,19 +5,22 @@
  *   1. Button disabled until valid props received.
  *   2. Two-step confirmation: modal + typed "CONFIRM" string.
  *   3. Request in-flight: button disabled, spinner shown.
- *   4. Idempotency guard: blocks re-submit within 60s of last attempt.
+ *   4. Idempotency guard: blocks re-submit within 60s per companyId.
  *   5. Result shown inline until user dismisses.
+ *   6. Escape key closes modal; Tab/Shift+Tab are focus-trapped inside.
+ *   7. Auto-polls recent-runs every 5s when result is "partial" (max 60s).
  */
 // TODO(tests): Add unit tests in ui/src/components/bba-memory/__tests__/ when
 // @testing-library/react is in ui/package.json devDependencies.
 // Target: 9 tests (8 unit + 1 snapshot) — see docs/codex-prompts/component-2-execute-button.md PHASE 3.
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   executeBbaBet,
   type ExecuteBetRequest,
   type ExecuteBetResponse,
 } from "../../api/bbaMemory";
+import { cn } from "../../lib/utils";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +48,8 @@ export interface BbaMemoryExecuteBetPanelProps {
 
 const IDEMPOTENCY_WINDOW_MS = 60_000;
 const CONFIRM_KEYWORD = "CONFIRM";
+const PARTIAL_POLL_INTERVAL_MS = 5_000;
+const PARTIAL_POLL_MAX_MS = 60_000;
 
 // ── Component ────────────────────────────────────────────────────────────────
 
@@ -59,14 +64,18 @@ export function BbaMemoryExecuteBetPanel({
   const [confirmText, setConfirmText] = useState("");
   const [result, setResult] = useState<ExecuteBetResponse | null>(null);
   const [resultError, setResultError] = useState<string | null>(null);
-  const lastSubmitAt = useRef<number | null>(null);
 
+  // Keyed by companyId so switching companies resets the window correctly.
+  const lastSubmitAt = useRef<Map<string, number>>(new Map());
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  const lastCompanySubmit = lastSubmitAt.current.get(companyId) ?? null;
   const isWithinIdempotencyWindow =
-    lastSubmitAt.current !== null &&
-    Date.now() - lastSubmitAt.current < IDEMPOTENCY_WINDOW_MS;
+    lastCompanySubmit !== null && Date.now() - lastCompanySubmit < IDEMPOTENCY_WINDOW_MS;
 
   const { mutate, isPending } = useMutation({
-    mutationFn: (req: ExecuteBetRequest) => executeBbaBet(companyId, req),
+    mutationFn: ({ req, iKey }: { req: ExecuteBetRequest; iKey: string }) =>
+      executeBbaBet(companyId, req, iKey),
     onSuccess: (res) => {
       setResult(res);
       setResultError(null);
@@ -78,6 +87,56 @@ export function BbaMemoryExecuteBetPanel({
       setResult(null);
     },
   });
+
+  // F-1: poll recent-runs every 5s while result is "partial", stop after 60s.
+  useEffect(() => {
+    if (result?.status !== "partial") return;
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (Date.now() - start >= PARTIAL_POLL_MAX_MS) {
+        clearInterval(interval);
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ["bba-memory", "recent-runs", companyId] });
+    }, PARTIAL_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [result?.status, companyId, queryClient]);
+
+  // F-2: Escape key closes the modal.
+  useEffect(() => {
+    if (!modalOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeModal();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [modalOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // F-3: Focus trap — Tab/Shift+Tab cycle only within the three modal focusables.
+  useEffect(() => {
+    if (!modalOpen) return;
+    const modal = modalRef.current;
+    if (!modal) return;
+    const SELECTORS = [
+      '[data-testid="confirm-input"]',
+      '[data-testid="cancel-button"]',
+      '[data-testid="confirm-submit-button"]',
+    ];
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      e.preventDefault();
+      const focusables = SELECTORS.map((s) => modal.querySelector<HTMLElement>(s)).filter(
+        Boolean,
+      ) as HTMLElement[];
+      const idx = focusables.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey
+        ? focusables[(idx - 1 + focusables.length) % focusables.length]
+        : focusables[(idx + 1) % focusables.length];
+      next?.focus();
+    };
+    modal.addEventListener("keydown", handler);
+    return () => modal.removeEventListener("keydown", handler);
+  }, [modalOpen]);
 
   const openModal = useCallback(() => {
     if (isWithinIdempotencyWindow) return;
@@ -94,10 +153,12 @@ export function BbaMemoryExecuteBetPanel({
 
   const handleConfirm = useCallback(() => {
     if (!payload || confirmText !== CONFIRM_KEYWORD || isPending) return;
-    lastSubmitAt.current = Date.now();
+    // F-4: generate UUID per submit, scoped to companyId.
+    const iKey = crypto.randomUUID();
+    lastSubmitAt.current.set(companyId, Date.now());
     setModalOpen(false);
-    mutate(payload);
-  }, [payload, confirmText, isPending, mutate]);
+    mutate({ req: payload, iKey });
+  }, [payload, confirmText, isPending, companyId, mutate]);
 
   const isPlaceDisabled = !payload || !betSummary || isPending || isWithinIdempotencyWindow;
 
@@ -105,10 +166,7 @@ export function BbaMemoryExecuteBetPanel({
     <div data-testid="bba-execute-panel">
       {/* ── Idempotency warning ─────────────────────────── */}
       {isWithinIdempotencyWindow && (
-        <div
-          data-testid="idempotency-warning"
-          style={{ color: "#b45309", marginBottom: 8, fontSize: 13 }}
-        >
+        <div data-testid="idempotency-warning" className="text-amber-700 mb-2 text-xs">
           ⚠ A bet was submitted less than 60s ago. Wait before placing another to avoid duplicates.
         </div>
       )}
@@ -118,22 +176,17 @@ export function BbaMemoryExecuteBetPanel({
         data-testid="place-bet-button"
         disabled={isPlaceDisabled}
         onClick={openModal}
-        style={{
-          backgroundColor: isPlaceDisabled ? "#9ca3af" : "#dc2626",
-          color: "white",
-          padding: "8px 20px",
-          border: "none",
-          borderRadius: 4,
-          cursor: isPlaceDisabled ? "not-allowed" : "pointer",
-          fontWeight: 600,
-        }}
+        className={cn(
+          "px-5 py-2 border-0 rounded font-semibold text-white",
+          isPlaceDisabled ? "bg-gray-400 cursor-not-allowed" : "bg-red-600 cursor-pointer",
+        )}
       >
         {isPending ? "Placing bet…" : "Place Bet"}
       </button>
 
       {/* ── In-flight spinner ───────────────────────────── */}
       {isPending && (
-        <span data-testid="placing-spinner" style={{ marginLeft: 10, color: "#6b7280" }}>
+        <span data-testid="placing-spinner" className="ml-2 text-gray-500">
           ⏳ Placing bet…
         </span>
       )}
@@ -143,31 +196,18 @@ export function BbaMemoryExecuteBetPanel({
         <div
           data-testid="result-panel"
           data-outcome={result.status}
-          style={{
-            marginTop: 12,
-            padding: "10px 14px",
-            borderRadius: 6,
-            backgroundColor:
-              result.status === "success"
-                ? "#dcfce7"
-                : result.status === "partial"
-                  ? "#fef9c3"
-                  : "#fee2e2",
-            color:
-              result.status === "success"
-                ? "#166534"
-                : result.status === "partial"
-                  ? "#854d0e"
-                  : "#991b1b",
-          }}
+          className={cn(
+            "mt-3 px-3 py-2 rounded-md",
+            result.status === "success" && "bg-green-100 text-green-800",
+            result.status === "partial" && "bg-yellow-100 text-yellow-800",
+            result.status !== "success" && result.status !== "partial" && "bg-red-100 text-red-800",
+          )}
         >
           {result.status === "success" && (
             <>
               <span>✅ Bet placed successfully.</span>
               {result.placedBetId && (
-                <span style={{ marginLeft: 8, fontSize: 12 }}>
-                  ID: {result.placedBetId}
-                </span>
+                <span className="ml-2 text-xs">ID: {result.placedBetId}</span>
               )}
             </>
           )}
@@ -178,9 +218,7 @@ export function BbaMemoryExecuteBetPanel({
             <>
               <span>❌ Bet failed.</span>
               {result.failureReason && (
-                <span style={{ marginLeft: 8, fontSize: 12 }}>
-                  Reason: {result.failureReason}
-                </span>
+                <span className="ml-2 text-xs">Reason: {result.failureReason}</span>
               )}
             </>
           )}
@@ -188,10 +226,7 @@ export function BbaMemoryExecuteBetPanel({
       )}
 
       {resultError && (
-        <div
-          data-testid="error-panel"
-          style={{ marginTop: 12, color: "#991b1b", fontSize: 13 }}
-        >
+        <div data-testid="error-panel" className="mt-3 text-red-800 text-xs">
           ❌ Error: {resultError}
         </div>
       )}
@@ -203,31 +238,17 @@ export function BbaMemoryExecuteBetPanel({
           role="dialog"
           aria-modal="true"
           aria-labelledby="confirm-modal-title"
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 9999,
-          }}
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]"
         >
           <div
-            style={{
-              backgroundColor: "white",
-              borderRadius: 8,
-              padding: 24,
-              maxWidth: 480,
-              width: "100%",
-              boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
-            }}
+            ref={modalRef}
+            className="bg-white rounded-lg p-6 max-w-[480px] w-full shadow-2xl"
           >
-            <h2 id="confirm-modal-title" style={{ marginTop: 0, color: "#111827" }}>
+            <h2 id="confirm-modal-title" className="mt-0 text-gray-900">
               ⚠ Confirm Real Bet Placement
             </h2>
 
-            <p style={{ lineHeight: 1.6, color: "#374151" }}>
+            <p className="leading-relaxed text-gray-700">
               Confirm: place{" "}
               <strong>
                 {betSummary.currency ?? "RON"} {betSummary.stake}
@@ -238,11 +259,11 @@ export function BbaMemoryExecuteBetPanel({
               <strong>REAL bet placement</strong> against the live bookmaker.
             </p>
 
-            <p style={{ color: "#6b7280", fontSize: 13 }}>
+            <p className="text-gray-500 text-xs">
               Market: {betSummary.market} · Selection: {betSummary.selection}
             </p>
 
-            <p style={{ fontWeight: 600, color: "#374151" }}>
+            <p className="font-semibold text-gray-700">
               Type <code>CONFIRM</code> below to proceed:
             </p>
 
@@ -253,28 +274,14 @@ export function BbaMemoryExecuteBetPanel({
               onChange={(e) => setConfirmText(e.target.value)}
               placeholder="Type CONFIRM"
               autoFocus
-              style={{
-                width: "100%",
-                padding: "8px 10px",
-                fontSize: 15,
-                border: "1px solid #d1d5db",
-                borderRadius: 4,
-                boxSizing: "border-box",
-                marginBottom: 16,
-              }}
+              className="w-full px-2.5 py-2 text-base border border-gray-300 rounded mb-4 box-border"
             />
 
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <div className="flex gap-2 justify-end">
               <button
                 data-testid="cancel-button"
                 onClick={closeModal}
-                style={{
-                  padding: "8px 18px",
-                  border: "1px solid #d1d5db",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                  backgroundColor: "white",
-                }}
+                className="px-4 py-2 border border-gray-300 rounded cursor-pointer bg-white"
               >
                 Cancel
               </button>
@@ -282,16 +289,12 @@ export function BbaMemoryExecuteBetPanel({
                 data-testid="confirm-submit-button"
                 disabled={confirmText !== CONFIRM_KEYWORD}
                 onClick={handleConfirm}
-                style={{
-                  padding: "8px 18px",
-                  backgroundColor:
-                    confirmText === CONFIRM_KEYWORD ? "#dc2626" : "#9ca3af",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 4,
-                  cursor: confirmText === CONFIRM_KEYWORD ? "pointer" : "not-allowed",
-                  fontWeight: 600,
-                }}
+                className={cn(
+                  "px-4 py-2 border-0 rounded font-semibold text-white",
+                  confirmText === CONFIRM_KEYWORD
+                    ? "bg-red-600 cursor-pointer"
+                    : "bg-gray-400 cursor-not-allowed",
+                )}
               >
                 Place Real Bet
               </button>

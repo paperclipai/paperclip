@@ -160,3 +160,14 @@ CREATE TABLE IF NOT EXISTS failures (
 
 CREATE INDEX IF NOT EXISTS idx_failures_class    ON failures(failure_class, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_failures_run      ON failures(run_id);
+
+-- Server-side idempotency store for POST /betting-browser-automation/execute.
+-- TTL = 60s. GC is lazy: stale rows deleted on read. No cron needed.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key        TEXT PRIMARY KEY,               -- UUID v4, max 128 chars
+  company_id TEXT NOT NULL,
+  response_json TEXT NOT NULL,               -- serialised ExecuteBetResponse
+  created_at TEXT NOT NULL                   -- ISO 8601 timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_idempotency_created_at ON idempotency_keys(created_at);

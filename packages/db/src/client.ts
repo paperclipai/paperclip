@@ -249,6 +249,7 @@ async function applyPendingMigrationsManually(
 
     for (const migrationFile of orderedPendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
+      const migrationStatements = splitMigrationStatements(migrationContent);
       const hash = createHash("sha256").update(migrationContent).digest("hex");
       const existingEntry = await migrationHistoryEntryExists(
         sql,
@@ -260,7 +261,10 @@ async function applyPendingMigrationsManually(
       if (existingEntry) continue;
 
       await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
+        for (const statement of migrationStatements) {
+          if (await migrationStatementAlreadyApplied(sql, statement)) {
+            continue;
+          }
           await sql.unsafe(statement);
         }
 

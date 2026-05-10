@@ -11,6 +11,7 @@
  *   - Functions throw on programmer errors (bad enum, missing FK).
  */
 import { getDb } from "./db.js";
+import { logger } from "../../middleware/logger.js";
 import type {
   FailureClass,
   FailureRow,
@@ -262,6 +263,63 @@ export function listRunsForSession(sessionId: number): RunRow[] {
        ORDER BY started_at ASC`,
     )
     .all(sessionId) as unknown as RunRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency keys (for POST /betting-browser-automation/execute)
+// ---------------------------------------------------------------------------
+
+const IDEMPOTENCY_TTL_MS = 60_000;
+
+export interface IdempotencyRow {
+  key: string;
+  company_id: string;
+  response_json: string;
+  created_at: string;
+}
+
+/** Lazy GC: remove expired rows, then return the live row (or undefined). */
+export function getIdempotencyKey(key: string): IdempotencyRow | undefined {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - IDEMPOTENCY_TTL_MS).toISOString();
+  db.prepare(`DELETE FROM idempotency_keys WHERE created_at < ?`).run(cutoff);
+  return db
+    .prepare(`SELECT * FROM idempotency_keys WHERE key = ?`)
+    .get(key) as IdempotencyRow | undefined;
+}
+
+export function putIdempotencyKey(
+  key: string,
+  companyId: string,
+  responseJson: string,
+): void {
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO idempotency_keys (key, company_id, response_json, created_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(key, companyId, responseJson, new Date().toISOString());
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Defensive JSON.parse for meta_json column values.
+ * One corrupt row must not poison the whole list.
+ */
+export function safeParseMetaJson(
+  metaJson: string | null,
+  runId?: number,
+): Record<string, unknown> | null {
+  if (!metaJson) return null;
+  try {
+    return JSON.parse(metaJson) as Record<string, unknown>;
+  } catch {
+    logger.warn({ runId, metaJson: metaJson.slice(0, 80) }, "bba-memory: corrupt meta_json, treating as null");
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

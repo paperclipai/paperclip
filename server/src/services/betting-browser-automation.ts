@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import type { Db } from "@paperclipai/db";
 import { bettingPlacedBets, bettingPredictions } from "@paperclipai/db";
@@ -268,6 +269,14 @@ type SessionPaths = {
   logPath: string;
 };
 
+type LaunchedBrowserSession = {
+  browser: Browser | null;
+  context: BrowserContext;
+  page: Page;
+  mode: "persistent_context" | "cdp";
+  chromeProcess: ReturnType<typeof spawn> | null;
+};
+
 export function renderSelectorTemplate(template: string, bet: BettingAutomationBetInput) {
   return template
     .replaceAll("{{matchLabel}}", bet.matchLabel)
@@ -397,6 +406,16 @@ function resolveSkipLoginVerificationUrl(request: BettingAutomationRequest) {
   );
 }
 
+export function shouldUseCdpPersistentProfile(request: BettingAutomationRequest) {
+  const bookmaker = request.bookmakerConfig.bookmaker.trim().toLowerCase();
+  return (
+    request.execution?.skipLogin === true &&
+    resolveBrowserName(request.execution) === "chromium" &&
+    Boolean(resolveUserDataDir(request.execution)) &&
+    bookmaker.includes("casa pariurilor")
+  );
+}
+
 function normalizeRuntimeConfig(input?: BettingAutomationExecutionOptions | null): RuntimeConfig {
   const actionDelayMinMs = Math.max(0, input?.actionDelayMinMs ?? DEFAULT_ACTION_DELAY_MIN_MS);
   const actionDelayMaxMs = Math.max(actionDelayMinMs, input?.actionDelayMaxMs ?? DEFAULT_ACTION_DELAY_MAX_MS);
@@ -508,6 +527,104 @@ async function cloneUserDataDir(userDataDir: string, random: () => number) {
   } catch { /* ignore if Preferences not found */ }
 
   return cloneRoot;
+}
+
+async function resolveChromiumExecutable(playwright: PlaywrightModule) {
+  const candidatePaths = [
+    process.env.PAPERCLIP_BBA_CHROME_PATH,
+    process.env.CHROME_PATH,
+    path.join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env.LOCALAPPDATA ?? "", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Chromium", "Application", "chrome.exe"),
+  ].filter((value): value is string => Boolean(value && value.trim().length > 0));
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      await fs.access(candidatePath);
+      return candidatePath;
+    } catch {
+      continue;
+    }
+  }
+
+  const executablePath = (playwright.chromium as { executablePath?: (() => string) | undefined }).executablePath?.();
+  if (typeof executablePath === "string" && executablePath.trim().length > 0) {
+    return executablePath;
+  }
+
+  throw new Error("Could not resolve a Chromium executable for CDP launch.");
+}
+
+async function connectChromiumProfileOverCdp(
+  playwright: PlaywrightModule,
+  profileDir: string,
+  runtime: RuntimeConfig,
+  startUrl: string,
+  random: () => number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<LaunchedBrowserSession> {
+  const executablePath = await resolveChromiumExecutable(playwright);
+  const cdpPort = 40000 + Math.floor(random() * 10000);
+  const chromeProcess = spawn(
+    executablePath,
+    [
+      `--user-data-dir=${profileDir}`,
+      `--remote-debugging-port=${cdpPort}`,
+      "--new-window",
+      "--window-size=1280,800",
+      ...CHROMIUM_STEALTH_ARGS,
+      startUrl,
+    ],
+    {
+      stdio: "ignore",
+      windowsHide: true,
+    },
+  );
+
+  let browser: Browser | null = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (chromeProcess.exitCode !== null) {
+      throw new Error(`Chromium exited before CDP attach (exit=${chromeProcess.exitCode}).`);
+    }
+    try {
+      browser = await playwright.chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+      break;
+    } catch {
+      await sleep(500);
+    }
+  }
+
+  if (!browser) {
+    try {
+      chromeProcess.kill();
+    } catch {
+      // ignore
+    }
+    throw new Error("Timed out connecting to Chromium over CDP.");
+  }
+
+  const context = browser.contexts()[0];
+  if (!context) {
+    await browser.close().catch(() => undefined);
+    try {
+      chromeProcess.kill();
+    } catch {
+      // ignore
+    }
+    throw new Error("Chromium CDP session did not expose a default browser context.");
+  }
+
+  const page = context.pages()[0] ?? await context.newPage();
+  page.setDefaultTimeout(runtime.pageTimeoutMs);
+
+  return {
+    browser,
+    context,
+    page,
+    mode: "cdp",
+    chromeProcess,
+  };
 }
 
 async function appendLog(paths: SessionPaths, message: string) {
@@ -1932,6 +2049,7 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
       let context: BrowserContext | null = null;
       let browser: Browser | null = null;
       let clonedUserDataDir: string | null = null;
+      let chromeProcess: ReturnType<typeof spawn> | null = null;
 
       try {
         const viewport = COMMON_VIEWPORTS[Math.floor(random() * COMMON_VIEWPORTS.length)]!;
@@ -1950,7 +2068,24 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
             paths,
             `persistent profile cloned from ${userDataDir} to ${clonedUserDataDir}`,
           );
-          context = await browserType.launchPersistentContext(clonedUserDataDir, contextOptions);
+          const canConnectOverCdp = typeof (playwright.chromium as { connectOverCDP?: unknown }).connectOverCDP === "function";
+          if (shouldUseCdpPersistentProfile(request) && canConnectOverCdp) {
+            const launched = await connectChromiumProfileOverCdp(
+              playwright,
+              clonedUserDataDir,
+              runtime,
+              resolveSkipLoginVerificationUrl(request),
+              random,
+              sleep,
+            );
+            browser = launched.browser;
+            context = launched.context;
+            page = launched.page;
+            chromeProcess = launched.chromeProcess;
+            await appendLog(paths, "persistent profile launched over CDP to avoid Playwright pipe detection");
+          } else {
+            context = await browserType.launchPersistentContext(clonedUserDataDir, contextOptions);
+          }
         } else {
           browser = await browserType.launch({
             headless: runtime.headless,
@@ -1973,7 +2108,7 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
           // Non-empty plugins list (headless has 0 by default)
           Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
         });
-        page = context.pages()[0] ?? await context.newPage();
+        page = page ?? context.pages()[0] ?? await context.newPage();
         page.setDefaultTimeout(runtime.pageTimeoutMs);
 
         // Auto-dismiss Casa Pariurilor session/activity popups via addLocatorHandler.
@@ -2467,6 +2602,13 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
         await browser?.close().catch((err: unknown) => {
           logger.warn({ err }, "betting browser automation: browser close failed");
         });
+        if (chromeProcess && chromeProcess.exitCode === null) {
+          try {
+            chromeProcess.kill();
+          } catch (err) {
+            logger.warn({ err }, "betting browser automation: chrome process kill failed");
+          }
+        }
         if (clonedUserDataDir) {
           await fs.rm(clonedUserDataDir, { recursive: true, force: true }).catch((err: unknown) => {
             logger.warn({ err, clonedUserDataDir }, "betting browser automation: cloned profile cleanup failed");

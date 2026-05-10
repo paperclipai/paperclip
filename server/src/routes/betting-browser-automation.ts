@@ -9,6 +9,7 @@ import { instrumentBettingService } from "../services/bba-memory-instrumentation
 import { secretService } from "../services/secrets.js";
 import { assertCompanyAccess } from "./authz.js";
 import { unprocessable } from "../errors.js";
+import { getIdempotencyKey, putIdempotencyKey } from "../services/bba-memory/index.js";
 
 function requireObject(value: unknown, label: string) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -157,6 +158,16 @@ export function bettingBrowserAutomationRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
+    const rawKey = req.headers["idempotency-key"];
+    const idempotencyKey = typeof rawKey === "string" ? rawKey.slice(0, 128) : null;
+    if (idempotencyKey) {
+      const cached = getIdempotencyKey(idempotencyKey);
+      if (cached && cached.company_id === companyId) {
+        res.setHeader("X-Idempotent-Replay", "true");
+        return res.json(JSON.parse(cached.response_json));
+      }
+    }
+
     const body = requireObject(req.body, "body");
     const bookmakerConfig = requireObject(body.bookmakerConfig, "bookmakerConfig");
     const rawBet = body.bet != null ? requireObject(body.bet, "bet") : null;
@@ -243,6 +254,9 @@ export function bettingBrowserAutomationRoutes(db: Db) {
       execution,
     });
 
+    if (idempotencyKey) {
+      putIdempotencyKey(idempotencyKey, companyId, JSON.stringify(result));
+    }
     res.json(result);
   });
 
