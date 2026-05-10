@@ -8,6 +8,8 @@ import type { Anomaly } from "./horizon-scan.js";
 // Dedup store — injectable for testing
 // ────────────────────────────────────────────────
 
+// NOTE: in-memory dedup — resets on process restart. For v1 this is acceptable;
+// a persistent hs_dedup_log table is planned for Week 3 (VOG-6113).
 const DEDUP_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 
 export interface DedupStore {

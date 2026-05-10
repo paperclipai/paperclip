@@ -46,7 +46,9 @@ export const agentWakeupRequests = pgTable(
       table.wakeKind,
       table.requestedAt,
     ),
+    // Scoped to agent_id so two different agents can use the same key without collision.
     idempotencyKeyUniqueIdx: uniqueIndex("agent_wakeup_requests_idempotency_key_unique").on(
+      table.agentId,
       table.idempotencyKey,
     ).where(sql`idempotency_key IS NOT NULL`),
   }),

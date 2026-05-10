@@ -4,7 +4,8 @@
 ALTER TABLE "agent_wakeup_requests" ADD COLUMN IF NOT EXISTS "wake_kind" VARCHAR(20) NOT NULL DEFAULT 'cron';
 ALTER TABLE "agent_wakeup_requests" ADD COLUMN IF NOT EXISTS "source_run_id" UUID REFERENCES "heartbeat_runs"("id");
 
-CREATE UNIQUE INDEX IF NOT EXISTS "agent_wakeup_requests_idempotency_key_unique" ON "agent_wakeup_requests"("idempotency_key") WHERE "idempotency_key" IS NOT NULL;
+-- Scoped to (agent_id, idempotency_key) so two agents can use the same key without a DB collision.
+CREATE UNIQUE INDEX IF NOT EXISTS "agent_wakeup_requests_idempotency_key_unique" ON "agent_wakeup_requests"("agent_id", "idempotency_key") WHERE "idempotency_key" IS NOT NULL;
 CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_agent_kind_requested_idx" ON "agent_wakeup_requests"("agent_id", "wake_kind", "requested_at");
 
 -- Horizon scan configuration per agent
