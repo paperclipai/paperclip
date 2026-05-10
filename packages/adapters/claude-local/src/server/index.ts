@@ -1,4 +1,13 @@
 export { execute, runClaudeLogin } from "./execute.js";
+export {
+  accountDir,
+  provisionOauthAccount,
+  readOauthCredentials,
+  deleteAccountFiles,
+  setApiKeyResolver,
+  readApiKeyValue,
+  type ApiKeyResolver,
+} from "./account-store.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";
 export { testEnvironment } from "./test.js";

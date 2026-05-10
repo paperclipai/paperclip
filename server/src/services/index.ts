@@ -29,6 +29,13 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
+export {
+  anthropicAccountsService,
+  type AnthropicAccountMode,
+  type AnthropicAccountsService,
+  type ActiveAccountView,
+  type CreateAnthropicAccountInput,
+} from "./anthropic-accounts.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
