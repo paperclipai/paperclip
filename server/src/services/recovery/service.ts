@@ -1394,6 +1394,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           now: input.now,
         });
       }
+      // No terminal evidence found (the run didn't directly mark its source issue done),
+      // but the source issue is already terminal. Skip rather than filing a new alert —
+      // each cycle would otherwise re-create the alert after an assignee closes the
+      // previous false-positive, producing runaway duplicates (VIG-116 / SUP-29468).
+      return { kind: "skipped" as const };
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
