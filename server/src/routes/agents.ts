@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRunEvents, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -3319,6 +3319,163 @@ export function agentRoutes(
 
     res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
+  });
+
+  router.get("/issues/:issueId/workflow", async (req, res) => {
+    const rawId = req.params.issueId as string;
+    const issueSvc = issueService(db);
+    const identifier = normalizeIssueIdentifier(rawId);
+    const issue = identifier ? await issueSvc.getByIdentifier(identifier) : await issueSvc.getById(rawId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const recentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        status: heartbeatRuns.status,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+        contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
+        agentId: heartbeatRuns.agentId,
+        agentName: agentsTable.name,
+        adapterType: agentsTable.adapterType,
+        logBytes: heartbeatRuns.logBytes,
+        livenessState: heartbeatRuns.livenessState,
+        livenessReason: heartbeatRuns.livenessReason,
+        continuationAttempt: heartbeatRuns.continuationAttempt,
+        lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+        nextAction: heartbeatRuns.nextAction,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+        lastOutputSeq: heartbeatRuns.lastOutputSeq,
+        lastOutputStream: heartbeatRuns.lastOutputStream,
+        lastOutputBytes: heartbeatRuns.lastOutputBytes,
+        processStartedAt: heartbeatRuns.processStartedAt,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(10);
+
+    const runIds = recentRuns.map((run) => run.id);
+    const recentEvents = runIds.length > 0
+      ? await db
+        .select({
+          id: heartbeatRunEvents.id,
+          companyId: heartbeatRunEvents.companyId,
+          runId: heartbeatRunEvents.runId,
+          agentId: heartbeatRunEvents.agentId,
+          seq: heartbeatRunEvents.seq,
+          eventType: heartbeatRunEvents.eventType,
+          stream: heartbeatRunEvents.stream,
+          level: heartbeatRunEvents.level,
+          createdAt: heartbeatRunEvents.createdAt,
+        })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.companyId, issue.companyId),
+            inArray(heartbeatRunEvents.runId, runIds),
+          ),
+        )
+        .orderBy(desc(heartbeatRunEvents.createdAt))
+        .limit(25)
+      : [];
+
+    const issueLabel = identifier ?? asNonEmptyString((issue as { identifier?: unknown }).identifier) ?? issue.id;
+    const issueNode = {
+      id: `issue:${issue.id}`,
+      type: "issue",
+      status: issue.status,
+      label: issueLabel,
+      metadata: {
+        id: issue.id,
+        companyId: issue.companyId,
+        projectId: (issue as { projectId?: unknown }).projectId ?? null,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        executionRunId: issue.executionRunId ?? null,
+      },
+    };
+    const runNodes = recentRuns.map((run) => ({
+      id: `run:${run.id}`,
+      type: "run",
+      status: run.status,
+      label: run.agentName ?? run.id,
+      metadata: {
+        id: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        agentName: run.agentName,
+        adapterType: run.adapterType,
+        invocationSource: run.invocationSource,
+        triggerDetail: run.triggerDetail,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        createdAt: run.createdAt,
+      },
+    }));
+    const eventNodes = recentEvents.map((event) => ({
+      id: `event:${event.runId}:${event.seq}`,
+      type: "event",
+      status: event.eventType,
+      label: `${event.eventType} #${event.seq}`,
+      metadata: {
+        id: event.id,
+        companyId: event.companyId,
+        runId: event.runId,
+        agentId: event.agentId,
+        seq: event.seq,
+        eventType: event.eventType,
+        stream: event.stream,
+        level: event.level,
+        createdAt: event.createdAt,
+      },
+    }));
+    const runEdges = recentRuns.map((run) => ({
+      id: `issue:${issue.id}->run:${run.id}`,
+      source: `issue:${issue.id}`,
+      target: `run:${run.id}`,
+      type: "issue_run",
+    }));
+    const eventEdges = recentEvents.map((event) => ({
+      id: `run:${event.runId}->event:${event.runId}:${event.seq}`,
+      source: `run:${event.runId}`,
+      target: `event:${event.runId}:${event.seq}`,
+      type: "run_event",
+    }));
+    const latestRun = recentRuns[0] ?? null;
+    const latestEvent = recentEvents[0] ?? null;
+
+    res.json({
+      issue: {
+        id: issue.id,
+        companyId: issue.companyId,
+        status: issue.status,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        executionRunId: issue.executionRunId ?? null,
+      },
+      summary: {
+        totalRuns: recentRuns.length,
+        activeRuns: recentRuns.filter((run) => run.status === "queued" || run.status === "running").length,
+        latestRunStatus: latestRun?.status ?? null,
+        latestEventSeq: latestEvent?.seq ?? null,
+      },
+      nodes: [issueNode, ...runNodes, ...eventNodes],
+      edges: [...runEdges, ...eventEdges],
+    });
   });
 
   router.get("/issues/:issueId/live-runs", async (req, res) => {

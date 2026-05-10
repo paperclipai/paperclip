@@ -27,6 +27,39 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type IssueWorkflowNode = {
+  id: string;
+  type: "issue" | "run" | "event";
+  status: string | null;
+  label: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type IssueWorkflowEdge = {
+  id: string;
+  source: string;
+  target: string;
+  label?: string | null;
+};
+
+export type IssueWorkflow = {
+  issue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId: string | null;
+    executionRunId: string | null;
+  };
+  summary: {
+    totalRuns: number;
+    activeRuns: number;
+    latestRunStatus: string | null;
+    latestEventSeq: number | null;
+  };
+  nodes: IssueWorkflowNode[];
+  edges: IssueWorkflowEdge[];
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -84,6 +117,7 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  getWorkflow: (id: string) => api.get<IssueWorkflow>(`/issues/${encodeURIComponent(id)}/workflow`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>
