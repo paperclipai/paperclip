@@ -3494,6 +3494,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
+  const [logUnavailable, setLogUnavailable] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
@@ -3649,6 +3650,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setHasMoreLog(false);
     setLoadingMoreLog(false);
     setLogError(null);
+    setLogUnavailable(false);
 
     if (!run.logRef && !isLive) {
       setLogLoading(false);
@@ -3669,6 +3671,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       } catch (err) {
         if (!cancelled) {
           if (isLive && isRunLogUnavailable(err)) {
+            setLogUnavailable(true);
             setLogLoading(false);
             return;
           }
@@ -3721,7 +3724,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
+    if (!isLive || isStreamingConnected || logUnavailable) return;
     const interval = setInterval(async () => {
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
@@ -3734,12 +3737,15 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           setLogOffset((prev) => prev + result.content.length);
         }
       } catch (err) {
-        if (isRunLogUnavailable(err)) return;
+        if (isRunLogUnavailable(err)) {
+          setLogUnavailable(true);
+          return;
+        }
         // ignore polling errors
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, logOffset]);
+  }, [run.id, isLive, isStreamingConnected, logOffset, logUnavailable]);
 
   // Stream live updates from websocket (primary path for running runs).
   useEffect(() => {

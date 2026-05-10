@@ -46,7 +46,7 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { isCodexLocalRoutableModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -290,6 +290,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
+  if (!isCodexLocalRoutableModel(model)) {
+    await onLog(
+      "stderr",
+      `[paperclip] Codex local refused model "${model}". GPT/OpenAI models must use codex_local; Claude/Sonnet/Opus models must use claude_local.\n`,
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: `Invalid codex_local model "${model}". Use claude_local for Claude/Sonnet/Opus models.`,
+      errorCode: "codex_local_model_route_mismatch",
+      errorMeta: { model, expectedAdapterType: "claude_local" },
+    };
+  }
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");

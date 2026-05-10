@@ -24,6 +24,19 @@ export function isCodexLocalManualModel(model: string | null | undefined): boole
   return Boolean(normalizedModel) && !isCodexLocalKnownModel(normalizedModel);
 }
 
+export function isCodexLocalRoutableModel(model: string | null | undefined): boolean {
+  const normalizedModel = normalizeModelId(model).toLowerCase();
+  if (!normalizedModel) return true;
+  return !(
+    normalizedModel.startsWith("claude-") ||
+    normalizedModel.includes("/claude-") ||
+    normalizedModel.includes("anthropic/") ||
+    normalizedModel.includes("sonnet") ||
+    normalizedModel.includes("opus") ||
+    normalizedModel.includes("haiku")
+  );
+}
+
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";

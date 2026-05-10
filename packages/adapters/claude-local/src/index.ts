@@ -14,6 +14,17 @@ export const models = [
   { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
 ];
 
+export function isClaudeLocalRoutableModel(model: string | null | undefined): boolean {
+  const normalizedModel = typeof model === "string" ? model.trim().toLowerCase() : "";
+  if (!normalizedModel) return true;
+  return (
+    normalizedModel.startsWith("claude-") ||
+    normalizedModel.includes("/claude-") ||
+    normalizedModel.includes("anthropic.") ||
+    normalizedModel.includes("anthropic/")
+  );
+}
+
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",

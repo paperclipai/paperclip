@@ -33,6 +33,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -1419,6 +1420,17 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const parentId = typeof req.query.parentId === "string" ? req.query.parentId : undefined;
+    const descendantOf = typeof req.query.descendantOf === "string" ? req.query.descendantOf : undefined;
+    if (parentId && !isUuidLike(parentId)) {
+      res.status(400).json({ error: "parentId must be a UUID" });
+      return;
+    }
+    if (descendantOf && !isUuidLike(descendantOf)) {
+      res.status(400).json({ error: "descendantOf must be a UUID" });
+      return;
+    }
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -1430,8 +1442,8 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
+      parentId,
+      descendantOf,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
