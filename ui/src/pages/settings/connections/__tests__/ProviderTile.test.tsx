@@ -116,7 +116,9 @@ describe("ProviderTile", () => {
     expect(onManage).toHaveBeenCalled();
   });
 
-  it("shows Reconnect on revoked connection", () => {
+  it("shows Reconnect on revoked connection and routes to onConnect (not onManage)", () => {
+    const onConnect = vi.fn();
+    const onManage = vi.fn();
     const root = createRoot(container);
     act(() => {
       root.render(
@@ -128,13 +130,19 @@ describe("ProviderTile", () => {
             lastError: "revoked_by_user",
           }}
           role="admin"
-          onConnect={() => {}}
-          onManage={() => {}}
+          onConnect={onConnect}
+          onManage={onManage}
         />,
       );
     });
-    expect(findButtonByText(container, /reconnect/i)).toBeTruthy();
+    const btn = findButtonByText(container, /reconnect/i);
+    expect(btn).toBeTruthy();
     expect(container.textContent).toMatch(/revoked/i);
+    act(() => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    expect(onManage).not.toHaveBeenCalled();
   });
 
   it("shows stalled state when active but with lastError", () => {

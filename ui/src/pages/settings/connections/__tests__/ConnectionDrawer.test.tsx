@@ -175,4 +175,43 @@ describe("ConnectionDrawer", () => {
     });
     expect(document.body.textContent).toContain("refresh_token_invalid");
   });
+
+  it("resets the disconnect confirmation when switching to a different connection", () => {
+    const root = createRoot(container);
+    const onDisconnect = vi.fn();
+    act(() => {
+      root.render(
+        <ConnectionDrawer
+          connection={conn}
+          role="admin"
+          onRefresh={() => {}}
+          onDisconnect={onDisconnect}
+          onClose={() => {}}
+        />,
+      );
+    });
+    // Reveal confirm prompt on connection A.
+    act(() => {
+      findButtonByText(/^disconnect$/i).click();
+    });
+    expect(findButtonByText(/^confirm$/i)).toBeTruthy();
+
+    // Switch to a different connection (different id) without closing.
+    act(() => {
+      root.render(
+        <ConnectionDrawer
+          connection={{ ...conn, id: "conn-other", providerId: "slack" }}
+          role="admin"
+          onRefresh={() => {}}
+          onDisconnect={onDisconnect}
+          onClose={() => {}}
+        />,
+      );
+    });
+
+    // Confirm button is gone — only the initial Disconnect button is back.
+    expect(() => findButtonByText(/^confirm$/i)).toThrow();
+    expect(findButtonByText(/^disconnect$/i)).toBeTruthy();
+    expect(onDisconnect).not.toHaveBeenCalled();
+  });
 });

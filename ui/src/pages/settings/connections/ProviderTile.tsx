@@ -95,9 +95,23 @@ export function ProviderTile({ provider, connection, role, onConnect, onManage }
           >
             {t.connect}
           </Button>
+        ) : state === "revoked" ? (
+          // Revoked → start a fresh OAuth flow (the drawer has no
+          // initiation path; routing here to onManage would dead-end the
+          // user). Members still hit a disabled button per the same
+          // RBAC rule the unconnected case applies.
+          <Button
+            size="sm"
+            variant={isMember ? "outline" : "default"}
+            onClick={onConnect}
+            disabled={isMember}
+            title={isMember ? t.memberCannotConnect(provider.displayName) : undefined}
+          >
+            {t.reconnect}
+          </Button>
         ) : (
           <Button size="sm" variant="outline" onClick={onManage}>
-            {state === "revoked" ? t.reconnect : t.manage}
+            {t.manage}
           </Button>
         )}
       </div>

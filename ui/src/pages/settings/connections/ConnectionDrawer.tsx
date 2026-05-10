@@ -61,10 +61,14 @@ export function ConnectionDrawer({
   const isAdmin = role === "admin";
   const open = connection !== null;
 
-  // Reset confirmation state whenever the drawer changes targets / closes.
+  // Reset confirmation state whenever the drawer changes targets — including
+  // switching directly between two connections without closing the drawer.
+  // Without this, an admin who clicks Disconnect on connection A and then
+  // navigates to connection B without dismissing would see the "Confirm"
+  // button and could inadvertently disconnect B.
   useEffect(() => {
-    if (!connection) setConfirmDisconnect(false);
-  }, [connection?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setConfirmDisconnect(false);
+  }, [connection?.id]);
 
   if (!connection) return null;
 
