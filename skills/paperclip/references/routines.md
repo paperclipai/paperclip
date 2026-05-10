@@ -64,7 +64,10 @@ Controls what happens when a trigger fires while the previous run issue is still
 |--------|-----------|
 | `coalesce_if_active` **(default)** | New run is marked `coalesced` and linked to the existing active run — no new issue created |
 | `skip_if_active` | New run is marked `skipped` and linked to the existing active run — no new issue created |
+| `skip_if_open` | New run is marked `skipped` and linked to any previous run issue still in a non-terminal status (`todo`, `in_progress`, `in_review`, `blocked`). Use this when an unpicked-up `todo` issue should still suppress duplicates. |
 | `always_enqueue` | Always create a new issue regardless of active runs |
+
+`skip_if_active` only suppresses duplicates when the previous run has a live heartbeat run (queued or running). `skip_if_open` is stricter: it also suppresses duplicates when the previous run issue exists in any non-terminal state but has no live heartbeat (e.g. a `todo` that was never picked up).
 
 ---
 

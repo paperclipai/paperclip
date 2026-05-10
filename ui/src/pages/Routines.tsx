@@ -50,12 +50,13 @@ import {
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 
-const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
+const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active", "skip_if_open"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
   always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
   skip_if_active: "Drop new trigger occurrences while a run is still active.",
+  skip_if_open: "Drop new trigger occurrences while any previous run issue is still open (todo, in progress, in review, or blocked).",
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",

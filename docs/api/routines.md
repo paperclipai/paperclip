@@ -61,7 +61,10 @@ Fields:
 |-------|-----------|
 | `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created |
 | `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
+| `skip_if_open` | Incoming run is immediately finalised as `skipped` and linked to any previous run issue still in a non-terminal status (`todo`, `in_progress`, `in_review`, `blocked`). Use this when an unpicked-up `todo` should still suppress duplicates. |
 | `always_enqueue` | Always create a new run regardless of active runs |
+
+`skip_if_active` only suppresses duplicates while the previous run has a live heartbeat (queued or running). `skip_if_open` is stricter: it suppresses duplicates as long as the previous run issue is in any non-terminal status, even if its heartbeat run has ended.
 
 **Catch-up policies:**
 
