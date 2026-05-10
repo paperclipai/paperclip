@@ -3707,6 +3707,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        try {
+          await budgets.evaluateHeartbeatRunFinalized({
+            companyId: updated.companyId,
+            agentId: updated.agentId,
+            status: updated.status,
+          });
+        } catch (err) {
+          logger.warn(
+            { err, runId: updated.id, agentId: updated.agentId },
+            "failed to evaluate heartbeat-count budget policies for finalized run",
+          );
+        }
+      }
     }
 
     return updated;

@@ -7,6 +7,7 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  heartbeatRuns,
   projects,
 } from "@paperclipai/db";
 import type {
@@ -52,12 +53,24 @@ function currentUtcMonthWindow(now = new Date()) {
   return { start, end };
 }
 
+function currentUtcDayWindow(now = new Date()) {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const day = now.getUTCDate();
+  const start = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, day + 1, 0, 0, 0, 0));
+  return { start, end };
+}
+
 function resolveWindow(windowKind: BudgetWindowKind, now = new Date()) {
   if (windowKind === "lifetime") {
     return {
       start: new Date(Date.UTC(1970, 0, 1, 0, 0, 0, 0)),
       end: new Date(Date.UTC(9999, 0, 1, 0, 0, 0, 0)),
     };
+  }
+  if (windowKind === "calendar_day_utc") {
+    return currentUtcDayWindow(now);
   }
   return currentUtcMonthWindow(now);
 }
@@ -139,10 +152,38 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
+const HEARTBEAT_RUN_COUNTABLE_STATUSES = [
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const;
+
 async function computeObservedAmount(
   db: Db,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
 ) {
+  if (policy.metric === "heartbeat_count") {
+    if (policy.scopeType !== "agent") return 0;
+    const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
+    const conditions = [
+      eq(heartbeatRuns.companyId, policy.companyId),
+      eq(heartbeatRuns.agentId, policy.scopeId),
+      inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_COUNTABLE_STATUSES]),
+    ];
+    if (policy.windowKind !== "lifetime") {
+      conditions.push(gte(heartbeatRuns.createdAt, start));
+      conditions.push(lt(heartbeatRuns.createdAt, end));
+    }
+    const [row] = await db
+      .select({
+        total: sql<number>`count(*)::double precision`,
+      })
+      .from(heartbeatRuns)
+      .where(and(...conditions));
+    return Number(row?.total ?? 0);
+  }
+
   if (policy.metric !== "billed_cents") return 0;
 
   const conditions = [eq(costEvents.companyId, policy.companyId)];
@@ -150,6 +191,10 @@ async function computeObservedAmount(
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
   if (policy.windowKind === "calendar_month_utc") {
+    conditions.push(gte(costEvents.occurredAt, start));
+    conditions.push(lt(costEvents.occurredAt, end));
+  }
+  if (policy.windowKind === "calendar_day_utc") {
     conditions.push(gte(costEvents.occurredAt, start));
     conditions.push(lt(costEvents.occurredAt, end));
   }
@@ -566,7 +611,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .returning()
           .then((rows) => rows[0]);
 
-      if (input.scopeType === "company" && windowKind === "calendar_month_utc") {
+      if (
+        input.scopeType === "company"
+        && windowKind === "calendar_month_utc"
+        && metric === "billed_cents"
+      ) {
         await db
           .update(companies)
           .set({
@@ -576,7 +625,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .where(eq(companies.id, input.scopeId));
       }
 
-      if (input.scopeType === "agent" && windowKind === "calendar_month_utc") {
+      if (
+        input.scopeType === "agent"
+        && windowKind === "calendar_month_utc"
+        && metric === "billed_cents"
+      ) {
         await db
           .update(agents)
           .set({
@@ -713,6 +766,86 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       }
     },
 
+    evaluateHeartbeatRunFinalized: async (run: {
+      companyId: string;
+      agentId: string;
+      status: string;
+    }) => {
+      if (
+        !HEARTBEAT_RUN_COUNTABLE_STATUSES.includes(
+          run.status as (typeof HEARTBEAT_RUN_COUNTABLE_STATUSES)[number],
+        )
+      ) {
+        return;
+      }
+
+      const candidatePolicies = await db
+        .select()
+        .from(budgetPolicies)
+        .where(
+          and(
+            eq(budgetPolicies.companyId, run.companyId),
+            eq(budgetPolicies.isActive, true),
+            eq(budgetPolicies.scopeType, "agent"),
+            eq(budgetPolicies.scopeId, run.agentId),
+            eq(budgetPolicies.metric, "heartbeat_count"),
+          ),
+        );
+
+      for (const policy of candidatePolicies) {
+        if (policy.amount <= 0) continue;
+        const observedAmount = await computeObservedAmount(db, policy);
+        const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
+
+        if (policy.notifyEnabled && observedAmount >= softThreshold) {
+          const softIncident = await createIncidentIfNeeded(policy, "soft", observedAmount);
+          if (softIncident) {
+            await logActivity(db, {
+              companyId: policy.companyId,
+              actorType: "system",
+              actorId: "budget_service",
+              action: "budget.soft_threshold_crossed",
+              entityType: "budget_incident",
+              entityId: softIncident.id,
+              details: {
+                scopeType: policy.scopeType,
+                scopeId: policy.scopeId,
+                amountObserved: observedAmount,
+                amountLimit: policy.amount,
+                metric: policy.metric,
+                windowKind: policy.windowKind,
+              },
+            });
+          }
+        }
+
+        if (policy.hardStopEnabled && observedAmount >= policy.amount) {
+          await resolveOpenSoftIncidents(policy.id);
+          const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
+          await pauseAndCancelScopeForBudget(policy);
+          if (hardIncident) {
+            await logActivity(db, {
+              companyId: policy.companyId,
+              actorType: "system",
+              actorId: "budget_service",
+              action: "budget.hard_threshold_crossed",
+              entityType: "budget_incident",
+              entityId: hardIncident.id,
+              details: {
+                scopeType: policy.scopeType,
+                scopeId: policy.scopeId,
+                amountObserved: observedAmount,
+                amountLimit: policy.amount,
+                metric: policy.metric,
+                windowKind: policy.windowKind,
+                approvalId: hardIncident.approvalId ?? null,
+              },
+            });
+          }
+        }
+      }
+    },
+
     getInvocationBlock: async (
       companyId: string,
       agentId: string,
@@ -777,16 +910,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         }
       }
 
-      if (agent.status === "paused" && agent.pauseReason === "budget") {
-        return {
-          scopeType: "agent" as const,
-          scopeId: agentId,
-          scopeName: agent.name,
-          reason: "Agent is paused because its budget hard-stop was reached.",
-        };
-      }
-
-      const agentPolicy = await db
+      const agentPolicies = await db
         .select()
         .from(budgetPolicies)
         .where(
@@ -795,20 +919,38 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             eq(budgetPolicies.scopeType, "agent"),
             eq(budgetPolicies.scopeId, agentId),
             eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (agentPolicy && agentPolicy.hardStopEnabled && agentPolicy.amount > 0) {
-        const observed = await computeObservedAmount(db, agentPolicy);
-        if (observed >= agentPolicy.amount) {
+        );
+
+      let agentHasExceededHardStop = false;
+      for (const policy of agentPolicies) {
+        if (!policy.hardStopEnabled || policy.amount <= 0) continue;
+        const observed = await computeObservedAmount(db, policy);
+        if (observed >= policy.amount) {
+          agentHasExceededHardStop = true;
+          break;
+        }
+      }
+
+      if (agent.status === "paused" && agent.pauseReason === "budget") {
+        if (agentHasExceededHardStop) {
           return {
             scopeType: "agent" as const,
             scopeId: agentId,
             scopeName: agent.name,
-            reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+            reason: "Agent is paused because its budget hard-stop was reached.",
           };
         }
+        if (agentPolicies.length > 0) {
+          await resumeScopeFromBudget(agentPolicies[0]!);
+        }
+      } else if (agentHasExceededHardStop) {
+        return {
+          scopeType: "agent" as const,
+          scopeId: agentId,
+          scopeName: agent.name,
+          reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+        };
       }
 
       const candidateProjectId = context?.projectId ?? null;
@@ -894,14 +1036,22 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           })
           .where(eq(budgetPolicies.id, policy.id));
 
-        if (policy.scopeType === "company" && policy.windowKind === "calendar_month_utc") {
+        if (
+          policy.scopeType === "company"
+          && policy.windowKind === "calendar_month_utc"
+          && policy.metric === "billed_cents"
+        ) {
           await db
             .update(companies)
             .set({ budgetMonthlyCents: nextAmount, updatedAt: now })
             .where(eq(companies.id, policy.scopeId));
         }
 
-        if (policy.scopeType === "agent" && policy.windowKind === "calendar_month_utc") {
+        if (
+          policy.scopeType === "agent"
+          && policy.windowKind === "calendar_month_utc"
+          && policy.metric === "billed_cents"
+        ) {
           await db
             .update(agents)
             .set({ budgetMonthlyCents: nextAmount, updatedAt: now })
