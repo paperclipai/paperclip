@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
@@ -153,5 +153,45 @@ describe("assertBoardOrgAccess", () => {
 
     expect(hasBoardOrgAccess(req)).toBe(false);
     expect(() => assertBoardOrgAccess(req)).toThrow("Company membership or instance admin access required");
+  });
+});
+
+describe("getActorInfo", () => {
+  it("returns null runId when actor runId is invalid", () => {
+    const req = makeReq({
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-1",
+      },
+    });
+
+    expect(getActorInfo(req)).toEqual({
+      actorType: "agent",
+      actorId: "agent-1",
+      agentId: "agent-1",
+      runId: null,
+    });
+  });
+
+  it("keeps valid UUID runIds", () => {
+    const req = makeReq({
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+
+    expect(getActorInfo(req)).toEqual({
+      actorType: "agent",
+      actorId: "agent-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+    });
   });
 });
