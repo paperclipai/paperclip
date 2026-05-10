@@ -25,7 +25,11 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 ## Session Persistence
 
-Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
+Codex sessions are persisted and resumed across heartbeats by default.
+
+- `codex_local` now defaults to **agent-scoped** session resume: one persistent Codex thread per agent.
+- You can opt into task-scoped resume by setting `runtimeConfig.heartbeat.sessionScope` to `"task"`.
+- Provide `forceFreshSession: true` in a wake context to explicitly reset and start a new session.
 
 ## Skills Injection
 

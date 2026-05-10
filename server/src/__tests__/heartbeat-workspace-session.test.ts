@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveTaskKeyForWake,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -322,6 +323,17 @@ describe("shouldResetTaskSessionForWake", () => {
     ).toBe(true);
   });
 
+  it("preserves session context when adapter session scope is agent-level", () => {
+    expect(
+      shouldResetTaskSessionForWake(
+        {
+          wakeReason: "issue_assigned",
+        },
+        { preserveAcrossWakes: true },
+      ),
+    ).toBe(false);
+  });
+
   it("does not reset session context on mention wake comment", () => {
     expect(
       shouldResetTaskSessionForWake({
@@ -355,6 +367,35 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveTaskKeyForWake", () => {
+  it("defaults codex_local to a stable agent session key", () => {
+    const key = resolveTaskKeyForWake(buildAgent("codex_local"), { wakeSource: "timer" }, null);
+    expect(key).toBe("__agent_session__:agent-1");
+  });
+
+  it("honors explicit task keys even when codex uses agent scope", () => {
+    const key = resolveTaskKeyForWake(
+      buildAgent("codex_local"),
+      { taskKey: "issue-123", wakeSource: "timer" },
+      null,
+    );
+    expect(key).toBe("issue-123");
+  });
+
+  it("allows codex agents to opt back into task-scoped resume", () => {
+    const key = resolveTaskKeyForWake(
+      buildAgent("codex_local", {
+        heartbeat: {
+          sessionScope: "task",
+        },
+      }),
+      { wakeSource: "timer" },
+      null,
+    );
+    expect(key).toBe("__heartbeat__");
   });
 });
 
