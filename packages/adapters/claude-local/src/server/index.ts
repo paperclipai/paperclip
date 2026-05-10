@@ -6,7 +6,15 @@ export {
   deleteAccountFiles,
   setApiKeyResolver,
   readApiKeyValue,
+  setActiveAccountResolver,
+  hasActiveAccountResolver,
+  resolveActiveAccount,
+  applyActiveAnthropicAccountToEnv,
   type ApiKeyResolver,
+  type ActiveAccountResolver,
+  type ActiveAnthropicAccount,
+  type ActiveAnthropicAccountMode,
+  type ApplyActiveAccountResult,
 } from "./account-store.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";

@@ -59,6 +59,12 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  applyActiveAnthropicAccountToEnv,
+  hasActiveAccountResolver,
+  resolveActiveAccount,
+  type ApplyActiveAccountResult,
+} from "./account-store.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -85,6 +91,7 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+  anthropicAccount: ApplyActiveAccountResult | null;
 }
 
 function buildLoginResult(input: {
@@ -244,6 +251,27 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
+  // Inject the company-active Anthropic account credentials BEFORE applying the
+  // user-supplied envConfig, so explicit `env.ANTHROPIC_API_KEY` /
+  // `env.CLAUDE_CONFIG_DIR` overrides on the agent config still win for
+  // power-user / testing scenarios. If the resolver is not wired (CLI path
+  // outside the server bootstrap, or no active account configured for the
+  // company), we surface a warning and proceed — existing single-account
+  // installs already rely on ambient process.env credentials.
+  let anthropicAccount: ApplyActiveAccountResult | null = null;
+  if (hasActiveAccountResolver()) {
+    try {
+      const account = await resolveActiveAccount(agent.companyId, agent.id);
+      anthropicAccount = await applyActiveAnthropicAccountToEnv({ account, env });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not resolve active Anthropic account for agent ${agent.id}: ${reason}\n`,
+      );
+    }
+  }
+
   const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
     env: envConfig,
     workspaceCwd: effectiveWorkspaceCwd,
@@ -284,6 +312,16 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     resolvedCommand,
   });
 
+  // Stamp account metadata onto loggedEnv only — never the executable env.
+  // These keys are non-sensitive (id/label/mode) and survive `redactEnvForLogs`
+  // because they don't match the secret-key heuristic. Credentials themselves
+  // (ANTHROPIC_API_KEY) are redacted automatically by buildInvocationEnvForLogs.
+  if (anthropicAccount) {
+    loggedEnv.paperclipAnthropicAccountId = anthropicAccount.accountId;
+    loggedEnv.paperclipAnthropicAccountLabel = anthropicAccount.accountLabel;
+    loggedEnv.paperclipAnthropicAccountMode = anthropicAccount.accountMode;
+  }
+
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -302,6 +340,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     timeoutSec,
     graceSec,
     extraArgs,
+    anthropicAccount,
   };
 }
 
@@ -401,6 +440,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     extraArgs,
+    anthropicAccount,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
@@ -567,6 +607,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (remoteClaudeConfigDir) {
         loggedEnv.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
       }
+      if (anthropicAccount) {
+        loggedEnv.paperclipAnthropicAccountId = anthropicAccount.accountId;
+        loggedEnv.paperclipAnthropicAccountLabel = anthropicAccount.accountLabel;
+        loggedEnv.paperclipAnthropicAccountMode = anthropicAccount.accountMode;
+      }
     }
   }
 
@@ -714,6 +759,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         prompt,
         promptMetrics,
         context,
+        anthropicAccountId: anthropicAccount?.accountId,
       });
     }
 

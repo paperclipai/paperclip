@@ -23,8 +23,12 @@ import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { anthropicAccountsRoutes } from "./routes/anthropic-accounts.js";
-import { setApiKeyResolver as setClaudeLocalApiKeyResolver } from "@paperclipai/adapter-claude-local/server";
+import {
+  setApiKeyResolver as setClaudeLocalApiKeyResolver,
+  setActiveAccountResolver as setClaudeLocalActiveAccountResolver,
+} from "@paperclipai/adapter-claude-local/server";
 import { secretService } from "./services/secrets.js";
+import { anthropicAccountsService } from "./services/anthropic-accounts.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -218,6 +222,28 @@ export async function createApp(
       throw new Error(`Secret ${secretId} not found`);
     }
     return anthropicSecretService.resolveSecretValue(secret.companyId, secretId, "latest");
+  });
+
+  // Bridge claude-local adapter active-account resolution to the
+  // anthropic-accounts service. Same DB-agnostic adapter contract.
+  const anthropicAccountsSvc = anthropicAccountsService(db);
+  setClaudeLocalActiveAccountResolver(async (companyId: string, agentId: string) => {
+    const account = await anthropicAccountsSvc.resolveActiveForAgent(companyId, agentId);
+    const mode =
+      account.mode === "oauth" || account.mode === "api_key" || account.mode === "bedrock"
+        ? account.mode
+        : null;
+    if (!mode) {
+      throw new Error(
+        `Anthropic account ${account.id} has unsupported mode "${account.mode}"`,
+      );
+    }
+    return {
+      id: account.id,
+      label: account.label,
+      mode,
+      apiKeySecretId: account.apiKeySecretId,
+    };
   });
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));

@@ -117,6 +117,12 @@ export interface AdapterInvocationMeta {
   prompt?: string;
   promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
+  /**
+   * Active Anthropic account id used for this invocation. Surfaces to run logs so
+   * operators can audit which credential bucket served a given run. Only set by
+   * adapters that resolve a per-company active Anthropic account (claude_local).
+   */
+  anthropicAccountId?: string;
 }
 
 export interface AdapterExecutionContext {

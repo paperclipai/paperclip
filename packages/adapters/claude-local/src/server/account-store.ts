@@ -55,6 +55,96 @@ export async function readApiKeyValue(secretId: string): Promise<string> {
   return apiKeyResolver(secretId);
 }
 
+export type ActiveAnthropicAccountMode = "oauth" | "api_key" | "bedrock";
+
+export interface ActiveAnthropicAccount {
+  id: string;
+  label: string;
+  mode: ActiveAnthropicAccountMode;
+  apiKeySecretId: string | null;
+}
+
+export type ActiveAccountResolver = (
+  companyId: string,
+  agentId: string,
+) => Promise<ActiveAnthropicAccount>;
+
+let activeAccountResolver: ActiveAccountResolver | null = null;
+
+export function setActiveAccountResolver(resolver: ActiveAccountResolver | null): void {
+  activeAccountResolver = resolver;
+}
+
+export function hasActiveAccountResolver(): boolean {
+  return activeAccountResolver !== null;
+}
+
+export async function resolveActiveAccount(
+  companyId: string,
+  agentId: string,
+): Promise<ActiveAnthropicAccount> {
+  if (!activeAccountResolver) {
+    throw new Error(
+      "Active Anthropic account resolver is not configured; call setActiveAccountResolver() during server bootstrap",
+    );
+  }
+  return activeAccountResolver(companyId, agentId);
+}
+
+export interface ApplyActiveAccountResult {
+  accountId: string;
+  accountLabel: string;
+  accountMode: ActiveAnthropicAccountMode;
+  /** What the resolver injected, for telemetry. "credential_dir" / "api_key" / "noop" (bedrock). */
+  injection: "credential_dir" | "api_key" | "noop";
+}
+
+/**
+ * Inject Anthropic-account-specific runtime credentials into the env that the
+ * Claude CLI will see. Caller decides how to populate `loggedEnv` (we never
+ * touch credential values here — `redactEnvForLogs` will mask api keys downstream).
+ */
+export async function applyActiveAnthropicAccountToEnv(input: {
+  account: ActiveAnthropicAccount;
+  env: Record<string, string>;
+  resolveApiKey?: (secretId: string) => Promise<string>;
+}): Promise<ApplyActiveAccountResult> {
+  const { account, env } = input;
+  const resolveApiKey = input.resolveApiKey ?? readApiKeyValue;
+
+  if (account.mode === "oauth") {
+    env.CLAUDE_CONFIG_DIR = accountDir(account.id);
+    return {
+      accountId: account.id,
+      accountLabel: account.label,
+      accountMode: "oauth",
+      injection: "credential_dir",
+    };
+  }
+  if (account.mode === "api_key") {
+    if (!account.apiKeySecretId) {
+      throw new Error(
+        `Anthropic account "${account.id}" is mode=api_key but has no apiKeySecretId`,
+      );
+    }
+    env.ANTHROPIC_API_KEY = await resolveApiKey(account.apiKeySecretId);
+    return {
+      accountId: account.id,
+      accountLabel: account.label,
+      accountMode: "api_key",
+      injection: "api_key",
+    };
+  }
+  // bedrock and any future modes — out of scope for this issue (MAS-253);
+  // existing CLAUDE_CODE_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL flow is untouched.
+  return {
+    accountId: account.id,
+    accountLabel: account.label,
+    accountMode: account.mode,
+    injection: "noop",
+  };
+}
+
 function isNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   return "code" in error && (error as { code?: string }).code === "ENOENT";
