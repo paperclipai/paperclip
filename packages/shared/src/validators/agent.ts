@@ -10,6 +10,13 @@ import { envConfigSchema } from "./secret.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
+  /**
+   * Grants the agent permission to PATCH another agent's adapterConfig within
+   * the same company. Intended for elevated roles such as CTO and Director of
+   * Infrastructure that need to manage fleet configuration without full
+   * canCreateAgents privileges.
+   */
+  canPatchAdapterConfig: z.boolean().optional().default(false),
 });
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
@@ -158,6 +165,7 @@ export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canAssignTasks: z.boolean(),
+  canPatchAdapterConfig: z.boolean().optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
