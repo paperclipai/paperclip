@@ -185,4 +185,30 @@ describe("sanitizeModelText", () => {
   it("returns null for whitespace-only input", () => {
     expect(sanitizeModelText("   \n  ")).toBeNull();
   });
+
+  // SAG-772 canary: Llama-70b emits prose then inline {"type":"function",...}
+  it("returns null when inline tool-call JSON is embedded after prose (SAG-772 canary)", () => {
+    const leaked =
+      'First, I need to check if there are any new comments on the issue since my last update.\n\n{"type": "function", "name": "get_issue_comments", "parameters": {"issue_id": "SAG-772"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null for inline tool call with no spaces around colon", () => {
+    const leaked = 'Checking status.\n{"type":"function","name":"fetch_issue","parameters":{}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("drops inline tool-call blocks via parseOpenCodeJsonl (end-to-end)", () => {
+    const leaked =
+      'First, I need to check if there are any new comments on the issue since my last update.\n\n{"type": "function", "name": "get_issue_comments", "parameters": {"issue_id": "SAG-772"}}';
+    const clean = "Canary complete — all tests passing.";
+    const stdout = [
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: leaked } }),
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: clean } }),
+    ].join("\n");
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe(clean);
+    expect(parsed.summary).not.toContain('"type": "function"');
+    expect(parsed.summary).not.toContain("First, I need to check");
+  });
 });

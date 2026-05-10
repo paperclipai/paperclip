@@ -30,9 +30,16 @@ const SYSTEM_PROMPT_ECHO_PATTERNS: RegExp[] = [
 // Match full <tag>…</tag> blocks for known internal-reasoning wrappers.
 const INTERNAL_XML_BLOCK_RE = /<(analysis|thinking|antml:thinking|antml:function_calls)>[\s\S]*?<\/\1>/gi;
 
+// Detect JSON tool-call objects embedded mid-text (e.g. Llama-70b emitting
+// prose then {"type":"function",...} when it can't use the structured channel).
+const INLINE_TOOL_CALL_RE = /\{\s*"type"\s*:\s*"function"/i;
+
 export function sanitizeModelText(text: string): string | null {
   if (isPureJson(text)) return null;
   if (SYSTEM_PROMPT_ECHO_PATTERNS.some((re) => re.test(text.trimStart()))) return null;
+  // Drop blocks where the model slipped an inline text-mode tool call anywhere
+  // in the text — the prose that precedes the JSON is also internal reasoning.
+  if (INLINE_TOOL_CALL_RE.test(text)) return null;
   const stripped = text.replace(INTERNAL_XML_BLOCK_RE, "").trim();
   return stripped.length > 0 ? stripped : null;
 }
