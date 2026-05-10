@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { listRecentRuns } from "../services/bba-memory/index.js";
+import {
+  listRecentRuns,
+  listRecentRunsForCompany,
+  getCompanyStatsSummary,
+} from "../services/bba-memory/index.js";
 import { assertCompanyAccess } from "./authz.js";
 
-// TODO(future): filter runs by companyId via meta_json once multi-tenant
-// bba-memory becomes a requirement. Currently bba-memory is a single global
-// SQLite file shared across all companies on the instance.
 export function bbaMemoryRoutes() {
   const router = Router();
 
@@ -16,7 +17,11 @@ export function bbaMemoryRoutes() {
     const parsed = typeof limitRaw === "string" ? parseInt(limitRaw, 10) : NaN;
     const safeLimit = Number.isFinite(parsed) && parsed > 0 && parsed <= 200 ? parsed : 20;
 
-    const runs = listRecentRuns(safeLimit);
+    // ?all=true is an instance-admin-only override that bypasses company filter.
+    const actor = (req as any).actor;
+    const wantsAll = req.query.all === "true";
+    const isAdmin = actor?.type === "board" && actor?.isInstanceAdmin === true;
+    const runs = wantsAll && isAdmin ? listRecentRuns(safeLimit) : listRecentRunsForCompany(companyId, safeLimit);
 
     res.json({
       companyId,
@@ -34,6 +39,17 @@ export function bbaMemoryRoutes() {
         meta: r.meta_json ? JSON.parse(r.meta_json) : null,
       })),
     });
+  });
+
+  router.get("/companies/:companyId/bba-memory/stats-summary", (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const windowRaw = req.query.windowDays;
+    const parsed = typeof windowRaw === "string" ? parseInt(windowRaw, 10) : NaN;
+    const windowDays = !Number.isFinite(parsed) || parsed <= 0 ? 7 : Math.min(parsed, 90);
+
+    res.json(getCompanyStatsSummary(companyId, windowDays));
   });
 
   return router;

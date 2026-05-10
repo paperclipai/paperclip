@@ -21,7 +21,9 @@ export {
   completeRun,
   getRun,
   listRecentRuns,
+  listRecentRunsForCompany,
   listRunsForSession,
+  getCompanyStatsSummary,
   // selectors
   getSelectorsByPurpose,
   listAllSelectors,
@@ -61,3 +63,5 @@ export type {
   FailureRow,
   SuccessStats,
 } from "./types.js";
+
+export type { CompanyStatsSummary } from "./repository.js";

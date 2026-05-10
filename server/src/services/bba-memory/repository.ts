@@ -181,6 +181,80 @@ export function listRecentRuns(limit = 100): RunRow[] {
     .all(limit) as unknown as RunRow[];
 }
 
+export function listRecentRunsForCompany(companyId: string, limit = 100): RunRow[] {
+  const safeLimit = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 100;
+  return getDb()
+    .prepare(
+      `SELECT * FROM runs
+       WHERE json_extract(meta_json, '$.companyId') = ?
+       ORDER BY started_at DESC
+       LIMIT ?`,
+    )
+    .all(companyId, safeLimit) as unknown as RunRow[];
+}
+
+export interface CompanyStatsSummary {
+  companyId: string;
+  windowDays: number;
+  totalRuns: number;
+  successCount: number;
+  failureCount: number;
+  partialCount: number;
+  successRatePct: number | null;
+  topFailureClasses: Array<{ class: string; count: number }>;
+}
+
+export function getCompanyStatsSummary(companyId: string, windowDays = 7): CompanyStatsSummary {
+  const safeWindow = Number.isFinite(windowDays) && windowDays >= 1 && windowDays <= 90 ? Math.round(windowDays) : 7;
+  const cutoff = new Date(Date.now() - safeWindow * 24 * 60 * 60 * 1000).toISOString();
+  const db = getDb();
+
+  const counts = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS totalRuns,
+         COUNT(CASE WHEN outcome = 'success' THEN 1 END) AS successCount,
+         COUNT(CASE WHEN outcome = 'failure' THEN 1 END) AS failureCount,
+         COUNT(CASE WHEN outcome = 'partial'  THEN 1 END) AS partialCount
+       FROM runs
+       WHERE json_extract(meta_json, '$.companyId') = ?
+         AND started_at >= ?`,
+    )
+    .get(companyId, cutoff) as {
+      totalRuns: number;
+      successCount: number;
+      failureCount: number;
+      partialCount: number;
+    };
+
+  const topFailureClasses = db
+    .prepare(
+      `SELECT failure_class AS class, COUNT(*) AS count
+       FROM runs
+       WHERE json_extract(meta_json, '$.companyId') = ?
+         AND started_at >= ?
+         AND failure_class IS NOT NULL
+       GROUP BY failure_class
+       ORDER BY count DESC
+       LIMIT 5`,
+    )
+    .all(companyId, cutoff) as Array<{ class: string; count: number }>;
+
+  const total = Number(counts.totalRuns);
+  const success = Number(counts.successCount);
+
+  return {
+    companyId,
+    windowDays: safeWindow,
+    totalRuns: total,
+    successCount: success,
+    failureCount: Number(counts.failureCount),
+    partialCount: Number(counts.partialCount),
+    successRatePct: total > 0 ? Math.round((success / total) * 1000) / 10 : null,
+    topFailureClasses: topFailureClasses.map((r) => ({ class: r.class, count: Number(r.count) })),
+  };
+}
+
 export function listRunsForSession(sessionId: number): RunRow[] {
   return getDb()
     .prepare(
