@@ -63,6 +63,21 @@ describe("buildHeartbeatRunIssueComment", () => {
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
+
+  // SAG-722 regression guard: pure JSON must never reach the comment body.
+  it("returns null and does not post when summary is pure tool-call JSON (AC5)", () => {
+    const leaked = JSON.stringify({ type: "function", name: "fetch_issue", parameters: { issue_id: "SAG-704" } });
+    expect(buildHeartbeatRunIssueComment({ summary: leaked })).toBeNull();
+  });
+
+  it("returns null when summary is a JSON array", () => {
+    expect(buildHeartbeatRunIssueComment({ summary: '[{"tool":"bash"}]' })).toBeNull();
+  });
+
+  it("passes through natural-language summaries unchanged", () => {
+    const text = "Moved issue to in_progress and posted update.";
+    expect(buildHeartbeatRunIssueComment({ summary: text })).toBe(text);
+  });
 });
 
 describe("mergeHeartbeatRunResultJson", () => {
