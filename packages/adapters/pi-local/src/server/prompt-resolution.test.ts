@@ -97,6 +97,26 @@ describe("buildSystemPromptExtension", () => {
     });
     expect(out).toBe(explicit);
   });
+
+  it("empty AGENTS.md → falls back to default template (does not silently strip the contract)", () => {
+    const out = buildSystemPromptExtension({
+      resolvedInstructionsFilePath: INSTRUCTIONS_PATH,
+      instructionsFileDir: INSTRUCTIONS_DIR,
+      instructionsContents: "",
+      explicitPromptTemplate: null,
+    });
+    expect(out).toBe(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  });
+
+  it("whitespace-only AGENTS.md → falls back to default template", () => {
+    const out = buildSystemPromptExtension({
+      resolvedInstructionsFilePath: INSTRUCTIONS_PATH,
+      instructionsFileDir: INSTRUCTIONS_DIR,
+      instructionsContents: "   \n\t  \n",
+      explicitPromptTemplate: null,
+    });
+    expect(out).toBe(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  });
 });
 
 describe("shouldRenderDefaultHeartbeatPrompt", () => {

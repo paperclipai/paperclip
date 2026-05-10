@@ -139,4 +139,73 @@ describe("createBufferedOnLog", () => {
     expect(stdout).toHaveLength(1);
     expect(stdout[0].chunk).toContain("thinking_delta");
   });
+
+  it("serializes concurrent handle calls — buffer cannot interleave between async chunks", async () => {
+    // Drive a slow onLog: each call resolves on its own microtask. If handle
+    // calls were not serialized, two concurrent invocations would mutate
+    // stdoutBuffer between split() and pop(), producing garbled output.
+    const captured: Captured[] = [];
+    let pending = 0;
+    let maxPending = 0;
+    const onLog = async (stream: LogStream, chunk: string) => {
+      pending += 1;
+      maxPending = Math.max(maxPending, pending);
+      // One microtask delay simulates the appendFile await in production.
+      await Promise.resolve();
+      captured.push({ stream, chunk });
+      pending -= 1;
+    };
+    const { handle, flush } = createBufferedOnLog(onLog);
+
+    // Fire-and-forget two overlapping calls (no await between them) and
+    // ensure the buffer reassembles correctly.
+    const eventA = JSON.stringify({ type: "agent_start" });
+    const eventB = JSON.stringify({ type: "turn_start" });
+    const eventC = JSON.stringify({ type: "agent_end", messages: [] });
+    void handle("stdout", `${eventA}\n${eventB.slice(0, 8)}`);
+    void handle("stdout", `${eventB.slice(8)}\n${eventC}\n`);
+    await flush();
+
+    expect(maxPending).toBe(1);
+    expect(captured.map((c) => JSON.parse(c.chunk).type)).toEqual([
+      "agent_start",
+      "turn_start",
+      "agent_end",
+    ]);
+  });
+
+  it("flush() waits for any in-flight handle() before draining the trailing fragment", async () => {
+    let order: string[] = [];
+    const onLog = async (_stream: LogStream, chunk: string) => {
+      // Force scheduling so handle's await is observable.
+      await Promise.resolve();
+      order.push(chunk.trim());
+    };
+    const { handle, flush } = createBufferedOnLog(onLog);
+
+    void handle("stdout", '{"type":"agent_start"}\n');
+    void handle("stdout", '{"type":"agent_end"');
+    await flush();
+
+    expect(order).toEqual(['{"type":"agent_start"}', '{"type":"agent_end"']);
+  });
+
+  it("truncates the partial-line buffer when it grows past the max-line cap", async () => {
+    const { captured, onLog } = captureSink();
+    const { handle } = createBufferedOnLog(onLog);
+
+    // Push 9MB of pi-agent gibberish without any newline. The buffer must
+    // be dropped before it eats RAM, and a stderr alarm must fire.
+    const giant = "x".repeat(9 * 1024 * 1024);
+    await handle("stdout", giant);
+    // A subsequent newline-terminated line should be processable normally.
+    await handle("stdout", '{"type":"agent_end","messages":[]}\n');
+
+    const stderr = captured.filter((c) => c.stream === "stderr");
+    expect(stderr).toHaveLength(1);
+    expect(stderr[0].chunk).toMatch(/dropped \d+ bytes from pi stdout buffer/);
+    const stdout = captured.filter((c) => c.stream === "stdout");
+    expect(stdout).toHaveLength(1);
+    expect(stdout[0].chunk).toContain('"agent_end"');
+  });
 });

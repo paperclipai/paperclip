@@ -553,7 +553,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
-  const instructionsLoaded = Boolean(resolvedInstructionsFilePath) && instructionsContents !== null;
+  const instructionsLoaded =
+    Boolean(resolvedInstructionsFilePath) &&
+    typeof instructionsContents === "string" &&
+    instructionsContents.trim().length > 0;
   const systemPromptExtension = buildSystemPromptExtension({
     resolvedInstructionsFilePath,
     instructionsFileDir,

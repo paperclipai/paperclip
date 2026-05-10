@@ -39,12 +39,20 @@ export interface SystemPromptInputs {
  *   - AGENTS.md loads + no explicit template → AGENTS.md + path directive only.
  *     (Default template is suppressed because AGENTS.md owns the contract.)
  *   - AGENTS.md loads + explicit template    → AGENTS.md + path directive + explicit template.
- *   - AGENTS.md not configured / read failed → fallback template.
+ *   - AGENTS.md empty / not configured / read failed → fallback template.
+ *
+ * An empty or whitespace-only AGENTS.md is treated as "not loaded" — silently
+ * stripping the execution contract because someone shipped a blank file would
+ * be worse than falling back to the default template.
  */
 export function buildSystemPromptExtension(inputs: SystemPromptInputs): string {
   const fallback = inputs.fallbackPromptTemplate ?? DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+  const hasInstructions =
+    Boolean(inputs.resolvedInstructionsFilePath) &&
+    typeof inputs.instructionsContents === "string" &&
+    inputs.instructionsContents.trim().length > 0;
 
-  if (inputs.resolvedInstructionsFilePath && inputs.instructionsContents !== null) {
+  if (hasInstructions) {
     const trailingTemplate =
       inputs.explicitPromptTemplate !== null ? `\n\n${inputs.explicitPromptTemplate}` : "";
     return (
