@@ -43,7 +43,7 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = liveRuns?.filter((run) => run.status === "running" || run.status === "queued").length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   const pluginContext = {

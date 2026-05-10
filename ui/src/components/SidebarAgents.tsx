@@ -222,6 +222,7 @@ export function SidebarAgents() {
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
     for (const run of liveRuns ?? []) {
+      if (run.status !== "running" && run.status !== "queued") continue;
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
