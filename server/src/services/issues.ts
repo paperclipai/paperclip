@@ -7,6 +7,7 @@ import {
   agents,
   approvals,
   assets,
+  authUsers,
   companies,
   companyMemberships,
   documents,
@@ -1776,6 +1777,28 @@ export function issueService(db: Db) {
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
       presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
       metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
+    };
+  }
+
+  async function resolveAuthorUserNames(userIds: string[]): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await db
+      .select({ id: authUsers.id, name: authUsers.name })
+      .from(authUsers)
+      .where(inArray(authUsers.id, userIds));
+    return new Map(rows.map((r) => [r.id, r.name]));
+  }
+
+  function attachAuthorUser<T extends { authorUserId?: string | null }>(
+    comment: T,
+    userNames: Map<string, string>,
+  ): T & { authorUser: { id: string; name: string | null } | null } {
+    if (!comment.authorUserId) {
+      return { ...comment, authorUser: null };
+    }
+    return {
+      ...comment,
+      authorUser: { id: comment.authorUserId, name: userNames.get(comment.authorUserId) ?? null },
     };
   }
 
@@ -3778,7 +3801,12 @@ export function issueService(db: Db) {
 
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
-      return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const redacted = comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const userIds = [
+        ...new Set(redacted.flatMap((c) => (c.authorUserId ? [c.authorUserId] : []))),
+      ];
+      const userNames = await resolveAuthorUserNames(userIds);
+      return redacted.map((comment) => attachAuthorUser(comment, userNames));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -3809,16 +3837,20 @@ export function issueService(db: Db) {
       };
     },
 
-    getComment: (commentId: string) =>
-      instanceSettings.getGeneral().then(({ censorUsernameInLogs }) =>
-        db
+    getComment: async (commentId: string) => {
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      const rows = await db
         .select()
         .from(issueComments)
-        .where(eq(issueComments.id, commentId))
-        .then((rows) => {
-          const comment = rows[0] ?? null;
-          return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
-        })),
+        .where(eq(issueComments.id, commentId));
+      const comment = rows[0] ?? null;
+      if (!comment) return null;
+      const redacted = redactIssueComment(comment, censorUsernameInLogs);
+      const userNames = redacted.authorUserId
+        ? await resolveAuthorUserNames([redacted.authorUserId])
+        : new Map<string, string>();
+      return attachAuthorUser(redacted, userNames);
+    },
 
     removeComment: async (commentId: string) => {
       const currentUserRedactionOptions = {

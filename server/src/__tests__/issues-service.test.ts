@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
   createDb,
   environments,
@@ -83,6 +84,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
+    await db.delete(authUsers);
     await db.delete(instanceSettings);
     await db.delete(companies);
   });
@@ -1212,6 +1214,107 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
+  });
+
+  it("attaches authorUser { id, name } on listComments and getComment for human comments", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const userId = `user-${randomUUID()}`;
+    const userCommentId = randomUUID();
+    const agentCommentId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({
+      id: userId,
+      name: "King",
+      email: `${userId}@example.com`,
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with mixed-author comments",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values([
+      {
+        id: userCommentId,
+        companyId,
+        issueId,
+        authorUserId: userId,
+        authorType: "user",
+        body: "Comment from human.",
+        createdAt: new Date("2026-05-10T09:00:00.000Z"),
+        updatedAt: new Date("2026-05-10T09:00:00.000Z"),
+      },
+      {
+        id: agentCommentId,
+        companyId,
+        issueId,
+        authorAgentId: null,
+        authorType: "system",
+        body: "Comment with no author.",
+        createdAt: new Date("2026-05-10T09:01:00.000Z"),
+        updatedAt: new Date("2026-05-10T09:01:00.000Z"),
+      },
+    ]);
+
+    const listed = await svc.listComments(issueId, { order: "asc", limit: 50 });
+    const userListed = listed.find((c) => c.id === userCommentId);
+    const systemListed = listed.find((c) => c.id === agentCommentId);
+    expect(userListed?.authorUser).toEqual({ id: userId, name: "King" });
+    expect(systemListed?.authorUser).toBeNull();
+
+    const got = await svc.getComment(userCommentId);
+    expect(got?.authorUser).toEqual({ id: userId, name: "King" });
+
+    const gotSystem = await svc.getComment(agentCommentId);
+    expect(gotSystem?.authorUser).toBeNull();
+  });
+
+  it("returns authorUser with null name when the auth user row is missing", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const orphanedUserId = `user-${randomUUID()}`;
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with orphaned user comment",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: orphanedUserId,
+      authorType: "user",
+      body: "Comment from a user that has been deleted.",
+    });
+
+    const [listed] = await svc.listComments(issueId, { order: "asc", limit: 50 });
+    expect(listed.authorUser).toEqual({ id: orphanedUserId, name: null });
+
+    const got = await svc.getComment(commentId);
+    expect(got?.authorUser).toEqual({ id: orphanedUserId, name: null });
   });
 });
 

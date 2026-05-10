@@ -27,6 +27,7 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  authUsers,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -1948,6 +1949,16 @@ async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
+  const wakeAuthorUserIds = [
+    ...new Set(commentRows.flatMap((c) => (c.authorUserId ? [c.authorUserId] : []))),
+  ];
+  const wakeAuthorUserRows = wakeAuthorUserIds.length > 0
+    ? await input.db
+        .select({ id: authUsers.id, name: authUsers.name })
+        .from(authUsers)
+        .where(inArray(authUsers.id, wakeAuthorUserIds))
+    : [];
+  const wakeAuthorUserNames = new Map(wakeAuthorUserRows.map((r) => [r.id, r.name]));
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
@@ -1989,7 +2000,7 @@ async function buildPaperclipWakePayload(input: {
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
         : row.authorUserId
-          ? { type: "user", id: row.authorUserId }
+          ? { type: "user", id: row.authorUserId, name: wakeAuthorUserNames.get(row.authorUserId) ?? null }
           : { type: "system", id: null },
     });
   }
@@ -6818,7 +6829,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
     const wakeCommentId = deriveCommentId(context, null);
-    const wakeCommentContext =
+    const wakeCommentRow =
       issueContext && wakeCommentId
         ? await db
             .select({
@@ -6838,6 +6849,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ))
             .then((rows) => rows[0] ?? null)
         : null;
+    const wakeCommentAuthorName =
+      wakeCommentRow?.authorUserId
+        ? await db
+            .select({ name: authUsers.name })
+            .from(authUsers)
+            .where(eq(authUsers.id, wakeCommentRow.authorUserId))
+            .then((rows) => rows[0]?.name ?? null)
+        : null;
+    const wakeCommentContext = wakeCommentRow
+      ? { ...wakeCommentRow, authorUserName: wakeCommentAuthorName }
+      : null;
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
