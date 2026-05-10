@@ -337,21 +337,37 @@ const plugin = definePlugin({
     });
 
     ctx.actions.register("update-event-ingestion-settings", async (params) => {
-      const sources = typeof params.sources === "object" && params.sources != null && !Array.isArray(params.sources)
+      const requestedSources = typeof params.sources === "object" && params.sources != null && !Array.isArray(params.sources)
         ? params.sources as Record<string, unknown>
-        : {};
+        : null;
+      const sources: { issues?: boolean; comments?: boolean; documents?: boolean } = {};
+      if (requestedSources && Object.prototype.hasOwnProperty.call(requestedSources, "issues")) {
+        sources.issues = requestedSources.issues === true;
+      }
+      if (requestedSources && Object.prototype.hasOwnProperty.call(requestedSources, "comments")) {
+        sources.comments = requestedSources.comments === true;
+      }
+      if (requestedSources && Object.prototype.hasOwnProperty.call(requestedSources, "documents")) {
+        sources.documents = requestedSources.documents === true;
+      }
+      const settings: {
+        enabled?: boolean;
+        wikiId?: string;
+        maxCharacters?: number;
+        sources?: typeof sources;
+      } = {
+        wikiId: stringField(params.wikiId) ?? undefined,
+        maxCharacters: typeof params.maxCharacters === "number" ? params.maxCharacters : undefined,
+      };
+      if (typeof params.enabled === "boolean") {
+        settings.enabled = params.enabled;
+      }
+      if (Object.keys(sources).length > 0) {
+        settings.sources = sources;
+      }
       return updateEventIngestionSettings(ctx, {
         companyId: readCompanyIdFromParams(params),
-        settings: {
-          enabled: params.enabled === true,
-          wikiId: stringField(params.wikiId) ?? undefined,
-          maxCharacters: typeof params.maxCharacters === "number" ? params.maxCharacters : undefined,
-          sources: {
-            issues: sources.issues === true,
-            comments: sources.comments === true,
-            documents: sources.documents === true,
-          },
-        },
+        settings,
       });
     });
 

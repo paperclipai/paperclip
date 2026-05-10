@@ -1713,6 +1713,41 @@ Duplicate headings receive stable suffixes.
     ]));
   });
 
+  it("preserves Paperclip event ingestion sources when only enabled changes", async () => {
+    const harness = createTestHarness({ manifest });
+
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("update-event-ingestion-settings", {
+      companyId: COMPANY_ID,
+      enabled: true,
+      sources: { issues: true, comments: true, documents: true },
+    });
+
+    const disabled = await harness.performAction<{
+      enabled: boolean;
+      sources: { issues: boolean; comments: boolean; documents: boolean };
+    }>("update-event-ingestion-settings", {
+      companyId: COMPANY_ID,
+      enabled: false,
+    });
+    expect(disabled).toMatchObject({
+      enabled: false,
+      sources: { issues: true, comments: true, documents: true },
+    });
+
+    const reenabled = await harness.performAction<{
+      enabled: boolean;
+      sources: { issues: boolean; comments: boolean; documents: boolean };
+    }>("update-event-ingestion-settings", {
+      companyId: COMPANY_ID,
+      enabled: true,
+    });
+    expect(reenabled).toMatchObject({
+      enabled: true,
+      sources: { issues: true, comments: true, documents: true },
+    });
+  });
+
   it("keeps Paperclip event cursor observations company scoped and ignores plugin-operation issues", async () => {
     const harness = createTestHarness({ manifest });
     const visibleIssue = paperclipIssue({ projectId: "77777777-7777-4777-8777-777777777777" });
