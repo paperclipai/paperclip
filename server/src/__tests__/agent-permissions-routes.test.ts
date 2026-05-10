@@ -860,6 +860,70 @@ describe.sequential("agent permission routes", () => {
     );
   }, 15_000);
 
+  it("grants joins:approve in addition to tasks:assign when board creates a CEO agent", async () => {
+    mockAgentService.create.mockResolvedValue({ ...baseAgent, role: "ceo" });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201]).toContain(res.status);
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      true,
+      "board-user",
+    );
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "joins:approve",
+      true,
+      "board-user",
+    );
+  }, 15_000);
+
+  it("does not grant joins:approve to non-CEO agents on creation", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201]).toContain(res.status);
+    const joinsApproveCalls = mockAccessService.setPrincipalPermission.mock.calls.filter(
+      (call) => call[3] === "joins:approve",
+    );
+    expect(joinsApproveCalls).toEqual([]);
+  }, 15_000);
+
   it("rejects unsupported query parameters on the agent list route", async () => {
     const app = await createApp({
       type: "board",
@@ -1371,6 +1435,62 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("grants joins:approve when CEO permissions are updated", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      role: "ceo",
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: true, canAssignTasks: false }));
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "joins:approve",
+      true,
+      "board-user",
+    );
+  });
+
+  it("does not grant joins:approve when non-CEO permissions are updated", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      role: "engineer",
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: true, canAssignTasks: false }));
+
+    expect(res.status).toBe(200);
+    const joinsApproveCalls = mockAccessService.setPrincipalPermission.mock.calls.filter(
+      (call) => call[3] === "joins:approve",
+    );
+    expect(joinsApproveCalls).toEqual([]);
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {

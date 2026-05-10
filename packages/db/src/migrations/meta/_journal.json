@@ -589,6 +589,13 @@
       "when": 1778074536410,
       "tag": "0083_company_secret_provider_configs",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1778421032000,
+      "tag": "0084_grant_joins_approve_to_ceo_agents",
+      "breakpoints": true
     }
   ]
 }

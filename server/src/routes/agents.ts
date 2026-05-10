@@ -524,9 +524,10 @@ export function agentRoutes(
     };
   }
 
-  async function applyDefaultAgentTaskAssignGrant(
+  async function applyDefaultAgentRoleGrants(
     companyId: string,
     agentId: string,
+    agentRole: string,
     grantedByUserId: string | null,
   ) {
     await access.ensureMembership(companyId, "agent", agentId, "member", "active");
@@ -538,6 +539,16 @@ export function agentRoutes(
       true,
       grantedByUserId,
     );
+    if (agentRole === "ceo") {
+      await access.setPrincipalPermission(
+        companyId,
+        "agent",
+        agentId,
+        "joins:approve",
+        true,
+        grantedByUserId,
+      );
+    }
   }
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
@@ -2098,9 +2109,10 @@ export function agentRoutes(
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
-    await applyDefaultAgentTaskAssignGrant(
+    await applyDefaultAgentRoleGrants(
       companyId,
       agent.id,
+      agent.role,
       actor.actorType === "user" ? actor.actorId : null,
     );
 
@@ -2219,9 +2231,10 @@ export function agentRoutes(
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
-    await applyDefaultAgentTaskAssignGrant(
+    await applyDefaultAgentRoleGrants(
       companyId,
       agent.id,
+      agent.role,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
 
@@ -2272,6 +2285,7 @@ export function agentRoutes(
 
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanApproveJoins = agent.role === "ceo";
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
@@ -2281,6 +2295,16 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+    if (effectiveCanApproveJoins) {
+      await access.setPrincipalPermission(
+        agent.companyId,
+        "agent",
+        agent.id,
+        "joins:approve",
+        true,
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2295,6 +2319,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        canApproveJoins: effectiveCanApproveJoins,
       },
     });
 
