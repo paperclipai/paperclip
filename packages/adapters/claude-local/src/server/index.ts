@@ -29,6 +29,7 @@ export {
   getQuotaWindows,
   readClaudeAuthStatus,
   readClaudeToken,
+  readClaudeTokenFromDir,
   fetchClaudeQuota,
   fetchClaudeCliQuota,
   captureClaudeCliUsageText,

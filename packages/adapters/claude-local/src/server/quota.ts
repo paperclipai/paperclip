@@ -146,6 +146,15 @@ export async function readClaudeToken(): Promise<string | null> {
   return null;
 }
 
+/** Read an OAuth access token from an arbitrary credential directory (e.g. a per-account credentialDir). */
+export async function readClaudeTokenFromDir(dir: string): Promise<string | null> {
+  for (const filename of [".credentials.json", "credentials.json"]) {
+    const token = await readClaudeTokenFromFile(path.join(dir, filename));
+    if (token) return token;
+  }
+  return null;
+}
+
 interface AnthropicUsageWindow {
   utilization?: number | null;
   resets_at?: string | null;
@@ -478,6 +487,10 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
+/**
+ * @deprecated Use `getQuotaWindowsForAccounts(companyId, db)` in quota-windows.ts for
+ * multi-account polling. This function polls the single active account credential dir.
+ */
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   if (
     process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||

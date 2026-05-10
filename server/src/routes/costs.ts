@@ -20,7 +20,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { fetchAllQuotaWindows, getQuotaWindowsForAccounts } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -233,8 +233,11 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows();
-    res.json(results);
+    const [perAccount, legacy] = await Promise.all([
+      getQuotaWindowsForAccounts(companyId, db),
+      fetchAllQuotaWindows(),
+    ]);
+    res.json({ perAccount, legacy });
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
