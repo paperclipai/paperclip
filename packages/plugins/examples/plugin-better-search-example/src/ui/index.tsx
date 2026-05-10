@@ -7,6 +7,10 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import type { Preset, SearchResult } from "../worker.js";
 
+// Cross-slot bridge: toolbar buttons write a pending preset here; the sidebar
+// panel reads it on mount and auto-applies it, then clears the key.
+const PENDING_PRESET_KEY = "bse-pending-preset";
+
 type SearchData = {
   results: SearchResult[];
   query: string;
@@ -527,6 +531,22 @@ export function BetterSearchPanel() {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [filter, setFilter] = useState<AuthorFilter>("all");
 
+  // Apply any preset that was queued by the inbox toolbar button.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(PENDING_PRESET_KEY);
+      if (!raw) return;
+      sessionStorage.removeItem(PENDING_PRESET_KEY);
+      const preset = JSON.parse(raw) as Preset;
+      const q = preset.query ?? "";
+      setInputValue(q);
+      setDebouncedQuery(q.trim());
+      setFilter((preset.filters.authorType as AuthorFilter) ?? "all");
+    } catch {
+      sessionStorage.removeItem(PENDING_PRESET_KEY);
+    }
+  }, []);
+
   // Preset state — loaded from worker on mount, kept in sync via refresh token.
   const [presetsRefresh, setPresetsRefresh] = useState(0);
   const [localPresets, setLocalPresets] = useState<Preset[] | null>(null);
@@ -751,6 +771,86 @@ export function BetterSearchPanel() {
           Deep search across titles, descriptions, and comments.
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inbox toolbar preset buttons
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders saved presets as compact outline buttons in the inbox toolbar.
+ * Clicking a button stores the preset in sessionStorage and navigates to the
+ * company home page so the sidebar search panel can auto-apply it on mount.
+ */
+export function InboxToolbarPresets() {
+  const context = useHostContext();
+  const companyId = context.companyId ?? "";
+  const userId = context.userId ?? "";
+  const companyPrefix = context.companyPrefix;
+
+  const presetsData = usePluginData<PresetsData>(
+    "getPresets",
+    companyId && userId ? { companyId, userId } : undefined
+  );
+
+  const presets = presetsData.data?.presets ?? [];
+
+  if (presets.length === 0) return null;
+
+  function handleClick(preset: Preset) {
+    try {
+      sessionStorage.setItem(PENDING_PRESET_KEY, JSON.stringify(preset));
+    } catch {
+      // sessionStorage unavailable — no-op; user can still open search manually.
+    }
+    window.location.href = companyPrefix ? `/${companyPrefix}` : "/";
+  }
+
+  const btnStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    height: "32px",
+    padding: "0 10px",
+    borderRadius: "6px",
+    border: "1px solid var(--border)",
+    background: "transparent",
+    color: "var(--foreground)",
+    fontSize: "12px",
+    fontWeight: 500,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    maxWidth: "120px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    flexShrink: 0,
+    transition: "background 0.1s, border-color 0.1s",
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+      {presets.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          style={btnStyle}
+          title={`Open saved search: ${p.name}`}
+          onClick={() => handleClick(p)}
+          onMouseEnter={(e) => {
+            const el = e.currentTarget as HTMLButtonElement;
+            el.style.background = "color-mix(in srgb, var(--accent, #6366f1) 12%, transparent)";
+            el.style.borderColor = "var(--primary, #6366f1)";
+          }}
+          onMouseLeave={(e) => {
+            const el = e.currentTarget as HTMLButtonElement;
+            el.style.background = "transparent";
+            el.style.borderColor = "var(--border)";
+          }}
+        >
+          {p.name}
+        </button>
+      ))}
     </div>
   );
 }
