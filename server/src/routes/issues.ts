@@ -2392,7 +2392,8 @@ export function issueRoutes(
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
+      const canonicalCommentBody = await svc.canonicalizeCommentBody(issue.companyId, commentBody as string);
+      comment = await svc.addComment(id, canonicalCommentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
@@ -3502,7 +3503,8 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
+    const canonicalBody = await svc.canonicalizeCommentBody(currentIssue.companyId, req.body.body as string);
+    const comment = await svc.addComment(id, canonicalBody, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,

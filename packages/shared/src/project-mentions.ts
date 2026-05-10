@@ -193,6 +193,57 @@ export function extractAgentMentionIds(markdown: string): string[] {
   return [...ids];
 }
 
+function resolveAgentByLabel(
+  label: string,
+  agents: ReadonlyArray<{ id: string; name: string }>,
+): { id: string; name: string } | null {
+  const lowerLabel = label.toLowerCase();
+
+  const exactMatches = agents.filter((a) => a.name.toLowerCase() === lowerLabel);
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) return null;
+
+  // "Name-Role" → try matching "Name"
+  const dashIdx = label.indexOf("-");
+  if (dashIdx > 0) {
+    const prefix = label.slice(0, dashIdx).toLowerCase();
+    const dashMatches = agents.filter((a) => a.name.toLowerCase() === prefix);
+    if (dashMatches.length === 1) return dashMatches[0];
+    if (dashMatches.length > 1) return null;
+  }
+
+  // "Name (Role)" → try matching "Name"
+  const parenIdx = label.indexOf(" (");
+  if (parenIdx > 0) {
+    const prefix = label.slice(0, parenIdx).toLowerCase();
+    const parenMatches = agents.filter((a) => a.name.toLowerCase() === prefix);
+    if (parenMatches.length === 1) return parenMatches[0];
+    if (parenMatches.length > 1) return null;
+  }
+
+  return null;
+}
+
+/**
+ * Rewrites agent mention links whose display label uniquely resolves to a different agent
+ * than the href id. Preserves mentions where the label is ambiguous or non-matching.
+ */
+export function canonicalizeAgentMentionLinks(
+  body: string,
+  agents: ReadonlyArray<{ id: string; name: string }>,
+): string {
+  if (!body || agents.length === 0) return body;
+  const re = /\[([^\]]*)\]\((agent:\/\/[^)\s]+)\)/g;
+  return body.replace(re, (full, labelRaw: string, href: string) => {
+    const parsed = parseAgentMentionHref(href);
+    if (!parsed) return full;
+    const label = labelRaw.startsWith("@") ? labelRaw.slice(1) : labelRaw;
+    const resolved = resolveAgentByLabel(label, agents);
+    if (!resolved || resolved.id === parsed.agentId) return full;
+    return `[@${resolved.name}](${buildAgentMentionHref(resolved.id)})`;
+  });
+}
+
 export function extractUserMentionIds(markdown: string): string[] {
   if (!markdown) return [];
   const ids = new Set<string>();

@@ -33,7 +33,7 @@ import type {
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
-import { clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import { canonicalizeAgentMentionLinks, clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -3777,6 +3777,15 @@ export function issueService(db: Db) {
         }
       }
       return [...resolved];
+    },
+
+    canonicalizeCommentBody: async (companyId: string, body: string): Promise<string> => {
+      if (!body) return body;
+      const agentRows = await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+      return canonicalizeAgentMentionLinks(body, agentRows);
     },
 
     findMentionedProjectIds: async (

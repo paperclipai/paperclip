@@ -893,6 +893,7 @@ export {
   buildProjectMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
+  canonicalizeAgentMentionLinks,
   extractAgentMentionIds,
   extractProjectMentionIds,
   extractSkillMentionIds,
